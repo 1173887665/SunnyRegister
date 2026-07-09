@@ -1,0 +1,32 @@
+# SunnyRegister local runtime data / secrets
+.env
+.env.*
+!.env.example
+!.env.production.example
+data/
+backend/data/
+*.db
+*.db-*
+*.log
+
+# Build outputs
+backend/*.exe
+backend/static/assets/
+backend/static/index.html
+frontend/dist/
+frontend/node_modules/
+frontend/.vite/
+frontend/coverage/
+
+# Python
+python-worker/.venv/
+original_runtime/.venv/
+**/__pycache__/
+**/*.pyc
+
+# Temporary
+.tmp/
+.agents/
+tmp_*
+.DS_Store
+Thumbs.db

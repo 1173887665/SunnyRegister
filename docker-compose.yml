@@ -1,0 +1,69 @@
+name: sunnyregister
+
+services:
+  sunnyregister:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sunnyregister/backend:${SUNNYREGISTER_TAG:-latest}
+    container_name: sunnyregister-go
+    restart: unless-stopped
+    depends_on:
+      python-worker:
+        condition: service_healthy
+    ports:
+      - "${SUNNYREGISTER_BIND:-0.0.0.0}:${SUNNYREGISTER_PORT:-8000}:8000"
+    environment:
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      APP_PASSWORD: ${APP_PASSWORD:-}
+      ADMIN_PASSWORD_FILE: /app/data/admin_password.txt
+      ACCOUNT_MANAGER_DATABASE_URL: /app/data/account_manager.db
+      PYTHON_WORKER_URL: http://python-worker:8765
+      PYTHON_WORKER_TOKEN: ${PYTHON_WORKER_TOKEN:-}
+      PYTHON_TASK_TYPES: ${PYTHON_TASK_TYPES:-sunny_register,sunny_login,sunny_refresh_session}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - sunnyregister-data:/app/data
+    healthcheck:
+      test: ["CMD", "/app/sunnyregister-go", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  python-worker:
+    build:
+      context: .
+      dockerfile: python-worker/Dockerfile
+    image: sunnyregister/python-worker:${SUNNYREGISTER_TAG:-latest}
+    container_name: sunnyregister-python-worker
+    restart: unless-stopped
+    environment:
+      ACCOUNT_MANAGER_DATABASE_URL: sqlite:////app/data/account_manager.db
+      PYTHON_WORKER_TOKEN: ${PYTHON_WORKER_TOKEN:-}
+      PYTHONUTF8: "1"
+      TZ: ${TZ:-Asia/Shanghai}
+      DISPLAY: ${DISPLAY:-:99}
+      ENABLE_XVFB: ${ENABLE_XVFB:-true}
+      ENABLE_NOVNC: ${ENABLE_NOVNC:-true}
+      NOVNC_PORT: 6080
+      XVFB_WHD: ${XVFB_WHD:-1600x900x24}
+      # 默认保留可视浏览器自动化能力：容器内通过 Xvfb 运行，服务器上可用 noVNC 查看。
+      # 如未来增加真正 headless 流程，可在任务层传 headless=true。
+    ports:
+      # noVNC 默认只绑定宿主机 127.0.0.1，生产环境建议通过 SSH 隧道访问，不要直接公网暴露。
+      - "${NOVNC_BIND:-127.0.0.1}:${NOVNC_PORT:-6080}:6080"
+    volumes:
+      - sunnyregister-data:/app/data
+    shm_size: "2gb"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8765/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  sunnyregister-data:
+    name: sunnyregister-data

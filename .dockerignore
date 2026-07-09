@@ -1,0 +1,34 @@
+.git
+.github
+.agents
+.codex
+.tmp
+**/.DS_Store
+
+# Local env / secrets / runtime data
+.env
+.env.*
+!.env.example
+!.env.production.example
+data
+backend/data
+*.db
+*.db-*
+*.log
+
+# Local build artifacts
+frontend/node_modules
+frontend/dist
+frontend/.vite
+frontend/coverage
+backend/*.exe
+backend/*.db
+backend/static/assets
+
+# Python caches / local virtualenvs
+**/__pycache__
+**/*.pyc
+python-worker/.venv
+original_runtime/.venv
+original_runtime/data
+original_runtime/account_manager.db

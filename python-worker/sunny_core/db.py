@@ -1,0 +1,441 @@
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from zoneinfo import ZoneInfo
+
+
+def db_path() -> str:
+    raw = os.getenv("ACCOUNT_MANAGER_DATABASE_URL") or os.getenv("ACCOUNT_MANAGER_DB") or "sqlite:///data/account_manager.db"
+    raw = raw.strip()
+    if raw.startswith("sqlite:///"):
+        return raw[10:]
+    if raw.startswith("sqlite://"):
+        return raw[9:]
+    return raw
+
+
+def now_sql() -> str:
+    tz_name = os.getenv("SUNNY_TIMEZONE") or os.getenv("TZ") or "Asia/Shanghai"
+    try:
+        return datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+class SunnyTaskCancelled(RuntimeError):
+    """Raised when the Go backend marks a SunnyRegister task as cancelled."""
+
+
+class SunnyDB:
+    def __init__(self, task_id: str):
+        self.task_id = task_id
+        self.conn = sqlite3.connect(db_path(), timeout=30)
+        self.conn.row_factory = sqlite3.Row
+        self.ensure_schema()
+
+    def close(self) -> None:
+        self.conn.close()
+
+    def ensure_schema(self) -> None:
+        """Keep the Python worker compatible with databases created by older builds."""
+        wanted = {
+            "sunny_accounts": {
+                "mailbox_id": "integer DEFAULT 0",
+                "group_name": "text DEFAULT ''",
+                "status": "text DEFAULT 'pending'",
+                "account_type": "text DEFAULT 'free'",
+                "openai_rt": "text DEFAULT ''",
+                "access_token": "text DEFAULT ''",
+                "phone_number": "text DEFAULT ''",
+                "sub2api_status": "text DEFAULT ''",
+                "sub2api_id": "text DEFAULT ''",
+                "last_error": "text DEFAULT ''",
+                "metadata_json": "text DEFAULT '{}'",
+                "created_at": "datetime",
+                "updated_at": "datetime",
+            },
+            "sunny_mailboxes": {
+                "openai_rt": "text DEFAULT ''",
+                "registered_at": "datetime",
+                "last_error": "text DEFAULT ''",
+            },
+            "sunny_sessions": {
+                "refresh_token": "text DEFAULT ''",
+                "id_token": "text DEFAULT ''",
+                "session_json": "text DEFAULT '{}'",
+                "storage_state_json": "text DEFAULT '{}'",
+                "raw_mailbox_line": "text DEFAULT ''",
+                "last_refresh_at": "datetime",
+            },
+        }
+        for table, columns in wanted.items():
+            try:
+                existing = {str(row["name"]) for row in self.conn.execute(f"pragma table_info({table})").fetchall()}
+            except Exception:
+                existing = set()
+            if not existing:
+                continue
+            for name, ddl in columns.items():
+                if name in existing:
+                    continue
+                self.conn.execute(f"alter table {table} add column {name} {ddl}")
+            refreshed = {str(row["name"]) for row in self.conn.execute(f"pragma table_info({table})").fetchall()}
+            if table in {"sunny_accounts", "sunny_mailboxes"} and "open_airt" in refreshed and "openai_rt" in refreshed:
+                self.conn.execute(f"update {table} set openai_rt=open_airt where coalesce(openai_rt,'')='' and coalesce(open_airt,'')<>''")
+        self.conn.execute(
+            """
+            create table if not exists sunny_sms_provider_numbers (
+                id integer primary key autoincrement,
+                provider text not null,
+                phone_number text not null,
+                country text default '',
+                service text default '',
+                pool text default '',
+                last_order_id text default '',
+                token text default '',
+                status text default 'available',
+                success_count integer default 0,
+                max_success integer default 3,
+                cooldown_until datetime,
+                last_error text default '',
+                last_used_at datetime,
+                created_at datetime,
+                updated_at datetime
+            )
+            """
+        )
+        self.conn.execute(
+            "create unique index if not exists idx_sunny_sms_provider_number on sunny_sms_provider_numbers(provider, phone_number, country, service)"
+        )
+        self.conn.commit()
+
+    def task(self) -> dict[str, Any]:
+        row = self.conn.execute("select * from tasks where id=?", (self.task_id,)).fetchone()
+        if not row:
+            raise RuntimeError(f"task not found: {self.task_id}")
+        return dict(row)
+
+    def event(self, message: str, level: str = "info", typ: str = "log", detail: dict[str, Any] | None = None) -> None:
+        created_at = now_sql()
+        event_detail = dict(detail or {})
+        event_detail.setdefault("local_created_at", created_at)
+        self.conn.execute(
+            "insert into task_events(task_id,type,level,message,detail_json,created_at) values(?,?,?,?,?,?)",
+            (self.task_id, typ, level, str(message), json.dumps(event_detail, ensure_ascii=False), created_at),
+        )
+        self.conn.commit()
+
+    def update_task(self, **fields: Any) -> None:
+        if not fields:
+            return
+        if "status" in fields and str(fields.get("status") or "") not in {"cancelled", "interrupted"}:
+            row = self.conn.execute("select status from tasks where id=?", (self.task_id,)).fetchone()
+            current = str(row["status"] if row else "")
+            if current in {"cancel_requested", "cancelled", "interrupted"}:
+                fields["status"] = "cancelled"
+                fields.setdefault("error", "用户已中断注册任务")
+                fields.setdefault("finished_at", now_sql())
+        fields["updated_at"] = now_sql()
+        sets = ",".join(f"{k}=?" for k in fields)
+        self.conn.execute(f"update tasks set {sets} where id=?", [*fields.values(), self.task_id])
+        self.conn.commit()
+
+    def task_status(self) -> str:
+        row = self.conn.execute("select status from tasks where id=?", (self.task_id,)).fetchone()
+        return str(row["status"] if row else "")
+
+    def cancel_requested(self) -> bool:
+        return self.task_status() in {"cancel_requested", "cancelled", "interrupted"}
+
+    def ensure_not_cancelled(self) -> None:
+        if self.cancel_requested():
+            raise SunnyTaskCancelled("Task cancelled by user")
+
+    def mark_cancelled(self, message: str = "用户已中断注册任务") -> None:
+        self.update_task(status="cancelled", error=message, finished_at=now_sql())
+        self.event(message, "warning", detail={"scope": "global", "cancelled": True})
+
+    def fetch_mailboxes(self, ids: list[int] | None = None, limit: int = 0) -> list[dict[str, Any]]:
+        if ids:
+            marks = ",".join("?" for _ in ids)
+            rows = self.conn.execute(f"select * from sunny_mailboxes where id in ({marks}) order by id asc", ids).fetchall()
+        else:
+            sql = "select * from sunny_mailboxes where enabled=1 and coalesce(status,'') not in ('disabled') order by id asc"
+            if limit:
+                sql += f" limit {int(limit)}"
+            rows = self.conn.execute(sql).fetchall()
+        items = [dict(r) for r in rows]
+        for item in items:
+            self._hydrate_mailbox_auth(item)
+        return items
+
+    def _hydrate_mailbox_auth(self, mailbox: dict[str, Any]) -> None:
+        """Fill mailbox OpenAI RT from account/session tables when the mailbox row is stale."""
+        if mailbox.get("openai_rt"):
+            return
+        email = str(mailbox.get("email") or "")
+        if not email:
+            return
+        row = self.conn.execute("select openai_rt from sunny_accounts where email=? and coalesce(openai_rt,'')<>''", (email,)).fetchone()
+        if row and row["openai_rt"]:
+            mailbox["openai_rt"] = row["openai_rt"]
+            return
+        row = self.conn.execute("select refresh_token from sunny_sessions where email=? and coalesce(refresh_token,'')<>''", (email,)).fetchone()
+        if row and row["refresh_token"]:
+            mailbox["openai_rt"] = row["refresh_token"]
+
+    def fetch_accounts(self, ids: list[int] | None = None) -> list[dict[str, Any]]:
+        if ids:
+            marks = ",".join("?" for _ in ids)
+            rows = self.conn.execute(f"select * from sunny_accounts where id in ({marks}) order by id asc", ids).fetchall()
+        else:
+            rows = self.conn.execute("select * from sunny_accounts order by id asc").fetchall()
+        return [dict(r) for r in rows]
+
+    def fetch_session_by_email(self, email: str) -> dict[str, Any] | None:
+        row = self.conn.execute("select * from sunny_sessions where email=?", (email,)).fetchone()
+        return dict(row) if row else None
+
+    def reserve_phone(self) -> dict[str, Any] | None:
+        phone_cfg = self.get_config("phone")
+        if phone_cfg and phone_cfg.get("pool_enabled") is False:
+            return None
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            row = self.conn.execute(
+                """
+                select * from sunny_phones
+                where enabled=1 and coalesce(status,'available') not in ('disabled','full','in_use')
+                  and coalesce(success_count,0) < coalesce(max_success,3)
+                  and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now'))
+                order by success_count asc, id asc limit 1
+                """
+            ).fetchone()
+            if not row:
+                self.conn.rollback()
+                return None
+            phone = dict(row)
+            self.conn.execute("update sunny_phones set status=?, updated_at=? where id=?", ("in_use", now_sql(), phone["id"]))
+            self.conn.commit()
+            return phone
+        except Exception:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            raise
+
+    def mark_phone_success(self, phone_id: int, code: str = "") -> None:
+        until = (datetime.now(timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+        self.conn.execute(
+            "update sunny_phones set success_count=coalesce(success_count,0)+1, status=case when coalesce(success_count,0)+1>=coalesce(max_success,3) then 'full' else 'cooldown' end, cooldown_until=?, last_code=?, last_used_at=?, updated_at=? where id=?",
+            (until, code, now_sql(), now_sql(), phone_id),
+        )
+        self.conn.commit()
+
+    def mark_phone_error(self, phone_id: int, error: str) -> None:
+        self.conn.execute("update sunny_phones set status='available', last_error=?, updated_at=? where id=?", (error, now_sql(), phone_id))
+        self.conn.commit()
+
+    def usable_phone_count(self) -> int:
+        phone_cfg = self.get_config("phone")
+        if phone_cfg and phone_cfg.get("pool_enabled") is False:
+            return 0
+        row = self.conn.execute(
+            """
+            select count(*) as n from sunny_phones
+            where enabled=1 and coalesce(status,'available') not in ('disabled','full','in_use')
+              and coalesce(success_count,0) < coalesce(max_success,3)
+              and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now'))
+            """
+        ).fetchone()
+        return int(row["n"] if row else 0)
+
+    def smsbower_available(self) -> bool:
+        phone_cfg = self.get_config("phone")
+        return bool(phone_cfg.get("smsbower_enabled") and str(phone_cfg.get("smsbower_api_key") or "").strip())
+
+    def smspool_available(self) -> bool:
+        phone_cfg = self.get_config("phone")
+        return bool(phone_cfg.get("smspool_enabled") and str(phone_cfg.get("smspool_api_key") or "").strip())
+
+    def reserve_sms_provider_number(self, provider: str, country: str = "", service: str = "") -> dict[str, Any] | None:
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            row = self.conn.execute(
+                """
+                select * from sunny_sms_provider_numbers
+                where provider=?
+                  and (?='' or country=?)
+                  and (?='' or service=?)
+                  and coalesce(status,'available') not in ('disabled','in_use','full')
+                  and coalesce(success_count,0) < coalesce(max_success,3)
+                  and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now'))
+                order by success_count asc, last_used_at asc, id asc
+                limit 1
+                """,
+                (provider, country, country, service, service),
+            ).fetchone()
+            if not row:
+                self.conn.rollback()
+                return None
+            item = dict(row)
+            self.conn.execute(
+                "update sunny_sms_provider_numbers set status='in_use', updated_at=? where id=?",
+                (now_sql(), item["id"]),
+            )
+            self.conn.commit()
+            return item
+        except Exception:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            raise
+
+    def record_sms_provider_number(self, provider: str, phone_number: str, country: str = "", service: str = "", pool: str = "", order_id: str = "", token: str = "") -> None:
+        if not phone_number:
+            return
+        row = self.conn.execute(
+            "select id from sunny_sms_provider_numbers where provider=? and phone_number=? and country=? and service=?",
+            (provider, phone_number, country, service),
+        ).fetchone()
+        values = {
+            "provider": provider,
+            "phone_number": phone_number,
+            "country": country,
+            "service": service,
+            "pool": pool,
+            "last_order_id": order_id,
+            "token": token,
+            "status": "in_use",
+            "last_error": "",
+            "last_used_at": now_sql(),
+            "updated_at": now_sql(),
+        }
+        if row:
+            sets = ",".join(f"{k}=?" for k in values)
+            self.conn.execute(f"update sunny_sms_provider_numbers set {sets} where id=?", [*values.values(), row["id"]])
+        else:
+            values["created_at"] = now_sql()
+            cols = ",".join(values)
+            self.conn.execute(f"insert into sunny_sms_provider_numbers({cols}) values({','.join('?' for _ in values)})", list(values.values()))
+        self.conn.commit()
+
+    def mark_sms_provider_number_success(self, provider: str, phone_number: str, code: str = "") -> None:
+        if not phone_number:
+            return
+        until = (datetime.now(timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+        self.conn.execute(
+            """
+            update sunny_sms_provider_numbers
+            set success_count=coalesce(success_count,0)+1,
+                status=case when coalesce(success_count,0)+1>=coalesce(max_success,3) then 'full' else 'cooldown' end,
+                cooldown_until=?,
+                last_error='',
+                last_used_at=?,
+                updated_at=?
+            where provider=? and phone_number=?
+            """,
+            (until, now_sql(), now_sql(), provider, phone_number),
+        )
+        self.conn.commit()
+
+    def mark_sms_provider_number_error(self, provider: str, phone_number: str, error: str) -> None:
+        if not phone_number:
+            return
+        self.conn.execute(
+            "update sunny_sms_provider_numbers set status='available', last_error=?, updated_at=? where provider=? and phone_number=?",
+            (error, now_sql(), provider, phone_number),
+        )
+        self.conn.commit()
+
+    def get_config(self, key: str) -> dict[str, Any]:
+        row = self.conn.execute("select value_json from sunny_configs where key=?", (key,)).fetchone()
+        if not row:
+            return {}
+        try:
+            data = json.loads(row["value_json"] or "{}")
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def set_account_sub2api_status(self, email: str, status: str, sub2api_id: str = "", error: str = "") -> None:
+        self.conn.execute("update sunny_accounts set sub2api_status=?, sub2api_id=?, last_error=?, updated_at=? where email=?", (status, sub2api_id, error, now_sql(), email))
+        self.conn.commit()
+
+    def upsert_account(self, email: str, **fields: Any) -> int:
+        row = self.conn.execute("select id from sunny_accounts where email=?", (email,)).fetchone()
+        base = {"email": email, "updated_at": now_sql(), **fields}
+        if row:
+            sets = ",".join(f"{k}=?" for k in base)
+            self.conn.execute(f"update sunny_accounts set {sets} where id=?", [*base.values(), row["id"]])
+            account_id = int(row["id"])
+        else:
+            base.setdefault("created_at", now_sql())
+            cols = ",".join(base)
+            marks = ",".join("?" for _ in base)
+            cur = self.conn.execute(f"insert into sunny_accounts({cols}) values({marks})", list(base.values()))
+            account_id = int(cur.lastrowid)
+        self.conn.commit()
+        return account_id
+
+    def upsert_session(self, email: str, account_id: int, session: dict[str, Any], raw_line: str = "") -> None:
+        values = {
+            "account_id": account_id,
+            "email": email,
+            "access_token": session.get("access_token", ""),
+            "refresh_token": session.get("refresh_token", "") or session.get("openai_rt", ""),
+            "id_token": session.get("id_token", ""),
+            "session_json": json.dumps(session.get("session_json", session), ensure_ascii=False) if not isinstance(session.get("session_json"), str) else session.get("session_json"),
+            "storage_state_json": json.dumps(session.get("storage_state_json", {}), ensure_ascii=False) if not isinstance(session.get("storage_state_json"), str) else session.get("storage_state_json"),
+            "raw_mailbox_line": raw_line,
+            "last_refresh_at": now_sql(),
+            "updated_at": now_sql(),
+        }
+        row = self.conn.execute("select id from sunny_sessions where email=?", (email,)).fetchone()
+        if row:
+            sets = ",".join(f"{k}=?" for k in values)
+            self.conn.execute(f"update sunny_sessions set {sets} where id=?", [*values.values(), row["id"]])
+        else:
+            values["created_at"] = now_sql()
+            cols = ",".join(values)
+            self.conn.execute(f"insert into sunny_sessions({cols}) values({','.join('?' for _ in values)})", list(values.values()))
+        self.conn.commit()
+
+    def mark_mailbox(self, mailbox_id: int, status: str, error: str = "", openai_rt: str = "") -> None:
+        if mailbox_id <= 0:
+            return
+        success_statuses = {"已注册", "已接码", "PLUS试用中"}
+        sets = ["status=?", "last_error=?", "updated_at=?"]
+        values: list[Any] = [status, error, now_sql()]
+        if openai_rt:
+            sets.append("openai_rt=?")
+            values.append(openai_rt)
+        if status in success_statuses:
+            sets.append("registered_at=coalesce(registered_at, ?)")
+            values.append(now_sql())
+        values.append(mailbox_id)
+        self.conn.execute(f"update sunny_mailboxes set {','.join(sets)} where id=?", values)
+        self.conn.commit()
+
+    def mark_mailbox_by_email(self, email: str, status: str, error: str = "", openai_rt: str = "") -> None:
+        if not email:
+            return
+        success_statuses = {"已注册", "已接码", "PLUS试用中"}
+        sets = ["status=?", "last_error=?", "updated_at=?"]
+        values: list[Any] = [status, error, now_sql()]
+        if openai_rt:
+            sets.append("openai_rt=?")
+            values.append(openai_rt)
+        if status in success_statuses:
+            sets.append("registered_at=coalesce(registered_at, ?)")
+            values.append(now_sql())
+        values.append(email)
+        self.conn.execute(f"update sunny_mailboxes set {','.join(sets)} where email=?", values)
+        self.conn.commit()
