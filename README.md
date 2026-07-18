@@ -98,7 +98,6 @@ TZ=Asia/Shanghai
 ### 4. 启动 Docker 服务
 
 ```bash
-chmod +x scripts/*.sh
 ./scripts/deploy-production.sh
 ```
 

@@ -55,7 +55,6 @@ bash scripts/docker-down.sh
 ```bash
 cp .env.production.example .env
 nano .env
-chmod +x scripts/*.sh
 ./scripts/deploy-production.sh
 ```
 

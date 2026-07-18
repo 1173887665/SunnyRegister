@@ -8,8 +8,9 @@ LOCK_FILE="${TMPDIR:-/tmp}/sunnyregister-update.lock"
 exec 9>"$LOCK_FILE"
 flock -n 9 || { echo "Another SunnyRegister update is running." >&2; exit 1; }
 
-if ! git diff --quiet || ! git diff --cached --quiet; then
+if ! git -c core.fileMode=false diff --quiet || ! git -c core.fileMode=false diff --cached --quiet; then
   echo "The deployment checkout has local changes. Refusing to overwrite them." >&2
+  git status --short >&2
   exit 1
 fi
 

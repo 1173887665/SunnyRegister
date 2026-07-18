@@ -51,7 +51,6 @@ preferred.
 ## 首次部署
 
 ```bash
-chmod +x scripts/*.sh
 ./scripts/deploy-production.sh
 ```
 
