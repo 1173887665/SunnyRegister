@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -320,6 +321,13 @@ func (s *Server) reconcilePythonTaskStatus(task *Task) {
 		lastActivity = ev.CreatedAt
 	}
 	if !lastActivity.IsZero() && time.Since(lastActivity) < 90*time.Second {
+		if task.Status != TaskCancelRequested || time.Since(lastActivity) < 20*time.Second {
+			return
+		}
+	}
+	silentFor := time.Since(lastActivity)
+	if task.Status == TaskCancelRequested && silentFor >= 20*time.Second {
+		s.interruptStaleSunnyTask(task, "Python Worker 未在停止请求后及时退出，已强制结束注册任务")
 		return
 	}
 
@@ -328,7 +336,7 @@ func (s *Server) reconcilePythonTaskStatus(task *Task) {
 		workerURL = "http://127.0.0.1:8765"
 	}
 	healthOK, stillRunning := s.pythonWorkerTaskRunning(workerURL, task.ID)
-	if healthOK && stillRunning {
+	if healthOK && stillRunning && silentFor < 20*time.Minute {
 		return
 	}
 	if !healthOK && !lastActivity.IsZero() && time.Since(lastActivity) < 5*time.Minute {
@@ -338,12 +346,28 @@ func (s *Server) reconcilePythonTaskStatus(task *Task) {
 	reason := "Python Worker 已不在执行该注册任务，已自动解除注册中状态"
 	if !healthOK {
 		reason = "无法连接 Python Worker，注册任务长时间无更新，已自动解除注册中状态"
+	} else if stillRunning {
+		reason = "Python Worker 注册任务超过 20 分钟无日志更新，已按卡死任务强制结束"
+	}
+	s.interruptStaleSunnyTask(task, reason)
+}
+
+func (s *Server) interruptStaleSunnyTask(task *Task, reason string) {
+	if task == nil || terminalTaskStatuses[task.Status] {
+		return
 	}
 	task.Status = TaskInterrupted
 	task.Error = reason
 	task.FinishedAt = sql.NullTime{Time: time.Now(), Valid: true}
 	s.db.Save(task)
-	s.appendTaskEvent(task.ID, reason, "log", "warning", map[string]any{"reconciled": true, "worker_health_ok": healthOK})
+	payload := jsonMap(task.PayloadJSON)
+	mailboxIDs := uintSlice(payload["mailbox_ids"])
+	if len(mailboxIDs) > 0 {
+		s.db.Model(&SunnyMailbox{}).
+			Where("id IN ? AND status IN ?", mailboxIDs, []string{"注册中", "登录刷新"}).
+			Updates(map[string]any{"status": "失败", "last_error": reason, "updated_at": time.Now()})
+	}
+	s.appendTaskEvent(task.ID, reason, "log", "warning", map[string]any{"reconciled": true, "forced": true})
 }
 
 func (s *Server) pythonWorkerTaskRunning(workerURL, taskID string) (bool, bool) {
@@ -351,7 +375,7 @@ func (s *Server) pythonWorkerTaskRunning(workerURL, taskID string) (bool, bool) 
 	if err != nil {
 		return false, false
 	}
-	if token := strings.TrimSpace(os.Getenv("PYTHON_WORKER_TOKEN")); token != "" {
+	if token := secretValue("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE"); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -485,6 +509,12 @@ func (s *Server) tryDispatchPythonWorker(task *Task) bool {
 		}
 		return false
 	}
+	if strings.HasPrefix(task.Type, "sunny_") {
+		if err := s.checkSunnyWorkerDatabase(workerURL); err != nil {
+			s.failPythonDispatch(task, err.Error())
+			return true
+		}
+	}
 	payload := map[string]any{"task_id": task.ID, "task_type": task.Type}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequest(http.MethodPost, workerURL+"/execute", bytes.NewReader(body))
@@ -493,7 +523,7 @@ func (s *Server) tryDispatchPythonWorker(task *Task) bool {
 		return true
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if token := strings.TrimSpace(os.Getenv("PYTHON_WORKER_TOKEN")); token != "" {
+	if token := secretValue("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE"); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	client := &http.Client{Timeout: 8 * time.Second}
@@ -509,6 +539,40 @@ func (s *Server) tryDispatchPythonWorker(task *Task) bool {
 	}
 	s.appendTaskEvent(task.ID, "任务已派发给 Python 自动化 Worker", "state", "info", map[string]any{"worker_url": workerURL, "task_type": task.Type})
 	return true
+}
+
+func (s *Server) checkSunnyWorkerDatabase(workerURL string) error {
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(workerURL + "/health")
+	if err != nil {
+		return fmt.Errorf("Python Worker 健康检查失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("Python Worker 健康检查返回 HTTP %d", resp.StatusCode)
+	}
+	var health map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		return fmt.Errorf("Python Worker 健康检查响应解析失败: %w", err)
+	}
+	workerDB := strings.TrimSpace(fmt.Sprint(health["sunny_db_path"]))
+	if workerDB == "" {
+		workerDBError := strings.TrimSpace(fmt.Sprint(health["sunny_db_error"]))
+		if workerDBError != "" {
+			return fmt.Errorf("Python Worker 数据库路径读取失败: %s", workerDBError)
+		}
+		return fmt.Errorf("Python Worker 版本过旧或尚未重启，健康检查未返回 sunny_db_path；请停止当前 8765 Worker 后重新运行 scripts\\start-python-worker.ps1")
+	}
+	backendDB, err := filepath.Abs(normalizeDatabasePath(os.Getenv("ACCOUNT_MANAGER_DATABASE_URL")))
+	if err != nil {
+		return fmt.Errorf("Go 后端数据库路径解析失败: %w", err)
+	}
+	backendDB = filepath.Clean(backendDB)
+	workerDB = filepath.Clean(workerDB)
+	if !strings.EqualFold(backendDB, workerDB) {
+		return fmt.Errorf("Python Worker 数据库路径与 Go 后端不一致：后端=%s，Worker=%s。请使用 scripts\\start-python-worker.ps1 启动 Worker，或把两边的 ACCOUNT_MANAGER_DATABASE_URL 设置为同一个 sqlite 数据库后重启", backendDB, workerDB)
+	}
+	return nil
 }
 
 func (s *Server) failPythonDispatch(task *Task, reason string) {

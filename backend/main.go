@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"errors"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path"
@@ -23,15 +26,27 @@ import (
 var embeddedStatic embed.FS
 
 type Server struct {
-	db        *gorm.DB
-	adminUser string
-	adminPass string
-	authToken string
-	staticFS  http.FileSystem
-	wake      chan struct{}
-	stop      chan struct{}
-	running   map[string]bool
-	runtimeMu sync.Mutex
+	db            *gorm.DB
+	adminUser     string
+	adminPass     string
+	staticFS      http.FileSystem
+	wake          chan struct{}
+	stop          chan struct{}
+	running       map[string]bool
+	runtimeMu     sync.Mutex
+	sessionMu     sync.Mutex
+	sessions      map[string]time.Time
+	loginMu       sync.Mutex
+	loginFailures map[string]*loginFailure
+	sessionTTL    time.Duration
+	secureCookies bool
+	production    bool
+}
+
+type loginFailure struct {
+	Count       int
+	WindowStart time.Time
+	BlockedTill time.Time
 }
 
 func main() {
@@ -51,11 +66,21 @@ func main() {
 	seedProviderDefinitions(db)
 	markInterrupted(db)
 	staticFS := resolveStaticFS()
+	production := strings.EqualFold(strings.TrimSpace(os.Getenv("SUNNY_ENV")), "production")
 	adminUser := fallback(strings.TrimSpace(os.Getenv("ADMIN_USERNAME")), "admin")
 	adminPass := ensureAdminPassword()
+	if production {
+		validateProductionSecrets(adminPass)
+	}
+	secureCookies := production
+	if raw := strings.TrimSpace(os.Getenv("SUNNY_SECURE_COOKIES")); raw != "" {
+		secureCookies = raw == "1" || strings.EqualFold(raw, "true")
+	}
 	s := &Server{
-		db: db, adminUser: adminUser, adminPass: adminPass, authToken: randomID("auth"), staticFS: staticFS,
+		db: db, adminUser: adminUser, adminPass: adminPass, staticFS: staticFS,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), running: map[string]bool{},
+		sessions: map[string]time.Time{}, loginFailures: map[string]*loginFailure{},
+		sessionTTL: 12 * time.Hour, secureCookies: secureCookies, production: production,
 	}
 	go s.sunnyWarmSMSProviderOptions()
 	log.Printf("admin login enabled: username=%s password_file=%s", adminUser, adminPasswordFile())
@@ -64,7 +89,11 @@ func main() {
 	mux.HandleFunc("/", s.serveHTTP)
 	addr := ":" + fallback(os.Getenv("PORT"), "8000")
 	log.Printf("SunnyRegister Go backend listening on %s", addr)
-	httpServer := &http.Server{Addr: addr, Handler: mux}
+	httpServer := &http.Server{
+		Addr: addr, Handler: s.securityHeaders(mux),
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+		WriteTimeout: 5 * time.Minute, IdleTimeout: 60 * time.Second,
+	}
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- httpServer.ListenAndServe()
@@ -123,6 +152,11 @@ func resolveStaticFS() http.FileSystem {
 
 func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/") {
+		w.Header().Set("Cache-Control", "no-store")
+		if isMutation(r.Method) && !s.validRequestOrigin(r) {
+			writeError(w, http.StatusForbidden, "Invalid request origin")
+			return
+		}
 		if !s.authorized(r) {
 			writeError(w, 401, "Unauthorized")
 			return
@@ -138,14 +172,154 @@ func (s *Server) authorized(r *http.Request) bool {
 	if strings.HasPrefix(p, "/api/auth/") || p == "/api/health" || p == "/api/ready" {
 		return true
 	}
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") && strings.TrimPrefix(auth, "Bearer ") == s.authToken {
+	return s.hasValidSession(r)
+}
+
+func (s *Server) hasValidSession(r *http.Request) bool {
+	token := ""
+	if c, err := r.Cookie(s.sessionCookieName()); err == nil {
+		token = strings.TrimSpace(c.Value)
+	}
+	if token == "" {
+		auth := r.Header.Get("Authorization")
+		if strings.HasPrefix(auth, "Bearer ") {
+			token = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+		}
+	}
+	if token == "" {
+		return false
+	}
+	now := time.Now()
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	expires, ok := s.sessions[token]
+	if !ok || !expires.After(now) {
+		delete(s.sessions, token)
+		return false
+	}
+	return true
+}
+
+func (s *Server) newSession() string {
+	token := randomID("session")
+	now := time.Now()
+	s.sessionMu.Lock()
+	for key, expires := range s.sessions {
+		if !expires.After(now) {
+			delete(s.sessions, key)
+		}
+	}
+	s.sessions[token] = now.Add(s.sessionTTL)
+	s.sessionMu.Unlock()
+	return token
+}
+
+func (s *Server) deleteSession(token string) {
+	s.sessionMu.Lock()
+	delete(s.sessions, token)
+	s.sessionMu.Unlock()
+}
+
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string, maxAge int) {
+	http.SetCookie(w, &http.Cookie{
+		Name: s.sessionCookieName(), Value: token, Path: "/", MaxAge: maxAge,
+		HttpOnly: true, Secure: s.secureCookies, SameSite: http.SameSiteStrictMode,
+	})
+}
+
+func (s *Server) sessionCookieName() string {
+	if s.secureCookies {
+		return "__Host-sunny_session"
+	}
+	return "sunny_session"
+}
+
+func constantTimeEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func (s *Server) loginClientKey(r *http.Request) string {
+	if raw := strings.TrimSpace(os.Getenv("SUNNY_TRUST_PROXY_HEADERS")); raw == "1" || strings.EqualFold(raw, "true") {
+		if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); net.ParseIP(forwarded) != nil {
+			return forwarded
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func (s *Server) loginBlocked(key string) (bool, time.Duration) {
+	now := time.Now()
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	entry := s.loginFailures[key]
+	if entry == nil || !entry.BlockedTill.After(now) {
+		return false, 0
+	}
+	return true, time.Until(entry.BlockedTill)
+}
+
+func (s *Server) recordLoginFailure(key string) {
+	now := time.Now()
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	entry := s.loginFailures[key]
+	if entry == nil || now.Sub(entry.WindowStart) > 15*time.Minute {
+		entry = &loginFailure{WindowStart: now}
+		s.loginFailures[key] = entry
+	}
+	entry.Count++
+	if entry.Count >= 5 {
+		entry.BlockedTill = now.Add(15 * time.Minute)
+	}
+}
+
+func (s *Server) clearLoginFailures(key string) {
+	s.loginMu.Lock()
+	delete(s.loginFailures, key)
+	s.loginMu.Unlock()
+}
+
+func isMutation(method string) bool {
+	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
+}
+
+func (s *Server) validRequestOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
 		return true
 	}
-	if c, err := r.Cookie("_auth"); err == nil && c.Value == s.authToken {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if strings.EqualFold(u.Host, r.Host) {
 		return true
 	}
-	return false
+	publicOrigin := strings.TrimRight(strings.TrimSpace(os.Getenv("SUNNY_PUBLIC_ORIGIN")), "/")
+	return publicOrigin != "" && strings.EqualFold(strings.TrimRight(origin, "/"), publicOrigin)
+}
+
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		if s.production {
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
+			if s.secureCookies {
+				w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func adminPasswordFile() string {
@@ -174,6 +348,26 @@ func ensureAdminPassword() string {
 	_ = ensureDir(file)
 	_ = os.WriteFile(file, []byte(pass+"\n"), 0600)
 	return pass
+}
+
+func secretValue(envKey, fileKey string) string {
+	if file := strings.TrimSpace(os.Getenv(fileKey)); file != "" {
+		if data, err := os.ReadFile(file); err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return strings.TrimSpace(os.Getenv(envKey))
+}
+
+func validateProductionSecrets(adminPass string) {
+	lower := strings.ToLower(strings.TrimSpace(adminPass))
+	if len(adminPass) < 16 || strings.Contains(lower, "change-me") || strings.Contains(lower, "password") {
+		log.Fatal("production startup refused: ADMIN_PASSWORD must be a non-placeholder secret of at least 16 characters")
+	}
+	workerToken := secretValue("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE")
+	if len(workerToken) < 32 || strings.Contains(strings.ToLower(workerToken), "change-me") {
+		log.Fatal("production startup refused: PYTHON_WORKER_TOKEN must contain at least 32 random characters")
+	}
 }
 
 func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {

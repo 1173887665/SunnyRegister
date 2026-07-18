@@ -104,7 +104,7 @@ class SMSBowerClient:
                 code = raw.split(":", 1)[1].strip()
                 if code:
                     if log:
-                        log(f"SMSBower received code {code}")
+                        log(f"SMSBower received a {len(code)}-digit code (redacted)")
                     return code
             if raw in {"STATUS_WAIT_CODE", "STATUS_WAIT_RETRY", "STATUS_WAIT_RESEND"}:
                 if log:
@@ -119,4 +119,3 @@ class SMSBowerClient:
                 raise RuntimeError(raw)
             time.sleep(5)
         raise TimeoutError(f"SMSBower code timeout: {last_status or 'no status'}")
-

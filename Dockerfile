@@ -3,29 +3,29 @@
 FROM node:22-alpine AS frontend-builder
 WORKDIR /src/frontend
 COPY frontend/package*.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY frontend/ ./
 RUN mkdir -p /src/backend && npm run build
 
 FROM golang:1.23-bookworm AS backend-builder
 WORKDIR /src/backend
 COPY backend/go.mod backend/go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY backend/ ./
 COPY --from=frontend-builder /src/backend/static ./static
 ENV CGO_ENABLED=0
-RUN go build -trimpath -ldflags="-s -w" -o /out/sunnyregister-go .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags="-s -w" -o /out/sunnyregister-go .
 
 FROM debian:bookworm-slim AS runtime
 LABEL org.opencontainers.image.title="SunnyRegister" \
-      org.opencontainers.image.description="SunnyRegister Go backend and bundled React frontend" \
-      org.opencontainers.image.source="https://github.com/your-org/SunnyRegister"
+      org.opencontainers.image.description="SunnyRegister Go backend and bundled React frontend"
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=backend-builder /out/sunnyregister-go /app/sunnyregister-go
-COPY --from=frontend-builder /src/backend/static /app/static
 ENV PORT=8000 \
     ACCOUNT_MANAGER_DATABASE_URL=/app/data/account_manager.db \
     TZ=Asia/Shanghai

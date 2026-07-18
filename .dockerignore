@@ -12,6 +12,8 @@
 !.env.production.example
 data
 backend/data
+secrets
+backups
 *.db
 *.db-*
 *.log
@@ -29,6 +31,9 @@ backend/static/assets
 **/__pycache__
 **/*.pyc
 python-worker/.venv
-original_runtime/.venv
-original_runtime/data
-original_runtime/account_manager.db
+python-worker/tests
+.runtime
+logs
+bin
+docs
+*.md

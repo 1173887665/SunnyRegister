@@ -8,26 +8,13 @@ export function cn(...inputs: ClassValue[]) {
 export const API = import.meta.env.VITE_API_BASE || '/api'
 export const API_BASE = API
 
-export function getAuthToken(): string {
-  return localStorage.getItem('_auth_token') || ''
-}
-export function setAuthToken(token: string) {
-  if (token) localStorage.setItem('_auth_token', token)
-  else localStorage.removeItem('_auth_token')
-}
-
-function authHeaders(): Record<string, string> {
-  const token = getAuthToken()
-  return token ? { Authorization: `Bearer ${token}` } : {}
-}
-
 export async function apiFetch(path: string, opts?: RequestInit) {
   const res = await fetch(API + path, {
     ...opts,
-    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(opts?.headers || {}) },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', ...(opts?.headers || {}) },
   })
   if (res.status === 401 && !path.startsWith('/auth/')) {
-    setAuthToken('')
     window.location.reload()
     throw new Error('Unauthorized')
   }
@@ -38,14 +25,13 @@ export async function apiFetch(path: string, opts?: RequestInit) {
 export async function apiDownload(path: string, opts?: RequestInit) {
   const res = await fetch(API + path, {
     ...opts,
+    credentials: 'include',
     headers: {
       ...(opts?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...authHeaders(),
       ...(opts?.headers || {}),
     },
   })
   if (res.status === 401) {
-    setAuthToken('')
     window.location.reload()
     throw new Error('Unauthorized')
   }

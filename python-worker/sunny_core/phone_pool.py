@@ -45,7 +45,7 @@ def wait_sms_code(number: str, sms_url: str, timeout: int = 180, log: Callable[[
             code = extract_sms_code(res.text)
             if code:
                 if log:
-                    log(f"手机号 {number} 读取到验证码 {code}")
+                    log(f"手机号 {number} 已读取到验证码（{len(code)} 位，已脱敏）")
                 return code
         except Exception as exc:
             last = str(exc)

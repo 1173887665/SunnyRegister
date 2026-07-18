@@ -1,1 +1,0 @@
-"""Mailbox provider plugins."""

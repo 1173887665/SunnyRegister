@@ -1,0 +1,112 @@
+name: sunnyregister-production
+
+services:
+  sunnyregister:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sunnyregister/backend:${SUNNYREGISTER_TAG:-latest}
+    container_name: sunnyregister-go
+    init: true
+    restart: unless-stopped
+    depends_on:
+      python-worker:
+        condition: service_healthy
+    environment:
+      SUNNY_ENV: production
+      SUNNY_SECURE_COOKIES: "true"
+      SUNNY_TRUST_PROXY_HEADERS: "true"
+      SUNNY_PUBLIC_ORIGIN: https://${SUNNYREGISTER_DOMAIN:?SUNNYREGISTER_DOMAIN is required}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-sunnyadmin}
+      ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      ACCOUNT_MANAGER_DATABASE_URL: /app/data/account_manager.db
+      PYTHON_WORKER_URL: http://python-worker:8765
+      PYTHON_WORKER_TOKEN_FILE: /run/secrets/python_worker_token
+      PYTHON_TASK_TYPES: ${PYTHON_TASK_TYPES:-sunny_register,sunny_login,sunny_refresh_session}
+      TZ: ${TZ:-Asia/Shanghai}
+      SUNNY_TIMEZONE: ${TZ:-Asia/Shanghai}
+      SUNNY_CONTAINERIZED: "true"
+    secrets:
+      - admin_password
+      - python_worker_token
+    volumes:
+      - sunnyregister-data:/app/data
+    networks:
+      - edge
+      - worker
+    ports:
+      - "${SUNNYREGISTER_BIND:-127.0.0.1}:${SUNNYREGISTER_PORT:-8000}:8000"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/app/sunnyregister-go", "--healthcheck"]
+      interval: 20s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  python-worker:
+    build:
+      context: .
+      dockerfile: python-worker/Dockerfile
+    image: sunnyregister/python-worker:${SUNNYREGISTER_TAG:-latest}
+    container_name: sunnyregister-python-worker
+    init: true
+    restart: unless-stopped
+    environment:
+      ACCOUNT_MANAGER_DATABASE_URL: /app/data/account_manager.db
+      PYTHON_WORKER_TOKEN_FILE: /run/secrets/python_worker_token
+      PYTHONUTF8: "1"
+      TZ: ${TZ:-Asia/Shanghai}
+      SUNNY_TIMEZONE: ${TZ:-Asia/Shanghai}
+      SUNNY_CONTAINERIZED: "true"
+      DISPLAY: ${WORKER_DISPLAY:-:99}
+      ENABLE_XVFB: ${ENABLE_XVFB:-true}
+      ENABLE_NOVNC: ${ENABLE_NOVNC:-false}
+      NOVNC_PORT: 6080
+      XVFB_WHD: ${XVFB_WHD:-1600x900x24}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    secrets:
+      - python_worker_token
+    ports:
+      - "${NOVNC_BIND:-127.0.0.1}:${NOVNC_PORT:-6080}:6080"
+    volumes:
+      - sunnyregister-data:/app/data
+    networks:
+      - worker
+    shm_size: "${WORKER_SHM_SIZE:-1gb}"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8765/health"]
+      interval: 20s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+secrets:
+  admin_password:
+    file: ./secrets/admin_password
+  python_worker_token:
+    file: ./secrets/python_worker_token
+
+volumes:
+  sunnyregister-data:
+    name: sunnyregister-data
+
+networks:
+  edge:
+    name: sunnyregister-edge
+  worker:
+    name: sunnyregister-worker

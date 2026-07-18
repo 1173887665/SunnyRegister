@@ -1,9 +1,12 @@
 ﻿from __future__ import annotations
 
 import json
+import os
+import random
 import traceback
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -18,6 +21,50 @@ from .smspool import SMSPoolClient
 REGISTER_ONLY = "register_only"
 CODEX_PHONE_BIND = "codex_phone_bind"
 IMPORT_REVERSE_PROXY = "import_reverse_proxy"
+
+_MAILBOX_PROGRESS_RANK = {
+    "未注册": 0,
+    "已注册": 1,
+    "registered": 1,
+    "已接码": 2,
+    "phone_bound": 2,
+    "PLUS试用中": 2,
+    "已反代": 3,
+    "reverse_proxied": 3,
+}
+
+
+def _container_host_proxy(proxy_url: str) -> str:
+    """Route localhost proxy settings to the Docker host when containerized."""
+    if os.getenv("SUNNY_CONTAINERIZED", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return proxy_url
+    try:
+        parsed = urlsplit(proxy_url)
+        if (parsed.hostname or "").lower() not in {"127.0.0.1", "localhost", "::1"}:
+            return proxy_url
+        auth = ""
+        if "@" in parsed.netloc:
+            auth = parsed.netloc.rsplit("@", 1)[0] + "@"
+        port = f":{parsed.port}" if parsed.port else ""
+        return urlunsplit((parsed.scheme, f"{auth}host.docker.internal{port}", parsed.path, parsed.query, parsed.fragment))
+    except Exception:
+        return proxy_url
+
+
+def _highest_mailbox_progress(current: str, candidate: str) -> str:
+    current = str(current or "").strip()
+    candidate = str(candidate or "").strip()
+    current_rank = _MAILBOX_PROGRESS_RANK.get(current, -1)
+    candidate_rank = _MAILBOX_PROGRESS_RANK.get(candidate, -1)
+    return current if current_rank >= candidate_rank and current_rank >= 0 else candidate
+
+
+def _account_status_for_mailbox(status: str) -> str:
+    if status == "已反代":
+        return "reverse_proxied"
+    if status in {"已接码", "PLUS试用中"}:
+        return "phone_bound"
+    return "registered"
 
 
 def _ids(value: Any) -> list[int]:
@@ -72,17 +119,25 @@ def _raw_mailboxes(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _proxy_snapshot(payload: dict[str, Any]) -> dict[str, str]:
+def _proxy_snapshot(payload: dict[str, Any], slot: int = 0) -> dict[str, str]:
     if payload.get("proxy_enabled") is False:
-        system_proxy = str(payload.get("system_proxy") or payload.get("local_proxy") or "").strip()
-        return {"register": build_proxy("", system_proxy).url, "mode": "system_proxy" if system_proxy else "direct", "local_proxy": build_proxy(system_proxy, "").url}
+        system_proxy = str(payload.get("system_proxy") or "").strip()
+        normalized_system_proxy = _container_host_proxy(build_proxy("", system_proxy).url)
+        return {"register": normalized_system_proxy, "mode": "system_proxy" if normalized_system_proxy else "direct", "local_proxy": ""}
     base = str(payload.get("proxy") or "").strip()
-    local_proxy = build_proxy(str(payload.get("local_proxy") or ""), "").url
-    return {"register": build_proxy("", str(payload.get("register_proxy") or base)).url, "mode": "proxy_pool", "local_proxy": local_proxy}
+    raw_pool = payload.get("proxy_pool")
+    pool_items = raw_pool if isinstance(raw_pool, list) else []
+    pool = [_container_host_proxy(build_proxy("", str(item or "")).url) for item in pool_items if str(item or "").strip()]
+    if pool:
+        register_proxy = pool[max(0, int(slot)) % len(pool)]
+    else:
+        register_proxy = _container_host_proxy(build_proxy("", str(payload.get("register_proxy") or base)).url)
+    local_proxy = _container_host_proxy(build_proxy(str(payload.get("local_proxy") or ""), "").url)
+    return {"register": register_proxy, "mode": "proxy_pool", "local_proxy": local_proxy}
 
 
-def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str) -> dict[str, str]:
-    proxies = _proxy_snapshot(payload)
+def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, slot: int = 0) -> dict[str, str]:
+    proxies = _proxy_snapshot(payload, slot)
     proxy = proxies.get("register", "")
     if not proxy or proxies.get("mode") != "proxy_pool":
         return proxies
@@ -131,12 +186,14 @@ def _log_proxy_startup(db: SunnyDB, payload: dict[str, Any]) -> None:
         )
         return
     proxy = _proxy_snapshot(payload).get("register", "")
+    proxy_pool_size = len(payload.get("proxy_pool") or [])
     db.event(
-        f"[代理] 代理开关：开启；代理池总数 {total}，启用 {enabled}，停用 {disabled}，失效 {invalid}",
-        detail={"scope": "global", "proxy_enabled": True, "proxy_stats": stats},
+        f"[代理] 代理开关：开启；代理池总数 {total}，启用 {enabled}，停用 {disabled}，失效 {invalid}；本任务快照可分配 {proxy_pool_size or (1 if proxy else 0)} 个代理",
+        detail={"scope": "global", "proxy_enabled": True, "proxy_stats": stats, "proxy_pool_size": proxy_pool_size},
     )
     if proxy:
-        db.event(f"[代理] 注册/登录请求将使用代理出口：{proxy}", detail={"scope": "global", "proxy": proxy})
+        redacted = redact_proxy_url(proxy)
+        db.event(f"[代理] 注册/登录请求将按邮箱轮询使用代理池，首个出口：{redacted}", detail={"scope": "global", "proxy": redacted})
     else:
         db.event("[代理] 未获取到可用代理，注册任务将停止或回退到后端校验结果", "warning", detail={"scope": "global"})
 
@@ -234,11 +291,32 @@ def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
     active: dict[str, Any] = {}
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
     phone_cfg = db.get_config("phone")
+    country_value = str(phone_cfg.get("smspool_default_country") or "1").strip()
+    country_option = db.resolve_sms_provider_option("smspool", "country", country_value)
+    resolved_country = str((country_option or {}).get("value") or country_value or "1")
+    service_value = str(phone_cfg.get("smspool_default_service") or "OpenAI").strip()
+    service_option = db.resolve_sms_provider_option("smspool", "service", service_value, resolved_country)
+    resolved_service = str((service_option or {}).get("value") or service_value)
+    if resolved_country != country_value or resolved_service != service_value:
+        phone_cfg = {
+            **phone_cfg,
+            "smspool_default_country": resolved_country,
+            "smspool_default_service": resolved_service,
+        }
+        db.event(
+            f"[{email}] [接码] 本次任务已将 SMSPool 配置解析为接口 ID：country={resolved_country}，service={resolved_service}",
+            detail={"email": email, "scope": "selected", "sms_provider": "smspool", "country": resolved_country, "service": resolved_service},
+        )
+    country_extra = db.sms_provider_option_extra(country_option)
     client = SMSPoolClient(phone_cfg, proxies=proxies)
 
     def provider(action: str, _email: str, payload: Any = None):
         nonlocal active
         if action == "next":
+            db.event(
+                f"[{email}] [接码] 准备向 SMSPool 申请手机号：country={client.country}，service={client.service}，pool={client.pool or '-'}，max_price={client.max_price}",
+                detail={"email": email, "scope": "selected", "sms_provider": "smspool", "country": client.country, "service": client.service, "pool": client.pool, "max_price": client.max_price},
+            )
             reusable = db.reserve_sms_provider_number("smspool", client.country, client.service)
             preferred_number = str((reusable or {}).get("phone_number") or "")
             if preferred_number:
@@ -256,8 +334,21 @@ def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
                         "warning",
                         detail={"email": email, "scope": "selected", "sms_provider": "smspool", "reuse": True},
                     )
-                    activation = client.get_number()
+                    try:
+                        activation = client.get_number()
+                    except Exception as fallback_exc:
+                        db.event(
+                            f"[{email}] [接码] SMSPool 重新购买手机号失败：{fallback_exc}",
+                            "error",
+                            detail={"email": email, "scope": "selected", "sms_provider": "smspool"},
+                        )
+                        raise
                 else:
+                    db.event(
+                        f"[{email}] [接码] SMSPool 申请手机号失败：{exc}",
+                        "error",
+                        detail={"email": email, "scope": "selected", "sms_provider": "smspool"},
+                    )
                     raise
             active = {
                 "provider": "smspool",
@@ -265,6 +356,10 @@ def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
                 "activation_id": activation.order_id,
                 "number": activation.number,
                 "token": activation.token,
+                "country": client.country,
+                "country_iso": str(country_extra.get("short_name") or ""),
+                "country_name": str(country_extra.get("name") or (country_option or {}).get("label") or ""),
+                "country_code": str(country_extra.get("cc") or ""),
             }
             db.record_sms_provider_number(
                 "smspool",
@@ -307,6 +402,80 @@ def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
     return provider
 
 
+def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = ""):
+    candidates: list[tuple[str, Any]] = []
+    if db.smsbower_available():
+        candidates.append(("SMSBower", lambda: _smsbower_provider(db, email, proxy_url)))
+    if db.smspool_available():
+        candidates.append(("SMSPool", lambda: _smspool_provider(db, email, proxy_url)))
+    random.shuffle(candidates)
+    if db.usable_phone_count() > 0:
+        candidates.append(("自建手机号池", lambda: _phone_provider(db, email)))
+    if not candidates:
+        return None
+
+    remaining = list(candidates)
+    active_provider = None
+    active_name = ""
+    active_phone: dict[str, Any] = {}
+
+    db.event(
+        f"[{email}] [接码] 本次接码候选顺序：{' → '.join(name for name, _ in remaining)}（外部供应商随机，自建手机号池兜底）",
+        detail={"email": email, "scope": "selected", "sms_provider": "combined", "candidate_order": [name for name, _ in remaining]},
+    )
+
+    def provider(action: str, _email: str, payload: Any = None):
+        nonlocal active_provider, active_name, active_phone
+        if action == "next":
+            active_provider = None
+            active_name = ""
+            active_phone = {}
+            while remaining:
+                name, factory = remaining.pop(0)
+                db.event(
+                    f"[{email}] [接码] 正在尝试接码资源：{name}",
+                    detail={"email": email, "scope": "selected", "sms_provider": name},
+                )
+                try:
+                    candidate_provider = factory()
+                    phone = candidate_provider("next", _email, payload)
+                    if not phone:
+                        raise RuntimeError("未获取到可用手机号")
+                    active_provider = candidate_provider
+                    active_name = name
+                    active_phone = dict(phone)
+                    active_phone["provider_name"] = name
+                    return active_phone
+                except Exception as exc:
+                    db.event(
+                        f"[{email}] [接码] {name} 无法获取手机号，继续尝试下一个接码资源：{exc}",
+                        "warning",
+                        detail={"email": email, "scope": "selected", "sms_provider": name, "error": str(exc)},
+                    )
+            db.event(
+                f"[{email}] [接码] 所有外部接码供应商及自建手机号池均不可用，停止手机号绑定",
+                "warning",
+                detail={"email": email, "scope": "selected", "sms_provider": "combined", "exhausted": True},
+            )
+            return None
+        if not active_provider:
+            return None
+        try:
+            return active_provider(action, _email, payload or active_phone)
+        finally:
+            if action == "bad":
+                db.event(
+                    f"[{email}] [接码] {active_name} 本次号码失败，将切换到下一个接码资源",
+                    "warning",
+                    detail={"email": email, "scope": "selected", "sms_provider": active_name},
+                )
+                active_provider = None
+                active_name = ""
+                active_phone = {}
+
+    return provider
+
+
 def _sub2api_group_ids(value: Any) -> list[int]:
     if not isinstance(value, list):
         return []
@@ -332,17 +501,30 @@ def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str,
     refresh_token = str(session.get("refresh_token") or session.get("openai_rt") or "").strip()
     if not refresh_token:
         raise RuntimeError("当前账号没有 Refresh Token，无法导入 sub2api")
+    token_record = session.get("token_record")
+    if not isinstance(token_record, dict):
+        token_record = {}
+    credentials = {
+        "access_token": session.get("access_token", ""),
+        "refresh_token": refresh_token,
+        "id_token": session.get("id_token", ""),
+        "email": email,
+        "client_id": session.get("client_id") or token_record.get("client_id") or "app_EMoamEEZ73f0CkXaXp7hrann",
+    }
+    optional_credentials = {
+        "chatgpt_account_id": session.get("chatgpt_account_id") or token_record.get("account_id"),
+        "chatgpt_user_id": session.get("chatgpt_user_id") or token_record.get("chatgpt_user_id"),
+        "organization_id": session.get("organization_id") or token_record.get("organization_id"),
+        "plan_type": session.get("plan_type") or token_record.get("plan_type"),
+        "expires_at": session.get("expires_at") or token_record.get("expires_at"),
+    }
+    credentials.update({key: value for key, value in optional_credentials.items() if value not in (None, "", 0)})
     payload = {
         "name": f"{str(cfg.get('name_prefix') or '')}{email}",
         "platform": "openai",
         "type": "oauth",
-        "credentials": {
-            "access_token": session.get("access_token", ""),
-            "refresh_token": refresh_token,
-            "id_token": session.get("id_token", ""),
-            "email": email,
-        },
-        "extra": {"import_source": "sunnyregister", "email": email},
+        "credentials": credentials,
+        "extra": {"import_source": "sunnyregister_oauth_code", "email": email},
         "group_ids": _sub2api_group_ids(cfg.get("group_ids")),
         "concurrency": int(cfg.get("concurrency") or 3),
         "priority": int(cfg.get("priority") or 50),
@@ -363,7 +545,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     db.ensure_not_cancelled()
     email = mailbox.get("email") or f"mailbox-{index}"
     stage = _stage(payload)
-    proxies = _prepare_register_proxy(db, payload, str(email))
+    proxies = _prepare_register_proxy(db, payload, str(email), index - 1)
     execution_mode = str(payload.get("execution_mode") or payload.get("mode") or "background").strip().lower()
     if execution_mode not in {"background", "visible", "protocol"}:
         execution_mode = "background"
@@ -372,18 +554,19 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     headless = bool(payload.get("headless", execution_mode != "visible"))
     account = account_from_row(mailbox)
     mailbox_id = max(0, int(mailbox.get("id") or 0))
-    is_registered_mailbox = bool(account.openai_rt) or str(mailbox.get("status") or "") in {"registered", "已注册", "已接码", "PLUS试用中", "登录刷新"}
+    is_registered_mailbox = bool(account.openai_rt) or str(mailbox.get("status") or "") in {"registered", "已注册", "phone_bound", "已接码", "已反代", "reverse_proxied", "PLUS试用中", "登录刷新"}
     original_mailbox_status = str(mailbox.get("status") or ("已注册" if is_registered_mailbox else "未注册"))
     db.event(f"[{email}] [系统] 开始注册/登录 {index}/{total}，阶段={_stage_label(stage)}", detail={"email": email, "scope": "selected", "stage": stage})
-    mode_label = "后台浏览器自动（Headless，无窗口）" if headless else "可视浏览器自动（Visible，有窗口）"
+    mode_label = "后台浏览器自动（Camoufox Headless，无窗口）" if headless else "可视浏览器自动（Chromium Visible，有窗口）"
     db.event(f"[{email}] [认证] 执行方式：{mode_label}", detail={"email": email, "scope": "selected", "execution_mode": execution_mode, "headless": headless})
     if proxies.get("register"):
+        proxy_label = redact_proxy_url(proxies["register"])
         if proxies.get("mode") == "system_proxy":
-            db.event(f"[{email}] [代理] 注册/登录流量使用服务器系统出口代理: {proxies['register']}", detail={"email": email, "scope": "selected", "proxy": proxies["register"], "proxy_mode": "system_proxy"})
+            db.event(f"[{email}] [代理] 注册/登录流量使用服务器系统出口代理: {proxy_label}", detail={"email": email, "scope": "selected", "proxy": proxy_label, "proxy_mode": "system_proxy"})
         elif proxies.get("mode") == "local_proxy_fallback":
-            db.event(f"[{email}] [代理] 注册/登录流量已切换为本地代理链路: {proxies['register']}", detail={"email": email, "scope": "selected", "proxy": proxies["register"], "proxy_mode": "local_proxy_fallback"})
+            db.event(f"[{email}] [代理] 注册/登录流量已切换为本地代理链路: {proxy_label}", detail={"email": email, "scope": "selected", "proxy": proxy_label, "proxy_mode": "local_proxy_fallback"})
         else:
-            db.event(f"[{email}] [代理] 注册/登录流量使用代理池代理: {proxies['register']}（代理池检测为轻量 TCP 连通检测，不等同于目标站点可访问）", detail={"email": email, "scope": "selected", "proxy": proxies["register"], "proxy_mode": "proxy_pool"})
+            db.event(f"[{email}] [代理] 注册/登录流量使用代理池代理: {proxy_label}（代理池检测为轻量 TCP 连通检测，不等同于目标站点可访问）", detail={"email": email, "scope": "selected", "proxy": proxy_label, "proxy_mode": "proxy_pool"})
     else:
         db.event(f"[{email}] [代理] 注册/登录流量使用服务器系统网络直连出口", detail={"email": email, "scope": "selected", "proxy": "", "proxy_mode": "direct"})
     db.mark_mailbox(mailbox_id, "登录刷新" if is_registered_mailbox else "注册中")
@@ -393,24 +576,27 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     require_refresh_token = False
     phone_skipped_reason = ""
     if wants_rt:
+        sms_cfg = db.get_config("phone")
+        db.event(
+            f"[{email}] [接码] 接码资源检查：自建号池可用 {db.usable_phone_count()} 个，SMSBower={'启用' if db.smsbower_available() else '不可用'}，SMSPool={'启用' if db.smspool_available() else '不可用'}",
+            detail={"email": email, "scope": "selected", "sms_provider": "resource_check", "phone_config": {"pool_enabled": sms_cfg.get("pool_enabled"), "smsbower_enabled": sms_cfg.get("smsbower_enabled"), "smspool_enabled": sms_cfg.get("smspool_enabled")}},
+        )
         if account.openai_rt:
             require_refresh_token = True
             db.event(f"[{email}] [接码] 邮箱记录已有 OpenAI RT，将直接刷新 Session", detail={"email": email, "scope": "selected"})
-        elif db.usable_phone_count() > 0:
-            require_refresh_token = True
-            phone_provider = _phone_provider(db, email)
-            db.event(f"[{email}] [接码] 将联动“接码配置”的自建手机号池完成手机验证", detail={"email": email, "scope": "selected"})
-        elif db.smsbower_available():
-            require_refresh_token = True
-            phone_provider = _smsbower_provider(db, email, proxies.get("register", ""))
-            db.event(f"[{email}] [接码] 自建手机号池无可用号码，将使用 SMSBower 接码供应商完成手机验证", detail={"email": email, "scope": "selected", "sms_provider": "smsbower"})
-        elif db.smspool_available():
-            require_refresh_token = True
-            phone_provider = _smspool_provider(db, email, proxies.get("register", ""))
-            db.event(f"[{email}] [接码] 自建手机号池/SMSBower 不可用，将使用 SMSPool 接码供应商完成手机验证", detail={"email": email, "scope": "selected", "sms_provider": "smspool"})
         else:
+            phone_provider = _combined_phone_provider(db, email, proxies.get("register", ""))
+        if phone_provider:
+            require_refresh_token = True
+            db.event(f"[{email}] [接码] 已启用组合接码策略：外部供应商随机尝试，自建手机号池作为兜底", detail={"email": email, "scope": "selected", "sms_provider": "combined"})
+        elif not account.openai_rt:
             phone_skipped_reason = "无可用手机号：自建手机号池未开启/无可用号码，且 SMSBower/SMSPool 未启用或未配置 API Key。本账号只执行 ChatGPT 注册/登录，不进行接码，也不会获取 Refresh Token。"
             db.event(f"[{email}] [接码] {phone_skipped_reason}", "warning", detail={"email": email, "scope": "selected"})
+    else:
+        db.event(
+            f"[{email}] [接码] 当前任务阶段为“仅注册 ChatGPT”，不会调用接码供应商，也不会获取 Refresh Token",
+            detail={"email": email, "scope": "selected", "stage": stage},
+        )
 
     try:
         db.ensure_not_cancelled()
@@ -426,22 +612,28 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             execution_mode=execution_mode,
         )
         db.ensure_not_cancelled()
+        if session.get("phone_binding_skipped_reason"):
+            phone_skipped_reason = str(session.get("phone_binding_skipped_reason") or "")
         rt_value = session.get("refresh_token") or session.get("openai_rt") or account.openai_rt
+        has_rt = bool(rt_value)
+        phone_bound = bool(session.get("phone_bound")) or has_rt
+        candidate_status = "已接码" if phone_bound else "已注册"
+        mailbox_status = _highest_mailbox_progress(original_mailbox_status, candidate_status)
         account_id = db.upsert_account(
             email,
             mailbox_id=mailbox_id,
-            status="registered",
+            status=_account_status_for_mailbox(mailbox_status),
             account_type=account.account_type,
             openai_rt=rt_value,
             access_token=session.get("access_token", ""),
+            last_error="",
             metadata_json=json.dumps({"task_id": db.task_id, "source": "sunny_register", "stage": stage, "phone_skipped_reason": phone_skipped_reason}, ensure_ascii=False),
         )
         db.upsert_session(email, account_id, session, account.raw)
         action = str(session.get("auth_action") or "login")
         action_label = "注册" if action == "register" else "登录"
-        has_rt = bool(rt_value)
-        mailbox_status = "已接码" if wants_rt and has_rt else "已注册"
         db.mark_mailbox(mailbox_id, mailbox_status, openai_rt=rt_value)
+        post_registration_error = str(session.get("post_registration_error") or "").strip()
         result: dict[str, Any] = {
             "email": email,
             "account_id": account_id,
@@ -450,15 +642,46 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             "access_token": session.get("access_token", ""),
             "refresh_token": rt_value,
             "has_session": bool(session.get("access_token")),
+            "phone_bound": phone_bound,
+            "completed_status": mailbox_status,
+            "stage_complete": stage == REGISTER_ONLY or (stage == CODEX_PHONE_BIND and has_rt),
             "phone_skipped_reason": phone_skipped_reason,
         }
+        if post_registration_error:
+            result["stage_error"] = post_registration_error
         db.event(f"[{email}] [认证] 识别为{action_label}成功，已保存 ChatGPT Session" + (" 和 Refresh Token" if result["refresh_token"] else ""), detail={"email": email, "scope": "selected", **result})
         if stage == IMPORT_REVERSE_PROXY:
             if not result["refresh_token"]:
                 result["sub2api_skipped_reason"] = "没有 Refresh Token，已停止导入反代平台"
+                result["stage_complete"] = False
+                result.setdefault("stage_error", post_registration_error or result["sub2api_skipped_reason"])
+                db.upsert_account(email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(mailbox_status), last_error=result["stage_error"])
+                db.mark_mailbox(mailbox_id, mailbox_status, result["stage_error"], openai_rt=rt_value)
                 db.event(f"[{email}] [反代] 没有 Refresh Token，已停止导入 sub2api", "warning", detail={"email": email, "scope": "selected"})
             else:
-                result["sub2api"] = _import_sub2api(db, email, account_id, session)
+                try:
+                    result["sub2api"] = _import_sub2api(db, email, account_id, session)
+                    mailbox_status = _highest_mailbox_progress(mailbox_status, "已反代")
+                    db.mark_mailbox(mailbox_id, mailbox_status, openai_rt=rt_value)
+                    db.upsert_account(email, mailbox_id=mailbox_id, status="reverse_proxied", last_error="")
+                    result["completed_status"] = mailbox_status
+                    result["stage_complete"] = True
+                except Exception as exc:
+                    stage_error = str(exc)
+                    result["stage_complete"] = False
+                    result["stage_error"] = stage_error
+                    result["sub2api_error"] = stage_error
+                    db.set_account_sub2api_status(email, "failed", error=stage_error)
+                    db.mark_mailbox(mailbox_id, mailbox_status, stage_error, openai_rt=rt_value)
+                    db.event(f"[{email}] [反代] 导入 sub2api 失败，账号保留为{mailbox_status}: {stage_error}", "error", detail={"email": email, "scope": "selected", "completed_status": mailbox_status})
+        elif wants_rt and not result["stage_complete"]:
+            stage_error = post_registration_error or phone_skipped_reason or "接码/Refresh Token 阶段未完成"
+            result["stage_error"] = stage_error
+            db.upsert_account(email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(mailbox_status), last_error=stage_error)
+            db.mark_mailbox(mailbox_id, mailbox_status, stage_error, openai_rt=rt_value)
+            db.event(f"[{email}] [接码] 后续接码阶段未完成，账号保留为{mailbox_status}: {stage_error}", "warning", detail={"email": email, "scope": "selected", "completed_status": mailbox_status})
+        result["has_access_token"] = bool(result.pop("access_token", ""))
+        result["has_refresh_token"] = bool(result.pop("refresh_token", ""))
         return True, result
     except Exception as exc:
         if _is_cancel_exception(exc):
@@ -485,7 +708,7 @@ def _run_one_isolated(task_id: str, task_type: str, payload: dict[str, Any], mai
     one browser context and one SQLite connection. This keeps concurrent OTP reads
     and mailbox state updates isolated from other mailboxes.
     """
-    worker_db = SunnyDB(task_id)
+    worker_db = SunnyDB(task_id, ensure_schema=False)
     try:
         ok, result = _run_one(worker_db, task_type, payload, mailbox, index, total)
         return index, ok, result
@@ -498,7 +721,6 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
     ok = 0
     errors: list[str] = []
     items: list[dict[str, Any]] = []
-    proxies = _proxy_snapshot(payload)
     for idx, acc in enumerate(accounts, start=1):
         db.ensure_not_cancelled()
         email = acc.get("email") or ""
@@ -507,14 +729,18 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
             if not rt:
                 sess = db.fetch_session_by_email(email) or {}
                 rt = sess.get("refresh_token") or ""
-            token = refresh_openai_access_token(rt, proxies["register"])
+            token = refresh_openai_access_token(rt, _proxy_snapshot(payload, idx - 1)["register"])
             db.ensure_not_cancelled()
             account_id = int(acc.get("id") or db.upsert_account(email))
             payload2 = {"access_token": token.get("access_token"), "refresh_token": token.get("refresh_token") or rt, "id_token": token.get("id_token", ""), "session_json": token}
             db.upsert_session(email, account_id, payload2)
             db.upsert_account(email, status="registered", access_token=payload2["access_token"], openai_rt=payload2["refresh_token"])
             db.mark_mailbox_by_email(email, "已接码" if payload2["refresh_token"] else "已注册", openai_rt=payload2["refresh_token"])
-            items.append({"email": email, **payload2})
+            items.append({
+                "email": email,
+                "has_access_token": bool(payload2["access_token"]),
+                "has_refresh_token": bool(payload2["refresh_token"]),
+            })
             ok += 1
             db.event(f"[{email}] [Session] Session/RT 刷新完成")
         except Exception as exc:
@@ -613,16 +839,20 @@ def run_sunny_task(task_id: str) -> None:
                             errors.append(str(result))
                         db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
             finally:
-                pool.shutdown(wait=False, cancel_futures=True)
+                # Do not let browser/OTP threads outlive the task. Running flows
+                # observe the cancelled task state through should_cancel and then
+                # close their own browser, mailbox reader and DB connection.
+                pool.shutdown(wait=True, cancel_futures=True)
         db.ensure_not_cancelled()
         registered = len([x for x in items if x.get("auth_action") == "register"])
         logged_in = len([x for x in items if x.get("auth_action") != "register"])
         skipped_phone = len([x for x in items if x.get("phone_skipped_reason")])
         imported = len([x for x in items if x.get("sub2api")])
+        partial = len([x for x in items if x.get("stage_complete") is False])
         status = "succeeded" if success else "failed"
-        summary = {"success": success, "failed": len(errors), "registered": registered, "logged_in": logged_in, "skipped_phone": skipped_phone, "imported": imported, "stage": stage, "errors": errors, "items": items}
+        summary = {"success": success, "failed": len(errors), "partial": partial, "registered": registered, "logged_in": logged_in, "skipped_phone": skipped_phone, "imported": imported, "stage": stage, "errors": errors, "items": items}
         db.update_task(status=status, error="; ".join(errors[:3]) if not success else "", result_json=json.dumps(summary, ensure_ascii=False), finished_at=now_sql())
-        db.event(f"注册任务总结：成功 {success}，失败 {len(errors)}，新注册 {registered}，登录更新 {logged_in}，跳过接码 {skipped_phone}，导入反代 {imported}", "info" if success else "error", detail={"scope": "global", **summary})
+        db.event(f"注册任务总结：成功 {success}，失败 {len(errors)}，阶段未完成 {partial}，新注册 {registered}，登录更新 {logged_in}，跳过接码 {skipped_phone}，导入反代 {imported}", "info" if success else "error", detail={"scope": "global", **summary})
     except Exception as exc:
         if _is_cancel_exception(exc):
             db.mark_cancelled("用户已中断注册任务")

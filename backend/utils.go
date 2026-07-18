@@ -13,11 +13,75 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
 )
+
+var (
+	bearerSecretPattern  = regexp.MustCompile(`(?i)(Bearer\s+)[A-Za-z0-9._~+/-]{12,}`)
+	jwtSecretPattern     = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`)
+	otpSecretPattern     = regexp.MustCompile(`(?i)(OTP|verification code|received code|验证码)(\s*[:=]?\s*)\d{4,8}`)
+	urlCredentialPattern = regexp.MustCompile(`(?i)\b(https?|socks5h?)://[^/@\s]+@`)
+)
+
+var persistedSecretKeys = map[string]bool{
+	"access_token": true, "refresh_token": true, "id_token": true, "openai_rt": true,
+	"session_json": true, "password": true, "secret": true, "api_key": true,
+	"admin_token": true, "authorization": true, "otp": true, "code": true,
+}
+
+func sanitizePersistedString(value string) string {
+	value = bearerSecretPattern.ReplaceAllString(value, `${1}[REDACTED]`)
+	value = jwtSecretPattern.ReplaceAllString(value, `[REDACTED_JWT]`)
+	value = otpSecretPattern.ReplaceAllString(value, `${1}${2}[REDACTED]`)
+	return urlCredentialPattern.ReplaceAllString(value, `${1}://[REDACTED]@`)
+}
+
+func sanitizePersistedValue(value any, key string) any {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	if persistedSecretKeys[normalized] || strings.HasSuffix(normalized, "_password") || strings.HasSuffix(normalized, "_secret") || strings.HasSuffix(normalized, "_token") || strings.HasSuffix(normalized, "_api_key") {
+		if value == nil || text(value) == "" {
+			return value
+		}
+		return "[REDACTED]"
+	}
+	switch item := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(item))
+		for childKey, childValue := range item {
+			out[childKey] = sanitizePersistedValue(childValue, childKey)
+		}
+		return out
+	case []any:
+		out := make([]any, len(item))
+		for i, childValue := range item {
+			out[i] = sanitizePersistedValue(childValue, key)
+		}
+		return out
+	case string:
+		return sanitizePersistedString(item)
+	default:
+		return value
+	}
+}
+
+func sanitizePersistedJSON(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return raw
+	}
+	var value any
+	if json.Unmarshal([]byte(raw), &value) != nil {
+		return sanitizePersistedString(raw)
+	}
+	encoded, err := json.Marshal(sanitizePersistedValue(value, ""))
+	if err != nil {
+		return raw
+	}
+	return string(encoded)
+}
 
 func jsonMap(raw string) map[string]any {
 	if strings.TrimSpace(raw) == "" {
@@ -211,7 +275,7 @@ func nullableTime(valid bool, t time.Time) any {
 }
 
 func randomID(prefix string) string {
-	var b [12]byte
+	var b [24]byte
 	_, _ = rand.Read(b[:])
 	return fmt.Sprintf("%s_%s", prefix, strings.TrimRight(base64.RawURLEncoding.EncodeToString(b[:]), "="))
 }

@@ -8,6 +8,16 @@ export NOVNC_PORT="${NOVNC_PORT:-6080}"
 if [ "${ENABLE_XVFB:-true}" = "true" ] || [ "${ENABLE_XVFB:-true}" = "1" ]; then
   echo "[entrypoint] starting Xvfb on ${DISPLAY} (${XVFB_WHD})"
   Xvfb "${DISPLAY}" -screen 0 "${XVFB_WHD}" -nolisten tcp -ac >/tmp/xvfb.log 2>&1 &
+  attempts=0
+  until xdpyinfo -display "${DISPLAY}" >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if [ "${attempts}" -ge 50 ]; then
+      echo "[entrypoint] Xvfb did not become ready" >&2
+      cat /tmp/xvfb.log >&2 || true
+      exit 1
+    fi
+    sleep 0.1
+  done
 fi
 
 if [ "${ENABLE_NOVNC:-true}" = "true" ] || [ "${ENABLE_NOVNC:-true}" = "1" ]; then

@@ -31,12 +31,32 @@ class SunnyTaskCancelled(RuntimeError):
     """Raised when the Go backend marks a SunnyRegister task as cancelled."""
 
 
+_SENSITIVE_EVENT_KEYS = {
+    "access_token", "refresh_token", "id_token", "openai_rt", "session_json",
+    "password", "secret", "api_key", "admin_token", "authorization", "otp", "code",
+}
+
+
+def _sanitize_event_detail(value: Any, key: str = "") -> Any:
+    normalized = key.lower().strip()
+    if normalized in _SENSITIVE_EVENT_KEYS or normalized.endswith(("_password", "_secret", "_token", "_api_key")):
+        return "[REDACTED]" if value not in (None, "") else value
+    if isinstance(value, dict):
+        return {str(k): _sanitize_event_detail(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_event_detail(item, key) for item in value]
+    return value
+
+
 class SunnyDB:
-    def __init__(self, task_id: str):
+    def __init__(self, task_id: str, *, ensure_schema: bool = True):
         self.task_id = task_id
         self.conn = sqlite3.connect(db_path(), timeout=30)
         self.conn.row_factory = sqlite3.Row
-        self.ensure_schema()
+        self.conn.execute("pragma busy_timeout=30000")
+        self.conn.execute("pragma foreign_keys=on")
+        if ensure_schema:
+            self.ensure_schema()
 
     def close(self) -> None:
         self.conn.close()
@@ -122,7 +142,7 @@ class SunnyDB:
 
     def event(self, message: str, level: str = "info", typ: str = "log", detail: dict[str, Any] | None = None) -> None:
         created_at = now_sql()
-        event_detail = dict(detail or {})
+        event_detail = _sanitize_event_detail(dict(detail or {}))
         event_detail.setdefault("local_created_at", created_at)
         self.conn.execute(
             "insert into task_events(task_id,type,level,message,detail_json,created_at) values(?,?,?,?,?,?)",
@@ -263,6 +283,41 @@ class SunnyDB:
     def smspool_available(self) -> bool:
         phone_cfg = self.get_config("phone")
         return bool(phone_cfg.get("smspool_enabled") and str(phone_cfg.get("smspool_api_key") or "").strip())
+
+    def resolve_sms_provider_option(self, provider: str, kind: str, value: str, parent: str = "") -> dict[str, Any] | None:
+        value = str(value or "").strip()
+        if not value:
+            return None
+        params: list[Any] = [provider, kind]
+        parent_clause = ""
+        if parent:
+            parent_clause = " and parent_value=?"
+            params.append(parent)
+        rows = self.conn.execute(
+            f"select * from sunny_sms_provider_options where provider=? and kind=?{parent_clause}",
+            params,
+        ).fetchall()
+        normalized = value.casefold()
+        contains: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if str(item.get("value") or "").strip().casefold() == normalized:
+                return item
+            label = str(item.get("label") or "").strip()
+            if label.casefold() == normalized:
+                return item
+            if normalized in label.casefold():
+                contains.append(item)
+        return min(contains, key=lambda item: len(str(item.get("label") or ""))) if contains else None
+
+    def sms_provider_option_extra(self, option: dict[str, Any] | None) -> dict[str, Any]:
+        if not option:
+            return {}
+        try:
+            value = json.loads(str(option.get("extra_json") or "{}"))
+            return value if isinstance(value, dict) else {}
+        except Exception:
+            return {}
 
     def reserve_sms_provider_number(self, provider: str, country: str = "", service: str = "") -> dict[str, Any] | None:
         try:
@@ -411,7 +466,7 @@ class SunnyDB:
     def mark_mailbox(self, mailbox_id: int, status: str, error: str = "", openai_rt: str = "") -> None:
         if mailbox_id <= 0:
             return
-        success_statuses = {"已注册", "已接码", "PLUS试用中"}
+        success_statuses = {"已注册", "已接码", "已反代", "PLUS试用中"}
         sets = ["status=?", "last_error=?", "updated_at=?"]
         values: list[Any] = [status, error, now_sql()]
         if openai_rt:
@@ -427,7 +482,7 @@ class SunnyDB:
     def mark_mailbox_by_email(self, email: str, status: str, error: str = "", openai_rt: str = "") -> None:
         if not email:
             return
-        success_statuses = {"已注册", "已接码", "PLUS试用中"}
+        success_statuses = {"已注册", "已接码", "已反代", "PLUS试用中"}
         sets = ["status=?", "last_error=?", "updated_at=?"]
         values: list[Any] = [status, error, now_sql()]
         if openai_rt:

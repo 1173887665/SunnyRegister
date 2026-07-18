@@ -37,7 +37,7 @@ const (
 	defaultGroupName = "默认分组"
 )
 
-var sunnyMailboxStatuses = []string{"未注册", "已注册", "已接码", "PLUS试用中", "已封禁", "需二验"}
+var sunnyMailboxStatuses = []string{"未注册", "已注册", "已接码", "已反代", "PLUS试用中", "已封禁", "需二验"}
 
 func (s *Server) handleSunny(w http.ResponseWriter, r *http.Request, rest string) {
 	rest = strings.Trim(rest, "/")
@@ -461,6 +461,9 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			}
 			if _, ok := body["enabled"]; ok {
 				m.Enabled = boolValue(body["enabled"], m.Enabled)
+			}
+			if _, ok := body["last_error"]; ok {
+				m.LastError = text(body["last_error"])
 			}
 			s.db.Save(&m)
 			if v, ok := body["access_token"]; ok {
@@ -946,7 +949,7 @@ func defaultPhoneConfig() map[string]any {
 		"smspool_base_url":         "https://api.smspool.net",
 		"smspool_api_key":          "",
 		"smspool_default_country":  "1",
-		"smspool_default_service":  "OpenAI",
+		"smspool_default_service":  "671",
 		"smspool_max_price":        -1,
 	}
 }
@@ -2002,14 +2005,21 @@ func defaultSub2APIConfig() map[string]any {
 }
 
 func (s *Server) sunnySub2API(w http.ResponseWriter, r *http.Request, parts []string) {
-	if len(parts) == 1 && parts[0] == "groups" && r.Method == http.MethodGet {
+	if len(parts) == 1 && parts[0] == "groups" && (r.Method == http.MethodGet || r.Method == http.MethodPost) {
 		cfg := s.sunnyGetConfig(sunnyCfgSub2API, defaultSub2APIConfig())
 		baseURL, token := strings.TrimRight(text(cfg["base_url"]), "/"), text(cfg["admin_token"])
-		if qBase := strings.TrimRight(text(r.URL.Query().Get("base_url")), "/"); qBase != "" {
-			baseURL = qBase
-		}
-		if qToken := text(r.URL.Query().Get("admin_token")); qToken != "" {
-			token = qToken
+		if r.Method == http.MethodPost {
+			body, err := parseBody(r)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "Invalid sub2api request")
+				return
+			}
+			if value := strings.TrimRight(text(body["base_url"]), "/"); value != "" {
+				baseURL = value
+			}
+			if value := text(body["admin_token"]); value != "" {
+				token = value
+			}
 		}
 		if baseURL == "" || token == "" {
 			writeError(w, 400, "Please fill sub2api Base URL and Admin Token")
@@ -2058,7 +2068,8 @@ func (s *Server) sunnySub2APIImport(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		ok++
-		s.db.Model(&SunnyAccount{}).Where("email = ?", sess.Email).Updates(map[string]any{"sub2api_status": "imported", "sub2api_id": text(resp["id"])})
+		s.db.Model(&SunnyAccount{}).Where("email = ?", sess.Email).Updates(map[string]any{"status": "reverse_proxied", "sub2api_status": "imported", "sub2api_id": text(resp["id"]), "last_error": ""})
+		s.db.Model(&SunnyMailbox{}).Where("email = ?", sess.Email).Updates(map[string]any{"status": "已反代", "last_error": ""})
 	}
 	writeJSON(w, 200, map[string]any{"ok": ok, "failed": len(errs), "errors": errs})
 }
@@ -2093,6 +2104,10 @@ func normalizeSunnyDisplayStatus(status string) string {
 	switch strings.ToLower(raw) {
 	case "registered", "success", "succeeded":
 		return "已注册"
+	case "phone_bound", "phone-bound", "bound":
+		return "已接码"
+	case "reverse_proxied", "reverse-proxied", "proxied", "imported":
+		return "已反代"
 	case "failed", "error":
 		return "失败"
 	case "pending", "":
@@ -2400,24 +2415,9 @@ func (s *Server) sunnyValidateRegisterStageResources(body map[string]any) error 
 	if err := s.sunnyValidateProxyForRegisterTask(); err != nil {
 		return err
 	}
-	stage := sunnyRegistrationStage(body)
-	if stage == "codex_phone_bind" || stage == "import_reverse_proxy" {
-		if s.sunnyMailboxesNeedPhone(mailboxes) && !s.sunnyHasUsableSMSConfig() {
-			return fmt.Errorf("sms config is unavailable: enable the self-managed phone pool with usable numbers or configure SMSBower/SMSPool API Key")
-		}
-	}
-	if stage == "import_reverse_proxy" {
-		cfg := s.sunnyGetConfig(sunnyCfgSub2API, defaultSub2APIConfig())
-		if !boolValue(cfg["enabled"], true) {
-			return fmt.Errorf("sub2api config is unavailable: enable sub2api reverse proxy first")
-		}
-		if strings.TrimSpace(text(cfg["base_url"])) == "" || strings.TrimSpace(text(cfg["admin_token"])) == "" {
-			return fmt.Errorf("sub2api config is unavailable: configure Base URL, Admin Token and target group first")
-		}
-		if len(stringSlice(cfg["group_ids"])) == 0 && len(uintSlice(cfg["group_ids"])) == 0 {
-			return fmt.Errorf("sub2api config is unavailable: configure Base URL, Admin Token and target group first")
-		}
-	}
+	// SMS and sub2api are post-registration stages. Missing resources must not
+	// block the base ChatGPT registration/login; the Worker records the last
+	// completed stage and stops at 已注册 or 已接码 with a detailed log.
 	return nil
 }
 
@@ -2539,18 +2539,32 @@ func (s *Server) sunnyTaskProxySnapshot(payload map[string]any) map[string]any {
 	next["proxy_enabled"] = proxyEnabled
 	next["proxy_stats"] = stats
 	next["local_proxy"] = localProxy
-	next["system_proxy"] = localProxy
 	if !proxyEnabled {
 		next["register_proxy"] = ""
 		next["proxy"] = ""
+		next["system_proxy"] = normalizeSunnyProxyAddress(text(cfg["system_proxy"]))
 		return next
 	}
+	next["system_proxy"] = localProxy
 	registerProxy := normalizeSunnyProxyAddress(text(cfg["register_proxy"]))
-	var p SunnyProxy
-	if err := s.db.Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).Order("updated_at desc").First(&p).Error; err == nil && p.Address != "" {
-		registerProxy = normalizeSunnyProxyAddress(p.Address)
-		next["proxy_id"] = p.ID
-		next["proxy_country"] = p.Country
+	var proxies []SunnyProxy
+	s.db.Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
+		Order("updated_at desc, id asc").Find(&proxies)
+	proxyPool := make([]string, 0, len(proxies))
+	proxyIDs := make([]uint, 0, len(proxies))
+	for _, p := range proxies {
+		address := normalizeSunnyProxyAddress(p.Address)
+		if address == "" {
+			continue
+		}
+		proxyPool = append(proxyPool, address)
+		proxyIDs = append(proxyIDs, p.ID)
+	}
+	if len(proxyPool) > 0 {
+		registerProxy = proxyPool[0]
+		next["proxy_pool"] = proxyPool
+		next["proxy_ids"] = proxyIDs
+		next["proxy_pool_size"] = len(proxyPool)
 	}
 	next["local_proxy"] = localProxy
 	next["register_proxy"] = registerProxy

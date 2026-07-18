@@ -16,14 +16,17 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates curl tzdata \
       xvfb x11vnc novnc websockify \
+      x11-utils \
       fonts-liberation fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY python-worker/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r /app/requirements.txt \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip \
+    && pip install -r /app/requirements.txt \
     && python -m playwright install --with-deps chromium \
+    && python -m camoufox fetch \
     && rm -rf /var/lib/apt/lists/* /tmp/*
 
 COPY python-worker/worker.py /app/worker.py

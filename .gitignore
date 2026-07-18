@@ -5,6 +5,11 @@
 !.env.production.example
 data/
 backend/data/
+secrets/
+backups/
+.runtime/
+logs/
+bin/
 *.db
 *.db-*
 *.log
@@ -17,16 +22,24 @@ frontend/dist/
 frontend/node_modules/
 frontend/.vite/
 frontend/coverage/
+frontend/tsconfig.tsbuildinfo
 
 # Python
 python-worker/.venv/
-original_runtime/.venv/
 **/__pycache__/
 **/*.pyc
+.pytest_cache/
+.ruff_cache/
 
 # Temporary
 .tmp/
 .agents/
+.codex/
 tmp_*
+*.tmp
+*.bak
+*.swp
+.idea/
+.vscode/
 .DS_Store
 Thumbs.db

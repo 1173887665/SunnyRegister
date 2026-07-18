@@ -7,6 +7,7 @@ services:
       dockerfile: Dockerfile
     image: sunnyregister/backend:${SUNNYREGISTER_TAG:-latest}
     container_name: sunnyregister-go
+    init: true
     restart: unless-stopped
     depends_on:
       python-worker:
@@ -23,6 +24,10 @@ services:
       PYTHON_WORKER_TOKEN: ${PYTHON_WORKER_TOKEN:-}
       PYTHON_TASK_TYPES: ${PYTHON_TASK_TYPES:-sunny_register,sunny_login,sunny_refresh_session}
       TZ: ${TZ:-Asia/Shanghai}
+      SUNNY_TIMEZONE: ${TZ:-Asia/Shanghai}
+      SUNNY_CONTAINERIZED: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - sunnyregister-data:/app/data
     healthcheck:
@@ -31,6 +36,11 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
 
   python-worker:
     build:
@@ -38,31 +48,39 @@ services:
       dockerfile: python-worker/Dockerfile
     image: sunnyregister/python-worker:${SUNNYREGISTER_TAG:-latest}
     container_name: sunnyregister-python-worker
+    init: true
     restart: unless-stopped
     environment:
-      ACCOUNT_MANAGER_DATABASE_URL: sqlite:////app/data/account_manager.db
+      ACCOUNT_MANAGER_DATABASE_URL: /app/data/account_manager.db
       PYTHON_WORKER_TOKEN: ${PYTHON_WORKER_TOKEN:-}
       PYTHONUTF8: "1"
       TZ: ${TZ:-Asia/Shanghai}
-      DISPLAY: ${DISPLAY:-:99}
+      SUNNY_TIMEZONE: ${TZ:-Asia/Shanghai}
+      SUNNY_CONTAINERIZED: "true"
+      DISPLAY: ${WORKER_DISPLAY:-:99}
       ENABLE_XVFB: ${ENABLE_XVFB:-true}
       ENABLE_NOVNC: ${ENABLE_NOVNC:-true}
       NOVNC_PORT: 6080
       XVFB_WHD: ${XVFB_WHD:-1600x900x24}
-      # 默认保留可视浏览器自动化能力：容器内通过 Xvfb 运行，服务器上可用 noVNC 查看。
-      # 如未来增加真正 headless 流程，可在任务层传 headless=true。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
-      # noVNC 默认只绑定宿主机 127.0.0.1，生产环境建议通过 SSH 隧道访问，不要直接公网暴露。
+      # Local only. Use an SSH tunnel for remote noVNC troubleshooting.
       - "${NOVNC_BIND:-127.0.0.1}:${NOVNC_PORT:-6080}:6080"
     volumes:
       - sunnyregister-data:/app/data
-    shm_size: "2gb"
+    shm_size: "${WORKER_SHM_SIZE:-1gb}"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8765/health"]
       interval: 30s
       timeout: 5s
       start_period: 30s
       retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
 
 volumes:
   sunnyregister-data:

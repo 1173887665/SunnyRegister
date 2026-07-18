@@ -53,7 +53,7 @@ class SMSPoolClient:
         self.base_url = _clean(config.get("smspool_base_url"), SMSPOOL_DEFAULT_BASE_URL).rstrip("/")
         self.api_key = _clean(config.get("smspool_api_key"))
         self.country = _clean(config.get("smspool_default_country"), "1")
-        self.service = _clean(config.get("smspool_default_service"), "OpenAI")
+        self.service = _clean(config.get("smspool_default_service"), "671")
         self.pool = _clean(config.get("smspool_pool") or config.get("smspool_default_pool"), "")
         self.max_price = _as_float(config.get("smspool_max_price"), -1)
         self.proxies = proxies or None
@@ -134,7 +134,7 @@ class SMSPoolClient:
                     code = match.group(1) if match else ""
                 if code:
                     if log:
-                        log(f"SMSPool received code {code}")
+                        log(f"SMSPool received a {len(code)}-digit code (redacted)")
                     return code
             if status == 6:
                 raise RuntimeError(str(body.get("message") or "SMSPool order cancelled"))

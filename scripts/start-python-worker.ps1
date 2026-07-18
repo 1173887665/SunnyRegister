@@ -13,9 +13,18 @@ if (-not (Test-Path $VenvPython)) {
   & (Join-Path $PSScriptRoot "setup-python-worker.ps1")
 }
 
+try {
+  & $VenvPython --version | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Python Worker venv python exited with code $LASTEXITCODE"
+  }
+} catch {
+  Write-Host "Python Worker venv is broken. Rebuilding..."
+  & (Join-Path $PSScriptRoot "setup-python-worker.ps1") -Force
+}
+
 $env:PYTHONUTF8 = "1"
 $env:ACCOUNT_MANAGER_DATABASE_URL = "sqlite:///$((Join-Path $Root 'data\account_manager.db').Replace('\','/'))"
-$env:ORIGINAL_APP_PATH = (Join-Path $Root "original_runtime")
 
 Set-Location $WorkerDir
 & $VenvPython -m uvicorn worker:app --host $HostName --port $Port

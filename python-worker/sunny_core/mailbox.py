@@ -92,36 +92,38 @@ TOKEN_ENDPOINTS = [
 ]
 
 
+def _request_outlook_access_token(account: MailAccount, endpoint: dict[str, str], proxies, log: Callable[[str], None] | None = None) -> str:
+    data = {
+        "client_id": account.client_id,
+        "grant_type": "refresh_token",
+        "refresh_token": account.refresh_token,
+    }
+    if endpoint.get("scope"):
+        data["scope"] = endpoint["scope"]
+    if endpoint.get("resource"):
+        data["resource"] = endpoint["resource"]
+    if log:
+        log(f"[{account.email}] Try Outlook token endpoint {endpoint['name']}")
+    resp = requests.post(endpoint["url"], data=data, headers={"Accept": "application/json"}, timeout=20, proxies=proxies)
+    payload = resp.json() if resp.text else {}
+    if resp.ok and payload.get("access_token"):
+        if log:
+            log(f"[{account.email}] Outlook token endpoint {endpoint['name']} succeeded")
+        return str(payload["access_token"])
+    msg = payload.get("error_description") or payload.get("error") or f"HTTP {resp.status_code}"
+    raise RuntimeError(str(msg))
+
+
 def refresh_hotmail_access_token(account: MailAccount, proxy_url: str = "", log: Callable[[str], None] | None = None) -> tuple[str, str]:
     errors: list[str] = []
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
     for endpoint in TOKEN_ENDPOINTS:
-        data = {
-            "client_id": account.client_id,
-            "grant_type": "refresh_token",
-            "refresh_token": account.refresh_token,
-        }
-        if endpoint.get("scope"):
-            data["scope"] = endpoint["scope"]
-        if endpoint.get("resource"):
-            data["resource"] = endpoint["resource"]
         try:
-            if log:
-                log(f"[{account.email}] Try Outlook token endpoint {endpoint['name']}")
-            resp = requests.post(endpoint["url"], data=data, headers={"Accept": "application/json"}, timeout=20, proxies=proxies)
-            payload = resp.json() if resp.text else {}
-            if resp.ok and payload.get("access_token"):
-                if log:
-                    log(f"[{account.email}] Outlook token endpoint {endpoint['name']} succeeded")
-                return str(payload["access_token"]), str(endpoint["name"])
-            msg = payload.get("error_description") or payload.get("error") or f"HTTP {resp.status_code}"
-            errors.append(f"{endpoint['name']}: {msg}")
-            if log:
-                log(f"[{account.email}] Outlook token endpoint {endpoint['name']} failed: {msg}")
+            return _request_outlook_access_token(account, endpoint, proxies, log), str(endpoint["name"])
         except Exception as exc:
             errors.append(f"{endpoint['name']}: {exc}")
             if log:
-                log(f"[{account.email}] Outlook token endpoint {endpoint['name']} exception: {exc}")
+                log(f"[{account.email}] Outlook token endpoint {endpoint['name']} failed: {exc}")
     raise RuntimeError("All Outlook token endpoints failed -> " + " | ".join(errors))
 
 
@@ -182,8 +184,24 @@ class HotmailReader:
 
     def connect(self, access_token: str | None = None) -> None:
         self.log(f"[{self.account.email}] Connecting Outlook IMAP for OTP")
-        if access_token is None:
-            access_token, _ = refresh_hotmail_access_token(self.account, self.proxy_url, self.log)
+        if access_token is not None:
+            self._connect_with_access_token(access_token, "provided")
+            return
+        errors: list[str] = []
+        proxies = {"http": self.proxy_url, "https": self.proxy_url} if self.proxy_url else None
+        for endpoint in TOKEN_ENDPOINTS:
+            try:
+                token = _request_outlook_access_token(self.account, endpoint, proxies, self.log)
+                self._connect_with_access_token(token, str(endpoint["name"]))
+                return
+            except Exception as exc:
+                errors.append(f"{endpoint['name']}: {exc}")
+                self.log(f"[{self.account.email}] Outlook IMAP connect via {endpoint['name']} failed: {exc}")
+                self.close()
+                time.sleep(0.5)
+        raise RuntimeError("All Outlook IMAP auth attempts failed -> " + " | ".join(errors))
+
+    def _connect_with_access_token(self, access_token: str, token_endpoint: str) -> None:
         auth = f"user={self.account.email}\x01auth=Bearer {access_token}\x01\x01"
         if self.proxy_url:
             self.imap = self._connect_imap_via_proxy(self.proxy_url)
@@ -198,7 +216,7 @@ class HotmailReader:
             self.imap.sock.settimeout(30)
         except Exception:
             pass
-        self.log(f"[{self.account.email}] Outlook IMAP connected")
+        self.log(f"[{self.account.email}] Outlook IMAP connected via {token_endpoint}")
 
     def _connect_imap_via_proxy(self, proxy_url: str) -> imaplib.IMAP4_SSL:
         proxy_url = normalize_proxy_url(proxy_url)
@@ -381,7 +399,7 @@ class HotmailReader:
                 self.seen.add(key)
                 code = extract_otp(haystack)
                 if code:
-                    self.log(f"[{self.account.email}] Received OpenAI OTP {code}")
+                    self.log(f"[{self.account.email}] Received OpenAI OTP ({len(code)} digits, redacted)")
                     return code
         except Exception:
             return ""

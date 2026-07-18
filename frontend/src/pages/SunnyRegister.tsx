@@ -35,24 +35,29 @@ function useCachedState<T>(key: string, initial: T | (() => T)): [T, Dispatch<Se
   return [value, setCachedValue];
 }
 
-const zh = {
-  workbench: "宸ヤ綔鍙?, mailbox: "閭閰嶇疆", phone: "鎺ョ爜閰嶇疆", sub2api: "鍙嶄唬閰嶇疆", proxy: "浠ｇ悊閰嶇疆", session: "Session绠＄悊",
-  title: "SunnyRegister 娉ㄥ唽鏈烘帶鍒跺彴", desc: "浣跨敤鑷缓 Outlook 閭姹犳敞鍐?鐧诲綍 GPT 璐︽埛锛屽苟缁熶竴绠＄悊璐︽埛鐘舵€併€丼ession銆丷T 鍜屾棩蹇椼€?,
-  register: "娉ㄥ唽鎴栫櫥褰?, refresh: "鍒锋柊", import: "瀵煎叆", save: "淇濆瓨", export: "瀵煎嚭", newGroup: "鏂板缓鍒嗙粍", move: "杩佺Щ鍒嗙粍",
-  mailboxTip: "鏍煎紡锛歟mail----password----client_id----refresh_token銆傛敮鎸佹墜鍔ㄥ鍏ャ€佹枃浠跺鍏ャ€佹寚瀹氬垎缁勫拰鍗曢偖绠辫縼绉汇€?, mailboxPoolName: "鑷缓閭姹?, mailboxPoolGlobalSwitch: "浣跨敤鑷缓閭姹?, mailboxPoolSwitchTip: "鍏抽棴鍚庯紝娉ㄥ唽鏈轰笉浼氫粠鑷缓 Outlook 閭姹犲垎閰嶉偖绠便€?,
-  phoneTip: "鏍煎紡锛?鎵嬫満鍙?---鎺ョ爜閾炬帴銆傛垚鍔熷悗鍐峰嵈 5 灏忔椂锛屾渶澶?3 娆°€?,
-  phonePool: "鑷缓鎵嬫満鍙锋睜", phonePoolGlobalSwitch: "浣跨敤鑷缓鎵嬫満鍙锋睜", importPhones: "瀵煎叆鎵嬫満鍙?, phonePoolSwitchTip: "鍏抽棴鍚庯紝娉ㄥ唽鏈轰笉浼氫粠鑷缓鎵嬫満鍙锋睜鍒嗛厤鍙风爜锛涘悗缁彲鍒囨崲涓哄閮ㄦ帴鐮佸钩鍙般€?, phonePoolOn: "鍙敤浜庢帴鐮?, phonePoolOff: "涓嶇敤浜庢帴鐮?, phoneImportHelp: "姣忚涓€涓暱鏁堟帴鐮侊細绗竴涓瓧绗﹀繀椤绘槸 +锛屾墜鏈哄彿涓庢帴鐮侀摼鎺ヤ箣闂村繀椤讳娇鐢ㄥ洓涓腑妯嚎 ---- 杩炴帴銆?, phoneImportPlaceholder: "+12632229568----https://668.smz6.com/sms/by_key?key=xxxx", phoneImportInvalid: "鎵嬫満鍙峰鍏ユ牸寮忛敊璇?, phoneSearch: "鎼滅储鎵嬫満鍙?..", phoneNumber: "鎵嬫満鍙?, smsLink: "鎺ョ爜閾炬帴", usedCount: "宸茬敤娆℃暟", countFilter: "娆℃暟绛涢€?, allCount: "鍏ㄩ儴娆℃暟", lastUsedAt: "鏈€杩戜娇鐢ㄦ椂闂?, phoneEdit: "缂栬緫鎵嬫満鍙?, phoneStatusEnabled: "鍚敤", phoneStatusDisabled: "鍋滅敤", phoneConfirmDelete: "纭鍒犻櫎璇ユ墜鏈哄彿锛熸鎿嶄綔涓嶅彲鎾ら攢銆?, phoneConfirmBatchDelete: "纭鍒犻櫎閫変腑鐨勬墜鏈哄彿锛熸鎿嶄綔涓嶅彲鎾ら攢銆?, smsbowerProvider: "SMSBower 鎺ョ爜渚涘簲鍟?, smsbowerDesc: "褰撹嚜寤烘墜鏈哄彿姹犱笉鍙敤鎴栨棤鍙敤鍙风爜鏃讹紝娉ㄥ唽鏈轰細浣跨敤 SMSBower API 鑷姩鑾峰彇涓€娆℃€ф墜鏈哄彿銆?, smsbowerSwitch: "鍚敤 SMSBower", smsbowerReady: "SMSBower 宸查厤缃?, smsbowerApiKey: "API Key", smsbowerCountry: "榛樿鍥藉", smsbowerService: "榛樿鏈嶅姟", smsbowerMaxPrice: "鏈€澶т环鏍?, smsbowerBaseURL: "鎺ュ彛鍦板潃", smsbowerCheck: "妫€娴嬩綑棰?, smsbowerBalance: "浣欓锛歿balance}", smsbowerSaved: "SMSBower 閰嶇疆宸蹭繚瀛?, smspoolProvider: "SMSPool 鎺ョ爜渚涘簲鍟?, smspoolDesc: "SMSPool 涓存椂鍙风爜骞冲彴锛屽彲鍦ㄨ嚜寤烘墜鏈哄彿姹犲拰 SMSBower 涓嶅彲鐢ㄦ椂鑷姩璐拱涓€娆℃€ф帴鐮佸彿鐮併€?, smspoolSwitch: "鍚敤 SMSPool", smspoolReady: "SMSPool 宸查厤缃?, smspoolApiKey: "API Key", smspoolCountry: "榛樿鍥藉", smspoolService: "榛樿鏈嶅姟", refreshProviderOptions: "鑾峰彇鍒楄〃", smspoolMaxPrice: "鏈€澶т环鏍?, smspoolBaseURL: "鎺ュ彛鍦板潃", smspoolCheck: "妫€娴嬩綑棰?, smspoolBalance: "浣欓锛歿balance}", smspoolSaved: "SMSPool 閰嶇疆宸蹭繚瀛?,
-  proxyTip: "绠＄悊娉ㄥ唽鏈哄彂璧锋敞鍐?鐧诲綍璇锋眰鏃朵娇鐢ㄧ殑鍑虹珯浠ｇ悊姹狅紱鎵归噺妫€娴嬩粎妫€娴嬩唬鐞嗘湇鍔¤繛閫氭€э紝涓嶈闂?ChatGPT 瀹樼綉銆?,
-  proxyPool: "浠ｇ悊姹?, proxyEnabled: "鍚敤", proxyAvailable: "澶辨晥", proxySearch: "鎼滅储浠ｇ悊鍦板潃...", proxyCountry: "鍥藉", proxyAllCountry: "鍏ㄩ儴鍥藉", proxyAddress: "浠ｇ悊鍦板潃", proxyBatchCheck: "鎵归噺妫€娴?, proxyBatchDelete: "鎵归噺鍒犻櫎", proxyBatchEdit: "鎵归噺淇敼", proxyAdd: "鏂板浠ｇ悊", proxyEdit: "缂栬緫浠ｇ悊", proxyCheckDone: "浠ｇ悊妫€娴嬪畬鎴?, proxyNoData: "鏆傛棤浠ｇ悊", proxyNoDataDesc: "璇峰厛鏂板浠ｇ悊鍦板潃锛屽啀瀵瑰惎鐢ㄤ唬鐞嗚繘琛屾壒閲忔娴嬨€?, proxyStatusEnabled: "鍚敤", proxyStatusDisabled: "鍋滅敤", proxyStatusInvalid: "澶辨晥", proxyLastChecked: "涓婃妫€娴?, proxyLatency: "寤惰繜", proxyCountryPlaceholder: "渚嬪 US / HK / JP / Brazil", proxyAddressPlaceholder: "姣忚涓€涓唬鐞嗭紝渚嬪 http://user:pass@host:port 鎴?socks5://host:port", proxyConfirmDelete: "纭鍒犻櫎璇ヤ唬鐞嗭紵姝ゆ搷浣滀笉鍙挙閿€銆?, proxyConfirmBatchDelete: "纭鍒犻櫎閫変腑鐨勪唬鐞嗭紵姝ゆ搷浣滀笉鍙挙閿€銆?, proxyTrafficSwitch: "娉ㄥ唽娴侀噺浠ｇ悊", proxyTrafficOn: "浠ｇ悊寮€鍚?, proxyTrafficOff: "浠ｇ悊鍏抽棴", proxyTrafficOnHint: "娉ㄥ唽/鐧诲綍璇锋眰璧颁唬鐞嗘睜", proxyTrafficOffHint: "浣跨敤鏈嶅姟鍣ㄧ郴缁熺綉缁滃嚭鍙?, proxySwitchSaved: "浠ｇ悊鍑哄彛璁剧疆宸叉洿鏂?,
-  selected: "宸查€?, globalLogs: "鍏ㄥ眬鏃ュ織", selectedLogs: "褰撳墠閭鏃ュ織", clearLogs: "娓呴櫎", latest: "鏌ヨ鏈€杩戦偖浠?, done: "鎿嶄綔瀹屾垚", failed: "鎿嶄綔澶辫触", file: "閫夋嫨鏂囦欢", status: "鐘舵€?, prev: "涓婁竴椤?, next: "涓嬩竴椤?, pageSize: "姣忛〉", pageInfo: "绗?{page} / {pages} 椤?, pageRange: "鏄剧ず {from} 鑷?{to} 鍏?{total} 鏉＄粨鏋?, noLogs: "鏆傛棤鏃ュ織", total: "鎬昏", yes: "鏄?, no: "鍚?, step: "姝ラ",
-  logProxy: "浠ｇ悊", logMailbox: "閭", logPhone: "鎵嬫満", logSession: "Session", logAuth: "璁よ瘉", logSystem: "绯荤粺",
-  defaultGroup: "榛樿鍒嗙粍", allGroups: "鍏ㄩ儴鍒嗙粍", mailboxGroup: "鎵€灞炲垎缁?, importMailboxes: "瀵煎叆閭", manualImport: "鎵嬪姩瀵煎叆", fileImport: "鏂囦欢瀵煎叆", dragFile: "鎷栨嫿閭鏂囦欢鍒拌繖閲岋紝鎴栫偣鍑婚€夋嫨鏂囦欢", importToGroup: "瀵煎叆鍒板垎缁?, addGroup: "鏂板缓鍒嗙粍", enterGroup: "杈撳叆鍒嗙粍鍚嶅悗鍥炶溅", validationOk: "鏍￠獙閫氳繃", validationFailed: "鏍￠獙澶辫触", mailboxList: "閭鍒楄〃", enabled: "鍚敤", updatedAt: "鏇存柊鏃堕棿", actions: "鎿嶄綔", queryMailbox: "鎼滅储閭...",
-  allStatus: "鍏ㄩ儴鐘舵€?, allPlanTypes: "鍏ㄩ儴濂楅", edit: "缂栬緫", delete: "鍒犻櫎", batchDelete: "鎵归噺鍒犻櫎", batchEdit: "鎵归噺缂栬緫", confirmDeleteMailbox: "纭鍒犻櫎璇ラ偖绠辫褰曪紵姝ゆ搷浣滀笉鍙挙閿€銆?, confirmBatchDeleteMailbox: "纭鍒犻櫎閫変腑鐨勯偖绠辫褰曪紵姝ゆ搷浣滀笉鍙挙閿€銆?, queryMail: "閭欢鏌ヨ", currentMailbox: "褰撳墠閭", getMail: "鑾峰彇閭欢", mailFetchCount: "鏌ヨ鏁伴噺", mailFetchCountSuffix: "灏?, mailList: "閭欢鍒楄〃", sender: "鍙戜欢浜?, receiver: "鏀朵欢浜?, time: "鏃堕棿", subject: "涓婚", content: "閭欢鍐呭", emptyMail: "鏆傛棤閭欢", mailboxName: "閭鍚?, password: "瀵嗙爜", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "鎵归噺缂栬緫閭", applyToSelected: "搴旂敤鍒伴€変腑鐨勯偖绠?,
-  autoRegister: "鑷姩娉ㄥ唽", interruptTask: "涓柇浠诲姟", interruptTaskTip: "绔嬪嵆璇锋眰鍋滄褰撳墠娉ㄥ唽浠诲姟锛屽苟鍦ㄦ棩蹇椾腑璁板綍涓柇鎿嶄綔銆?, interruptTaskRequested: "宸茶姹備腑鏂綋鍓嶆敞鍐屼换鍔★紝Worker 灏嗗敖蹇仠姝?, interruptTaskFailed: "涓柇浠诲姟澶辫触", manualNew: "鎵嬪姩鏂板", searchAccount: "鎼滅储璐﹀彿閭...", refreshQuota: "鍒锋柊棰濆害", refreshList: "鍒锋柊鍒楄〃", refreshDone: "鍒楄〃宸插埛鏂?, refreshStatus: "鍒锋柊璐﹀彿鐘舵€?, statusChangedAt: "鐘舵€佸彉鏇存椂闂?, planType: "濂楅绫诲瀷", email: "閭", trialLink: "璇曠敤閾炬帴", registeredAt: "娉ㄥ唽鏃堕棿", operation: "鎿嶄綔", noData: "鏆傛棤鏁版嵁", noDataDesc: "褰撳墠骞冲彴娌℃湁鎵惧埌浠讳綍璐﹀彿璁板綍銆傝鍏堝埌閭閰嶇疆涓鍏ラ偖绠憋紝鐒跺悗閫夋嫨閭杩涜鑷姩娉ㄥ唽銆?, chooseMailbox: "璇烽€夋嫨閭", createTaskLog: "鍒涘缓 ChatGPT 娉ㄥ唽浠诲姟锛屾暟閲?, taskSubmitted: "娉ㄥ唽浠诲姟宸叉彁浜わ紝姝ｅ湪寮€濮嬫墽琛?, taskCreated: "鑷姩娉ㄥ唽浠诲姟宸插垱寤?, taskDone: "浠诲姟瀹屾垚", taskFailed: "浠诲姟澶辫触", taskPollRecovered: "妫€娴嬪埌涓婃娉ㄥ唽浠诲姟浠嶅湪杩涜锛屽凡鎭㈠鏃ュ織杞", taskPollLost: "浠诲姟鐘舵€佽疆璇㈣繛缁け璐ワ紝宸茶В闄ゅ墠绔敞鍐屼腑鐘舵€侊細{error}", taskPollTimeout: "浠诲姟杞瓒呰繃 30 鍒嗛挓锛屽凡瑙ｉ櫎鍓嶇娉ㄥ唽涓姸鎬侊紱璇峰埛鏂板垪琛ㄧ‘璁ゆ渶缁堢粨鏋?, importDone: "瀵煎叆瀹屾垚", exportDone: "瀵煎嚭瀹屾垚", manualNewTip: "璇峰埌閭閰嶇疆涓墜鍔ㄦ柊澧為偖绠?, autoRegisterTitle: "鑷姩娉ㄥ唽 ChatGPT", step1Title: "閫夋嫨娉ㄥ唽韬唤", step1Desc: "褰撳墠浼樺厛浣跨敤鑷缓 Outlook 閭姹犺繘琛岄偖绠遍獙璇併€?, systemMailbox: "绯荤粺閭", systemMailboxPoolDisabled: "绯荤粺閭姹犲姛鑳芥湭鍚敤锛岃鍏堝惎鐢ㄩ偖绠辨睜鍔熻兘", smsConfigDisabled: "璇峰墠寰€鎺ョ爜閰嶇疆椤甸潰鍚敤鎺ョ爜閰嶇疆", registerStageUnavailable: "璇峰厛鍚敤鑷冲皯涓€绉嶉偖绠辨敞鍐屾柟寮?, googleMailboxDisabled: "Google 閭鍔熻兘鏈惎鐢紝璇峰厛鍚敤瀵瑰簲鐨勯偖绠卞姛鑳?, microsoftMailboxDisabled: "Microsoft 閭鍔熻兘鏈惎鐢紝璇峰厛鍚敤瀵瑰簲鐨勯偖绠卞姛鑳?, systemMailboxDesc: "浣跨敤閭姹犺嚜鍔ㄦ敹鍙栭獙璇佺爜骞跺畬鎴愭敞鍐?, googleDesc: "棰勭暀韬唤锛屽悗缁帴鍏?Google 璐﹀彿", microsoftDesc: "棰勭暀韬唤锛屽悗缁帴鍏?Microsoft 璐﹀彿", step2Title: "閫夋嫨鎵ц鏂瑰紡", step2Desc: "鏀寔鍚庡彴娴忚鍣ㄨ嚜鍔ㄤ笌鍙娴忚鍣ㄨ嚜鍔紱鍚庡彴妯″紡涓嶆樉绀虹獥鍙ｏ紝鏇撮€傚悎鎵归噺鎵ц銆?, protocolMode: "鍗忚妯″紡", protocolDesc: "鍗犱綅鑳藉姏锛屾殏鏈紑鏀鹃€夋嫨", backgroundMode: "鍚庡彴娴忚鍣ㄨ嚜鍔?, backgroundDesc: "鏃犵獥鍙?Headless 鎵ц锛屼粛浣跨敤闅旂鏃犵棔娴忚鍣ㄤ笂涓嬫枃鑷姩娉ㄥ唽", visibleMode: "鍙娴忚鍣ㄨ嚜鍔?, visibleDesc: "浼氭墦寮€娴忚鍣ㄧ獥鍙ｏ紝閫傚悎鎺掓煡浜烘満楠岃瘉鎴栭〉闈㈠紓甯?, registerCount: "娉ㄥ唽鏁伴噺", concurrency: "骞跺彂鏁?, identityLabel: "娉ㄥ唽韬唤", modeLabel: "鎵ц鏂瑰紡", registerAccounts: "娉ㄥ唽璐﹀彿", verifyStrategy: "楠岃瘉绛栫暐锛氫娇鐢?Outlook IMAP/XOAUTH2 鑷姩璇诲彇楠岃瘉鐮?, step3Title: "閫夋嫨娉ㄥ唽闃舵", step3Desc: "鎺у埗鏈浠诲姟鎵ц鍒板摢涓樁娈碉紝榛樿浠呭畬鎴?ChatGPT 娉ㄥ唽/鐧诲綍涓?Session 瀛樺偍銆?, registerOnly: "浠呮敞鍐?ChatGPT", registerOnlyDesc: "娉ㄥ唽鎴栫櫥褰曟垚鍔熷悗锛屽彧璇诲彇骞朵繚瀛?ChatGPT Session 淇℃伅", codexPhoneBind: "Codex鎺ョ爜缁戝畾", codexPhoneBindDesc: "娉ㄥ唽/鐧诲綍鍚庣户缁娇鐢ㄦ帴鐮侀厤缃畬鎴愭墜鏈洪獙璇佸苟鑾峰彇 Refresh Token", importReverseProxy: "瀵煎叆鍙嶄唬骞冲彴", importReverseProxyDesc: "瀹屾垚璐﹀彿 Session/RT 鍚庡鍏ュ凡閰嶇疆鐨?sub2api 鍙嶄唬骞冲彴", stageLabel: "娉ㄥ唽闃舵", startAutoRegister: "寮€濮嬭嚜鍔ㄦ敞鍐?, cancel: "鍙栨秷", noMailbox: "鏆傛棤閭", noMailboxDesc: "璇风偣鍑诲彸涓婅鈥滃鍏ラ偖绠扁€濇坊鍔犺嚜寤?Outlook 閭姹犮€?, inbox: "鏀朵欢绠?, fillOrChooseMailboxFile: "璇峰厛濉啓鎴栭€夋嫨閭鏂囦欢",
-  sub2apiDesc: "鐢ㄤ簬鈥滃鍏ュ弽浠ｅ钩鍙扳€濋樁娈点€傚～鍐?sub2api 鍦板潃涓庣鐞嗗憳 Key 鍚庯紝娉ㄥ唽浠诲姟鍙皢宸茶幏鍙?Session/RT 鐨?GPT 璐﹀彿瀵煎叆骞冲彴銆?, baseURL: "Base URL", adminToken: "Admin Token", accountNamePrefix: "璐﹀彿鍚嶅墠缂€", targetGroup: "鐩爣鍒嗙粍", targetGroupPlaceholder: "璇烽€夋嫨鐩爣鍒嗙粍", noGroupsFetch: "鏆傛棤鍒嗙粍锛岃鐐瑰嚮鍙充晶鈥滆幏鍙栤€?, fetch: "鑾峰彇", priority: "浼樺厛绾?, check: "妫€娴?, configUnchanged: "閰嶇疆鏈洿鏀?, fillURLToken: "璇峰厛濉啓 Base URL 鍜?Admin Token", fetchedGroups: "宸茶幏鍙?{count} 涓洰鏍囧垎缁?, fillURLTokenShort: "璇峰厛濉啓 URL 鍜?Token", checking: "妫€娴嬩腑...", checkPassedGroups: "妫€娴嬮€氳繃锛屽彂鐜?{count} 涓垎缁?, checkFailed: "妫€娴嬪け璐ワ細{error}", lineFormatPhone: "+鎵嬫満鍙?---https://鎺ョ爜閾炬帴", sessionJSON: "Auth Session", accessToken: "Access Token", mailboxAccountExport: "閭璐︽埛", exportFormat: "瀵煎嚭鍐呭", selectExportRows: "璇烽€夋嫨闇€瑕佸鍑虹殑璐﹀彿", tokenPreview: "Token棰勮", sessionRefreshToken: "Refresh Token", updated: "鏇存柊鏃堕棿",
-  linkedMailboxConfig: "鑱斿姩閭閰嶇疆", linkedPhoneConfig: "鑱斿姩鎺ョ爜閰嶇疆", linkedReverseConfig: "鑱斿姩鍙嶄唬閰嶇疆", resourceReady: "鍙敤", resourceMissing: "涓嶅彲鐢?, usablePhones: "鍙敤鎵嬫満鍙?{count} 涓?, existingRTReady: "鎵€閫夎处鍙峰凡鏈?RT锛屾棤闇€鎺ョ爜", sub2apiReady: "sub2api 宸查厤缃?, sub2apiMissing: "sub2api 鏈畬鏁撮厤缃?, stageDisabledTip: "璇ラ樁娈典緷璧栫殑閰嶇疆鏆備笉鍙敤锛岃鍏堝畬鎴愬搴旇彍鍗曢厤缃€?,
-  statusLabels: { "鏈敞鍐?: "鏈敞鍐?, "宸叉敞鍐?: "宸叉敞鍐?, "registered": "宸叉敞鍐?, "宸叉帴鐮?: "宸叉帴鐮?, "PLUS璇曠敤涓?: "PLUS璇曠敤涓?, "宸插皝绂?: "宸插皝绂?, "闇€浜岄獙": "闇€浜岄獙", "娉ㄥ唽涓?: "娉ㄥ唽涓?, "鐧诲綍鍒锋柊": "鐧诲綍鍒锋柊", "澶辫触": "澶辫触", "failed": "澶辫触", "绂佺敤": "绂佺敤" },
-};
+const zh: AnyObj = new Proxy({
+  workbench: "工作台", mailbox: "邮箱配置", phone: "接码配置", sub2api: "反代配置", proxy: "代理配置", session: "Session管理",
+  title: "SunnyRegister 注册机控制台", desc: "使用自建 Outlook 邮箱池注册/登录 GPT 账户，并统一管理账户状态、Session、RT 和日志。",
+  register: "注册或登录", refresh: "刷新", import: "导入", save: "保存", export: "导出", newGroup: "新建分组", move: "迁移到分组",
+  mailboxTip: "格式：email----password----client_id----refresh_token。支持手动导入、文件导入、指定分组和单邮箱迁移。",
+  mailboxPoolName: "自建邮箱池", mailboxPoolGlobalSwitch: "使用自建邮箱池", mailboxPoolSwitchTip: "关闭后，注册机不会从自建 Outlook 邮箱池分配邮箱。",
+  phoneTip: "格式：+手机号----接码链接。成功后冷却 5 小时，最多 3 次。", phonePool: "自建手机号池", phonePoolGlobalSwitch: "使用自建手机号池", importPhones: "导入手机号", phonePoolSwitchTip: "关闭后，注册机不会从自建手机号池分配号码；后续可切换为外部接码平台。", phonePoolOn: "可用于接码", phonePoolOff: "不用于接码", phoneImportHelp: "每行一个长效接码：第一个字符必须是 +，手机号与接码链接之间必须使用四个中横线 ---- 连接。", phoneImportPlaceholder: "+12632229568----https://668.smz6.com/sms/by_key?key=xxxx", phoneImportInvalid: "手机号导入格式错误", phoneSearch: "搜索手机号...", phoneNumber: "手机号", smsLink: "接码链接", usedCount: "已用次数", countFilter: "次数筛选", allCount: "全部次数", lastUsedAt: "最近使用时间", phoneEdit: "编辑手机号", phoneStatusEnabled: "启用", phoneStatusDisabled: "停用", phoneConfirmDelete: "确认删除该手机号？此操作不可撤销。", phoneConfirmBatchDelete: "确认删除选中的手机号？此操作不可撤销。",
+  smsbowerProvider: "SMSBower 接码供应商", smsbowerDesc: "当自建手机号池不可用或无可用号码时，注册机会使用 SMSBower API 自动获取一次性手机号。", smsbowerSwitch: "启用 SMSBower", smsbowerReady: "SMSBower 已配置", smsbowerApiKey: "API Key", smsbowerCountry: "默认国家", smsbowerService: "默认服务", smsbowerMaxPrice: "最大价格", smsbowerBaseURL: "接口地址", smsbowerCheck: "检测余额", smsbowerBalance: "余额：{balance}", smsbowerSaved: "SMSBower 配置已保存",
+  smspoolProvider: "SMSPool 接码供应商", smspoolDesc: "SMSPool 临时号码平台，可在自建手机号池和 SMSBower 不可用时自动购买一次性接码号码。", smspoolSwitch: "启用 SMSPool", smspoolReady: "SMSPool 已配置", smspoolApiKey: "API Key", smspoolCountry: "默认国家", smspoolService: "默认服务", refreshProviderOptions: "获取列表", smspoolMaxPrice: "最大价格", smspoolBaseURL: "接口地址", smspoolCheck: "检测余额", smspoolBalance: "余额：{balance}", smspoolSaved: "SMSPool 配置已保存",
+  proxyTip: "管理注册机发起注册/登录请求时使用的出站代理池；批量检测仅检测代理服务连通性，不访问 ChatGPT 官网。", proxyPool: "代理池", proxyEnabled: "启用", proxyDisabled: "停用", proxyAvailable: "失效", proxySearch: "搜索代理地址...", proxyCountry: "国家", proxyAllCountry: "全部国家", proxyAddress: "代理地址", proxyBatchCheck: "批量检测", proxyBatchDelete: "批量删除", proxyBatchEdit: "批量修改", proxyAdd: "新增代理", proxyEdit: "编辑代理", proxyCheckDone: "代理检测完成", proxyNoData: "暂无代理", proxyNoDataDesc: "请先新增代理地址，再对启用代理进行批量检测。", proxyStatusEnabled: "启用", proxyStatusDisabled: "停用", proxyStatusInvalid: "失效", proxyLastChecked: "上次检测", proxyLatency: "延迟", proxyCountryPlaceholder: "例如 US / HK / JP / Brazil", proxyAddressPlaceholder: "每行一个代理，例如 http://user:pass@host:port 或 socks5://host:port", proxyConfirmDelete: "确认删除该代理？此操作不可撤销。", proxyConfirmBatchDelete: "确认删除选中的代理？此操作不可撤销。", proxyTrafficSwitch: "注册流量代理", proxyTrafficOn: "代理开启", proxyTrafficOff: "代理关闭", proxyTrafficOnHint: "注册/登录请求走代理池", proxyTrafficOffHint: "使用服务器系统网络出口", proxySwitchSaved: "代理出口设置已更新",
+  selected: "已选", clearSelection: "清除选择", globalLogs: "全局日志", selectedLogs: "当前邮箱日志", clearLogs: "清除", latest: "查询最近邮件", done: "操作完成", failed: "操作失败", file: "选择文件", status: "状态", prev: "上一页", next: "下一页", pageSize: "每页", pageInfo: "第 {page} / {pages} 页", pageRange: "显示 {from} 至 {to} 共 {total} 条结果", noLogs: "暂无日志", total: "总计", yes: "是", no: "否", step: "步骤",
+  logProxy: "代理", logMailbox: "邮箱", logPhone: "手机", logSession: "Session", logAuth: "认证", logSystem: "系统",
+  defaultGroup: "默认分组", allGroups: "全部分组", mailboxGroup: "所属分组", importMailboxes: "导入邮箱", manualImport: "手动导入", fileImport: "文件导入", dragFile: "拖拽邮箱文件到这里，或点击选择文件", importToGroup: "导入到分组", addGroup: "新建分组", enterGroup: "输入分组名后回车", validationOk: "校验通过", validationFailed: "校验失败", mailboxList: "邮箱列表", enabled: "启用", updatedAt: "更新时间", actions: "操作", queryMailbox: "搜索邮箱...", allStatus: "全部状态", allPlanTypes: "全部套餐", edit: "编辑", delete: "删除", batchDelete: "批量删除", batchEdit: "批量编辑", confirmDeleteMailbox: "确认删除该邮箱记录？此操作不可撤销。", confirmBatchDeleteMailbox: "确认删除选中的邮箱记录？此操作不可撤销。", queryMail: "邮件查询", currentMailbox: "当前邮箱", getMail: "获取邮件", mailFetchCount: "查询数量", mailFetchCountSuffix: "封", mailList: "邮件列表", sender: "发件人", receiver: "收件人", time: "时间", subject: "主题", content: "邮件内容", emptyMail: "暂无邮件", mailboxName: "邮箱名", password: "密码", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "批量编辑邮箱", applyToSelected: "应用到选中的邮箱",
+  autoRegister: "自动注册", interruptTask: "停止", interruptingTask: "停止中...", interruptTaskTip: "立即请求停止当前注册任务，Worker 将关闭对应线程、浏览器和任务资源。", interruptTaskRequested: "已请求停止当前注册任务，正在等待 Worker 关闭浏览器与线程", interruptTaskFailed: "停止任务失败", registerTaskRunning: "当前注册任务正在执行，请等待任务结束或先停止任务", manualNew: "手动新增", searchAccount: "搜索账号邮箱...", refreshQuota: "刷新额度", refreshList: "刷新列表", refreshDone: "列表已刷新", refreshStatus: "刷新账号状态", statusChangedAt: "状态变更时间", planType: "套餐类型", email: "邮箱", trialLink: "试用链接", registeredAt: "注册时间", operation: "操作", noData: "暂无数据", noDataDesc: "当前平台没有找到任何账号记录。请先到邮箱配置中导入邮箱，然后选择邮箱进行自动注册。", chooseMailbox: "请选择邮箱", createTaskLog: "创建 ChatGPT 注册任务，数量", taskSubmitted: "注册任务已提交，正在开始执行", taskCreated: "自动注册任务已创建", taskDone: "任务完成", taskFailed: "任务失败", taskPollRecovered: "检测到上次注册任务仍在进行，已恢复日志轮询", taskPollLost: "任务状态轮询暂时失败，将继续等待任务状态：{error}", taskPollTimeout: "任务状态轮询时间较长，仍将继续等待；可使用停止按钮中断任务", importDone: "导入完成", exportDone: "导出完成", manualNewTip: "请到邮箱配置中手动新增邮箱", autoRegisterTitle: "自动注册 ChatGPT", step1Title: "选择注册身份", step1Desc: "当前优先使用自建 Outlook 邮箱池进行邮箱验证。", systemMailbox: "系统邮箱", systemMailboxPoolDisabled: "系统邮箱池功能未启用，请先启用邮箱池功能", smsConfigDisabled: "请前往接码配置页面启用接码配置", registerStageUnavailable: "请先启用至少一种邮箱注册方式", googleMailboxDisabled: "Google 邮箱功能未启用，请先启用对应的邮箱功能", microsoftMailboxDisabled: "Microsoft 邮箱功能未启用，请先启用对应的邮箱功能", systemMailboxDesc: "使用邮箱池自动收取验证码并完成注册", googleDesc: "预留身份，后续接入 Google 账号", microsoftDesc: "预留身份，后续接入 Microsoft 账号", step2Title: "选择执行方式", step2Desc: "支持后台浏览器自动与可视浏览器自动；后台模式不显示窗口，更适合批量执行。", protocolMode: "协议模式", protocolDesc: "占位能力，暂未开放选择", backgroundMode: "后台浏览器自动", backgroundDesc: "无窗口 Headless 执行，仍使用隔离无痕浏览器上下文自动注册", visibleMode: "可视浏览器自动", visibleDesc: "会打开浏览器窗口，适合排查人机验证或页面异常", registerCount: "注册数量", concurrency: "并发数", identityLabel: "注册身份", modeLabel: "执行方式", registerAccounts: "注册账号", verifyStrategy: "验证策略：使用 Outlook IMAP/XOAUTH2 自动读取验证码", step3Title: "选择注册阶段", step3Desc: "控制本次任务执行到哪个阶段，默认仅完成 ChatGPT 注册/登录与 Session 存储。", registerOnly: "仅注册 ChatGPT", registerOnlyDesc: "注册或登录成功后，只读取并保存 ChatGPT Session 信息", codexPhoneBind: "Codex接码绑定", codexPhoneBindDesc: "注册/登录后继续使用接码配置完成手机验证并获取 Refresh Token", importReverseProxy: "导入反代平台", importReverseProxyDesc: "完成账号 Session/RT 后导入已配置的 sub2api 反代平台", stageLabel: "注册阶段", startAutoRegister: "开始自动注册", cancel: "取消", noMailbox: "暂无邮箱", noMailboxDesc: "请点击右上角“导入邮箱”添加自建 Outlook 邮箱池。", inbox: "收件箱", fillOrChooseMailboxFile: "请先填写或选择邮箱文件",
+  sub2apiDesc: "用于“导入反代平台”阶段。填写 sub2api 地址与管理员 Key 后，注册任务可将已获取 Session/RT 的 GPT 账号导入平台。", baseURL: "Base URL", adminToken: "Admin Token", accountNamePrefix: "账号名前缀", targetGroup: "目标分组", targetGroupPlaceholder: "请选择目标分组", noGroupsFetch: "暂无分组，请点击右侧“获取”", fetch: "获取", priority: "优先级", check: "检测", configUnchanged: "配置未更改", fillURLToken: "请先填写 Base URL 和 Admin Token", fetchedGroups: "已获取 {count} 个目标分组", fillURLTokenShort: "请先填写 URL 和 Token", checking: "检测中...", checkPassedGroups: "检测通过，发现 {count} 个分组", checkFailed: "检测失败：{error}", lineFormatPhone: "+手机号----https://接码链接", sessionJSON: "Auth Session", accessToken: "Access Token", mailboxAccountExport: "邮箱账户", exportFormat: "导出内容", selectExportRows: "请选择需要导出的账号", tokenPreview: "Token预览", sessionRefreshToken: "Refresh Token", updated: "更新时间",
+  linkedMailboxConfig: "联动邮箱配置", linkedPhoneConfig: "联动接码配置", linkedReverseConfig: "联动反代配置", resourceReady: "可用", resourceMissing: "不可用", usablePhones: "可用手机号 {count} 个", existingRTReady: "所选账号已有 RT，无需接码", sub2apiReady: "sub2api 已配置", sub2apiMissing: "sub2api 未完整配置", stageDisabledTip: "该阶段依赖的配置暂不可用，请先完成对应菜单配置。",
+  statusLabels: { "未注册": "未注册", "已注册": "已注册", "registered": "已注册", "已接码": "已接码", "phone_bound": "已接码", "已反代": "已反代", "reverse_proxied": "已反代", "PLUS试用中": "PLUS试用中", "已封禁": "已封禁", "需二验": "需二验", "注册中": "注册中", "登录刷新": "登录刷新", "失败": "失败", "failed": "失败", "禁用": "禁用" },
+}, {
+  get(target, prop) {
+    if (typeof prop === 'string') return prop in target ? (target as AnyObj)[prop] : prop;
+    return (target as AnyObj)[prop as any];
+  }
+}) as AnyObj;
 const en = {
   workbench: "Workbench", mailbox: "Mailbox", phone: "SMS", sub2api: "Reverse Proxy", proxy: "Proxy", session: "Sessions",
   title: "SunnyRegister Console", desc: "Register/login GPT accounts with a self-managed Outlook mailbox pool, then manage account status, sessions, RTs and logs.",
@@ -62,17 +67,17 @@ const en = {
   phonePool: "Self-managed Phone Pool", phonePoolGlobalSwitch: "Use Self-managed Phone Pool", importPhones: "Import Phones", phonePoolSwitchTip: "When disabled, SunnyRegister will not allocate numbers from this phone pool. You can switch to external SMS providers later.", phonePoolOn: "Usable for SMS", phonePoolOff: "Not used for SMS", phoneImportHelp: "One long-lived SMS record per line. The first character must be +, and the phone number and SMS URL must be separated with exactly four hyphens: ----.", phoneImportPlaceholder: "+12632229568----https://668.smz6.com/sms/by_key?key=xxxx", phoneImportInvalid: "Invalid phone import format", phoneSearch: "Search phone number...", phoneNumber: "Phone Number", smsLink: "SMS Link", usedCount: "Used Count", countFilter: "Count", allCount: "All Counts", lastUsedAt: "Last Used", phoneEdit: "Edit Phone", phoneStatusEnabled: "Enabled", phoneStatusDisabled: "Disabled", phoneConfirmDelete: "Delete this phone number? This cannot be undone.", phoneConfirmBatchDelete: "Delete selected phone numbers? This cannot be undone.", smsbowerProvider: "SMSBower Provider", smsbowerDesc: "When the self-managed phone pool is unavailable or empty, SunnyRegister can use SMSBower API to rent a one-time number automatically.", smsbowerSwitch: "Enable SMSBower", smsbowerReady: "SMSBower configured", smsbowerApiKey: "API Key", smsbowerCountry: "Default Country", smsbowerService: "Default Service", smsbowerMaxPrice: "Max Price", smsbowerBaseURL: "API URL", smsbowerCheck: "Check Balance", smsbowerBalance: "Balance: {balance}", smsbowerSaved: "SMSBower config saved", smspoolProvider: "SMSPool Provider", smspoolDesc: "SMSPool is a temporary-number provider used when the self-managed phone pool and SMSBower are unavailable.", smspoolSwitch: "Enable SMSPool", smspoolReady: "SMSPool configured", smspoolApiKey: "API Key", smspoolCountry: "Default Country", smspoolService: "Default Service", refreshProviderOptions: "Fetch options", smspoolMaxPrice: "Max Price", smspoolBaseURL: "API URL", smspoolCheck: "Check Balance", smspoolBalance: "Balance: {balance}", smspoolSaved: "SMSPool config saved",
   proxyTip: "Manage the outbound proxy pool for register/login requests. Batch check only tests proxy server connectivity and does not access chatgpt.com.",
   proxyPool: "Proxy Pool", proxyEnabled: "Enabled", proxyAvailable: "Invalid", proxySearch: "Search proxy address...", proxyCountry: "Country", proxyAllCountry: "All Countries", proxyAddress: "Proxy Address", proxyBatchCheck: "Batch Check", proxyBatchDelete: "Batch Delete", proxyBatchEdit: "Batch Edit", proxyAdd: "Add Proxy", proxyEdit: "Edit Proxy", proxyCheckDone: "Proxy check completed", proxyNoData: "No Proxies", proxyNoDataDesc: "Add proxy addresses first, then batch-check enabled proxies.", proxyStatusEnabled: "Enabled", proxyStatusDisabled: "Disabled", proxyStatusInvalid: "Invalid", proxyLastChecked: "Last Checked", proxyLatency: "Latency", proxyCountryPlaceholder: "e.g. US / HK / JP / Brazil", proxyAddressPlaceholder: "One proxy per line, e.g. http://user:pass@host:port or socks5://host:port", proxyConfirmDelete: "Delete this proxy? This cannot be undone.", proxyConfirmBatchDelete: "Delete selected proxies? This cannot be undone.", proxyTrafficSwitch: "Register Traffic Proxy", proxyTrafficOn: "Proxy On", proxyTrafficOff: "Proxy Off", proxyTrafficOnHint: "Register/login requests use proxy pool", proxyTrafficOffHint: "Use server/system network", proxySwitchSaved: "Proxy outlet setting updated",
-  selected: "Selected", globalLogs: "Global Logs", selectedLogs: "Current Mailbox Logs", clearLogs: "Clear", latest: "Latest Mail", done: "Done", failed: "Failed", file: "Choose File", status: "Status", prev: "Prev", next: "Next", pageSize: "Per page", pageInfo: "Page {page} / {pages}", pageRange: "Showing {from} to {to} of {total} results", noLogs: "No logs", total: "Total", yes: "Yes", no: "No", step: "STEP",
+  selected: "Selected", clearSelection: "Clear Selection", globalLogs: "Global Logs", selectedLogs: "Current Mailbox Logs", clearLogs: "Clear", latest: "Latest Mail", done: "Done", failed: "Failed", file: "Choose File", status: "Status", prev: "Prev", next: "Next", pageSize: "Per page", pageInfo: "Page {page} / {pages}", pageRange: "Showing {from} to {to} of {total} results", noLogs: "No logs", total: "Total", yes: "Yes", no: "No", step: "STEP",
   logProxy: "Proxy", logMailbox: "Mailbox", logPhone: "Phone", logSession: "Session", logAuth: "Auth", logSystem: "System",
   defaultGroup: "Default Group", allGroups: "All Groups", mailboxGroup: "Group", importMailboxes: "Import Mailboxes", manualImport: "Manual", fileImport: "File", dragFile: "Drag mailbox file here, or click to choose a file", importToGroup: "Import to group", addGroup: "New Group", enterGroup: "Type group name and press Enter", validationOk: "Validation passed", validationFailed: "Validation failed", mailboxList: "Mailbox List", enabled: "Enabled", updatedAt: "Updated", actions: "Actions", queryMailbox: "Search mailbox...",
   allStatus: "All Status", allPlanTypes: "All Plans", edit: "Edit", delete: "Delete", batchDelete: "Batch Delete", batchEdit: "Batch Edit", confirmDeleteMailbox: "Delete this mailbox record? This cannot be undone.", confirmBatchDeleteMailbox: "Delete the selected mailbox records? This cannot be undone.", queryMail: "Mail Query", currentMailbox: "Current Mailbox", getMail: "Get Mail", mailFetchCount: "Count", mailFetchCountSuffix: "mails", mailList: "Mail List", sender: "Sender", receiver: "Receiver", time: "Time", subject: "Subject", content: "Content", emptyMail: "No mails", mailboxName: "Mailbox", password: "Password", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "Batch Edit Mailboxes", applyToSelected: "Apply to selected mailboxes",
-  autoRegister: "Auto Register", interruptTask: "Interrupt Task", interruptTaskTip: "Request the current registration task to stop immediately and write a cancellation log.", interruptTaskRequested: "Interrupt requested; the Worker will stop as soon as possible", interruptTaskFailed: "Failed to interrupt task", manualNew: "Manual Add", searchAccount: "Search account email...", refreshQuota: "Refresh Quota", refreshList: "Refresh List", refreshDone: "List refreshed", refreshStatus: "Refresh Account Status", statusChangedAt: "Status Changed At", planType: "Plan Type", email: "Email", trialLink: "Trial Link", registeredAt: "Registered At", operation: "Action", noData: "No Data", noDataDesc: "No mailbox records were found. Import mailboxes in Mailbox settings, then select mailboxes to start auto registration.", chooseMailbox: "Please select mailboxes", createTaskLog: "Created ChatGPT register task, count", taskSubmitted: "Registration task submitted and starting", taskCreated: "Auto register task created", taskDone: "Task completed", taskFailed: "Task failed", taskPollRecovered: "Detected an unfinished registration task and resumed log polling", taskPollLost: "Task status polling failed repeatedly; frontend registering state has been released: {error}", taskPollTimeout: "Task polling exceeded 30 minutes; frontend registering state has been released. Refresh the list to confirm the final result.", importDone: "Import completed", exportDone: "Export completed", manualNewTip: "Please add mailboxes manually in Mailbox settings", autoRegisterTitle: "Auto Register ChatGPT", step1Title: "Choose Identity", step1Desc: "The self-managed Outlook mailbox pool is used first for email verification.", systemMailbox: "System Mailbox", systemMailboxPoolDisabled: "System mailbox pool is not enabled. Please enable the mailbox pool first.", smsConfigDisabled: "Please enable SMS settings on the SMS configuration page first.", registerStageUnavailable: "Please enable at least one mailbox registration method first.", googleMailboxDisabled: "Google mailbox is not enabled. Please enable the corresponding mailbox feature first.", microsoftMailboxDisabled: "Microsoft mailbox is not enabled. Please enable the corresponding mailbox feature first.", systemMailboxDesc: "Use mailbox pool to receive verification codes and complete registration", googleDesc: "Reserved identity; Google account integration will be added later", microsoftDesc: "Reserved identity; Microsoft account integration will be added later", step2Title: "Choose Execution Mode", step2Desc: "Background browser and visible browser automation are supported. Background mode runs without a window and is better for batches.", protocolMode: "Protocol Mode", protocolDesc: "Reserved; not selectable yet", backgroundMode: "Background Browser", backgroundDesc: "Run headless without a visible window while still using an isolated incognito browser context", visibleMode: "Visible Browser", visibleDesc: "Open a browser window for easier challenge or page issue troubleshooting", registerCount: "Register Count", concurrency: "Concurrency", identityLabel: "Identity", modeLabel: "Execution Mode", registerAccounts: "Accounts", verifyStrategy: "Verification: read code automatically with Outlook IMAP/XOAUTH2", step3Title: "Choose Registration Stage", step3Desc: "Control how far this task should run. Default only completes ChatGPT registration/login and Session storage.", registerOnly: "Register ChatGPT Only", registerOnlyDesc: "After register/login, only read and save ChatGPT Session info", codexPhoneBind: "Codex Phone Binding", codexPhoneBindDesc: "Continue phone verification with SMS settings and acquire Refresh Token", importReverseProxy: "Import Reverse Proxy", importReverseProxyDesc: "Import the account into configured sub2api after Session/RT is ready", stageLabel: "Stage", startAutoRegister: "Start Auto Register", cancel: "Cancel", noMailbox: "No Mailboxes", noMailboxDesc: "Click 鈥淚mport Mailboxes鈥?in the upper-right corner to add your Outlook mailbox pool.", inbox: "Inbox", fillOrChooseMailboxFile: "Please fill in or choose a mailbox file",
-  sub2apiDesc: "Used by the 鈥淚mport Reverse Proxy鈥?stage. After Base URL and Admin Key are configured, registration tasks can import GPT accounts with Session/RT into the platform.", baseURL: "Base URL", adminToken: "Admin Token", accountNamePrefix: "Account Name Prefix", targetGroup: "Target Group", targetGroupPlaceholder: "Select target groups", noGroupsFetch: "No groups yet. Click 鈥淔etch鈥?on the right.", fetch: "Fetch", priority: "Priority", check: "Check", configUnchanged: "Configuration unchanged", fillURLToken: "Please fill in Base URL and Admin Token first", fetchedGroups: "Fetched {count} target groups", fillURLTokenShort: "Please fill in URL and Token first", checking: "Checking...", checkPassedGroups: "Check passed, found {count} groups", checkFailed: "Check failed: {error}", lineFormatPhone: "+phone----https://sms-url", sessionJSON: "Auth Session", accessToken: "Access Token", mailboxAccountExport: "Mailbox Account", exportFormat: "Export Content", selectExportRows: "Please select accounts to export", tokenPreview: "Token Preview", sessionRefreshToken: "Refresh Token", updated: "Updated",
+  autoRegister: "Auto Register", interruptTask: "Stop", interruptingTask: "Stopping...", interruptTaskTip: "Stop the active registration task and close its worker threads, browser and task resources.", interruptTaskRequested: "Stop requested; waiting for the Worker to close the browser and threads", interruptTaskFailed: "Failed to stop task", registerTaskRunning: "A registration task is running. Wait for it to finish or stop it first.", manualNew: "Manual Add", searchAccount: "Search account email...", refreshQuota: "Refresh Quota", refreshList: "Refresh List", refreshDone: "List refreshed", refreshStatus: "Refresh Account Status", statusChangedAt: "Status Changed At", planType: "Plan Type", email: "Email", trialLink: "Trial Link", registeredAt: "Registered At", operation: "Action", noData: "No Data", noDataDesc: "No mailbox records were found. Import mailboxes in Mailbox settings, then select mailboxes to start auto registration.", chooseMailbox: "Please select mailboxes", createTaskLog: "Created ChatGPT register task, count", taskSubmitted: "Registration task submitted and starting", taskCreated: "Auto register task created", taskDone: "Task completed", taskFailed: "Task failed", taskPollRecovered: "Detected an unfinished registration task and resumed log polling", taskPollLost: "Task status polling temporarily failed; the app will keep waiting: {error}", taskPollTimeout: "Task polling is taking longer than expected. The app will keep waiting; use Stop to interrupt it.", importDone: "Import completed", exportDone: "Export completed", manualNewTip: "Please add mailboxes manually in Mailbox settings", autoRegisterTitle: "Auto Register ChatGPT", step1Title: "Choose Identity", step1Desc: "The self-managed Outlook mailbox pool is used first for email verification.", systemMailbox: "System Mailbox", systemMailboxPoolDisabled: "System mailbox pool is not enabled. Please enable the mailbox pool first.", smsConfigDisabled: "Please enable SMS settings on the SMS configuration page first.", registerStageUnavailable: "Please enable at least one mailbox registration method first.", googleMailboxDisabled: "Google mailbox is not enabled. Please enable the corresponding mailbox feature first.", microsoftMailboxDisabled: "Microsoft mailbox is not enabled. Please enable the corresponding mailbox feature first.", systemMailboxDesc: "Use mailbox pool to receive verification codes and complete registration", googleDesc: "Reserved identity; Google account integration will be added later", microsoftDesc: "Reserved identity; Microsoft account integration will be added later", step2Title: "Choose Execution Mode", step2Desc: "Background browser and visible browser automation are supported. Background mode runs without a window and is better for batches.", protocolMode: "Protocol Mode", protocolDesc: "Reserved; not selectable yet", backgroundMode: "Background Browser", backgroundDesc: "Run headless without a visible window while still using an isolated incognito browser context", visibleMode: "Visible Browser", visibleDesc: "Open a browser window for easier challenge or page issue troubleshooting", registerCount: "Register Count", concurrency: "Concurrency", identityLabel: "Identity", modeLabel: "Execution Mode", registerAccounts: "Accounts", verifyStrategy: "Verification: read code automatically with Outlook IMAP/XOAUTH2", step3Title: "Choose Registration Stage", step3Desc: "Control how far this task should run. Default only completes ChatGPT registration/login and Session storage.", registerOnly: "Register ChatGPT Only", registerOnlyDesc: "After register/login, only read and save ChatGPT Session info", codexPhoneBind: "Codex Phone Binding", codexPhoneBindDesc: "Continue phone verification with SMS settings and acquire Refresh Token", importReverseProxy: "Import Reverse Proxy", importReverseProxyDesc: "Import the account into configured sub2api after Session/RT is ready", stageLabel: "Stage", startAutoRegister: "Start Auto Register", cancel: "Cancel", noMailbox: "No Mailboxes", noMailboxDesc: "Click 'Import Mailboxes' in the upper-right corner to add your Outlook mailbox pool.", inbox: "Inbox", fillOrChooseMailboxFile: "Please fill in or choose a mailbox file",
+  sub2apiDesc: "Used by the 'Import Reverse Proxy' stage. After Base URL and Admin Key are configured, registration tasks can import GPT accounts with Session/RT into the platform.", baseURL: "Base URL", adminToken: "Admin Token", accountNamePrefix: "Account Name Prefix", targetGroup: "Target Group", targetGroupPlaceholder: "Select target groups", noGroupsFetch: "No groups yet. Click 'Fetch' on the right.", fetch: "Fetch", priority: "Priority", check: "Check", configUnchanged: "Configuration unchanged", fillURLToken: "Please fill in Base URL and Admin Token first", fetchedGroups: "Fetched {count} target groups", fillURLTokenShort: "Please fill in URL and Token first", checking: "Checking...", checkPassedGroups: "Check passed, found {count} groups", checkFailed: "Check failed: {error}", lineFormatPhone: "+phone----https://sms-url", sessionJSON: "Auth Session", accessToken: "Access Token", mailboxAccountExport: "Mailbox Account", exportFormat: "Export Content", selectExportRows: "Please select accounts to export", tokenPreview: "Token Preview", sessionRefreshToken: "Refresh Token", updated: "Updated",
   linkedMailboxConfig: "Uses Mailbox config", linkedPhoneConfig: "Uses SMS config", linkedReverseConfig: "Uses Reverse Proxy config", resourceReady: "Ready", resourceMissing: "Unavailable", usablePhones: "{count} usable phones", existingRTReady: "Selected accounts already have RT; SMS is not required", sub2apiReady: "sub2api configured", sub2apiMissing: "sub2api incomplete", stageDisabledTip: "The configuration required by this stage is unavailable. Complete the linked menu first.",
-  statusLabels: { "鏈敞鍐?: "Unregistered", "宸叉敞鍐?: "Registered", "registered": "Registered", "宸叉帴鐮?: "Phone Bound", "PLUS璇曠敤涓?: "PLUS Trial", "宸插皝绂?: "Banned", "闇€浜岄獙": "Needs 2FA", "娉ㄥ唽涓?: "Registering", "鐧诲綍鍒锋柊": "Refreshing Login", "澶辫触": "Failed", "failed": "Failed", "绂佺敤": "Disabled" },
+  statusLabels: { "未注册": "Unregistered", "已注册": "Registered", "registered": "Registered", "已接码": "Phone Bound", "phone_bound": "Phone Bound", "已反代": "Reverse Proxied", "reverse_proxied": "Reverse Proxied", "PLUS试用中": "PLUS Trial", "已封禁": "Banned", "需二验": "Needs 2FA", "注册中": "Registering", "登录刷新": "Refreshing Login", "失败": "Failed", "failed": "Failed", "禁用": "Disabled" },
 };
 
-const MAILBOX_STATUSES = ["鏈敞鍐?, "宸叉敞鍐?, "宸叉帴鐮?, "PLUS璇曠敤涓?, "宸插皝绂?, "闇€浜岄獙"];
+const MAILBOX_STATUSES = ["未注册", "已注册", "已接码", "已反代", "PLUS试用中", "已封禁", "需二验"];
 const PLAN_TYPE_OPTIONS = ["free", "plus", "k12", "team", "pro"];
 function template(text: string, values: Record<string, string | number>) {
   return text.replace(/\{(\w+)\}/g, (_, key) => String(values[key] ?? ""));
@@ -150,7 +155,7 @@ function formatDateTime(value: any) {
 type SortOrder = "asc" | "desc";
 function nextSortOrder(v: SortOrder): SortOrder { return v === "asc" ? "desc" : "asc"; }
 function SortTimeHeader({ label, order, onToggle }: { label: string; order: SortOrder; onToggle: () => void }) {
-  return <button type="button" className="sr-sort-th" onClick={onToggle} title={order === "asc" ? "ASC" : "DESC"}><span>{label}</span><span className="sr-sort-icon">{order === "asc" ? "鈫? : "鈫?}</span></button>;
+  return <button type="button" className="sr-sort-th" onClick={onToggle} title={order === "asc" ? "ASC" : "DESC"}><span>{label}</span><span className="sr-sort-icon">{order === "asc" ? "↑" : "↓"}</span></button>;
 }
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 function pageCount(total: number, pageSize: number) {
@@ -180,12 +185,12 @@ function PaginationBar({ t, total, page, pageSize, setPage, setPageSize }: { t: 
       <SelectBox className="sr-page-size-select" value={pageSize} onChange={(v)=>{ setPageSize(Number(v)); setPage(1); }} options={PAGE_SIZE_OPTIONS.map((n)=>({value:n,label:String(n)}))} />
     </div>
     <div className="sr-pagination-actions" aria-label="pagination">
-      <button type="button" className="sr-page-nav" disabled={safePage<=1 || total <= 0} onClick={()=>setPage(safePage-1)} title={t.prev}>鈥?/button>
+      <button type="button" className="sr-page-nav" disabled={safePage<=1 || total <= 0} onClick={()=>setPage(safePage-1)} title={t.prev}>‹</button>
       {tokens.map((token, idx) => token === "..."
-        ? <span key={`ellipsis-${idx}`} className="sr-page-ellipsis">鈥?/span>
+        ? <span key={`ellipsis-${idx}`} className="sr-page-ellipsis">...</span>
         : <button key={token} type="button" className={cn("sr-page-number", token === safePage && "active")} onClick={()=>setPage(token)}>{token}</button>
       )}
-      <button type="button" className="sr-page-nav" disabled={safePage>=pages || total <= 0} onClick={()=>setPage(safePage+1)} title={t.next}>鈥?/button>
+      <button type="button" className="sr-page-nav" disabled={safePage>=pages || total <= 0} onClick={()=>setPage(safePage+1)} title={t.next}>›</button>
     </div>
   </div>;
 }
@@ -194,12 +199,12 @@ function logModule(message: string) {
   const explicit = text.match(/^\[([^\]]+)\]/);
   if (explicit) return explicit[1];
   const lower = text.toLowerCase();
-  if (/proxy|浠ｇ悊|鍑哄彛|ipinfo/.test(lower)) return "浠ｇ悊";
-  if (/imap|閭|閭欢|楠岃瘉鐮亅otp/.test(lower)) return "閭";
-  if (/鎵嬫満|鐢佃瘽|sms|phone/.test(lower)) return "鎵嬫満";
+  if (/proxy|ipinfo|代理|出口/.test(lower)) return "Proxy";
+  if (/imap|mail|email|outlook|otp|邮箱|邮件|验证码/.test(lower)) return "Mailbox";
+  if (/sms|phone|mobile|手机号|电话/.test(lower)) return "Phone";
   if (/session|access token|accesstoken|rt/.test(lower)) return "Session";
-  if (/娉ㄥ唽|鐧诲綍|璁よ瘉|oauth|auth|chatgpt|openai/.test(lower)) return "璁よ瘉";
-  return "绯荤粺";
+  if (/register|login|oauth|auth|chatgpt|openai|注册|登录|认证/.test(lower)) return "Auth";
+  return "System";
 }
 function logMessage(message: string) {
   return String(message || "").replace(/^\[[^\]\s]+@[^\]\s]+\]\s*/, "").replace(/^\[[^\]]+\]\s*/, "").trim();
@@ -244,6 +249,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const [mailboxes, setMailboxes] = useCachedState<AnyObj[]>("workbench.mailboxes", []);
   const [groups, setGroups] = useCachedState<AnyObj[]>("workbench.groups", []);
   const [selected, setSelected] = useCachedState<number[]>("workbench.selected", []);
+  const [selectedRowCache, setSelectedRowCache] = useCachedState<Record<string,AnyObj>>("workbench.selectedRows", {});
   const [query, setQuery] = useCachedState("workbench.query", "");
   const [status, setStatus] = useCachedState("workbench.status", "");
   const [planFilter, setPlanFilter] = useCachedState("workbench.planFilter", "");
@@ -255,6 +261,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const [busy, setBusy] = useCachedState("workbench.busy", false);
   const [activeTaskId, setActiveTaskId] = useCachedState("workbench.activeTaskId", "");
   const [activeTaskMailboxIds, setActiveTaskMailboxIds] = useCachedState<number[]>("workbench.activeTaskMailboxIds", []);
+  const [stopRequested, setStopRequested] = useCachedState("workbench.stopRequested", false);
   const [autoOpen, setAutoOpen] = useCachedState("workbench.autoOpen", false);
   const [modalConcurrency, setModalConcurrency] = useCachedState("workbench.concurrency", 1);
   const [identity, setIdentity] = useCachedState<"system" | "google" | "microsoft">("workbench.identity", "system");
@@ -265,7 +272,6 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const [, setCurrentLogEmail] = useCachedState("workbench.currentLogEmail", "");
   const pollingTaskIdsRef = useRef<Set<string>>(new Set());
   const resumedTaskIdsRef = useRef<Set<string>>(new Set());
-  const ignoredTaskIdsRef = useRef<Set<string>>(new Set());
   const load = async () => {
     const params = new URLSearchParams({ page: String(pageNo), page_size: String(pageSize), enabled: "true", sort_by: "updated_at", sort_order: timeSort });
     if (query.trim()) params.set("q", query.trim());
@@ -291,13 +297,30 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     .map((m: AnyObj) => ({ ...m, account: accounts.find((a: AnyObj) => a.email === m.email) || {} }) as AnyObj);
   const safePageNo = Math.min(Math.max(1, pageNo), pageCount(total, pageSize));
   const pagedRows = rows;
+  useEffect(() => {
+    if (!selected.length || !rows.length) return;
+    setSelectedRowCache((old) => {
+      let changed = false;
+      const next = { ...old };
+      rows.forEach((row) => {
+        const id = Number(row.id);
+        if (selected.includes(id) && !next[String(id)]) {
+          next[String(id)] = row;
+          changed = true;
+        }
+      });
+      return changed ? next : old;
+    });
+  }, [mailboxes, accounts, selected]);
   useEffect(()=>{setPageNo(1)},[query, status, planFilter, groupFilter, pageSize, timeSort]);
   useEffect(()=>{if (pageNo !== safePageNo) setPageNo(safePageNo)},[pageNo, safePageNo]);
   async function createRegisterTask(directIds?: number[]) {
-    const ids = directIds?.length ? directIds : visibleSelected;
+    if (busy || activeTaskId) { notify("fail", t.registerTaskRunning); return; }
+    const ids = directIds?.length ? directIds : selected;
     if (!ids.length) { notify("fail", t.chooseMailbox); return; }
     setBusy(true);
-    const sep = batchSeparatorLog(`========= SunnyRegister ${t.autoRegister} 路 ${formatDateTime(new Date())} =========`);
+    setStopRequested(false);
+    const sep = batchSeparatorLog(`========= SunnyRegister ${t.autoRegister} · ${formatDateTime(new Date())} =========`);
     setGlobalLogs((old) => [localLog(`${t.createTaskLog} ${ids.length}`), sep, ...old]);
     setSelectedLogs((old) => [sep, ...old]);
     try {
@@ -312,25 +335,23 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     } catch (e: any) {
       notify("fail", e.message || String(e));
       setBusy(false);
+      setStopRequested(false);
       setActiveTaskId("");
       setActiveTaskMailboxIds([]);
     }
   }
   async function cancelActiveTask() {
     const taskId = String(activeTaskId || "");
-    if (!taskId) return;
+    if (!busy || !taskId || stopRequested) return;
     const msg = t.interruptTaskRequested;
+    setStopRequested(true);
     setGlobalLogs((old) => [localLog(msg, "warning"), ...old].slice(0, 200));
     setSelectedLogs((old) => [localLog(msg, "warning"), ...old].slice(0, 200));
     try {
       await apiFetch(`/tasks/${taskId}/cancel`, { method: "POST" });
-      ignoredTaskIdsRef.current.add(taskId);
       notify("ok", msg);
-      setBusy(false);
-      setActiveTaskId("");
-      setActiveTaskMailboxIds([]);
-      void load();
     } catch (e: any) {
+      setStopRequested(false);
       notify("fail", `${t.interruptTaskFailed}: ${e?.message || String(e)}`);
     }
   }
@@ -338,6 +359,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     const taskId = String(id || "");
     if (!taskId) {
       setBusy(false);
+      setStopRequested(false);
       setActiveTaskId("");
       setActiveTaskMailboxIds([]);
       return;
@@ -349,8 +371,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     let activeLogEmail = "";
     let failures = 0;
     try {
-      for (let i = 0; i < 1800; i++) {
-        if (ignoredTaskIdsRef.current.has(taskId)) return;
+      for (let i = 0; ; i++) {
         try {
           const [task, ev] = await Promise.all([apiFetch(`/tasks/${taskId}`), apiFetch(`/tasks/${taskId}/events?since=${last}`)]);
           failures = 0;
@@ -368,10 +389,12 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
             }
           }
           if (task.terminal) {
-            if (ignoredTaskIdsRef.current.has(taskId)) return;
             setBusy(false);
+            setStopRequested(false);
             setActiveTaskId("");
             setActiveTaskMailboxIds([]);
+            setSelected([]);
+            setSelectedRowCache({});
             notify(task.status === "succeeded" ? "ok" : "fail", task.status === "succeeded" ? t.taskDone : (task.error || t.taskFailed));
             void load();
             return;
@@ -379,32 +402,27 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
         } catch (e: any) {
           failures += 1;
           if (failures >= 12) {
-            if (ignoredTaskIdsRef.current.has(taskId)) return;
             const msg = template(t.taskPollLost, { error: e?.message || String(e) });
             setGlobalLogs((old) => [localLog(msg, "error"), ...old].slice(0, 200));
             notify("fail", msg);
-            setBusy(false);
-            setActiveTaskId("");
-            setActiveTaskMailboxIds([]);
-            return;
+            failures = 0;
+            await new Promise((r) => setTimeout(r, 4000));
           }
+        }
+        if (i > 0 && i % 1800 === 0) {
+          setGlobalLogs((old) => [localLog(t.taskPollTimeout, "warning"), ...old].slice(0, 200));
+          notify("fail", t.taskPollTimeout);
         }
         await new Promise((r) => setTimeout(r, 1000));
       }
-      if (ignoredTaskIdsRef.current.has(taskId)) return;
-      setGlobalLogs((old) => [localLog(t.taskPollTimeout, "warning"), ...old].slice(0, 200));
-      notify("fail", t.taskPollTimeout);
-      setBusy(false);
-      setActiveTaskId("");
-      setActiveTaskMailboxIds([]);
     } finally {
       pollingTaskIdsRef.current.delete(taskId);
-      ignoredTaskIdsRef.current.delete(taskId);
     }
   }
   useEffect(() => {
     if (busy && !activeTaskId) {
       setBusy(false);
+      setStopRequested(false);
       return;
     }
     if (!busy || !activeTaskId) return;
@@ -447,9 +465,27 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       setActiveTaskMailboxIds([]);
     }
   }
-  const visibleSelected = selected.filter((id)=>rows.some((r)=>r.id === id));
-  const selectedRows = rows.filter((m)=>visibleSelected.includes(m.id));
+  const selectedRows = selected.map((id)=>selectedRowCache[String(id)] || rows.find((row)=>row.id===id)).filter(Boolean) as AnyObj[];
   const allChecked = pagedRows.length > 0 && pagedRows.every((r) => selected.includes(r.id));
+  const selectRow = (row: AnyObj, checked: boolean) => {
+    if (checked) {
+      setSelected((old)=>Array.from(new Set([...old, Number(row.id)])));
+      setSelectedRowCache((old)=>({...old, [String(row.id)]: row}));
+      return;
+    }
+    setSelected((old)=>old.filter((id)=>id!==Number(row.id)));
+    setSelectedRowCache((old)=>{ const next={...old}; delete next[String(row.id)]; return next; });
+  };
+  const selectCurrentPage = (checked: boolean) => {
+    const pageIds = pagedRows.map((row)=>Number(row.id));
+    setSelected((old)=>checked ? Array.from(new Set([...old, ...pageIds])) : old.filter((id)=>!pageIds.includes(id)));
+    setSelectedRowCache((old)=>{
+      const next={...old};
+      pagedRows.forEach((row)=>{ if (checked) next[String(row.id)]=row; else delete next[String(row.id)]; });
+      return next;
+    });
+  };
+  const clearWorkbenchSelection = () => { setSelected([]); setSelectedRowCache({}); };
   return <div className="space-y-5">
     <div className="grid gap-4 lg:grid-cols-2">
       <LogCard t={t} title={t.globalLogs} logs={globalLogs} busy={busy} onClear={()=>setGlobalLogs([])}/>
@@ -457,11 +493,11 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     </div>
     <Card className="sr-toolbar rounded-[18px] p-5">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-4"><h2 className="text-2xl font-bold text-slate-950 dark:text-white">ChatGPT</h2><span className="text-sm text-slate-400">{t.selected}: {visibleSelected.length}</span></div>
+        <div className="flex items-center gap-4"><h2 className="text-2xl font-bold text-slate-950 dark:text-white">ChatGPT</h2><span className="text-sm text-slate-400">{t.selected}: {selected.length}</span>{selected.length > 0 && <button className="sr-clear-selection" onClick={clearWorkbenchSelection}>{t.clearSelection}</button>}</div>
         <div className="flex flex-wrap gap-2">
-          {busy && activeTaskId ? <button className="sr-btn sr-danger-btn" title={t.interruptTaskTip} onClick={cancelActiveTask}><X className="h-4 w-4"/>{t.interruptTask}</button> : null}
-          <span title={!visibleSelected.length ? t.chooseMailbox : ""}>
-            <Button className="rounded-xl bg-blue-600 px-4 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => setAutoOpen(true)} disabled={busy || visibleSelected.length === 0}><Plus className="mr-2 h-4 w-4"/>{t.autoRegister}</Button>
+          <button className="sr-btn sr-danger-btn disabled:cursor-not-allowed disabled:opacity-50" title={busy && activeTaskId ? t.interruptTaskTip : ""} onClick={cancelActiveTask} disabled={!busy || !activeTaskId || stopRequested}><X className="h-4 w-4"/>{stopRequested ? t.interruptingTask : t.interruptTask}</button>
+          <span title={busy ? t.registerTaskRunning : !selected.length ? t.chooseMailbox : ""}>
+            <Button className="rounded-xl bg-blue-600 px-4 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => setAutoOpen(true)} disabled={busy || selected.length === 0}><Plus className="mr-2 h-4 w-4"/>{t.autoRegister}</Button>
           </span>
           <label className="sr-btn"><Download className="h-4 w-4"/>{t.import}<input type="file" className="hidden" onChange={(e)=>importFile(e.target.files?.[0])}/></label>
           <button className="sr-btn" onClick={exportAccounts} disabled={!rows.length}><Upload className="h-4 w-4"/>{t.export}</button>
@@ -480,7 +516,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       </div>
     </Card>
     <Card className="sr-table-card overflow-hidden rounded-[18px] p-0">
-      <table className="sr-account-table"><thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...pagedRows.map((r)=>r.id)])) : selected.filter((id)=>!pagedRows.some((r)=>r.id===id)))}/></th><th>{t.email}</th><th>{t.mailboxGroup}</th><th>{t.status}</th><th>{t.planType}</th><th><SortTimeHeader label={t.statusChangedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.operation}</th></tr></thead><tbody>{rows.length ? pagedRows.map((r) => <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} onChange={(e)=>setSelected(e.target.checked ? [...selected, r.id] : selected.filter((x)=>x!==r.id))}/></td><td>{r.email}</td><td>{r.group_name || t.defaultGroup}</td><td><StatusBadge t={t} status={r.status || "鏈敞鍐?} /></td><td><PlanTypeBadge value={r.account?.plan_type || r.plan_type} /></td><td>{formatDateTime(r.updated_at || r.account?.updated_at)}</td><td><button className="sr-link inline-flex items-center gap-1" title={t.refreshStatus} disabled={busy} onClick={()=>refreshAccountStatus(r)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button></td></tr>) : <tr><td colSpan={7}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.noDataDesc}</p></div></td></tr>}</tbody></table>
+      <table className="sr-account-table"><thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>selectCurrentPage(e.target.checked)}/></th><th>{t.email}</th><th>{t.mailboxGroup}</th><th>{t.status}</th><th>{t.planType}</th><th><SortTimeHeader label={t.statusChangedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.operation}</th></tr></thead><tbody>{rows.length ? pagedRows.map((r) => <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} onChange={(e)=>selectRow(r,e.target.checked)}/></td><td>{r.email}</td><td>{r.group_name || t.defaultGroup}</td><td><StatusBadge t={t} status={r.status || "未注册"} /></td><td><PlanTypeBadge value={r.account?.plan_type || r.plan_type} /></td><td>{formatDateTime(r.updated_at || r.account?.updated_at)}</td><td><button className="sr-link inline-flex items-center gap-1" title={t.refreshStatus} disabled={busy} onClick={()=>refreshAccountStatus(r)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button></td></tr>) : <tr><td colSpan={7}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.noDataDesc}</p></div></td></tr>}</tbody></table>
       <PaginationBar t={t} total={total} page={safePageNo} pageSize={pageSize} setPage={setPageNo} setPageSize={setPageSize} />
     </Card>
     {autoOpen && <AutoRegisterModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} selectedNeedPhone={selectedRows.some((m)=>!String(m.openai_rt || m.account?.openai_rt || "").trim())} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} identity={identity} setIdentity={setIdentity} mode={mode} setMode={setMode} stage={stage} setStage={setStage} onClose={()=>setAutoOpen(false)} onStart={()=>createRegisterTask()} notify={notify} />}
@@ -491,7 +527,6 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
   const [phoneCfg, setPhoneCfg] = useState<AnyObj>({ pool_enabled: true, usable_count: 0 });
   const [reverseCfg, setReverseCfg] = useState<AnyObj>({});
   const [mailboxCfg, setMailboxCfg] = useState<AnyObj>({ pool_enabled: true });
-  const [resourceLoaded, setResourceLoaded] = useState(false);
   useEffect(() => {
     let alive = true;
     Promise.all([
@@ -503,7 +538,6 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
       setPhoneCfg(phone || {});
       setReverseCfg(reverse || {});
       setMailboxCfg(mailbox || { pool_enabled: true });
-      setResourceLoaded(true);
     });
     return () => { alive = false; };
   }, []);
@@ -514,28 +548,20 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
   const poolPhoneReady = phoneCfg.pool_enabled !== false && usablePhones > 0;
   const smsbowerReady = phoneCfg.smsbower_enabled === true && !!String(phoneCfg.smsbower_api_key || "").trim();
   const smspoolReady = phoneCfg.smspool_enabled === true && !!String(phoneCfg.smspool_api_key || "").trim();
-  const phoneReady = poolPhoneReady || smsbowerReady || smspoolReady;
   const sub2apiReady = reverseCfg.enabled !== false && !!String(reverseCfg.base_url || "").trim() && !!String(reverseCfg.admin_token || "").trim() && Array.isArray(reverseCfg.group_ids) && reverseCfg.group_ids.length > 0;
   const mailboxPoolReady = mailboxCfg.pool_enabled !== false;
   const googleMailboxReady = false;
   const microsoftMailboxReady = false;
   const identityValid = (identity === "system" && mailboxPoolReady) || (identity === "google" && googleMailboxReady) || (identity === "microsoft" && microsoftMailboxReady);
-  const externalSmsReady = phoneCfg.external_enabled === true || phoneCfg.external_provider_enabled === true;
-  const smsConfigReady = phoneReady || externalSmsReady;
   const modeValid = mode === "visible" || mode === "background";
   const registerOnlyDisabled = !identityValid;
-  const stageValid = identityValid && (stage === REGISTER_ONLY || (stage === CODEX_PHONE_BIND && smsConfigReady) || (stage === IMPORT_REVERSE_PROXY && smsConfigReady && sub2apiReady));
+  const stageValid = identityValid;
   const startDisabled = busy || !identityValid || !modeValid || !stageValid;
-  useEffect(() => {
-    if (!resourceLoaded) return;
-    if (identityValid && (stage === "import_reverse_proxy" && (!smsConfigReady || !sub2apiReady))) setStage(REGISTER_ONLY);
-    if (identityValid && (stage === "codex_phone_bind" && !smsConfigReady)) setStage(REGISTER_ONLY);
-  }, [resourceLoaded, identityValid, smsConfigReady, sub2apiReady, stage, setStage]);
-  const mailboxHint = t.linkedMailboxConfig + " 路 " + (mailboxPoolReady ? t.resourceReady : t.resourceMissing);
-  const phoneHint = t.linkedPhoneConfig + " 路 " + (!selectedNeedPhone ? t.existingRTReady : poolPhoneReady ? template(t.usablePhones, { count: usablePhones }) : smsbowerReady ? t.smsbowerReady : smspoolReady ? t.smspoolReady : t.resourceMissing);
-  const reverseHint = t.linkedReverseConfig + " 路 " + (sub2apiReady ? t.sub2apiReady : t.sub2apiMissing);
-  const codexDisabled = !identityValid || (resourceLoaded && !smsConfigReady);
-  const importDisabled = !identityValid || (resourceLoaded && (!smsConfigReady || !sub2apiReady));
+  const mailboxHint = t.linkedMailboxConfig + " · " + (mailboxPoolReady ? t.resourceReady : t.resourceMissing);
+  const phoneHint = t.linkedPhoneConfig + " · " + (!selectedNeedPhone ? t.existingRTReady : poolPhoneReady ? template(t.usablePhones, { count: usablePhones }) : smsbowerReady ? t.smsbowerReady : smspoolReady ? t.smspoolReady : t.resourceMissing);
+  const reverseHint = t.linkedReverseConfig + " · " + (sub2apiReady ? t.sub2apiReady : t.sub2apiMissing);
+  const codexDisabled = !identityValid;
+  const importDisabled = !identityValid;
   const safeConcurrency = Math.max(1, Math.min(Number(concurrency) || 1, Math.max(1, selectedEmails.length)));
   return <div className="sr-modal-mask"><div className="sr-modal sr-register-modal">
     <div className="sr-modal-head"><h3>{t.autoRegisterTitle}</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div>
@@ -558,8 +584,8 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
       <h4>{t.step3Title}</h4><p>{t.step3Desc}</p>
       <div className="sr-choice-grid three">
         <Choice disabled={registerOnlyDisabled} disabledMessage={t.registerStageUnavailable} active={identityValid && stage===REGISTER_ONLY} title={t.registerOnly} desc={t.registerOnlyDesc + "\n" + mailboxHint} onClick={()=>setStage(REGISTER_ONLY)} onDisabledClick={(msg)=>notify("fail", msg)} />
-        <Choice disabled={codexDisabled} disabledMessage={!identityValid ? t.registerStageUnavailable : t.smsConfigDisabled} active={!codexDisabled && stage===CODEX_PHONE_BIND} title={t.codexPhoneBind} desc={t.codexPhoneBindDesc + "\n" + phoneHint + (codexDisabled ? " 路 " + t.stageDisabledTip : "")} onClick={()=>setStage(CODEX_PHONE_BIND)} onDisabledClick={(msg)=>notify("fail", msg)} />
-        <Choice disabled={importDisabled} disabledMessage={!identityValid ? t.registerStageUnavailable : !smsConfigReady ? t.smsConfigDisabled : t.stageDisabledTip} active={!importDisabled && stage===IMPORT_REVERSE_PROXY} title={t.importReverseProxy} desc={t.importReverseProxyDesc + "\n" + phoneHint + "\n" + reverseHint + (importDisabled ? " 路 " + t.stageDisabledTip : "")} onClick={()=>setStage(IMPORT_REVERSE_PROXY)} onDisabledClick={(msg)=>notify("fail", msg)} />
+        <Choice disabled={codexDisabled} disabledMessage={t.registerStageUnavailable} active={!codexDisabled && stage===CODEX_PHONE_BIND} title={t.codexPhoneBind} desc={t.codexPhoneBindDesc + "\n" + phoneHint + (codexDisabled ? " · " + t.stageDisabledTip : "")} onClick={()=>setStage(CODEX_PHONE_BIND)} onDisabledClick={(msg)=>notify("fail", msg)} />
+        <Choice disabled={importDisabled} disabledMessage={t.registerStageUnavailable} active={!importDisabled && stage===IMPORT_REVERSE_PROXY} title={t.importReverseProxy} desc={t.importReverseProxyDesc + "\n" + phoneHint + "\n" + reverseHint + (importDisabled ? " · " + t.stageDisabledTip : "")} onClick={()=>setStage(IMPORT_REVERSE_PROXY)} onDisabledClick={(msg)=>notify("fail", msg)} />
       </div>
       <div className="sr-summary sr-register-summary"><div><b>{t.identityLabel}</b><span>{identityText}</span></div><div><b>{t.modeLabel}</b><span>{modeText}</span></div><div><b>{t.stageLabel}</b><span>{stageText}</span></div><div><b>{t.registerAccounts}</b><span>{selectedEmails.length}</span></div><div><b>{t.concurrency}</b><input className="sr-concurrency-input" type="number" min={1} max={Math.max(1, selectedEmails.length)} value={safeConcurrency} onChange={(e)=>setConcurrency(Math.max(1, Math.min(Number(e.target.value || 1), Math.max(1, selectedEmails.length))))}/></div><div className="sr-register-account-list">{selectedEmails.map((email)=><div key={email}>{email}</div>)}</div></div>
       <div className="sr-register-actions"><Button className="h-12 flex-1 rounded-xl bg-blue-600 text-lg text-white hover:bg-blue-700" disabled={startDisabled} onClick={onStart}>{busy ? <Loader2 className="mr-2 h-5 w-5 animate-spin"/> : null}{t.startAutoRegister}</Button><button className="sr-register-cancel" onClick={onClose}>{t.cancel}</button></div>
@@ -652,17 +678,17 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
               <SelectBox className="sr-select-like" value={groupFilter} onChange={(v)=>setGroupFilter(Number(v))} options={[{value:0,label:t.allGroups}, ...groups.map((g)=>({value:g.id,label:g.name || t.defaultGroup}))]} />
               <SelectBox className="sr-select-like" value={statusFilter} onChange={(v)=>setStatusFilter(String(v))} options={[{value:"",label:t.allStatus}, ...MAILBOX_STATUSES.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))]} />
             </div>
-            <div className="sr-mailbox-actions flex flex-nowrap gap-2">{selected.length > 0 && <ConfirmBubble message={t.confirmBatchDeleteMailbox} detail={`${selected.length} ${t.selected}`} onConfirm={batchDelete}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.batchDelete} ({selected.length})</Button></ConfirmBubble>}{selected.length > 0 && <Button variant="outline" className="rounded-xl border-emerald-200 text-emerald-700" onClick={()=>setBatchEditing(true)}>{t.batchEdit} ({selected.length})</Button>}<button className="sr-text-btn" onClick={load}><RefreshCw className="h-4 w-4"/>{t.refresh}</button><Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setImportOpen(true)}><Download className="mr-2 h-4 w-4"/>{t.importMailboxes}</Button></div>
+            <div className="sr-mailbox-actions flex flex-nowrap items-center gap-2">{selected.length > 0 && <button className="sr-clear-selection" onClick={()=>setSelected([])}>{t.clearSelection}</button>}{selected.length > 0 && <ConfirmBubble message={t.confirmBatchDeleteMailbox} detail={`${selected.length} ${t.selected}`} onConfirm={batchDelete}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.batchDelete} ({selected.length})</Button></ConfirmBubble>}{selected.length > 0 && <Button variant="outline" className="rounded-xl border-emerald-200 text-emerald-700" onClick={()=>setBatchEditing(true)}>{t.batchEdit} ({selected.length})</Button>}<button className="sr-text-btn" onClick={load}><RefreshCw className="h-4 w-4"/>{t.refresh}</button><Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setImportOpen(true)}><Download className="mr-2 h-4 w-4"/>{t.importMailboxes}</Button></div>
           </div>
         </div>
         <div className="sr-table-card sr-mailbox-table-panel overflow-hidden rounded-[18px] p-0">
           <table className="sr-account-table">
-            <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? items.map((m)=>m.id) : [])}/></th><th>{t.mailbox}</th><th>{t.importToGroup}</th><th>{t.status}</th><th>{t.planType}</th><th>{t.enabled}</th><th><SortTimeHeader label={t.updatedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.actions}</th></tr></thead>
+            <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/></th><th>{t.mailbox}</th><th>{t.importToGroup}</th><th>{t.status}</th><th>{t.planType}</th><th>{t.enabled}</th><th><SortTimeHeader label={t.updatedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.actions}</th></tr></thead>
             <tbody>{items.length ? items.map((m)=><tr key={m.id}>
-              <td><input type="checkbox" checked={selected.includes(m.id)} onChange={(e)=>setSelected(e.target.checked ? [...selected,m.id] : selected.filter((id)=>id!==m.id))}/></td>
+              <td><input type="checkbox" checked={selected.includes(m.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,m.id])) : selected.filter((id)=>id!==m.id))}/></td>
               <td><div className="font-semibold">{m.email}</div></td>
               <td><SelectBox className="sr-mini-select-like" value={m.group_id || 0} onChange={(v)=>run(t.done,()=>apiFetch(`/sunny/mailboxes/${m.id}`,{method:"PUT",body:JSON.stringify({group_id:Number(v)})}))} options={groups.map((g)=>({value:g.id,label:g.name || t.defaultGroup}))} /></td>
-              <td><StatusBadge t={t} status={m.status || "鏈敞鍐?} /></td>
+              <td><StatusBadge t={t} status={m.status || "未注册"} /></td>
               <td><PlanTypeBadge value={m.plan_type} /></td>
               <td><button className={cn("sr-toggle", m.enabled && "on")} onClick={()=>run(t.done,()=>apiFetch(`/sunny/mailboxes/${m.id}`,{method:"PUT",body:JSON.stringify({enabled:!m.enabled})}))}>{m.enabled ? "ON" : "OFF"}</button></td>
               <td>{formatDateTime(m.updated_at)}</td>
@@ -681,21 +707,21 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
 }
 
 function StatusBadge({ t, status }: { t: typeof zh; status: string }) {
+  const normalized = status === "registered" ? "已注册" : status === "phone_bound" ? "已接码" : status === "reverse_proxied" ? "已反代" : status === "failed" ? "失败" : status;
   const map: Record<string,string> = {
-    "鏈敞鍐?: "gray",
-    "宸叉敞鍐?: "blue",
-    "registered": "blue",
-    "宸叉帴鐮?: "green",
-    "PLUS璇曠敤涓?: "violet",
-    "宸插皝绂?: "red",
-    "闇€浜岄獙": "amber",
-    "娉ㄥ唽涓?: "amber",
-    "鐧诲綍鍒锋柊": "blue",
-    "澶辫触": "red",
-    "failed": "red",
-    "绂佺敤": "red",
+    "未注册": "gray",
+    "已注册": "blue",
+    "已接码": "green",
+    "已反代": "cyan",
+    "PLUS试用中": "violet",
+    "已封禁": "red",
+    "需二验": "amber",
+    "注册中": "amber",
+    "登录刷新": "blue",
+    "失败": "red",
+    "禁用": "red",
   };
-  return <span className={cn("sr-status", `sr-status-${map[status] || "gray"}`)}>{t.statusLabels[status as keyof typeof t.statusLabels] || status}</span>;
+  return <span className={cn("sr-status", "sr-status-" + (map[normalized] || "gray"))}>{t.statusLabels[normalized as keyof typeof t.statusLabels] || normalized}</span>;
 }
 
 function formatPlanType(value: any) {
@@ -708,7 +734,9 @@ function formatPlanType(value: any) {
 function PlanTypeBadge({ value }: { value: any }) {
   const label = formatPlanType(value);
   if (label === "-") return <span className="text-slate-400">-</span>;
-  return <span className="sr-plan-badge">{label}</span>;
+  const key = String(value || "").trim().toLowerCase();
+  const color = ({ free:"free", plus:"plus", k12:"k12", team:"team", pro:"pro" } as Record<string,string>)[key] || "default";
+  return <span className={cn("sr-plan-badge", `sr-plan-${color}`)}>{label}</span>;
 }
 
 function MailboxEditModal({ t, mailbox, groups, onClose, onSaved, notify }: { t: typeof zh; mailbox: AnyObj; groups: AnyObj[]; onClose:()=>void; onSaved:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
@@ -731,7 +759,7 @@ function MailboxEditModal({ t, mailbox, groups, onClose, onSaved, notify }: { t:
     <div className="sr-modal-body space-y-4">
       <div className="grid gap-4 md:grid-cols-2">
         <div><Label>{t.mailboxName}</Label><Input value={form.email||""} onChange={(e)=>setForm({...form,email:e.target.value})}/></div>
-        <div><Label>{t.password}</Label><Input value={form.password||""} onChange={(e)=>setForm({...form,password:e.target.value})}/></div>
+        <div><Label>{t.password}</Label><Input type="password" autoComplete="new-password" value={form.password||""} onChange={(e)=>setForm({...form,password:e.target.value})}/></div>
         <div><Label>{t.clientId}</Label><Input value={form.client_id||""} onChange={(e)=>setForm({...form,client_id:e.target.value})}/></div>
         <div><Label>{t.refreshToken}</Label><Input value={form.refresh_token||""} onChange={(e)=>setForm({...form,refresh_token:e.target.value})}/></div>
         <div><Label>{t.openaiAccessToken}</Label><Input value={form.access_token||""} onChange={(e)=>setForm({...form,access_token:e.target.value})}/></div>
@@ -895,7 +923,7 @@ function phoneStatusText(t: typeof zh, status: string) {
 function providerOptionLabel(opt: AnyObj) {
   const value = String(opt.value ?? "");
   const label = String(opt.label ?? value);
-  return label && label !== value ? `${value} 路 ${label}` : value;
+  return label && label !== value ? `${value} · ${label}` : value;
 }
 
 function ProviderOptionSelect({ value, onChange, options, placeholder, className }: { value: string; onChange: (v: string) => void; options: AnyObj[]; placeholder: string; className?: string }) {
@@ -915,7 +943,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   const [selected,setSelected]=useCachedState<number[]>("phone.selected",[]);
   const [page,setPage]=useCachedState("phone.page",1);
   const [pageSize,setPageSize]=useCachedState("phone.pageSize",10);
-  const [phoneCfg,setPhoneCfg]=useCachedState<AnyObj>("phone.config",{pool_enabled:true, smsbower_enabled:false, smsbower_base_url:"https://smsbower.page/stubs/handler_api.php", smsbower_default_country:"187", smsbower_default_service:"dr", smsbower_max_price:-1, smspool_enabled:false, smspool_base_url:"https://api.smspool.net", smspool_default_country:"1", smspool_default_service:"OpenAI", smspool_max_price:-1});
+  const [phoneCfg,setPhoneCfg]=useCachedState<AnyObj>("phone.config",{pool_enabled:true, smsbower_enabled:false, smsbower_base_url:"https://smsbower.page/stubs/handler_api.php", smsbower_default_country:"187", smsbower_default_service:"dr", smsbower_max_price:-1, smspool_enabled:false, smspool_base_url:"https://api.smspool.net", smspool_default_country:"1", smspool_default_service:"671", smspool_max_price:-1});
   const [savedPhoneCfg,setSavedPhoneCfg]=useState<AnyObj|null>(null);
   const [smsCheck,setSmsCheck]=useState("");
   const [smsPoolCheck,setSmsPoolCheck]=useState("");
@@ -941,7 +969,19 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
     const key = `${provider}_${kind}_${country || "all"}`;
     try {
       const res = await apiFetch("/sunny/phones/provider-options", { method:"POST", body: JSON.stringify({ ...phoneCfg, provider, kind, country, refresh }) });
-      setSmsOptions((old: AnyObj)=>({ ...old, [key]: res.items || [] }));
+      const items = Array.isArray(res.items) ? res.items : [];
+      setSmsOptions((old: AnyObj)=>({ ...old, [key]: items }));
+      if (kind === "services") {
+        const field = provider === "smspool" ? "smspool_default_service" : "smsbower_default_service";
+        const current = String(phoneCfg[field] || "").trim();
+        const exact = items.some((item: AnyObj)=>String(item.value ?? "") === current);
+        if (current && !exact) {
+          const normalized = current.toLocaleLowerCase();
+          const match = items.find((item: AnyObj)=>String(item.label ?? "").toLocaleLowerCase() === normalized)
+            || items.find((item: AnyObj)=>String(item.label ?? "").toLocaleLowerCase().includes(normalized));
+          if (match?.value != null) setPhoneCfg((old: AnyObj)=>({ ...old, [field]: String(match.value) }));
+        }
+      }
       if (refresh) notify("ok", t.refreshDone);
     } catch(e:any) {
       if (refresh) notify("fail", e.message || String(e));
@@ -1102,7 +1142,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
         <div className="sr-sms-provider-top-row">
           <div className="sr-sms-provider-api"><Label>{t.smspoolApiKey}</Label><Input type="password" value={phoneCfg.smspool_api_key||""} onChange={(e)=>setPhoneCfg({...phoneCfg,smspool_api_key:e.target.value})} placeholder="xxxxxxxxxxxxxxxx"/></div>
           <div><Label>{t.smspoolCountry}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.smspool_default_country||"1")} onChange={(v)=>setPhoneCfg({...phoneCfg,smspool_default_country:v})} options={optionsFor("smspool","countries")} placeholder="1"/></div>
-          <div><Label>{t.smspoolService}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.smspool_default_service||"OpenAI")} onChange={(v)=>setPhoneCfg({...phoneCfg,smspool_default_service:v})} options={optionsFor("smspool","services",String(phoneCfg.smspool_default_country||""))} placeholder="OpenAI"/></div>
+          <div><Label>{t.smspoolService}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.smspool_default_service||"671")} onChange={(v)=>setPhoneCfg({...phoneCfg,smspool_default_service:v})} options={optionsFor("smspool","services",String(phoneCfg.smspool_default_country||""))} placeholder="OpenAI / ChatGPT"/></div>
           <div className="sr-sms-provider-price"><Label>{t.smspoolMaxPrice}</Label><Input type="number" value={phoneCfg.smspool_max_price ?? -1} onChange={(e)=>setPhoneCfg({...phoneCfg,smspool_max_price:Number(e.target.value)})} placeholder="-1"/></div>
         </div>
         <div className="sr-sms-provider-bottom-row">
@@ -1133,6 +1173,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
             <SelectBox className="sr-select-like" value={countFilter} onChange={(v)=>setCountFilter(String(v))} options={countOptions} />
           </div>
           <div className="flex flex-nowrap gap-2">
+            {selected.length > 0 && <button className="sr-clear-selection" onClick={()=>setSelected([])}>{t.clearSelection}</button>}
             {selected.length > 0 && <ConfirmBubble message={t.phoneConfirmBatchDelete} detail={`${selected.length} ${t.selected}`} onConfirm={batchDelete}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.batchDelete} ({selected.length})</Button></ConfirmBubble>}
             <button className="sr-text-btn" onClick={()=>run(t.refreshDone, load)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
             <Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setImportOpen(true)}><Download className="mr-2 h-4 w-4"/>{t.importPhones}</Button>
@@ -1141,9 +1182,9 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
         </div>
         <div className="sr-table-card overflow-hidden rounded-[18px] p-0">
       <table className="sr-account-table">
-        <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? items.map((p)=>p.id) : [])}/></th><th>{t.phoneNumber}</th><th>{t.status}</th><th>{t.usedCount}</th><th>{t.smsLink}</th><th><SortTimeHeader label={t.lastUsedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.actions}</th></tr></thead>
+        <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((p)=>p.id)])) : selected.filter((id)=>!items.some((p)=>p.id===id)))}/></th><th>{t.phoneNumber}</th><th>{t.status}</th><th>{t.usedCount}</th><th>{t.smsLink}</th><th><SortTimeHeader label={t.lastUsedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.actions}</th></tr></thead>
         <tbody>{items.length ? items.map((p)=><tr key={p.id}>
-          <td><input type="checkbox" checked={selected.includes(p.id)} onChange={(e)=>setSelected(e.target.checked ? [...selected,p.id] : selected.filter((id)=>id!==p.id))}/></td>
+          <td><input type="checkbox" checked={selected.includes(p.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,p.id])) : selected.filter((id)=>id!==p.id))}/></td>
           <td><div className="font-semibold">{p.number}</div>{p.last_error ? <div className="mt-1 max-w-md truncate text-xs text-red-400">{p.last_error}</div> : null}</td>
           <td><span className={cn("sr-status", p.display_status === "disabled" ? "sr-status-gray" : "sr-status-green")}>{phoneStatusText(t, p.display_status || "enabled")}</span></td>
           <td>{p.success_count || 0}/{p.max_success || 3}</td>
@@ -1186,7 +1227,7 @@ function PhoneImportModal({ t, onClose, onImported, notify }: { t: typeof zh; on
       {mode==="file" ? <label className={cn("sr-drop-zone", drag && "drag")} onDragOver={(e)=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)} onDrop={(e)=>{e.preventDefault();setDrag(false);void pick(e.dataTransfer.files?.[0])}}>
         <Download className="h-8 w-8"/><span>{t.dragFile}</span><small>{lines ? `${validCount} valid line(s), ${errors.length} error(s)` : "TXT / CSV"}</small><input type="file" className="hidden" onChange={(e)=>pick(e.target.files?.[0])}/>
       </label> : <Textarea className="min-h-56 rounded-2xl" value={lines} onChange={(e)=>setLines(e.target.value)} placeholder={t.phoneImportPlaceholder}/>} 
-      <div className={cn("sr-validation", errors.length ? "bad" : lines.trim() ? "ok" : "")}>{errors.length ? <><b>{t.validationFailed}</b>{errors.slice(0,3).join("锛?)}{errors.length>3?` ... +${errors.length-3}`:""}</> : lines.trim() ? <><b>{t.validationOk}</b>{validCount}</> : t.phoneImportPlaceholder}</div>
+      <div className={cn("sr-validation", errors.length ? "bad" : lines.trim() ? "ok" : "")}>{errors.length ? <><b>{t.validationFailed}</b>{errors.slice(0,3).join("；")}{errors.length>3?` ... +${errors.length-3}`:""}</> : lines.trim() ? <><b>{t.validationOk}</b>{validCount}</> : t.phoneImportPlaceholder}</div>
     </div>
     <div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={!lines.trim() || errors.length>0} onClick={submit}><Download className="mr-2 h-4 w-4"/>{t.importPhones}</Button></div>
   </div></div>;
@@ -1254,7 +1295,7 @@ function normalizeSub2APIConfig(cfg: AnyObj) {
 function sub2apiGroupLabel(group: AnyObj) {
   const id = String(group.id ?? "").trim();
   const name = String(group.name ?? "").trim();
-  return name && name !== id ? `${id}路${name}` : id;
+  return name && name !== id ? `${id}·${name}` : id;
 }
 
 function Sub2APIConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", text: string) => void }) {
@@ -1271,7 +1312,7 @@ function Sub2APIConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
     const group = groups.find((g)=>String(g.id) === String(id));
     if (group) return sub2apiGroupLabel(group);
     const saved = String(savedGroupLabels[id] || "").trim();
-    return saved ? `${id}路${saved}` : id;
+    return saved ? `${id}·${saved}` : id;
   };
   const buildGroupLabels = (ids: string[]) => Object.fromEntries(ids.map((id)=>{
     const group = groups.find((g)=>String(g.id) === String(id));
@@ -1289,8 +1330,7 @@ function Sub2APIConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
     }
     setFetching(true);
     try {
-      const qs = new URLSearchParams({base_url:String(sourceCfg.base_url||""), admin_token:String(sourceCfg.admin_token||"")});
-      const resp = await apiFetch(`/sunny/sub2api/groups?${qs.toString()}`);
+      const resp = await apiFetch("/sunny/sub2api/groups", { method:"POST", body:JSON.stringify({base_url:String(sourceCfg.base_url||""), admin_token:String(sourceCfg.admin_token||"")}) });
       const list = normalizeSub2APIGroups(resp);
       setGroups(list);
       if (selectedGroupIds.length) {
@@ -1317,8 +1357,7 @@ function Sub2APIConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
     setCheckStatus({type:"loading", text:t.checking});
     setFetching(true);
     try {
-      const qs = new URLSearchParams({base_url:String(cfg.base_url||""), admin_token:String(cfg.admin_token||"")});
-      const resp = await apiFetch(`/sunny/sub2api/groups?${qs.toString()}`);
+      const resp = await apiFetch("/sunny/sub2api/groups", { method:"POST", body:JSON.stringify({base_url:String(cfg.base_url||""), admin_token:String(cfg.admin_token||"")}) });
       const list = normalizeSub2APIGroups(resp);
       setGroups(list);
       if (selectedGroupIds.length) {
@@ -1404,7 +1443,7 @@ function Sub2APIConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
               {groups.length ? groups.map((g)=>{
                 const checked = selectedGroupIds.includes(String(g.id));
                 return <button type="button" key={String(g.id)} className={cn("sr-group-picker-option", checked && "selected")} onMouseDown={(e)=>e.preventDefault()} onClick={()=>toggleGroup(String(g.id))}>
-                  <span className={cn("sr-group-check", checked && "on")}>{checked ? "鉁? : ""}</span>
+                  <span className={cn("sr-group-check", checked && "on")}>{checked ? "✓" : ""}</span>
                   <span className="sr-group-name">{sub2apiGroupLabel(g)}</span>
                   <span className="sr-group-id">ID {g.id}</span>
                 </button>
@@ -1426,12 +1465,12 @@ function Sub2APIConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
     </div>}
   </Card>;
 }
-const PROXY_STATUSES = ["鍚敤", "鍋滅敤", "澶辨晥"];
+const PROXY_STATUSES = ["启用", "停用", "失效"];
 
 function ProxyStatusBadge({ t, status }: { t: typeof zh; status: string }) {
-  const normalized = status === "鍙敤" ? "鍚敤" : status;
-  const map: Record<string,string> = { "鍚敤": "green", "鍋滅敤": "gray", "澶辨晥": "red" };
-  const labelMap: Record<string,string> = { "鍚敤": t.proxyStatusEnabled, "鍋滅敤": t.proxyStatusDisabled, "澶辨晥": t.proxyStatusInvalid };
+  const normalized = status === "可用" ? "启用" : status;
+  const map: Record<string,string> = { "启用": "green", "停用": "gray", "失效": "red" };
+  const labelMap: Record<string,string> = { "启用": t.proxyStatusEnabled, "停用": t.proxyStatusDisabled, "失效": t.proxyStatusInvalid };
   return <span className={cn("sr-status", `sr-status-${map[normalized] || "gray"}`)}>{labelMap[normalized] || normalized}</span>;
 }
 
@@ -1516,9 +1555,9 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
   }
   async function batchUpdateProxy(form: AnyObj){
     if (!selected.length) return;
-    const statusValue = String(form.status || "鍚敤");
+    const statusValue = String(form.status || "启用");
     try {
-      await Promise.all(selected.map((id)=>apiFetch(`/sunny/proxy-config/pool/${id}`, { method:"PUT", body: JSON.stringify({country: form.country, status: statusValue, enabled: statusValue === "鍚敤"}) })));
+      await Promise.all(selected.map((id)=>apiFetch(`/sunny/proxy-config/pool/${id}`, { method:"PUT", body: JSON.stringify({country: form.country, status: statusValue, enabled: statusValue === "启用"}) })));
       setBatchEditing(null);
       notify("ok", t.done);
       await load();
@@ -1526,7 +1565,7 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
   }
   const countryOptions = [{value:"",label:t.proxyAllCountry}, ...countries.map((c)=>({value:c,label:c}))];
   const allChecked = items.length > 0 && items.every((p)=>selected.includes(Number(p.id)));
-  const statusOptions = PROXY_STATUSES.map((s)=>({value:s,label:s==="鍚敤"?t.proxyStatusEnabled:s==="鍋滅敤"?t.proxyStatusDisabled:t.proxyStatusInvalid}));
+  const statusOptions = PROXY_STATUSES.map((s)=>({value:s,label:s==="启用"?t.proxyStatusEnabled:s==="停用"?t.proxyStatusDisabled:t.proxyStatusInvalid}));
   async function refreshProxyList(){
     try { await load(); notify("ok", t.refreshDone); }
     catch(e:any) { notify("fail", e.message || String(e)); }
@@ -1547,7 +1586,7 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
             </span>
             {proxySaving ? <Loader2 className="ml-1 h-4 w-4 animate-spin opacity-70"/> : null}
           </button>
-          <Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setEditing({address:"",country:"",status:"鍚敤",enabled:true})}><Plus className="mr-2 h-4 w-4"/>{t.proxyAdd}</Button>
+          <Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setEditing({address:"",country:"",status:"启用",enabled:true})}><Plus className="mr-2 h-4 w-4"/>{t.proxyAdd}</Button>
         </div>
       </div>
       <div className="mt-5 grid gap-3 md:grid-cols-4">
@@ -1565,7 +1604,8 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
           <SelectBox className="sr-select-like" value={country} onChange={(v)=>setCountry(String(v))} options={countryOptions} />
         </div>
         <div className="flex flex-wrap gap-2">
-          {selected.length > 0 && <Button variant="outline" className="rounded-xl" onClick={()=>setBatchEditing({country:"",status:"鍚敤"})}>{t.proxyBatchEdit} ({selected.length})</Button>}
+          {selected.length > 0 && <button className="sr-clear-selection" onClick={()=>setSelected([])}>{t.clearSelection}</button>}
+          {selected.length > 0 && <Button variant="outline" className="rounded-xl" onClick={()=>setBatchEditing({country:"",status:"启用"})}>{t.proxyBatchEdit} ({selected.length})</Button>}
           {selected.length > 0 && <ConfirmBubble message={t.proxyConfirmBatchDelete} detail={`${selected.length} ${t.selected}`} onConfirm={batchDeleteProxy}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.proxyBatchDelete} ({selected.length})</Button></ConfirmBubble>}
           <button className="sr-text-btn" onClick={refreshProxyList}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
           <Button variant="outline" className="rounded-xl" disabled={loading || !items.length} onClick={batchCheck}>{loading?<Loader2 className="mr-2 h-4 w-4 animate-spin"/>:<Settings2 className="mr-2 h-4 w-4"/>}{t.proxyBatchCheck}</Button>
@@ -1574,12 +1614,12 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
     </Card>
     <Card className="sr-table-card overflow-hidden rounded-[18px] p-0">
       <table className="sr-account-table sr-proxy-table">
-        <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? items.map((p)=>Number(p.id)) : [])}/></th><th>{t.proxyAddress}</th><th>{t.proxyCountry}</th><th>{t.status}</th><th><SortTimeHeader label={t.proxyLastChecked} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.operation}</th></tr></thead>
+        <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((p)=>Number(p.id))])) : selected.filter((id)=>!items.some((p)=>Number(p.id)===id)))}/></th><th>{t.proxyAddress}</th><th>{t.proxyCountry}</th><th>{t.status}</th><th><SortTimeHeader label={t.proxyLastChecked} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.operation}</th></tr></thead>
         <tbody>{items.length ? items.map((p)=><tr key={p.id}>
-          <td><input type="checkbox" checked={selected.includes(Number(p.id))} onChange={(e)=>setSelected(e.target.checked ? [...selected, Number(p.id)] : selected.filter((id)=>id!==Number(p.id)))}/></td>
+          <td><input type="checkbox" checked={selected.includes(Number(p.id))} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,Number(p.id)])) : selected.filter((id)=>id!==Number(p.id)))}/></td>
           <td><div className="font-semibold">{p.address}</div>{p.last_error ? <div className="mt-1 max-w-xl truncate text-xs text-red-400">{p.last_error}</div> : null}</td>
           <td>{p.country || "-"}</td>
-          <td><ProxyStatusBadge t={t} status={p.status || "鍚敤"} />{p.latency_ms ? <div className="mt-1 text-xs text-[var(--text-muted)]">{t.proxyLatency}: {p.latency_ms}ms</div> : null}</td>
+          <td><ProxyStatusBadge t={t} status={p.status || "启用"} />{p.latency_ms ? <div className="mt-1 text-xs text-[var(--text-muted)]">{t.proxyLatency}: {p.latency_ms}ms</div> : null}</td>
           <td>{formatDateTime(p.last_checked_at)}</td>
           <td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" disabled={loading} onClick={()=>checkOne(p)}>{t.refresh}</button><button className="sr-link" onClick={()=>setEditing(p)}>{t.edit}</button><ConfirmBubble message={t.proxyConfirmDelete} detail={p.address || ""} onConfirm={()=>deleteProxy(p)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td>
         </tr>) : <tr><td colSpan={6}><div className="sr-empty"><div className="sr-empty-icon"><Settings2 className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.proxyNoData}</div><p className="mt-2 text-sm text-slate-400">{t.proxyNoDataDesc}</p></div></td></tr>}</tbody>
@@ -1592,16 +1632,16 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
 }
 
 function ProxyEditModal({ t, proxy, onClose, onSaved, notify }: { t: typeof zh; proxy: AnyObj; onClose:()=>void; onSaved:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
-  const [form,setForm]=useState<AnyObj>({...proxy, status: proxy.status || "鍚敤"});
+  const [form,setForm]=useState<AnyObj>({...proxy, status: proxy.status || "启用"});
   const isNew = !form.id;
   async function save(){
     const lines = String(form.address || "").split(/\r?\n/).map((x)=>x.trim()).filter(Boolean);
     if (!lines.length) { notify("fail", t.validationFailed); return; }
-    const status = String(form.status || "鍚敤");
+    const status = String(form.status || "启用");
     try {
       await apiFetch(isNew ? "/sunny/proxy-config/pool" : `/sunny/proxy-config/pool/${form.id}`, {
         method: isNew ? "POST" : "PUT",
-        body: JSON.stringify(isNew ? {addresses:lines, country:form.country, status, enabled: status !== "鍋滅敤"} : {address:lines[0], country:form.country, status, enabled: status !== "鍋滅敤"}),
+        body: JSON.stringify(isNew ? {addresses:lines, country:form.country, status, enabled: status !== "停用"} : {address:lines[0], country:form.country, status, enabled: status !== "停用"}),
       });
       onSaved();
     } catch(e:any) { notify("fail", e.message || String(e)); }
@@ -1612,7 +1652,7 @@ function ProxyEditModal({ t, proxy, onClose, onSaved, notify }: { t: typeof zh; 
       <div><Label>{t.proxyAddress}</Label>{isNew ? <Textarea className="min-h-40 rounded-[14px]" placeholder={t.proxyAddressPlaceholder} value={form.address||""} onChange={(e)=>setForm({...form,address:e.target.value})}/> : <Input placeholder={t.proxyAddressPlaceholder} value={form.address||""} onChange={(e)=>setForm({...form,address:e.target.value})}/>}</div>
       <div className="grid gap-4 md:grid-cols-2">
         <div><Label>{t.proxyCountry}</Label><Input placeholder={t.proxyCountryPlaceholder} value={form.country||""} onChange={(e)=>setForm({...form,country:e.target.value})}/></div>
-        <div><Label>{t.status}</Label><SelectBox value={form.status||"鍚敤"} onChange={(v)=>setForm({...form,status:String(v)})} options={PROXY_STATUSES.map((s)=>({value:s,label:s==="鍚敤"?t.proxyStatusEnabled:s==="鍋滅敤"?t.proxyStatusDisabled:t.proxyStatusInvalid}))} /></div>
+        <div><Label>{t.status}</Label><SelectBox value={form.status||"启用"} onChange={(v)=>setForm({...form,status:String(v)})} options={PROXY_STATUSES.map((s)=>({value:s,label:s==="启用"?t.proxyStatusEnabled:s==="停用"?t.proxyStatusDisabled:t.proxyStatusInvalid}))} /></div>
       </div>
     </div>
     <div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" onClick={save}><Save className="mr-2 h-4 w-4"/>{t.save}</Button></div>
@@ -1626,7 +1666,7 @@ function ProxyBatchEditModal({ t, count, form, setForm, onClose, onSaved }: { t:
       <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 text-sm font-bold text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200">{t.selected}: {count}</div>
       <div className="grid gap-4 md:grid-cols-2">
         <div><Label>{t.proxyCountry}</Label><Input placeholder={t.proxyCountryPlaceholder} value={form.country||""} onChange={(e)=>setForm({...form,country:e.target.value})}/></div>
-        <div><Label>{t.status}</Label><SelectBox value={form.status||"鍚敤"} onChange={(v)=>setForm({...form,status:String(v)})} options={PROXY_STATUSES.map((s)=>({value:s,label:s==="鍚敤"?t.proxyStatusEnabled:s==="鍋滅敤"?t.proxyStatusDisabled:t.proxyStatusInvalid}))} /></div>
+        <div><Label>{t.status}</Label><SelectBox value={form.status||"启用"} onChange={(v)=>setForm({...form,status:String(v)})} options={PROXY_STATUSES.map((s)=>({value:s,label:s==="启用"?t.proxyStatusEnabled:s==="停用"?t.proxyStatusDisabled:t.proxyStatusInvalid}))} /></div>
       </div>
     </div>
     <div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" onClick={onSaved}><Save className="mr-2 h-4 w-4"/>{t.save}</Button></div>
@@ -1644,7 +1684,7 @@ function tokenTailPreview(value: any) {
 }
 
 const SESSION_PLAN_OPTIONS = PLAN_TYPE_OPTIONS;
-const SESSION_STATUS_OPTIONS = [...MAILBOX_STATUSES, "澶辫触"];
+const SESSION_STATUS_OPTIONS = [...MAILBOX_STATUSES, "失败"];
 function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", text: string) => void }) {
   const [items,setItems]=useCachedState<AnyObj[]>("session.items",[]);
   const [fmt,setFmt]=useCachedState("session.fmt","mailbox_account");
@@ -1696,9 +1736,10 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       <div className="relative min-w-[260px] max-w-lg flex-1"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/><input className="sr-search" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={t.searchAccount} /></div>
       <SelectBox className="sr-select-like" value={status} onChange={(v)=>setStatus(String(v))} options={[{value:"",label:t.allStatus}, ...SESSION_STATUS_OPTIONS.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))]} />
       <SelectBox className="sr-select-like" value={plan} onChange={(v)=>setPlan(String(v))} options={[{value:"",label:t.planType}, ...SESSION_PLAN_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))]} />
+      {selected.length > 0 && <button className="sr-clear-selection" onClick={()=>setSelected([])}>{t.clearSelection}</button>}
       <button className="sr-text-btn" onClick={refreshSessionList}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
     </div>
-    <table className="sr-account-table"><thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/></th><th>{t.email}</th><th>{t.status}</th><th>{t.planType}</th><th>{t.accessToken}</th><th>{t.sessionRefreshToken}</th><th>{t.operation}</th></tr></thead><tbody>{items.length ? items.map((s)=><tr key={s.id}><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? [...selected, s.id] : selected.filter((id)=>id!==s.id))}/></td><td>{s.email}</td><td><StatusBadge t={t} status={s.status || "宸叉敞鍐?} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td title={s.access_token || ""}>{tokenTailPreview(s.access_token)}</td><td title={s.refresh_token || ""}>{tokenPreview(s.refresh_token)}</td><td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link" onClick={()=>exp([s.id],"all")}>{t.export}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>) : <tr><td colSpan={7}><div className="sr-empty !min-h-[260px]"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><p className="mt-3 text-sm text-slate-400">{t.noData}</p></div></td></tr>}</tbody></table>
+    <table className="sr-account-table"><thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/></th><th>{t.email}</th><th>{t.status}</th><th>{t.planType}</th><th>{t.accessToken}</th><th>{t.sessionRefreshToken}</th><th>{t.operation}</th></tr></thead><tbody>{items.length ? items.map((s)=><tr key={s.id}><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td>{s.email}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td title={s.access_token || ""}>{tokenTailPreview(s.access_token)}</td><td title={s.refresh_token || ""}>{tokenPreview(s.refresh_token)}</td><td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link" onClick={()=>exp([s.id],"all")}>{t.export}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>) : <tr><td colSpan={7}><div className="sr-empty !min-h-[260px]"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><p className="mt-3 text-sm text-slate-400">{t.noData}</p></div></td></tr>}</tbody></table>
     <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
     {editing && <SessionEditModal t={t} item={editing} onClose={()=>setEditing(null)} onSaved={()=>{setEditing(null); notify("ok", t.done); void load();}} notify={notify}/>}
   </Card>;
@@ -1717,7 +1758,7 @@ function SessionEditModal({ t, item, onClose, onSaved, notify }: { t: typeof zh;
     <div className="sr-modal-body space-y-4">
       <div className="grid gap-4 md:grid-cols-2">
         <div><Label>{t.email}</Label><Input value={form.email || ""} disabled /></div>
-        <div><Label>{t.status}</Label><SelectBox value={form.status||"宸叉敞鍐?} onChange={(v)=>setForm({...form,status:String(v)})} options={SESSION_STATUS_OPTIONS.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))} /></div>
+        <div><Label>{t.status}</Label><SelectBox value={form.status||"已注册"} onChange={(v)=>setForm({...form,status:String(v)})} options={SESSION_STATUS_OPTIONS.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))} /></div>
       </div>
       <div><Label>{t.accessToken}</Label><Textarea className="min-h-24 rounded-[14px]" value={form.access_token||""} onChange={(e)=>setForm({...form,access_token:e.target.value})}/></div>
       <div><Label>{t.sessionRefreshToken}</Label><Textarea className="min-h-20 rounded-[14px]" value={form.refresh_token||""} onChange={(e)=>setForm({...form,refresh_token:e.target.value})}/></div>
@@ -1726,111 +1767,57 @@ function SessionEditModal({ t, item, onClose, onSaved, notify }: { t: typeof zh;
   </div></div>, document.body);
 }
 function logModuleLabel(t: typeof zh, module: string) {
-  const map: Record<string,string> = { "浠ｇ悊": t.logProxy, "Proxy": t.logProxy, "閭": t.logMailbox, "Mailbox": t.logMailbox, "鎵嬫満": t.logPhone, "Phone": t.logPhone, "Session": t.logSession, "璁よ瘉": t.logAuth, "Auth": t.logAuth, "绯荤粺": t.logSystem, "System": t.logSystem };
+  const map: Record<string,string> = {
+    "Proxy": t.logProxy, "代理": t.logProxy,
+    "Mailbox": t.logMailbox, "邮箱": t.logMailbox,
+    "Phone": t.logPhone, "手机": t.logPhone,
+    "Session": t.logSession,
+    "Auth": t.logAuth, "认证": t.logAuth,
+    "System": t.logSystem, "系统": t.logSystem,
+  };
   return map[module] || module;
 }
 function logStageLabel(t: typeof zh, value: any) {
   const text = String(value || "");
-  if (text === REGISTER_ONLY || text.includes("浠呮敞鍐?) || /register chatgpt only/i.test(text)) return t.registerOnly;
-  if (text === CODEX_PHONE_BIND || text.includes("鎺ョ爜") || /phone binding/i.test(text)) return t.codexPhoneBind;
-  if (text === IMPORT_REVERSE_PROXY || text.includes("鍙嶄唬") || /reverse proxy/i.test(text)) return t.importReverseProxy;
+  if (text === REGISTER_ONLY || /register chatgpt only|register_only|仅注册/i.test(text)) return t.registerOnly;
+  if (text === CODEX_PHONE_BIND || /phone binding|codex_phone_bind|接码/i.test(text)) return t.codexPhoneBind;
+  if (text === IMPORT_REVERSE_PROXY || /reverse proxy|import_reverse_proxy|反代/i.test(text)) return t.importReverseProxy;
   return text || "-";
 }
 function localizedLogMessage(t: typeof zh, entry: LogEntry) {
   const enMode = t.workbench === en.workbench;
   const msg = String(entry.message || "");
-  const raw = String(entry.rawMessage || msg);
   const detail = entry.detail || {};
   const stage = logStageLabel(t, detail.stage || "");
   const nums = {
     total: Number(detail.total ?? 0),
     success: Number(detail.success ?? 0),
     failed: Number(detail.failed ?? 0),
+    partial: Number(detail.partial ?? 0),
     registered: Number(detail.registered ?? 0),
     loggedIn: Number(detail.logged_in ?? 0),
     skippedPhone: Number(detail.skipped_phone ?? 0),
     imported: Number(detail.imported ?? 0),
   };
-  const proxyStats = detail.proxy_stats || {};
-  const proxyText = String(detail.proxy || "").trim();
-  const emailMatch = raw.match(/^\[([^\]\s]+@[^\]\s]+)\]/);
-  const email = String(detail.email || emailMatch?.[1] || "");
-  const prefix = "";
   const pick = (zhText: string, enText: string) => enMode ? enText : zhText;
-  const externalRaw = () => msg;
-
-  if (/SunnyRegister Worker accepted register task/i.test(msg)) return pick("SunnyRegister Worker 宸叉帴鏀舵敞鍐屼换鍔?, "SunnyRegister Worker accepted the register task");
-  if (/鏈浠诲姟闃舵/.test(msg) || /task stage/i.test(msg)) {
-    return pick(`鏈浠诲姟闃舵锛?{stage}锛岃处鍙锋暟閲忥細${nums.total || detail.total || "-"}`, `Task stage: ${stage}; accounts: ${nums.total || detail.total || "-"}`);
+  if (/SunnyRegister Worker accepted register task/i.test(msg)) return pick("SunnyRegister Worker 已接收注册任务", "SunnyRegister Worker accepted the register task");
+  if (/task stage|本次任务阶段/i.test(msg)) return pick(`本次任务阶段：${stage}，账号数量：${nums.total || detail.total || "-"}`, `Task stage: ${stage}; accounts: ${nums.total || detail.total || "-"}`);
+  if (/register task concurrency|注册任务并发数/i.test(msg)) return pick(`注册任务并发数：${detail.concurrency || "-"}；每个邮箱使用独立 Worker、浏览器上下文和邮箱验证码读取器`, `Register task concurrency: ${detail.concurrency || "-"}; each mailbox uses an isolated worker, browser context and mailbox OTP reader`);
+  if (/task summary|注册任务总结/i.test(msg)) return pick(`注册任务总结：成功 ${nums.success}，失败 ${nums.failed}，阶段未完成 ${nums.partial}，新注册 ${nums.registered}，登录更新 ${nums.loggedIn}，跳过接码 ${nums.skippedPhone}，导入反代 ${nums.imported}`, `Register task summary: success ${nums.success}, failed ${nums.failed}, incomplete stages ${nums.partial}, newly registered ${nums.registered}, login refreshed ${nums.loggedIn}, phone skipped ${nums.skippedPhone}, reverse-proxy imported ${nums.imported}`);
+  if (/后续接码阶段未完成，账号保留为/.test(msg)) return enMode ? msg.replace("后续接码阶段未完成，账号保留为", "The phone-binding stage was not completed; account status remains ") : msg;
+  if (/导入 sub2api 失败，账号保留为/.test(msg)) return enMode ? msg.replace("导入 sub2api 失败，账号保留为", "sub2api import failed; account status remains ") : msg;
+  if (/ChatGPT 注册\/登录已经完成，但手机号阶段无法继续/.test(msg)) return pick("ChatGPT 注册/登录已经完成，但手机号阶段无法继续；已保存 Session 并保留已注册状态", "ChatGPT registration/login completed, but the phone stage could not continue; Session was saved and the Registered status was preserved");
+  if (/已自动点击 Codex 授权继续按钮/.test(msg)) return pick("已自动点击 Codex 授权继续按钮", "Automatically clicked Continue on the Codex authorization page");
+  if (/已捕获 OAuth callback，正在交换 Refresh Token/.test(msg)) return pick("已捕获 OAuth callback，正在交换 Refresh Token", "OAuth callback captured; exchanging it for a Refresh Token");
+  if (/已通过页面原生表单提交邮箱验证码/.test(msg)) return pick("已通过页面原生表单提交邮箱验证码", "Email verification code submitted through the page's native form");
+  if (/页面未找到可用的验证码提交控件，使用兼容接口提交/.test(msg)) return pick("页面未找到可用的验证码提交控件，使用兼容接口提交", "No usable verification submit control was found; using the compatibility API");
+  if (/邮箱验证码提交后出现交互式验证/.test(msg)) return pick("邮箱验证码提交后出现交互式验证，请在当前可视浏览器中完成", "Interactive verification appeared after email code submission; complete it in the visible browser");
+  if (/proxy switch|代理.*开关/i.test(msg)) {
+    const proxyStats = detail.proxy_stats || {};
+    const open = detail.proxy_enabled !== false && !/off|关闭/i.test(msg);
+    return pick(`代理池开关：${open ? "开启" : "关闭"}；代理池总数 ${proxyStats.total ?? 0}，启用 ${proxyStats.enabled ?? 0}，停用 ${proxyStats.disabled ?? 0}，失效 ${proxyStats.invalid ?? 0}${open ? "" : "；注册机将使用服务器系统出口"}`, `Proxy switch: ${open ? "on" : "off"}; pool total ${proxyStats.total ?? 0}, enabled ${proxyStats.enabled ?? 0}, disabled ${proxyStats.disabled ?? 0}, invalid ${proxyStats.invalid ?? 0}${open ? "" : "; SunnyRegister will use the server/system network outlet"}`);
   }
-  if (/娉ㄥ唽浠诲姟骞跺彂鏁?.test(msg) || /register task concurrency/i.test(msg)) {
-    return pick(
-      `娉ㄥ唽浠诲姟骞跺彂鏁帮細${detail.concurrency || "-"}锛涙瘡涓偖绠变娇鐢ㄧ嫭绔?Worker銆佹祻瑙堝櫒涓婁笅鏂囧拰閭楠岃瘉鐮佽鍙栧櫒`,
-      `Register task concurrency: ${detail.concurrency || "-"}; each mailbox uses an isolated worker, browser context and mailbox OTP reader`,
-    );
-  }
-  if (/娉ㄥ唽浠诲姟鎬荤粨/.test(msg) || /task summary/i.test(msg)) {
-    return pick(
-      `娉ㄥ唽浠诲姟鎬荤粨锛氭垚鍔?${nums.success}锛屽け璐?${nums.failed}锛屾柊娉ㄥ唽 ${nums.registered}锛岀櫥褰曟洿鏂?${nums.loggedIn}锛岃烦杩囨帴鐮?${nums.skippedPhone}锛屽鍏ュ弽浠?${nums.imported}`,
-      `Register task summary: success ${nums.success}, failed ${nums.failed}, newly registered ${nums.registered}, login refreshed ${nums.loggedIn}, phone skipped ${nums.skippedPhone}, reverse-proxy imported ${nums.imported}`,
-    );
-  }
-  if (/浠ｇ悊(?:姹??寮€鍏?.test(msg) || /proxy switch/i.test(msg)) {
-    const open = detail.proxy_enabled !== false && !/鍏抽棴|off/i.test(msg);
-    return pick(
-      `浠ｇ悊姹犲紑鍏筹細${open ? "寮€鍚? : "鍏抽棴"}锛涗唬鐞嗘睜鎬绘暟 ${proxyStats.total ?? 0}锛屽惎鐢?${proxyStats.enabled ?? 0}锛屽仠鐢?${proxyStats.disabled ?? 0}锛屽け鏁?${proxyStats.invalid ?? 0}${open ? "" : "锛涙敞鍐屾満灏嗕娇鐢ㄦ湇鍔″櫒绯荤粺鍑哄彛"}`,
-      `Proxy switch: ${open ? "on" : "off"}; pool total ${proxyStats.total ?? 0}, enabled ${proxyStats.enabled ?? 0}, disabled ${proxyStats.disabled ?? 0}, invalid ${proxyStats.invalid ?? 0}${open ? "" : "; SunnyRegister will use the server/system network outlet"}`,
-    );
-  }
-  if (/娉ㄥ唽\/鐧诲綍璇锋眰灏嗕娇鐢ㄤ唬鐞嗗嚭鍙?.test(msg) || /requests? .*proxy/i.test(msg)) return pick(`娉ㄥ唽/鐧诲綍璇锋眰灏嗕娇鐢ㄤ唬鐞嗗嚭鍙ｏ細${proxyText || msg.split("锛?).pop() || "-"}`, `Register/login requests will use proxy outlet: ${proxyText || msg.split(":").pop() || "-"}`);
-  if (/鏈幏鍙栧埌鍙敤浠ｇ悊/.test(msg)) return pick("鏈幏鍙栧埌鍙敤浠ｇ悊锛屾敞鍐屼换鍔″皢鍋滄锛涜鍏堟柊澧炲苟鍚敤浠ｇ悊锛屾垨鍏抽棴浠ｇ悊寮€鍏炽€?, "No usable proxy was found. The register task will stop; add and enable a proxy first, or turn off the proxy switch.");
-  if (/寮€濮嬫敞鍐孿/鐧诲綍/.test(msg)) {
-    const m = msg.match(/(\d+)\/(\d+)/);
-    return pick(`${prefix}寮€濮嬫敞鍐?鐧诲綍 ${m?.[1] || "-"} / ${m?.[2] || "-"}锛岄樁娈碉細${stage || logStageLabel(t, msg)}`, `${prefix}Start register/login ${m?.[1] || "-"} / ${m?.[2] || "-"}; stage: ${stage || logStageLabel(t, msg)}`);
-  }
-  if (/娉ㄥ唽\/鐧诲綍娴侀噺浣跨敤浠ｇ悊姹犱唬鐞唡娉ㄥ唽\/鐧诲綍娴侀噺浣跨敤浠ｇ悊/.test(msg)) return pick(`${prefix}娉ㄥ唽/鐧诲綍娴侀噺浣跨敤浠ｇ悊姹犱唬鐞嗭細${proxyText || msg.split(":").pop() || "-"}`, `${prefix}Register/login traffic uses proxy-pool proxy: ${proxyText || msg.split(":").pop() || "-"}`);
-  if (/娉ㄥ唽\/鐧诲綍娴侀噺浣跨敤鏈嶅姟鍣ㄧ郴缁熷嚭鍙ｄ唬鐞?.test(msg)) return pick(`${prefix}娉ㄥ唽/鐧诲綍娴侀噺浣跨敤鏈嶅姟鍣ㄧ郴缁熷嚭鍙ｄ唬鐞嗭細${proxyText || msg.split(":").pop() || "-"}`, `${prefix}Register/login traffic uses server/system outlet proxy: ${proxyText || msg.split(":").pop() || "-"}`);
-  if (/娉ㄥ唽\/鐧诲綍娴侀噺浣跨敤鏈嶅姟鍣ㄧ郴缁熺綉缁滅洿杩炲嚭鍙娉ㄥ唽\/鐧诲綍娴侀噺浣跨敤鏈嶅姟鍣ㄧ郴缁熺綉缁滃嚭鍙?.test(msg)) return pick(`${prefix}娉ㄥ唽/鐧诲綍娴侀噺浣跨敤鏈嶅姟鍣ㄧ郴缁熺綉缁滅洿杩炲嚭鍙, `${prefix}Register/login traffic uses the server/system direct outlet`);
-  if (/宸蹭粠鎺ョ爜閰嶇疆鍒嗛厤鎵嬫満鍙?.test(msg)) return pick(`${prefix}宸蹭粠鎺ョ爜閰嶇疆鍒嗛厤鎵嬫満鍙?${msg.match(/\+?\d{6,}/)?.[0] || ""}`.trim(), `${prefix}Allocated a phone number from SMS settings ${msg.match(/\+?\d{6,}/)?.[0] || ""}`.trim());
-  if (/閭璁板綍宸叉湁 OpenAI RT/.test(msg)) return pick(`${prefix}閭璁板綍宸叉湁 OpenAI RT锛屽皢鐩存帴鍒锋柊 Session`, `${prefix}Mailbox already has OpenAI RT; refreshing Session directly`);
-  if (/鑱斿姩.*鎺ョ爜閰嶇疆|鑷缓鎵嬫満鍙锋睜/.test(msg)) return pick(`${prefix}灏嗚仈鍔ㄢ€滄帴鐮侀厤缃€濈殑鑷缓鎵嬫満鍙锋睜瀹屾垚鎵嬫満楠岃瘉`, `${prefix}Will use the self-managed phone pool in SMS settings for phone verification`);
-  if (/鏃犲彲鐢ㄦ墜鏈哄彿/.test(msg)) return pick(`${prefix}鏃犲彲鐢ㄦ墜鏈哄彿锛氭祦绋嬩粎瀹屾垚 ChatGPT 娉ㄥ唽/鐧诲綍锛屼笉杩涜鎺ョ爜锛屼篃涓嶄細鑾峰彇 Refresh Token銆俙, `${prefix}No usable phone number: this flow only completes ChatGPT register/login, without phone binding or Refresh Token acquisition.`);
-  if (/寮€濮嬫敞鍐屾垨鐧诲綍/.test(msg)) return pick(`${prefix}寮€濮嬫敞鍐屾垨鐧诲綍${email ? `锛?{email}` : ""}`, `${prefix}Start register or login${email ? `: ${email}` : ""}`);
-  if (/鎵ц鏂瑰紡锛?.test(msg)) {
-    const isBackground = /鍚庡彴|Headless/i.test(msg);
-    return pick(`${prefix}鎵ц鏂瑰紡锛?{isBackground ? "鍚庡彴娴忚鍣ㄨ嚜鍔紙鏃犵獥鍙ｏ級" : "鍙娴忚鍣ㄨ嚜鍔紙鏈夌獥鍙ｏ級"}`, `${prefix}Execution mode: ${isBackground ? "Background browser (headless)" : "Visible browser (headed)"}`);
-  }
-  if (/鏃犵棔娴忚鍣ㄤ笂涓嬫枃|娴忚鍣ㄦ棤鐥曚笂涓嬫枃/.test(msg)) return enMode ? msg.replace("宸插惎鍔ㄩ殧绂绘棤鐥曟祻瑙堝櫒涓婁笅鏂?, "Isolated incognito browser context started").replace("璇█鐜", "locale") : msg;
-  if (/娴忚鍣ㄦ寚绾?.test(msg)) return enMode ? msg.replace("娴忚鍣ㄦ寚绾?, "Browser fingerprint") : msg;
-  if (/宸叉墦寮€ OpenAI 璁よ瘉椤?.test(msg)) return pick("宸叉墦寮€ OpenAI 璁よ瘉椤碉紱濡傚嚭鐜颁汉鏈洪獙璇侊紝璇峰湪娴忚鍣ㄤ腑鎵嬪姩瀹屾垚", "Opened the OpenAI authentication page; if a challenge appears, complete it manually in the browser");
-  if (/鎻愬墠杩炴帴 Outlook IMAP/.test(msg)) return pick("鎻愬墠杩炴帴 Outlook IMAP锛屽噯澶囨帴鏀?OpenAI 楠岃瘉鐮?, "Connected to Outlook IMAP in advance and prepared to receive the OpenAI verification code");
-  if (/濉啓閭骞剁户缁?.test(msg)) return pick("濉啓閭骞剁户缁?, "Filled the email and continued");
-  if (/绛夊緟 OpenAI 閭楠岃瘉鐮?.test(msg)) return pick("绛夊緟 OpenAI 閭楠岃瘉鐮?, "Waiting for the OpenAI email verification code");
-  if (/宸叉彁浜ら偖绠遍獙璇佺爜/.test(msg)) return pick("宸叉彁浜ら偖绠遍獙璇佺爜", "Submitted the email verification code");
-  if (/Cloudflare challenge/.test(msg) && /瑙﹀彂|鎵撳紑楠岃瘉椤?.test(msg)) return pick("EmailOtpValidate 瑙﹀彂 Cloudflare challenge锛屽凡鎵撳紑楠岃瘉椤?, "EmailOtpValidate triggered a Cloudflare challenge; verification page opened");
-  if (/Cloudflare challenge 宸查€氳繃/.test(msg)) return pick("Cloudflare challenge 宸查€氳繃锛岄噸璇曢偖绠遍獙璇佺爜鎻愪氦", "Cloudflare challenge passed; retrying email code submission");
-  if (/绛夊緟 Cloudflare 閫氳繃/.test(msg)) return enMode ? msg.replace("绛夊緟 Cloudflare 閫氳繃锛屽墿浣欑害", "Waiting for Cloudflare to pass, about").replace("褰撳墠 URL", "current URL") : msg;
-  if (/璐﹀彿闇€瑕佸瘑鐮佹楠?.test(msg)) return pick("璐﹀彿闇€瑕佸瘑鐮佹楠わ紝宸插～鍐欏瘑鐮?, "Password step required; password filled");
-  if (/濉啓鍩虹璧勬枡/.test(msg)) return enMode ? msg.replace("濉啓鍩虹璧勬枡", "Filled profile details") : msg;
-  if (/鏈嶅姟瑕佹眰鐢佃瘽楠岃瘉/.test(msg)) return enMode ? msg.replace("鏈嶅姟瑕佹眰鐢佃瘽楠岃瘉锛屽凡濉啓鎵嬫満鍙?, "Service requested phone verification; phone number filled") : msg;
-  if (/浠呮敞鍐岄樁娈?.test(msg)) return pick("浠呮敞鍐岄樁娈碉細宸茶鍙?ChatGPT Session锛屼笉鎵ц Codex OAuth / 涓嶈幏鍙?Refresh Token", "Register-only stage: ChatGPT Session was read; Codex OAuth / Refresh Token acquisition was skipped");
-  if (/宸茶幏鍙?Access Token 鍜?Refresh Token/.test(msg)) return pick("宸茶幏鍙?Access Token 鍜?Refresh Token", "Access Token and Refresh Token acquired");
-  if (/鍦ㄥ綋鍓嶇櫥褰曟€佸彂璧?OAuth 鎺堟潈鑾峰彇 Refresh Token/.test(msg)) return pick("鍦ㄥ綋鍓嶇櫥褰曟€佸彂璧?OAuth 鎺堟潈鑾峰彇 Refresh Token", "Started OAuth authorization in the current login state to obtain Refresh Token");
-  if (/宸茶幏鍙?OAuth 鎺堟潈 code/.test(msg)) return pick("宸茶幏鍙?OAuth 鎺堟潈 code锛屾鍦ㄤ氦鎹?Refresh Token", "OAuth authorization code acquired; exchanging for Refresh Token");
-  if (/绛夊緟 OAuth callback/.test(msg)) return enMode ? msg.replace("绛夊緟 OAuth callback锛屽墿浣欑害", "Waiting for OAuth callback, about").replace("褰撳墠 URL", "current URL") : msg;
-  if (/浣跨敤宸蹭繚瀛?OpenAI RT 鍒锋柊 Session/.test(msg)) return pick("浣跨敤宸蹭繚瀛?OpenAI RT 鍒锋柊 Session", "Refreshing Session with saved OpenAI RT");
-  if (/娉ㄥ唽鎴栫櫥褰曞畬鎴?.test(msg)) return pick("娉ㄥ唽鎴栫櫥褰曞畬鎴愶紝宸茶鍙?Session 淇℃伅", "Register/login completed; Session information read");
-  if (/璇嗗埆涓?*鎴愬姛/.test(msg)) {
-    const isRegister = /娉ㄥ唽/.test(msg);
-    const withRT = /Refresh Token/.test(msg);
-    return pick(`${prefix}璇嗗埆涓?{isRegister ? "娉ㄥ唽" : "鐧诲綍"}鎴愬姛锛屽凡淇濆瓨 ChatGPT Session${withRT ? " 鍜?Refresh Token" : ""}`, `${prefix}Detected successful ${isRegister ? "registration" : "login"}; saved ChatGPT Session${withRT ? " and Refresh Token" : ""}`);
-  }
-  if (/娌℃湁 Refresh Token.*sub2api|娌℃湁 Refresh Token/.test(msg)) return pick(`${prefix}娌℃湁 Refresh Token锛屽凡鍋滄瀵煎叆 sub2api`, `${prefix}No Refresh Token; sub2api import stopped`);
-  if (/瀵煎叆.*sub2api/.test(msg)) return pick(`${prefix}宸叉牴鎹弽浠ｉ厤缃鍏?sub2api`, `${prefix}Imported into sub2api according to reverse-proxy settings`);
-  if (/鎵嬫満.*浜屾楠岃瘉|Phone verification required/i.test(msg)) return pick(`${prefix}璐﹀彿闇€瑕佹墜鏈哄彿浜屾楠岃瘉锛屼絾褰撳墠娌℃湁鍙敤鎺ョ爜閰嶇疆锛屾祦绋嬪凡鍋滄`, `${prefix}The account requires phone verification, but no usable SMS configuration is available; the flow stopped`);
-  if (/Session\/RT .*鍒锋柊瀹屾垚|Session\/RT 鍒锋柊瀹屾垚/.test(msg)) return pick(`${prefix}Session/RT 鍒锋柊瀹屾垚`, `${prefix}Session/RT refresh completed`);
-  if (/SunnyRegister Worker failed:/i.test(msg)) return pick(`SunnyRegister Worker 鎵ц澶辫触锛?{msg.replace(/SunnyRegister Worker failed:\s*/i, "")}`, `SunnyRegister Worker failed: ${msg.replace(/SunnyRegister Worker failed:\s*/i, "")}`);
-  return externalRaw();
+  return msg;
 }
 function LogCard({ t, title, logs, busy, onClear }: { t: typeof zh; title: string; logs: LogEntry[]; busy: boolean; onClear: () => void }) {
   return <Card className="sr-log-card rounded-[30px] p-5">
@@ -1841,7 +1828,7 @@ function LogCard({ t, title, logs, busy, onClear }: { t: typeof zh; title: strin
         {busy?<Loader2 className="h-5 w-5 animate-spin text-[var(--accent)]"/>:<Settings2 className="h-5 w-5 text-[var(--accent)]"/>}
       </div>
     </div>
-    <div className="log-box sr-paylink-log rounded-[24px] p-4">
+    <div className="log-box sr-register-log rounded-[24px] p-4">
       {logs.length ? logs.map((x)=><div key={x.id} className={cn("sr-log-line", `level-${x.level}`)}>
         <div className="sr-log-meta">
           <span className="sr-log-time">[{x.time}]</span>
@@ -1853,23 +1840,6 @@ function LogCard({ t, title, logs, busy, onClear }: { t: typeof zh; title: strin
     </div>
   </Card>;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

@@ -49,7 +49,33 @@ func openDB() *gorm.DB {
 		log.Fatalf("migrate sqlite failed: %v", err)
 	}
 	ensureSunnySchema(db)
+	sanitizeHistoricalTaskData(db)
 	return db
+}
+
+func sanitizeHistoricalTaskData(db *gorm.DB) {
+	var events []TaskEvent
+	if db.Select("id", "message", "detail_json").Find(&events).Error == nil {
+		for _, event := range events {
+			message := sanitizePersistedString(event.Message)
+			detail := sanitizePersistedJSON(event.DetailJSON)
+			if message != event.Message || detail != event.DetailJSON {
+				db.Model(&TaskEvent{}).Where("id = ?", event.ID).Updates(map[string]any{"message": message, "detail_json": detail})
+			}
+		}
+	}
+	var tasks []Task
+	terminal := []string{"succeeded", "failed", "cancelled", "interrupted"}
+	if db.Select("id", "status", "payload_json", "result_json", "error").Where("status IN ?", terminal).Find(&tasks).Error == nil {
+		for _, task := range tasks {
+			payload := sanitizePersistedJSON(task.PayloadJSON)
+			result := sanitizePersistedJSON(task.ResultJSON)
+			errorText := sanitizePersistedString(task.Error)
+			if payload != task.PayloadJSON || result != task.ResultJSON || errorText != task.Error {
+				db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"payload_json": payload, "result_json": result, "error": errorText})
+			}
+		}
+	}
 }
 
 func ensureSunnySchema(db *gorm.DB) {
@@ -159,7 +185,23 @@ func seedProviderDefinitions(db *gorm.DB) {
 }
 
 func markInterrupted(db *gorm.DB) {
+	reason := "服务重启，任务已中断"
+	var tasks []Task
+	db.Where("status IN ?", []string{"pending", "claimed", "running", "cancel_requested"}).Find(&tasks)
+	for _, task := range tasks {
+		if !strings.HasPrefix(task.Type, "sunny_") {
+			continue
+		}
+		payload := jsonMap(task.PayloadJSON)
+		mailboxIDs := uintSlice(payload["mailbox_ids"])
+		if len(mailboxIDs) == 0 {
+			continue
+		}
+		db.Model(&SunnyMailbox{}).
+			Where("id IN ? AND status IN ?", mailboxIDs, []string{"注册中", "登录刷新"}).
+			Updates(map[string]any{"status": "失败", "last_error": reason, "updated_at": time.Now()})
+	}
 	db.Model(&Task{}).
 		Where("status IN ?", []string{"pending", "claimed", "running", "cancel_requested"}).
-		Updates(map[string]any{"status": "interrupted", "error": "服务重启，任务已中断"})
+		Updates(map[string]any{"status": "interrupted", "error": reason, "finished_at": time.Now(), "updated_at": time.Now()})
 }

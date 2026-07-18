@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -9,20 +10,39 @@ import (
 
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request, rest string) {
 	if rest == "/check" && r.Method == http.MethodGet {
-		writeJSON(w, 200, map[string]any{"required": true, "username_required": true, "username": s.adminUser})
+		writeJSON(w, 200, map[string]any{"required": true, "authenticated": s.hasValidSession(r), "username_required": true})
 		return
 	}
 	if rest == "/login" && r.Method == http.MethodPost {
-		body, _ := parseBody(r)
-		username := fallback(text(body["username"]), text(body["user"]))
-		if username == "" {
-			username = s.adminUser
-		}
-		if username == s.adminUser && text(body["password"]) == s.adminPass {
-			writeJSON(w, 200, map[string]any{"ok": true, "token": s.authToken, "user": map[string]any{"username": s.adminUser, "role": "admin"}})
+		key := s.loginClientKey(r)
+		if blocked, retryAfter := s.loginBlocked(key); blocked {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", max(1, int(retryAfter.Seconds()))))
+			writeError(w, http.StatusTooManyRequests, "Too many login attempts; try again later")
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": false, "error": "??????????"})
+		body, err := parseBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid login request")
+			return
+		}
+		username := fallback(text(body["username"]), text(body["user"]))
+		if constantTimeEqual(username, s.adminUser) && constantTimeEqual(text(body["password"]), s.adminPass) {
+			s.clearLoginFailures(key)
+			token := s.newSession()
+			s.setSessionCookie(w, token, int(s.sessionTTL.Seconds()))
+			writeJSON(w, 200, map[string]any{"ok": true, "user": map[string]any{"username": s.adminUser, "role": "admin"}})
+			return
+		}
+		s.recordLoginFailure(key)
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Invalid username or password"})
+		return
+	}
+	if rest == "/logout" && r.Method == http.MethodPost {
+		if c, err := r.Cookie(s.sessionCookieName()); err == nil {
+			s.deleteSession(c.Value)
+		}
+		s.setSessionCookie(w, "", -1)
+		writeJSON(w, 200, map[string]any{"ok": true})
 		return
 	}
 	writeError(w, 404, "not found")

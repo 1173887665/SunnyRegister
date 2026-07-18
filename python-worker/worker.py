@@ -5,26 +5,43 @@ import sys
 import threading
 import traceback
 from pathlib import Path
-from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 os.environ.setdefault("PYTHONUTF8", "1")
-os.environ.setdefault("ACCOUNT_MANAGER_DATABASE_URL", "sqlite:////app/data/account_manager.db")
 
-ORIGINAL_RUNTIME_ENABLED = os.getenv("ORIGINAL_RUNTIME_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
-ORIGINAL_APP_PATH = Path(os.getenv("ORIGINAL_APP_PATH", "/app/original")).resolve()
-if ORIGINAL_RUNTIME_ENABLED and str(ORIGINAL_APP_PATH) not in sys.path:
-    sys.path.insert(0, str(ORIGINAL_APP_PATH))
 
-WORKER_TOKEN = os.getenv("PYTHON_WORKER_TOKEN", "").strip()
+def _default_account_manager_db_url() -> str:
+    """Return a safe local default DB path.
+
+    Docker images provide ACCOUNT_MANAGER_DATABASE_URL explicitly as /app/data.
+    In local development this file lives under <repo>/python-worker/worker.py, so
+    the matching Go backend database is <repo>/data/account_manager.db.
+    """
+    worker_file = Path(__file__).resolve()
+    if worker_file.parent.name == "python-worker":
+        return "sqlite:///" + str((worker_file.parent.parent / "data" / "account_manager.db")).replace("\\", "/")
+    return "sqlite:////app/data/account_manager.db"
+
+
+os.environ.setdefault("ACCOUNT_MANAGER_DATABASE_URL", _default_account_manager_db_url())
+
+def _secret_value(env_key: str, file_key: str) -> str:
+    file_name = os.getenv(file_key, "").strip()
+    if file_name:
+        try:
+            return Path(file_name).read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    return os.getenv(env_key, "").strip()
+
+
+WORKER_TOKEN = _secret_value("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE")
 
 app = FastAPI(title="SunnyRegister Python Automation Worker", version="1.0.0")
 _state_lock = threading.Lock()
 _running: set[str] = set()
-_boot_error: Optional[str] = None
-_booted = False
 
 
 def _check_token(auth: str | None) -> None:
@@ -35,44 +52,9 @@ def _check_token(auth: str | None) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized worker token")
 
 
-def bootstrap_original_runtime() -> None:
-    global _booted, _boot_error
-    if not ORIGINAL_RUNTIME_ENABLED:
-        raise RuntimeError("original runtime is disabled; SunnyRegister tasks do not require it")
-    if _booted:
-        return
-    with _state_lock:
-        if _booted:
-            return
-        try:
-            if not ORIGINAL_APP_PATH.exists():
-                raise RuntimeError(f"ORIGINAL_APP_PATH not found: {ORIGINAL_APP_PATH}")
-            from core.db import init_db
-            from core.registry import load_all
-            from providers.registry import load_all as load_providers
-
-            init_db()
-            load_all()
-            load_providers()
-            _booted = True
-            _boot_error = None
-            print(f"[worker] original runtime booted from {ORIGINAL_APP_PATH}", flush=True)
-        except Exception:
-            _boot_error = traceback.format_exc()
-            print("[worker] bootstrap failed:\n" + _boot_error, flush=True)
-            raise
-
-
 @app.on_event("startup")
 def on_startup() -> None:
-    if not ORIGINAL_RUNTIME_ENABLED:
-        print("[worker] original runtime disabled; SunnyRegister worker ready", flush=True)
-        return
-    try:
-        bootstrap_original_runtime()
-    except Exception:
-        # Keep HTTP server alive so Go can report a meaningful worker status.
-        pass
+    print("[worker] SunnyRegister automation worker ready", flush=True)
 
 
 class ExecuteRequest(BaseModel):
@@ -82,13 +64,21 @@ class ExecuteRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict:
+    sunny_db_path = ""
+    sunny_db_error = ""
+    try:
+        from sunny_core.db import db_path
+
+        sunny_db_path = str(Path(db_path()).resolve())
+    except Exception as exc:
+        sunny_db_error = str(exc)
     return {
-        "ok": (not ORIGINAL_RUNTIME_ENABLED) or _boot_error is None,
-        "booted": _booted,
+        "ok": sunny_db_error == "",
         "running": sorted(_running),
-        "original_runtime_enabled": ORIGINAL_RUNTIME_ENABLED,
-        "original_app_path": str(ORIGINAL_APP_PATH),
-        "error": _boot_error,
+        "cwd": os.getcwd(),
+        "python": sys.executable,
+        "sunny_db_path": sunny_db_path,
+        "sunny_db_error": sunny_db_error,
     }
 
 
@@ -98,11 +88,7 @@ def execute(req: ExecuteRequest, background: BackgroundTasks, authorization: str
     if not req.task_id.strip():
         raise HTTPException(status_code=400, detail="task_id is required")
     if not req.task_type.startswith("sunny_"):
-        if not ORIGINAL_RUNTIME_ENABLED:
-            raise HTTPException(status_code=503, detail={"message": "original runtime is disabled; only sunny_* tasks are available"})
-        if _boot_error is not None:
-            raise HTTPException(status_code=503, detail={"message": "worker bootstrap failed", "error": _boot_error})
-        bootstrap_original_runtime()
+        raise HTTPException(status_code=400, detail="only sunny_* task types are supported")
     with _state_lock:
         if req.task_id in _running:
             return {"ok": True, "accepted": False, "already_running": True, "task_id": req.task_id}
@@ -113,26 +99,33 @@ def execute(req: ExecuteRequest, background: BackgroundTasks, authorization: str
 
 def _run_task(task_id: str, task_type: str = "") -> None:
     try:
-        if task_type.startswith("sunny_"):
-            from sunny_runner import run_sunny_task
-            run_sunny_task(task_id)
-            return
-        bootstrap_original_runtime()
-        from application.tasks import append_task_event, execute_task
+        if not task_type.startswith("sunny_"):
+            raise RuntimeError(f"unsupported task type: {task_type}")
+        from sunny_runner import run_sunny_task
 
-        append_task_event(task_id, "Python 自动化 Worker 已接管任务", event_type="state", level="info", detail={"worker": "python"})
-        execute_task(task_id)
+        run_sunny_task(task_id)
     except Exception as exc:
         tb = traceback.format_exc()
         print(f"[worker] task {task_id} failed:\n{tb}", flush=True)
-        try:
-            from application.tasks import TASK_STATUS_FAILED, TaskLogger
-
-            TaskLogger(task_id).finish(TASK_STATUS_FAILED, error=f"Python Worker 执行失败: {exc}", result={"traceback": tb[-4000:]})
-        except Exception:
-            pass
+        _finish_sunny_task_failed(task_id, exc, tb)
     finally:
         with _state_lock:
             _running.discard(task_id)
+
+
+def _finish_sunny_task_failed(task_id: str, exc: Exception, tb: str) -> None:
+    try:
+        from sunny_core.db import SunnyDB, db_path, now_sql
+
+        db = SunnyDB(task_id)
+        try:
+            message = f"SunnyRegister Worker 启动任务失败: {exc}"
+            detail = {"traceback": tb[-4000:], "worker_db_path": str(Path(db_path()).resolve())}
+            db.update_task(status="failed", error=message, result_json='{"error":"worker failed before startup"}', finished_at=now_sql())
+            db.event(message, "error", detail=detail)
+        finally:
+            db.close()
+    except Exception as inner:
+        print(f"[worker] failed to write SunnyRegister failure to DB: {inner}", flush=True)
 
 

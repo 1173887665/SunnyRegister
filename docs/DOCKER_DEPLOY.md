@@ -1,144 +1,167 @@
-# SunnyRegister Docker 一键部署指南
+# SunnyRegister Docker 使用说明
 
-本项目的服务架构固定为：
+SunnyRegister 提供两份 Compose：
 
-- `sunnyregister`：Go 后端 + React 静态前端，端口 `8000`。
-- `python-worker`：Python Worker + Playwright Chromium，用于注册/登录浏览器自动化，端口 `8765` 仅容器内访问。
-- `sunnyregister-data`：Docker volume，保存 SQLite 数据库、管理员密码和运行数据。
-- `noVNC`：Python Worker 内置的浏览器远程查看入口，默认映射到宿主机 `127.0.0.1:6080`。
+| 文件 | 用途 | Web 绑定 |
+| --- | --- | --- |
+| `docker-compose.yml` | 本地开发、局域网试用 | 默认 `0.0.0.0:8000` |
+| `docker-compose.production.yml` | 云服务器生产部署 | 默认 `127.0.0.1:8000` |
 
-## 1. 服务器准备
+生产服务器必须使用 `docker-compose.production.yml`。完整 Cloudflare 接入流程见根目录 [README.md](../README.md)。
 
-Linux 云服务器建议最低配置：
+## 服务结构
 
-- 2 核 CPU / 4GB 内存；并发注册较高时建议 4 核 / 8GB。
-- Docker Engine 24+ 与 Docker Compose v2。
-- 出站网络可访问 ChatGPT、Outlook、接码供应商、sub2api 等目标服务。
+| 服务 | 内容 | 网络边界 |
+| --- | --- | --- |
+| `sunnyregister` | Go API + React 静态前端 | 开发环境发布 8000；生产环境仅回环地址 |
+| `python-worker` | FastAPI + Camoufox + Playwright | 只在 `sunnyregister-worker` 网络提供 8765 |
+| noVNC | Xvfb 虚拟桌面 | 默认关闭；启用后仅 `127.0.0.1:6080` |
+| `sunnyregister-data` | SQLite 与运行数据 | Docker named volume |
 
-安装 Docker 后，拉取源码：
+Go 与 Python Worker 共享 `/app/data/account_manager.db`。容器重建不会删除 named volume，除非显式执行 `down -v`。
+
+## 本地 Docker 启动
+
+Windows Docker Desktop：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\docker-up.ps1
+```
+
+Linux：
 
 ```bash
-git clone https://github.com/<your-org>/SunnyRegister.git
-cd SunnyRegister
+bash scripts/docker-up.sh
+```
+
+脚本会创建本地 `.env`、生成管理员密码与 Worker Token、构建镜像并等待健康检查。启动后访问：
+
+```text
+http://127.0.0.1:8000
+```
+
+停止本地环境：
+
+```bash
+bash scripts/docker-down.sh
+```
+
+```powershell
+.\scripts\docker-down.ps1
+```
+
+## 生产 Docker 启动
+
+```bash
 cp .env.production.example .env
+nano .env
+chmod +x scripts/*.sh
+./scripts/deploy-production.sh
 ```
 
-编辑 `.env`，至少修改：
+生产脚本使用 Docker secrets：
 
-```env
-ADMIN_PASSWORD=请改成强密码
-PYTHON_WORKER_TOKEN=请改成随机长字符串
-TZ=Asia/Shanghai
+```text
+secrets/admin_password
+secrets/python_worker_token
 ```
 
-## 2. 一键启动
+不要在生产环境改用普通 `docker-compose.yml`，也不要把 `SUNNYREGISTER_BIND` 改成 `0.0.0.0` 后直接暴露公网。
+
+检查生产服务：
 
 ```bash
-docker compose up -d --build
+docker compose -f docker-compose.production.yml --env-file .env config --quiet
+docker compose -f docker-compose.production.yml --env-file .env ps
+docker compose -f docker-compose.production.yml --env-file .env logs --tail=200
+curl -fsS http://127.0.0.1:8000/api/ready
 ```
 
-查看状态：
+## 可视浏览器
+
+后台浏览器使用 Camoufox Headless。可视浏览器使用 Xvfb 中的 Chromium；需要排查时临时开启：
+
+```dotenv
+ENABLE_NOVNC=true
+```
+
+重新部署后建立 SSH 隧道：
 
 ```bash
-docker compose ps
+ssh -L 6080:127.0.0.1:6080 user@server
+```
+
+本地打开 `http://127.0.0.1:6080/vnc.html`。noVNC 当前为本机免密模式，不得绑定到公网地址，排查完成后应重新关闭。
+
+## 宿主机本地代理
+
+Worker 容器内的 `127.0.0.1` 不是宿主机。项目会在容器模式下将注册代理配置中的 `127.0.0.1`、`localhost` 或 `::1` 转换为 `host.docker.internal`。
+
+Linux 宿主机上的代理服务必须监听 Docker 网桥可访问的地址。更推荐直接使用代理池中的远程代理地址。
+
+## 日志与重启
+
+本地环境：
+
+```bash
 docker compose logs -f sunnyregister
 docker compose logs -f python-worker
+docker compose restart python-worker
 ```
 
-访问控制台：
-
-```text
-http://服务器IP:8000
-```
-
-如果没有设置 `ADMIN_PASSWORD`，首次启动会自动生成密码。查看方式：
+生产环境：
 
 ```bash
-docker compose exec sunnyregister cat /app/data/admin_password.txt
+docker compose -f docker-compose.production.yml --env-file .env logs -f --tail=200
+docker compose -f docker-compose.production.yml --env-file .env restart
 ```
 
-## 3. Linux 服务器上的“可视浏览器”问题
+## SQLite 在线备份
 
-Windows 开发环境中，Playwright 启动的是本机真实桌面窗口；Linux 云服务器通常没有桌面显示器，直接启动可视浏览器会失败。
-
-本项目 Docker 方案已经内置解决方案：
-
-1. `python-worker` 容器启动 `Xvfb`，提供虚拟显示器 `DISPLAY=:99`。
-2. Playwright 的可视 Chromium 会运行在这个虚拟显示器里。
-3. 容器同时启动 `x11vnc + noVNC`，你可以通过浏览器远程查看这个虚拟桌面。
-
-默认 noVNC 只绑定服务器本机 `127.0.0.1:6080`，避免公网裸露。推荐使用 SSH 隧道：
+不要在服务运行时使用普通 `cp` 复制 SQLite 主文件。使用 Python SQLite Backup API：
 
 ```bash
-ssh -L 6080:127.0.0.1:6080 root@你的服务器IP
+timestamp="$(date +%Y%m%d_%H%M%S)"
+docker compose -f docker-compose.production.yml --env-file .env exec -T python-worker \
+  python -c "import sqlite3; s=sqlite3.connect('/app/data/account_manager.db'); d=sqlite3.connect('/app/data/backup_${timestamp}.db'); s.backup(d); d.close(); s.close()"
 ```
 
-然后在本机浏览器打开：
-
-```text
-http://127.0.0.1:6080/vnc.html
-```
-
-这样注册任务仍然可以选择“可视浏览器自动”，浏览器窗口会出现在 noVNC 页面中。遇到人机验证或需要人工介入时，也可以在 noVNC 中处理。
-
-> 不建议把 `NOVNC_BIND` 改成 `0.0.0.0` 后直接公网暴露，因为 noVNC 默认没有登录鉴权。若必须公网访问，请放到带鉴权的反向代理后面。
-
-## 4. 常用运维命令
-
-更新代码并重启：
+更新脚本会自动执行同类备份：
 
 ```bash
-git pull
-docker compose up -d --build
+./scripts/update-production.sh v0.2.0
 ```
 
-停止：
+volume 内备份不等于异地备份。应定期导出到加密对象存储，并进行恢复演练。
 
-```bash
-docker compose down
-```
+## 资源建议
 
-停止并删除数据卷（会清空数据库，谨慎执行）：
-
-```bash
-docker compose down -v
-```
-
-备份 SQLite 数据：
-
-```bash
-mkdir -p backups
-docker compose exec sunnyregister sh -lc 'cp /app/data/account_manager.db /tmp/account_manager.db'
-docker cp sunnyregister-go:/tmp/account_manager.db ./backups/account_manager-$(date +%Y%m%d-%H%M%S).db
-```
-
-## 5. 端口与环境变量
-
-| 变量 | 默认值 | 说明 |
+| 服务器 | 建议注册并发 | `WORKER_SHM_SIZE` |
 | --- | --- | --- |
-| `SUNNYREGISTER_PORT` | `8000` | Web 控制台端口 |
-| `ADMIN_USERNAME` | `admin` | 管理员账号 |
-| `ADMIN_PASSWORD` | 空 | 管理员密码，空则自动生成 |
-| `PYTHON_WORKER_TOKEN` | 空 | Go 后端与 Worker 的内部鉴权 Token，生产建议必填 |
-| `TZ` | `Asia/Shanghai` | 容器时区 |
-| `ENABLE_XVFB` | `true` | 启用虚拟显示器 |
-| `ENABLE_NOVNC` | `true` | 启用 noVNC 远程查看 |
-| `NOVNC_BIND` | `127.0.0.1` | noVNC 端口绑定地址 |
-| `NOVNC_PORT` | `6080` | noVNC 端口 |
-| `XVFB_WHD` | `1600x900x24` | 虚拟屏幕尺寸 |
+| 2 核 / 4 GB | 1 | `1gb` |
+| 4 核 / 8 GB | 1-2 | `1gb` 到 `2gb` |
+| 8 核 / 16 GB | 3-4 | `2gb` |
 
-## 6. GitHub 上传注意事项
+实际并发还受代理质量、浏览器页面、邮箱收码和接码平台速度影响。
 
-已经提供 `.gitignore` 与 `.dockerignore`，会排除：
+## 故障排查
 
-- `.env`、数据库、运行日志。
-- 本地虚拟环境、Node 依赖、编译产物。
-- Windows `.exe` 本地构建文件。
-
-上传前建议检查：
+Worker 不健康：
 
 ```bash
-git status --ignored
+docker compose -f docker-compose.production.yml --env-file .env logs --tail=200 python-worker
 ```
 
-确认没有把 `data/`、`.env`、数据库和真实 Token 提交到仓库。
+检查虚拟显示：
+
+```bash
+docker compose -f docker-compose.production.yml --env-file .env exec python-worker \
+  sh -c 'echo "$DISPLAY"; xdpyinfo -display "$DISPLAY" >/dev/null && echo OK'
+```
+
+检查 Worker 数据库路径：
+
+```bash
+docker compose -f docker-compose.production.yml --env-file .env exec python-worker \
+  curl -fsS http://127.0.0.1:8765/health
+```
