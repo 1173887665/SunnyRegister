@@ -342,7 +342,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   }
   async function cancelActiveTask() {
     const taskId = String(activeTaskId || "");
-    if (!busy || !taskId || stopRequested) return;
+    if (!taskId || stopRequested) return;
     const msg = t.interruptTaskRequested;
     setStopRequested(true);
     setGlobalLogs((old) => [localLog(msg, "warning"), ...old].slice(0, 200));
@@ -420,12 +420,12 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     }
   }
   useEffect(() => {
-    if (busy && !activeTaskId) {
-      setBusy(false);
-      setStopRequested(false);
+    if (!activeTaskId) {
+      if (busy) setBusy(false);
+      if (stopRequested) setStopRequested(false);
       return;
     }
-    if (!busy || !activeTaskId) return;
+    if (!busy) setBusy(true);
     if (!resumedTaskIdsRef.current.has(activeTaskId)) {
       resumedTaskIdsRef.current.add(activeTaskId);
       setGlobalLogs((old) => [localLog(t.taskPollRecovered), ...old].slice(0, 200));
@@ -495,7 +495,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-4"><h2 className="text-2xl font-bold text-slate-950 dark:text-white">ChatGPT</h2><span className="text-sm text-slate-400">{t.selected}: {selected.length}</span>{selected.length > 0 && <button className="sr-clear-selection" onClick={clearWorkbenchSelection}>{t.clearSelection}</button>}</div>
         <div className="flex flex-wrap gap-2">
-          <button className="sr-btn sr-danger-btn disabled:cursor-not-allowed disabled:opacity-50" title={busy && activeTaskId ? t.interruptTaskTip : ""} onClick={cancelActiveTask} disabled={!busy || !activeTaskId || stopRequested}><X className="h-4 w-4"/>{stopRequested ? t.interruptingTask : t.interruptTask}</button>
+          <button className="sr-btn sr-danger-btn disabled:cursor-not-allowed disabled:opacity-50" title={activeTaskId ? t.interruptTaskTip : ""} onClick={cancelActiveTask} disabled={!activeTaskId || stopRequested}><X className="h-4 w-4"/>{stopRequested ? t.interruptingTask : t.interruptTask}</button>
           <span title={busy ? t.registerTaskRunning : !selected.length ? t.chooseMailbox : ""}>
             <Button className="rounded-xl bg-blue-600 px-4 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => setAutoOpen(true)} disabled={busy || selected.length === 0}><Plus className="mr-2 h-4 w-4"/>{t.autoRegister}</Button>
           </span>
@@ -1840,7 +1840,6 @@ function LogCard({ t, title, logs, busy, onClear }: { t: typeof zh; title: strin
     </div>
   </Card>;
 }
-
 
 
 

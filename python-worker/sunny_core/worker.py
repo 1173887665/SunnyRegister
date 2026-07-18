@@ -686,8 +686,8 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     except Exception as exc:
         if _is_cancel_exception(exc):
             if mailbox_id > 0:
-                db.mark_mailbox(mailbox_id, original_mailbox_status, "用户已中断任务")
-            db.event(f"[{email}] [系统] 用户已中断任务，当前邮箱流程已停止", "warning", detail={"email": email, "scope": "selected", "cancelled": True})
+                db.mark_mailbox(mailbox_id, "失败", "任务已由用户停止，当前邮箱未完成本次注册流程")
+            db.event(f"[{email}] [系统] 用户已停止任务，当前邮箱未完成本次注册流程并已标记为失败", "warning", detail={"email": email, "scope": "selected", "cancelled": True})
             raise
         err_text = str(exc)
         err = f"[{email}] {err_text}"

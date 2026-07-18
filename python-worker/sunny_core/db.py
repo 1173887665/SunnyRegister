@@ -176,9 +176,102 @@ class SunnyDB:
         if self.cancel_requested():
             raise SunnyTaskCancelled("Task cancelled by user")
 
-    def mark_cancelled(self, message: str = "用户已中断注册任务") -> None:
-        self.update_task(status="cancelled", error=message, finished_at=now_sql())
-        self.event(message, "warning", detail={"scope": "global", "cancelled": True})
+    def mark_cancelled(self, message: str = "用户已停止注册任务") -> dict[str, Any]:
+        current = self.task_status()
+        summary = self.fail_unfinished_mailboxes(message)
+        task = self.task()
+        try:
+            result = json.loads(task.get("result_json") or "{}")
+            if not isinstance(result, dict):
+                result = {}
+        except Exception:
+            result = {}
+        result.update({"cancelled": True, **summary})
+        self.update_task(
+            status="cancelled",
+            error=message,
+            progress_current=summary["completed"] + summary["failed"],
+            success_count=summary["completed"],
+            error_count=summary["failed"],
+            result_json=json.dumps(result, ensure_ascii=False),
+            finished_at=now_sql(),
+        )
+        if current not in {"cancelled", "interrupted"}:
+            self.event(
+                f"{message}；已完成 {summary['completed']} 个，未完成并标记失败 {summary['failed']} 个",
+                "warning",
+                detail={"scope": "global", "cancelled": True, **summary},
+            )
+        return summary
+
+    def fail_unfinished_mailboxes(self, reason: str = "任务已由用户停止，当前邮箱未完成本次注册流程") -> dict[str, Any]:
+        """Fail selected mailboxes that did not complete successfully in this task."""
+        task = self.task()
+        try:
+            payload = json.loads(task.get("payload_json") or "{}")
+            if not isinstance(payload, dict):
+                payload = {}
+        except Exception:
+            payload = {}
+
+        mailbox_ids: list[int] = []
+        for raw in payload.get("mailbox_ids") or []:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0 and value not in mailbox_ids:
+                mailbox_ids.append(value)
+        if not mailbox_ids:
+            account_ids: list[int] = []
+            for raw in payload.get("account_ids") or []:
+                try:
+                    value = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if value > 0:
+                    account_ids.append(value)
+            if account_ids:
+                marks = ",".join("?" for _ in account_ids)
+                rows = self.conn.execute(
+                    f"select mailbox_id from sunny_accounts where id in ({marks})",
+                    account_ids,
+                ).fetchall()
+                mailbox_ids = [int(row["mailbox_id"] or 0) for row in rows if int(row["mailbox_id"] or 0) > 0]
+
+        completed_ids: set[int] = set()
+        if mailbox_ids:
+            marks = ",".join("?" for _ in mailbox_ids)
+            rows = self.conn.execute(
+                f"select mailbox_id,status,metadata_json from sunny_accounts where mailbox_id in ({marks})",
+                mailbox_ids,
+            ).fetchall()
+            for row in rows:
+                try:
+                    metadata = json.loads(row["metadata_json"] or "{}")
+                except Exception:
+                    metadata = {}
+                if (
+                    isinstance(metadata, dict)
+                    and str(metadata.get("task_id") or "") == self.task_id
+                    and str(row["status"] or "").lower() not in {"failed", "error"}
+                ):
+                    completed_ids.add(int(row["mailbox_id"] or 0))
+
+        failed_ids = [mailbox_id for mailbox_id in mailbox_ids if mailbox_id not in completed_ids]
+        if failed_ids:
+            marks = ",".join("?" for _ in failed_ids)
+            self.conn.execute(
+                f"update sunny_mailboxes set status='失败',last_error=?,updated_at=? where id in ({marks})",
+                [reason, now_sql(), *failed_ids],
+            )
+            self.conn.commit()
+        return {
+            "completed": len(completed_ids),
+            "failed": len(failed_ids),
+            "completed_mailbox_ids": sorted(completed_ids),
+            "failed_mailbox_ids": failed_ids,
+        }
 
     def fetch_mailboxes(self, ids: list[int] | None = None, limit: int = 0) -> list[dict[str, Any]]:
         if ids:

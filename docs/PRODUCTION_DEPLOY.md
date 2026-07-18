@@ -32,6 +32,20 @@ SUNNYREGISTER_PUBLIC_CHECK=false
 ADMIN_USERNAME=sunnyadmin
 ```
 
+Outlook verification codes use IPv4 IMAP direct access first. If the cloud
+provider blocks outbound TCP/993, configure a dedicated HTTP CONNECT or SOCKS5
+proxy in `.env`:
+
+```dotenv
+OUTLOOK_IMAP_DIRECT_FIRST=true
+OUTLOOK_IMAP_PROXY=socks5://user:password@proxy.example.com:1080
+```
+
+The registration task proxy is used as a fallback when no dedicated IMAP proxy
+is configured. Many rotating HTTP proxies only allow CONNECT to port 443, so a
+SOCKS5 proxy or an outbound firewall rule for `outlook.office365.com:993` is
+preferred.
+
 `SUNNYREGISTER_BIND=127.0.0.1` 是生产安全边界。Cloudflare Tunnel 以宿主机方式运行时，Published application 的 Service 设置为 `http://127.0.0.1:8000`。
 
 ## 首次部署

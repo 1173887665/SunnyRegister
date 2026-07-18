@@ -102,6 +102,10 @@ chmod +x scripts/*.sh
 ./scripts/deploy-production.sh
 ```
 
+If the server blocks Outlook IMAP (`outlook.office365.com:993`), set
+`OUTLOOK_IMAP_PROXY` in `.env` to a SOCKS5 or HTTP CONNECT proxy that permits
+port 993 before running the deployment script.
+
 部署脚本会：
 
 1. 生成强管理员密码和 Worker Token。

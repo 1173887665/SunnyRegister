@@ -4,6 +4,7 @@ import base64
 import dataclasses
 import email as email_pkg
 import imaplib
+import os
 import re
 import socket
 import ssl
@@ -185,38 +186,78 @@ class HotmailReader:
     def connect(self, access_token: str | None = None) -> None:
         self.log(f"[{self.account.email}] Connecting Outlook IMAP for OTP")
         if access_token is not None:
-            self._connect_with_access_token(access_token, "provided")
+            self._connect_with_access_token_routes(access_token, "provided")
             return
         errors: list[str] = []
-        proxies = {"http": self.proxy_url, "https": self.proxy_url} if self.proxy_url else None
+        request_routes = [None]
+        if self.proxy_url:
+            request_routes.append({"http": self.proxy_url, "https": self.proxy_url})
         for endpoint in TOKEN_ENDPOINTS:
-            try:
-                token = _request_outlook_access_token(self.account, endpoint, proxies, self.log)
-                self._connect_with_access_token(token, str(endpoint["name"]))
-                return
-            except Exception as exc:
-                errors.append(f"{endpoint['name']}: {exc}")
-                self.log(f"[{self.account.email}] Outlook IMAP connect via {endpoint['name']} failed: {exc}")
-                self.close()
-                time.sleep(0.5)
+            for request_proxies in request_routes:
+                route_name = "proxy" if request_proxies else "direct"
+                try:
+                    token = _request_outlook_access_token(self.account, endpoint, request_proxies, self.log)
+                    self._connect_with_access_token_routes(token, f"{endpoint['name']} token-{route_name}")
+                    return
+                except Exception as exc:
+                    errors.append(f"{endpoint['name']}/{route_name}: {exc}")
+                    self.log(f"[{self.account.email}] Outlook IMAP connect via {endpoint['name']}/{route_name} failed: {exc}")
+                    self.close()
+                    time.sleep(0.5)
         raise RuntimeError("All Outlook IMAP auth attempts failed -> " + " | ".join(errors))
 
-    def _connect_with_access_token(self, access_token: str, token_endpoint: str) -> None:
-        auth = f"user={self.account.email}\x01auth=Bearer {access_token}\x01\x01"
-        if self.proxy_url:
-            self.imap = self._connect_imap_via_proxy(self.proxy_url)
-        else:
-            self.imap = imaplib.IMAP4_SSL(OUTLOOK_IMAP_HOST, OUTLOOK_IMAP_PORT, timeout=20)
+    def _imap_proxy_candidates(self) -> list[str]:
+        dedicated_proxy = os.getenv("OUTLOOK_IMAP_PROXY", "").strip()
+        fallback_proxy = dedicated_proxy or self.proxy_url
+        direct_first = os.getenv("OUTLOOK_IMAP_DIRECT_FIRST", "true").strip().lower() not in {"0", "false", "no", "off"}
+        candidates = ["", fallback_proxy] if direct_first else [fallback_proxy, ""]
+        return list(dict.fromkeys(candidate for candidate in candidates if candidate or candidate == ""))
+
+    def _connect_with_access_token_routes(self, access_token: str, token_endpoint: str) -> None:
+        errors: list[str] = []
+        for proxy_url in self._imap_proxy_candidates():
+            route_name = "IPv4 direct" if not proxy_url else ("dedicated proxy" if os.getenv("OUTLOOK_IMAP_PROXY", "").strip() else "task proxy")
             try:
-                self.imap.sock.settimeout(20)
-            except Exception:
-                pass
+                self._connect_with_access_token(access_token, token_endpoint, proxy_url)
+                self.log(f"[{self.account.email}] Outlook IMAP route selected: {route_name}")
+                return
+            except Exception as exc:
+                errors.append(f"{route_name}: {exc}")
+                self.log(f"[{self.account.email}] Outlook IMAP {route_name} failed: {exc}")
+                self.close()
+        raise RuntimeError("Outlook IMAP network routes failed -> " + " | ".join(errors))
+
+    def _connect_with_access_token(self, access_token: str, token_endpoint: str, proxy_url: str = "") -> None:
+        auth = f"user={self.account.email}\x01auth=Bearer {access_token}\x01\x01"
+        if proxy_url:
+            self.imap = self._connect_imap_via_proxy(proxy_url)
+        else:
+            self.imap = self._connect_imap_direct_ipv4()
         self.imap.authenticate("XOAUTH2", lambda _: auth.encode("utf-8"))
         try:
             self.imap.sock.settimeout(30)
         except Exception:
             pass
         self.log(f"[{self.account.email}] Outlook IMAP connected via {token_endpoint}")
+
+    def _connect_imap_direct_ipv4(self) -> imaplib.IMAP4_SSL:
+        errors: list[str] = []
+        addresses = socket.getaddrinfo(OUTLOOK_IMAP_HOST, OUTLOOK_IMAP_PORT, socket.AF_INET, socket.SOCK_STREAM)
+        for family, socktype, proto, _canonname, address in addresses:
+            raw = socket.socket(family, socktype, proto)
+            raw.settimeout(20)
+            try:
+                raw.connect(address)
+                tls_sock = ssl.create_default_context().wrap_socket(raw, server_hostname=OUTLOOK_IMAP_HOST)
+                tls_sock.settimeout(20)
+                return ProxiedIMAP4SSL(OUTLOOK_IMAP_HOST, OUTLOOK_IMAP_PORT, tls_sock, timeout=20)
+            except Exception as exc:
+                errors.append(f"{address[0]}:{address[1]}: {exc}")
+                try:
+                    raw.close()
+                except Exception:
+                    pass
+        raise OSError("Outlook IMAP IPv4 connection failed -> " + " | ".join(errors))
 
     def _connect_imap_via_proxy(self, proxy_url: str) -> imaplib.IMAP4_SSL:
         proxy_url = normalize_proxy_url(proxy_url)

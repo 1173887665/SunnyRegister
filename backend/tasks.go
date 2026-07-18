@@ -203,6 +203,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request, rest string
 			}
 			if task.Status == TaskPending {
 				task.Status = TaskCancelled
+				task.Error = "用户已停止注册任务"
 				task.FinishedAt = sql.NullTime{Time: time.Now(), Valid: true}
 			} else {
 				task.Status = TaskCancelRequested
@@ -210,9 +211,17 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request, rest string
 			s.db.Save(&task)
 			message := "Task cancel requested"
 			if strings.HasPrefix(task.Type, "sunny_") {
-				message = "用户已请求中断 SunnyRegister 注册任务，正在停止 Worker"
+				message = "用户已请求停止 SunnyRegister 注册任务，正在关闭任务进程、浏览器与邮箱读取资源"
 			}
 			s.appendTaskEvent(task.ID, message, "log", "warning", map[string]any{"cancelled": true})
+			if strings.HasPrefix(task.Type, "sunny_") {
+				if task.Status == TaskCancelled {
+					s.markSunnyUnfinishedMailboxes(&task, "任务已由用户停止，当前邮箱未完成本次注册流程")
+				} else if err := s.requestPythonWorkerCancel(task.ID); err != nil {
+					s.appendTaskEvent(task.ID, "Python Worker 停止接口调用失败，将继续通过数据库取消信号终止任务: "+err.Error(), "log", "warning", map[string]any{"cancelled": true})
+				}
+				_ = s.db.First(&task, "id = ?", task.ID).Error
+			}
 			writeJSON(w, 200, serializeTask(task))
 			return
 		}
@@ -368,6 +377,78 @@ func (s *Server) interruptStaleSunnyTask(task *Task, reason string) {
 			Updates(map[string]any{"status": "失败", "last_error": reason, "updated_at": time.Now()})
 	}
 	s.appendTaskEvent(task.ID, reason, "log", "warning", map[string]any{"reconciled": true, "forced": true})
+}
+
+func (s *Server) requestPythonWorkerCancel(taskID string) error {
+	workerURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PYTHON_WORKER_URL")), "/")
+	if workerURL == "" {
+		workerURL = "http://127.0.0.1:8765"
+	}
+	body, _ := json.Marshal(map[string]any{"task_id": taskID})
+	req, err := http.NewRequest(http.MethodPost, workerURL+"/cancel", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token := secretValue("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("worker returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (s *Server) markSunnyUnfinishedMailboxes(task *Task, reason string) {
+	if task == nil {
+		return
+	}
+	payload := jsonMap(task.PayloadJSON)
+	mailboxIDs := uintSlice(payload["mailbox_ids"])
+	if len(mailboxIDs) == 0 {
+		accountIDs := uintSlice(payload["account_ids"])
+		if len(accountIDs) > 0 {
+			var accounts []SunnyAccount
+			s.db.Where("id IN ?", accountIDs).Find(&accounts)
+			for _, account := range accounts {
+				if account.MailboxID > 0 {
+					mailboxIDs = append(mailboxIDs, account.MailboxID)
+				}
+			}
+		}
+	}
+	if len(mailboxIDs) == 0 {
+		return
+	}
+	var accounts []SunnyAccount
+	s.db.Where("mailbox_id IN ?", mailboxIDs).Find(&accounts)
+	completed := map[uint]bool{}
+	for _, account := range accounts {
+		metadata := jsonMap(account.MetadataJSON)
+		if text(metadata["task_id"]) == task.ID && account.Status != "failed" && account.Status != "error" {
+			completed[account.MailboxID] = true
+		}
+	}
+	unfinished := make([]uint, 0, len(mailboxIDs))
+	for _, mailboxID := range mailboxIDs {
+		if !completed[mailboxID] {
+			unfinished = append(unfinished, mailboxID)
+		}
+	}
+	if len(unfinished) > 0 {
+		s.db.Model(&SunnyMailbox{}).Where("id IN ?", unfinished).Updates(map[string]any{
+			"status": "失败", "last_error": reason, "updated_at": time.Now(),
+		})
+	}
+	task.SuccessCount = len(completed)
+	task.ErrorCount = len(unfinished)
+	task.ProgressCurrent = len(completed) + len(unfinished)
+	s.db.Save(task)
 }
 
 func (s *Server) pythonWorkerTaskRunning(workerURL, taskID string) (bool, bool) {

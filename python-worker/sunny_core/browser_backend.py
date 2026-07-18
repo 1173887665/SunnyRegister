@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ctypes
+import os
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
@@ -12,6 +15,25 @@ class RegistrationBrowserSession:
     backend: str
     browser: Any
     context: Any
+
+
+def camoufox_runtime_error() -> str:
+    """Return a concise container runtime error before a task can get stuck."""
+    if not sys.platform.startswith("linux") or os.getenv("SUNNY_CONTAINERIZED", "").lower() not in {"1", "true", "yes"}:
+        return ""
+    missing: list[str] = []
+    for library in ("libgtk-3.so.0", "libx11-xcb.so.1", "libasound.so.2"):
+        try:
+            ctypes.CDLL(library)
+        except OSError:
+            missing.append(library)
+    if not missing:
+        return ""
+    return (
+        "Camoufox Linux runtime dependencies are missing: "
+        + ", ".join(missing)
+        + ". Rebuild the python-worker image from the current Dockerfile."
+    )
 
 
 @contextmanager
@@ -30,6 +52,9 @@ def open_registration_browser(
     """
 
     if headless:
+        runtime_error = camoufox_runtime_error()
+        if runtime_error:
+            raise RuntimeError(runtime_error)
         try:
             from camoufox.sync_api import Camoufox  # type: ignore
         except Exception as exc:
@@ -39,7 +64,7 @@ def open_registration_browser(
             ) from exc
 
         launch_options: dict[str, Any] = {
-            "headless": True,
+            "headless": "virtual" if os.getenv("SUNNY_CONTAINERIZED", "").lower() in {"1", "true", "yes"} else True,
             "block_webrtc": True,
             "humanize": True,
             "locale": [fingerprint.locale, *fingerprint.languages[1:]],
@@ -55,6 +80,9 @@ def open_registration_browser(
         context = None
         try:
             browser = manager.__enter__()
+        except Exception as exc:
+            raise RuntimeError(f"Camoufox browser startup failed: {str(exc)[:500]}") from exc
+        try:
             context = browser.new_context(
                 no_viewport=True,
                 locale=fingerprint.locale,
