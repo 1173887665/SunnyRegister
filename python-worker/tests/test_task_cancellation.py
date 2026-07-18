@@ -1,16 +1,34 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from sunny_core.db import SunnyDB
+from worker import _terminate_process_tree
 
 
 class TaskCancellationTests(unittest.TestCase):
+    def test_force_stop_terminates_task_process(self) -> None:
+        kwargs: dict = {}
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            kwargs["start_new_session"] = True
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], **kwargs)
+        try:
+            _terminate_process_tree(process)
+            self.assertIsNotNone(process.poll())
+        finally:
+            if process.poll() is None:
+                process.kill()
+
     def test_cancel_preserves_completed_mailbox_and_fails_unfinished_mailbox(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             database = Path(tmp) / "cancel.db"
