@@ -40,7 +40,20 @@ generate_secret secrets/admin_password 24
 generate_secret secrets/python_worker_token 32
 
 "${COMPOSE[@]}" config --quiet
-"${COMPOSE[@]}" up -d --build --remove-orphans
+
+dump_failure_diagnostics() {
+  echo "=== Container status ===" >&2
+  "${COMPOSE[@]}" ps >&2 || true
+  echo "=== Python Worker logs ===" >&2
+  "${COMPOSE[@]}" logs --no-color --tail=200 python-worker >&2 || true
+  echo "=== Python Worker health ===" >&2
+  docker inspect --format '{{json .State.Health}}' sunnyregister-python-worker >&2 || true
+}
+
+if ! "${COMPOSE[@]}" up -d --build --remove-orphans; then
+  dump_failure_diagnostics
+  exit 1
+fi
 
 ready=0
 for _ in $(seq 1 120); do
@@ -54,12 +67,7 @@ done
 
 "${COMPOSE[@]}" ps
 if [[ "$ready" -ne 1 ]]; then
-  echo "=== Container status ===" >&2
-  "${COMPOSE[@]}" ps >&2 || true
-  echo "=== Python Worker logs ===" >&2
-  "${COMPOSE[@]}" logs --no-color --tail=200 python-worker >&2 || true
-  echo "=== Python Worker health ===" >&2
-  docker inspect --format '{{json .State.Health}}' sunnyregister-python-worker >&2 || true
+  dump_failure_diagnostics
   echo "SunnyRegister did not become healthy. Run: docker compose -f docker-compose.production.yml logs --tail=200" >&2
   exit 1
 fi
