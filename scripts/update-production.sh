@@ -25,12 +25,12 @@ if docker inspect sunnyregister-python-worker >/dev/null 2>&1; then
 fi
 
 git checkout --detach "$TARGET"
-if ./scripts/deploy-production.sh; then
+if bash ./scripts/deploy-production.sh; then
   echo "Updated SunnyRegister: ${previous} -> $(git rev-parse HEAD)"
   exit 0
 fi
 
 echo "Deployment health check failed; rolling back to ${previous}." >&2
 git checkout --detach "$previous"
-./scripts/deploy-production.sh
+bash ./scripts/deploy-production.sh
 exit 1

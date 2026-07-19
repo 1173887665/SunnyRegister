@@ -54,6 +54,12 @@ done
 
 "${COMPOSE[@]}" ps
 if [[ "$ready" -ne 1 ]]; then
+  echo "=== Container status ===" >&2
+  "${COMPOSE[@]}" ps >&2 || true
+  echo "=== Python Worker logs ===" >&2
+  "${COMPOSE[@]}" logs --no-color --tail=200 python-worker >&2 || true
+  echo "=== Python Worker health ===" >&2
+  docker inspect --format '{{json .State.Health}}' sunnyregister-python-worker >&2 || true
   echo "SunnyRegister did not become healthy. Run: docker compose -f docker-compose.production.yml logs --tail=200" >&2
   exit 1
 fi
