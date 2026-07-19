@@ -12,8 +12,13 @@ ENV PYTHONUNBUFFERED=1 \
     NOVNC_PORT=6080 \
     TZ=Asia/Shanghai
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+RUN for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+      if [ -f "$source" ]; then \
+        sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' "$source"; \
+      fi; \
+    done \
+    && apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true update \
+    && apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true install -y --no-install-recommends \
       ca-certificates curl tzdata \
       xvfb x11vnc novnc websockify \
       x11-utils \

@@ -32,12 +32,12 @@ SUNNYREGISTER_PUBLIC_CHECK=false
 ADMIN_USERNAME=sunnyadmin
 ```
 
-Outlook verification codes use IPv4 IMAP direct access first. If the cloud
-provider blocks outbound TCP/993, configure a dedicated HTTP CONNECT or SOCKS5
+The registration task proxy is used for Outlook IMAP before trying a direct
+IPv4 connection. To override it, configure a dedicated HTTP CONNECT or SOCKS5
 proxy in `.env`:
 
 ```dotenv
-OUTLOOK_IMAP_DIRECT_FIRST=true
+OUTLOOK_IMAP_DIRECT_FIRST=false
 OUTLOOK_IMAP_PROXY=socks5://user:password@proxy.example.com:1080
 ```
 

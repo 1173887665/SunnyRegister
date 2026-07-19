@@ -209,7 +209,7 @@ class HotmailReader:
     def _imap_proxy_candidates(self) -> list[str]:
         dedicated_proxy = os.getenv("OUTLOOK_IMAP_PROXY", "").strip()
         fallback_proxy = dedicated_proxy or self.proxy_url
-        direct_first = os.getenv("OUTLOOK_IMAP_DIRECT_FIRST", "true").strip().lower() not in {"0", "false", "no", "off"}
+        direct_first = os.getenv("OUTLOOK_IMAP_DIRECT_FIRST", "false").strip().lower() not in {"0", "false", "no", "off"}
         candidates = ["", fallback_proxy] if direct_first else [fallback_proxy, ""]
         return list(dict.fromkeys(candidate for candidate in candidates if candidate or candidate == ""))
 

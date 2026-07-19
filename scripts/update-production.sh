@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+chmod +x "$ROOT"/scripts/*.sh 2>/dev/null || true
 TARGET="${1:-origin/main}"
 LOCK_FILE="${TMPDIR:-/tmp}/sunnyregister-update.lock"
 exec 9>"$LOCK_FILE"
@@ -25,6 +26,7 @@ if docker inspect sunnyregister-python-worker >/dev/null 2>&1; then
 fi
 
 git checkout --detach "$TARGET"
+chmod +x "$ROOT"/scripts/*.sh 2>/dev/null || true
 if bash ./scripts/deploy-production.sh; then
   echo "Updated SunnyRegister: ${previous} -> $(git rev-parse HEAD)"
   exit 0
@@ -32,5 +34,6 @@ fi
 
 echo "Deployment health check failed; rolling back to ${previous}." >&2
 git checkout --detach "$previous"
+chmod +x "$ROOT"/scripts/*.sh 2>/dev/null || true
 bash ./scripts/deploy-production.sh
 exit 1
