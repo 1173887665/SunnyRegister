@@ -21,7 +21,23 @@ if [[ "${SKIP_SYSTEM_DEPS:-0}" != "1" ]] && command -v apt-get >/dev/null 2>&1; 
     exit 1
   fi
   "${SUDO[@]}" apt-get update
-  "${SUDO[@]}" apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify x11-utils fonts-liberation fonts-noto-cjk curl ca-certificates
+
+  # Camoufox bundles Firefox but relies on host GTK/X11 runtime libraries. The
+  # package suffix changed to t64 on Ubuntu 24.04, so resolve names at runtime
+  # to keep the one-command setup compatible with both 22.04 and 24.04.
+  gtk_package="libgtk-3-0"
+  xt_package="libxt6"
+  if apt-cache show libgtk-3-0t64 >/dev/null 2>&1; then
+    gtk_package="libgtk-3-0t64"
+  fi
+  if apt-cache show libxt6t64 >/dev/null 2>&1; then
+    xt_package="libxt6t64"
+  fi
+
+  "${SUDO[@]}" apt-get install -y --no-install-recommends \
+    xvfb x11vnc novnc websockify x11-utils \
+    fonts-liberation fonts-noto-cjk curl ca-certificates \
+    "$gtk_package" "$xt_package" libdbus-glib-1-2 libnss3 libasound2
 fi
 
 if [[ ! -x python-worker/.venv/bin/python ]] || ! python-worker/.venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' >/dev/null 2>&1; then
