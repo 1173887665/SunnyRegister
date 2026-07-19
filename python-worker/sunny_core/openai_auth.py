@@ -371,7 +371,7 @@ class OpenAIEmailRegisterFlow:
         if self.otp_reader:
             return
         self.log("[邮箱] 提前连接 Outlook IMAP，准备接收 OpenAI 验证码")
-        self.otp_reader = HotmailReader(self.account, self.log, "")
+        self.otp_reader = HotmailReader(self.account, self.log, self.proxy_url)
         self.otp_reader.connect()
 
     def _create_openai_signin_url(self, context, page=None) -> str:
@@ -705,7 +705,7 @@ class OpenAIEmailRegisterFlow:
 
     def _submit_email_code(self, page, min_timestamp: float) -> None:
         if not self.otp_reader:
-            self.otp_reader = HotmailReader(self.account, self.log, "")
+            self.otp_reader = HotmailReader(self.account, self.log, self.proxy_url)
         self.log("[邮箱] 等待 OpenAI 邮箱验证码")
         code = self.otp_reader.wait_for_code(min_timestamp, 180)
         if not self._fill_email_code_inputs(page, code):
