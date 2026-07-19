@@ -27,6 +27,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/text/encoding/htmlindex"
 )
 
 const (
@@ -613,7 +615,8 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 	if limit > 50 {
 		limit = 50
 	}
-	payload, err := fetchOutlookLatestMail(m.Email, m.ClientID, m.RefreshToken, limit)
+	proxyURL := s.sunnyMailboxProxyURL()
+	payload, err := fetchOutlookLatestMail(m.Email, m.ClientID, m.RefreshToken, limit, proxyURL)
 	if err != nil {
 		m.LastError = err.Error()
 		s.db.Save(m)
@@ -627,12 +630,31 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 	writeJSON(w, 200, payload)
 }
 
-func fetchOutlookLatestMail(email, clientID, refreshToken string, limit int) (map[string]any, error) {
-	token, endpoint, err := refreshHotmailAccessTokenCached(email, clientID, refreshToken, "")
+// sunnyMailboxProxyURL returns the same enabled proxy used by registration tasks.
+// Outlook IMAPS is not reliably reachable directly from all server networks, so
+// mailbox reads must use that proxy too instead of silently bypassing it.
+func (s *Server) sunnyMailboxProxyURL() string {
+	cfg := s.sunnyGetConfig(sunnyCfgProxy, defaultProxyConfig())
+	if !boolValue(cfg["proxy_enabled"], true) {
+		return ""
+	}
+	if proxy := normalizeSunnyProxyAddress(text(cfg["register_proxy"])); proxy != "" {
+		return proxy
+	}
+	var row SunnyProxy
+	if s.db.Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
+		Order("updated_at desc, id asc").First(&row).Error == nil {
+		return normalizeSunnyProxyAddress(row.Address)
+	}
+	return normalizeSunnyProxyAddress(text(cfg["local_proxy"]))
+}
+
+func fetchOutlookLatestMail(email, clientID, refreshToken string, limit int, proxyURL string) (map[string]any, error) {
+	token, endpoint, err := refreshHotmailAccessTokenCached(email, clientID, refreshToken, proxyURL)
 	if err != nil {
 		return nil, err
 	}
-	items, err := fetchLatestMailsViaIMAP(email, token, limit)
+	items, err := fetchLatestMailsViaIMAP(email, token, limit, proxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -729,8 +751,83 @@ func refreshHotmailAccessToken(email, clientID, refreshToken, proxyURL string) (
 	return "", "", fmt.Errorf("Outlook token 刷新失败，所有 sunny 兼容端点均失败：%s", strings.Join(errors, " | "))
 }
 
+func dialOutlookIMAPS(proxyURL string) (*tls.Conn, error) {
+	const host = "outlook.office365.com"
+	const target = host + ":993"
+	const timeout = 30 * time.Second
+	if strings.TrimSpace(proxyURL) == "" {
+		return tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", target, &tls.Config{ServerName: host})
+	}
+
+	proxy, err := url.Parse(proxyURL)
+	if err != nil || proxy.Hostname() == "" {
+		return nil, fmt.Errorf("invalid IMAP proxy URL")
+	}
+	if scheme := strings.ToLower(proxy.Scheme); scheme != "http" && scheme != "https" {
+		return nil, fmt.Errorf("IMAP proxy only supports HTTP CONNECT: %s", proxy.Scheme)
+	}
+	port := proxy.Port()
+	if port == "" {
+		port = "80"
+	}
+	raw, err := (&net.Dialer{Timeout: timeout}).Dial("tcp", net.JoinHostPort(proxy.Hostname(), port))
+	if err != nil {
+		return nil, fmt.Errorf("IMAP proxy dial failed: %w", err)
+	}
+	closeRaw := true
+	defer func() {
+		if closeRaw {
+			_ = raw.Close()
+		}
+	}()
+	_ = raw.SetDeadline(time.Now().Add(timeout))
+
+	request := []string{
+		"CONNECT " + target + " HTTP/1.1",
+		"Host: " + target,
+		"Proxy-Connection: keep-alive",
+		"User-Agent: SunnyRegister/1.0",
+	}
+	if proxy.User != nil {
+		password, _ := proxy.User.Password()
+		auth := base64.StdEncoding.EncodeToString([]byte(proxy.User.Username() + ":" + password))
+		request = append(request, "Proxy-Authorization: Basic "+auth)
+	}
+	if _, err := io.WriteString(raw, strings.Join(request, "\r\n")+"\r\n\r\n"); err != nil {
+		return nil, fmt.Errorf("IMAP proxy CONNECT write failed: %w", err)
+	}
+	// Keep one buffered reader for the whole CONNECT response: creating a new
+	// reader after the status line could discard headers already buffered by the
+	// first reader.
+	reader := bufio.NewReader(raw)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("IMAP proxy CONNECT response failed: %w", err)
+	}
+	if !strings.Contains(response, " 200 ") {
+		return nil, fmt.Errorf("IMAP proxy CONNECT failed: %s", strings.TrimSpace(response))
+	}
+	// Consume the remaining HTTP response headers before beginning TLS.
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("IMAP proxy CONNECT headers failed: %w", err)
+		}
+		if line == "\r\n" || line == "\n" {
+			break
+		}
+	}
+	_ = raw.SetDeadline(time.Time{})
+	conn := tls.Client(raw, &tls.Config{ServerName: host})
+	if err := conn.Handshake(); err != nil {
+		return nil, fmt.Errorf("IMAP TLS handshake via proxy failed: %w", err)
+	}
+	closeRaw = false
+	return conn, nil
+}
+
 func fetchLatestMailViaIMAP(emailAddr, accessToken string) (map[string]any, error) {
-	items, err := fetchLatestMailsViaIMAP(emailAddr, accessToken, 1)
+	items, err := fetchLatestMailsViaIMAP(emailAddr, accessToken, 1, "")
 	if err != nil {
 		return nil, err
 	}
@@ -740,14 +837,14 @@ func fetchLatestMailViaIMAP(emailAddr, accessToken string) (map[string]any, erro
 	return items[0], nil
 }
 
-func fetchLatestMailsViaIMAP(emailAddr, accessToken string, limit int) ([]map[string]any, error) {
+func fetchLatestMailsViaIMAP(emailAddr, accessToken string, limit int, proxyURL string) ([]map[string]any, error) {
 	if limit < 1 {
 		limit = 5
 	}
 	if limit > 50 {
 		limit = 50
 	}
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 25 * time.Second}, "tcp", "outlook.office365.com:993", &tls.Config{ServerName: "outlook.office365.com"})
+	conn, err := dialOutlookIMAPS(proxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -870,12 +967,13 @@ func parseIMAPMailItem(msgID, raw, tag string) map[string]any {
 	if err != nil {
 		return map[string]any{"id": msgID, "parse_error": err.Error(), "raw_preview": strings.TrimSpace(raw[:min(len(raw), 1200)])}
 	}
+	decoder := &mime.WordDecoder{CharsetReader: mailCharsetReader}
 	subject := m.Header.Get("Subject")
-	if dec, derr := (&mime.WordDecoder{}).DecodeHeader(subject); derr == nil {
+	if dec, derr := decoder.DecodeHeader(subject); derr == nil {
 		subject = dec
 	}
 	from := m.Header.Get("From")
-	if dec, derr := (&mime.WordDecoder{}).DecodeHeader(from); derr == nil {
+	if dec, derr := decoder.DecodeHeader(from); derr == nil {
 		from = dec
 	}
 	bodyText, bodyHTML := extractMailBodies(textproto.MIMEHeader(m.Header), m.Body)
@@ -901,9 +999,48 @@ func parseIMAPMailItem(msgID, raw, tag string) map[string]any {
 	}
 }
 
+func mailCharsetReader(charset string, input io.Reader) (io.Reader, error) {
+	encoding, err := htmlindex.Get(strings.TrimSpace(charset))
+	if err != nil {
+		return nil, err
+	}
+	return encoding.NewDecoder().Reader(input), nil
+}
+
+func decodeMailBytes(raw []byte, charset string) string {
+	charset = strings.TrimSpace(charset)
+	if charset == "" || strings.EqualFold(charset, "utf-8") || strings.EqualFold(charset, "us-ascii") {
+		return string(raw)
+	}
+	encoding, err := htmlindex.Get(charset)
+	if err != nil {
+		return string(raw)
+	}
+	decoded, err := encoding.NewDecoder().Bytes(raw)
+	if err != nil {
+		return string(raw)
+	}
+	return string(decoded)
+}
+
+func htmlDeclaredCharset(raw []byte) string {
+	// Some legacy mail omits charset in Content-Type but provides it in an HTML
+	// meta tag. Decode that declaration before handing HTML to the browser.
+	match := regexp.MustCompile(`(?i)<meta[^>]+charset\s*=\s*["']?\s*([a-z0-9._-]+)`).FindSubmatch(raw)
+	if len(match) > 1 {
+		return string(match[1])
+	}
+	match = regexp.MustCompile(`(?i)<meta[^>]+content\s*=\s*["'][^"']*charset\s*=\s*([a-z0-9._-]+)`).FindSubmatch(raw)
+	if len(match) > 1 {
+		return string(match[1])
+	}
+	return ""
+}
+
 func extractMailBodies(header textproto.MIMEHeader, body io.Reader) (string, string) {
 	mediaType, params, _ := mime.ParseMediaType(header.Get("Content-Type"))
-	if strings.HasPrefix(strings.ToLower(mediaType), "multipart/") && params["boundary"] != "" {
+	mediaType = strings.ToLower(mediaType)
+	if strings.HasPrefix(mediaType, "multipart/") && params["boundary"] != "" {
 		mr := multipart.NewReader(body, params["boundary"])
 		texts, htmls := []string{}, []string{}
 		for {
@@ -921,16 +1058,25 @@ func extractMailBodies(header textproto.MIMEHeader, body io.Reader) (string, str
 		}
 		return strings.Join(texts, "\n"), strings.Join(htmls, "\n")
 	}
+	// Attachments such as PNG/PDF must not be decoded as mail text; doing so
+	// produced binary garbage in the preview.
+	if mediaType != "text/plain" && mediaType != "text/html" {
+		return "", ""
+	}
 	reader := body
-	switch strings.ToLower(header.Get("Content-Transfer-Encoding")) {
+	switch strings.ToLower(strings.TrimSpace(header.Get("Content-Transfer-Encoding"))) {
 	case "quoted-printable":
 		reader = quotedprintable.NewReader(body)
 	case "base64":
 		reader = base64.NewDecoder(base64.StdEncoding, body)
 	}
-	b, _ := io.ReadAll(io.LimitReader(reader, 4<<20))
-	value := string(b)
-	if strings.Contains(strings.ToLower(mediaType), "html") {
+	raw, _ := io.ReadAll(io.LimitReader(reader, 4<<20))
+	charset := params["charset"]
+	if charset == "" && mediaType == "text/html" {
+		charset = htmlDeclaredCharset(raw)
+	}
+	value := decodeMailBytes(raw, charset)
+	if mediaType == "text/html" {
 		return "", value
 	}
 	return value, ""
