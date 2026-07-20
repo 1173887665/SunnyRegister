@@ -5,9 +5,15 @@
 **A GPT account registration and management tool for accounts you own and authorized testing environments**
 
 [![CI](https://github.com/pxygit/SunnyRegister/actions/workflows/ci.yml/badge.svg)](https://github.com/pxygit/SunnyRegister/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/pxygit/SunnyRegister?display_name=tag&sort=semver)](https://github.com/pxygit/SunnyRegister/releases)
 [![License](https://img.shields.io/badge/license-MIT-10b981.svg)](./LICENSE)
-[![Stars](https://img.shields.io/github/stars/pxygit/SunnyRegister?style=flat)](https://github.com/pxygit/SunnyRegister/stargazers)
+[![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111111)](https://react.dev/)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+[![Playwright](https://img.shields.io/badge/Playwright-1.61%2B-2EAD33?logo=playwright&logoColor=white)](https://playwright.dev/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![GSAP](https://img.shields.io/badge/GSAP-3-88CE02?logo=greensock&logoColor=111111)](https://gsap.com/)
 
 [简体中文](./README.md) | [English](./README_en.md)
 
