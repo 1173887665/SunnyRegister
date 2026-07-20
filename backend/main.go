@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/subtle"
 	"embed"
@@ -90,7 +91,7 @@ func main() {
 	addr := ":" + fallback(os.Getenv("PORT"), "8000")
 	log.Printf("SunnyRegister Go backend listening on %s", addr)
 	httpServer := &http.Server{
-		Addr: addr, Handler: s.securityHeaders(mux),
+		Addr: addr, Handler: s.gzipResponses(s.securityHeaders(mux)),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 5 * time.Minute, IdleTimeout: 60 * time.Second,
 	}
@@ -425,10 +426,65 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	if f, err := s.staticFS.Open(clean); err == nil {
 		_ = f.Close()
+		if clean == "index.html" {
+			w.Header().Set("Cache-Control", "no-cache")
+		} else {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
 		http.FileServer(s.staticFS).ServeHTTP(w, r)
 		return
 	}
 	r2 := *r
 	r2.URL.Path = "/index.html"
+	w.Header().Set("Cache-Control", "no-cache")
 	http.FileServer(s.staticFS).ServeHTTP(w, &r2)
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gzipWriter  *gzip.Writer
+	wroteHeader bool
+}
+
+func (w *gzipResponseWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	w.Header().Del("Content-Length")
+	w.Header().Set("Content-Encoding", "gzip")
+	w.Header().Add("Vary", "Accept-Encoding")
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *gzipResponseWriter) Write(data []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.gzipWriter.Write(data)
+}
+
+func (w *gzipResponseWriter) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	_ = w.gzipWriter.Flush()
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (s *Server) gzipResponses(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		acceptsGzip := strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip")
+		excluded := r.Method == http.MethodHead || strings.Contains(r.URL.Path, "/export") || r.Header.Get("Range") != ""
+		if !acceptsGzip || excluded {
+			next.ServeHTTP(w, r)
+			return
+		}
+		gz := gzip.NewWriter(w)
+		wrapped := &gzipResponseWriter{ResponseWriter: w, gzipWriter: gz}
+		defer gz.Close()
+		next.ServeHTTP(wrapped, r)
+	})
 }

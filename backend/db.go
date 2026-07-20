@@ -35,9 +35,20 @@ func openDB() *gorm.DB {
 	}
 	sqlDB, _ := db.DB()
 	if sqlDB != nil {
-		sqlDB.SetMaxOpenConns(1)
+		maxOpen := intValue(os.Getenv("SUNNY_DB_MAX_OPEN_CONNS"), 4)
+		if maxOpen < 1 {
+			maxOpen = 1
+		}
+		sqlDB.SetMaxOpenConns(maxOpen)
+		sqlDB.SetMaxIdleConns(maxOpen)
+		sqlDB.SetConnMaxIdleTime(5 * time.Minute)
 	}
+	db.Exec("PRAGMA busy_timeout=5000")
 	db.Exec("PRAGMA journal_mode=WAL")
+	db.Exec("PRAGMA synchronous=NORMAL")
+	db.Exec("PRAGMA temp_store=MEMORY")
+	db.Exec("PRAGMA cache_size=-32768")
+	db.Exec("PRAGMA wal_autocheckpoint=1000")
 	db.Exec("PRAGMA foreign_keys=ON")
 	if err := db.AutoMigrate(
 		&ConfigItem{}, &Account{}, &AccountOverview{}, &AccountCredential{},
@@ -49,8 +60,28 @@ func openDB() *gorm.DB {
 		log.Fatalf("migrate sqlite failed: %v", err)
 	}
 	ensureSunnySchema(db)
+	ensureSunnyIndexes(db)
 	sanitizeHistoricalTaskData(db)
 	return db
+}
+
+func ensureSunnyIndexes(db *gorm.DB) {
+	indexes := []string{
+		"CREATE INDEX IF NOT EXISTS idx_sunny_mailboxes_enabled_updated ON sunny_mailboxes(enabled, updated_at DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_sunny_mailboxes_group_status_enabled ON sunny_mailboxes(group_id, status, enabled)",
+		"CREATE INDEX IF NOT EXISTS idx_sunny_sessions_updated ON sunny_sessions(updated_at DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_sunny_sessions_email ON sunny_sessions(email)",
+		"CREATE INDEX IF NOT EXISTS idx_sunny_accounts_email ON sunny_accounts(email)",
+		"CREATE INDEX IF NOT EXISTS idx_sunny_proxies_status_enabled_checked ON sunny_proxies(status, enabled, last_checked_at)",
+		"CREATE INDEX IF NOT EXISTS idx_sunny_proxies_country_status ON sunny_proxies(country, status)",
+		"CREATE INDEX IF NOT EXISTS idx_task_events_task_id_id ON task_events(task_id, id)",
+		"CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at)",
+	}
+	for _, statement := range indexes {
+		if err := db.Exec(statement).Error; err != nil {
+			log.Printf("create performance index failed: %v", err)
+		}
+	}
 }
 
 func sanitizeHistoricalTaskData(db *gorm.DB) {

@@ -35,6 +35,15 @@ function useCachedState<T>(key: string, initial: T | (() => T)): [T, Dispatch<Se
   return [value, setCachedValue];
 }
 
+function useDebouncedValue<T>(value: T, delay = 260): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
+}
+
 const zh: AnyObj = new Proxy({
   workbench: "工作台", mailbox: "邮箱配置", phone: "接码配置", sub2api: "反代配置", proxy: "代理配置", session: "Session管理",
   title: "SunnyRegister 注册机控制台", desc: "使用自建 Outlook 邮箱池注册/登录 GPT 账户，并统一管理账户状态、Session、RT 和日志。",
@@ -245,12 +254,12 @@ export default function SunnyRegister() {
 function Hero({ t }: { t: typeof zh }) { return <section className="hero-card rounded-[34px] border border-[var(--border)] p-6 md:p-8"><Badge className="rounded-full px-3 py-1">SunnyRegister</Badge><h1 className="mt-4 text-4xl font-black tracking-[-0.05em] md:text-5xl">{t.title}</h1><p className="mt-3 max-w-4xl leading-7 text-[var(--text-secondary)]">{t.desc}</p></section>; }
 
 function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", text: string) => void }) {
-  const [accounts, setAccounts] = useCachedState<AnyObj[]>("workbench.accounts", []);
   const [mailboxes, setMailboxes] = useCachedState<AnyObj[]>("workbench.mailboxes", []);
   const [groups, setGroups] = useCachedState<AnyObj[]>("workbench.groups", []);
   const [selected, setSelected] = useCachedState<number[]>("workbench.selected", []);
   const [selectedRowCache, setSelectedRowCache] = useCachedState<Record<string,AnyObj>>("workbench.selectedRows", {});
   const [query, setQuery] = useCachedState("workbench.query", "");
+  const debouncedQuery = useDebouncedValue(query);
   const [status, setStatus] = useCachedState("workbench.status", "");
   const [planFilter, setPlanFilter] = useCachedState("workbench.planFilter", "");
   const [groupFilter, setGroupFilter] = useCachedState("workbench.groupFilter", 0);
@@ -276,15 +285,13 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const stopAfterSubmitRef = useRef(false);
   const load = async () => {
     const params = new URLSearchParams({ page: String(pageNo), page_size: String(pageSize), enabled: "true", sort_by: "updated_at", sort_order: timeSort });
-    if (query.trim()) params.set("q", query.trim());
+    if (debouncedQuery.trim()) params.set("q", debouncedQuery.trim());
     if (groupFilter) params.set("group_id", String(groupFilter));
     if (status) params.set("status", status);
     if (planFilter) params.set("plan_type", planFilter);
-    const [a, m, g] = await Promise.all([apiFetch("/sunny/workbench/accounts"), apiFetch(`/sunny/mailboxes?${params.toString()}`), apiFetch("/sunny/mailbox-groups")]);
-    setAccounts(a.items || []);
+    const m = await apiFetch(`/sunny/mailboxes?${params.toString()}`);
     setMailboxes(m.items || []);
     setTotal(Number(m.total || 0));
-    setGroups(g.items || []);
   };
   const refreshList = async () => {
     try {
@@ -294,9 +301,10 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       notify("fail", e.message || String(e));
     }
   };
-  useEffect(() => { void load(); }, [pageNo, pageSize, query, status, planFilter, groupFilter, timeSort]);
+  useEffect(() => { void load(); }, [pageNo, pageSize, debouncedQuery, status, planFilter, groupFilter, timeSort]);
+  useEffect(() => { void apiFetch("/sunny/mailbox-groups").then((g) => setGroups(g.items || [])).catch(() => {}); }, []);
   const rows: AnyObj[] = mailboxes
-    .map((m: AnyObj) => ({ ...m, account: accounts.find((a: AnyObj) => a.email === m.email) || {} }) as AnyObj);
+    .map((m: AnyObj) => ({ ...m, account: { id: Number(m.account_id || 0) } }) as AnyObj);
   const safePageNo = Math.min(Math.max(1, pageNo), pageCount(total, pageSize));
   const pagedRows = rows;
   useEffect(() => {
@@ -313,7 +321,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       });
       return changed ? next : old;
     });
-  }, [mailboxes, accounts, selected]);
+  }, [mailboxes, selected]);
   useEffect(()=>{setPageNo(1)},[query, status, planFilter, groupFilter, pageSize, timeSort]);
   useEffect(()=>{if (pageNo !== safePageNo) setPageNo(safePageNo)},[pageNo, safePageNo]);
   async function createRegisterTask(directIds?: number[]) {
@@ -638,6 +646,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   const [pageSize,setPageSize]=useCachedState("mailbox.pageSize", 10);
   const [total,setTotal]=useCachedState("mailbox.total", 0);
   const [query,setQuery]=useCachedState("mailbox.query", "");
+  const debouncedQuery = useDebouncedValue(query);
   const [groupFilter,setGroupFilter]=useCachedState("mailbox.groupFilter", 0);
   const [statusFilter,setStatusFilter]=useCachedState("mailbox.statusFilter", "");
   const [timeSort,setTimeSort]=useCachedState<SortOrder>("mailbox.timeSort", "desc");
@@ -649,17 +658,17 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   const [mailboxCfg,setMailboxCfg]=useCachedState<AnyObj>("mailbox.config",{pool_enabled:true});
   const load=async()=>{
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
-    if (query.trim()) params.set("q", query.trim());
+    if (debouncedQuery.trim()) params.set("q", debouncedQuery.trim());
     if (groupFilter) params.set("group_id", String(groupFilter));
     if (statusFilter) params.set("status", statusFilter);
     params.set("sort_by", "updated_at");
     params.set("sort_order", timeSort);
-    const [m,g]=await Promise.all([apiFetch(`/sunny/mailboxes?${params.toString()}`),apiFetch("/sunny/mailbox-groups")]);
+    const m=await apiFetch(`/sunny/mailboxes?${params.toString()}`);
     setItems(m.items||[]);
     setTotal(m.total||0);
-    setGroups(g.items||[]);
   };
-  useEffect(()=>{void load()},[page, query, groupFilter, statusFilter, timeSort, pageSize]);
+  useEffect(()=>{void load()},[page, debouncedQuery, groupFilter, statusFilter, timeSort, pageSize]);
+  useEffect(()=>{void apiFetch("/sunny/mailbox-groups").then((g)=>setGroups(g.items||[])).catch(()=>{})},[]);
   useEffect(()=>{apiFetch("/sunny/mailboxes/config").then((cfg)=>setMailboxCfg(cfg || {pool_enabled:true})).catch(()=>{})},[]);
   useEffect(()=>{setPage(1)},[query, groupFilter, statusFilter, timeSort, pageSize]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
@@ -958,6 +967,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   const [items,setItems]=useCachedState<AnyObj[]>("phone.items",[]);
   const [total,setTotal]=useCachedState("phone.total",0);
   const [query,setQuery]=useCachedState("phone.query","");
+  const debouncedQuery = useDebouncedValue(query);
   const [statusFilter,setStatusFilter]=useCachedState("phone.status","");
   const [countFilter,setCountFilter]=useCachedState("phone.count","all");
   const [timeSort,setTimeSort]=useCachedState<SortOrder>("phone.timeSort","desc");
@@ -973,7 +983,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   const [importOpen,setImportOpen]=useState(false);
   const load=async()=>{
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
-    if (query.trim()) params.set("q", query.trim());
+    if (debouncedQuery.trim()) params.set("q", debouncedQuery.trim());
     if (statusFilter) params.set("status", statusFilter);
     if (countFilter !== "all") params.set("count", countFilter);
     params.set("sort_by", "last_used_at");
@@ -982,7 +992,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
     setItems(data.items || []);
     setTotal(data.total || 0);
   };
-  useEffect(()=>{void load()},[page, query, statusFilter, countFilter, timeSort, pageSize]);
+  useEffect(()=>{void load()},[page, debouncedQuery, statusFilter, countFilter, timeSort, pageSize]);
   useEffect(()=>{apiFetch("/sunny/phones/config").then((cfg)=>{ const next = cfg || {pool_enabled:true}; setPhoneCfg(next); setSavedPhoneCfg(next); }).catch(()=>{})},[]);
   useEffect(()=>{setPage(1)},[query, statusFilter, countFilter, timeSort, pageSize]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
@@ -1500,6 +1510,7 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
   const [stats,setStats]=useCachedState<AnyObj>("proxy.stats",{total:0,enabled:0,available:0});
   const [countries,setCountries]=useCachedState<string[]>("proxy.countries",[]);
   const [query,setQuery]=useCachedState("proxy.query","");
+  const debouncedQuery = useDebouncedValue(query);
   const [status,setStatus]=useCachedState("proxy.status","");
   const [country,setCountry]=useCachedState("proxy.country","");
   const [timeSort,setTimeSort]=useCachedState<SortOrder>("proxy.timeSort","desc");
@@ -1513,7 +1524,7 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
   const [proxyCfg,setProxyCfg]=useCachedState<AnyObj>("proxy.cfg",{proxy_enabled:true});
   const [proxySaving,setProxySaving]=useCachedState("proxy.savingCfg",false);
   const load = async () => {
-    const qs = new URLSearchParams({page:String(page), page_size:String(pageSize), q:query, status, country, sort_by:"last_checked_at", sort_order:timeSort});
+    const qs = new URLSearchParams({page:String(page), page_size:String(pageSize), q:debouncedQuery, status, country, sort_by:"last_checked_at", sort_order:timeSort});
     const res = await apiFetch(`/sunny/proxy-config/pool?${qs.toString()}`);
     setItems(res.items || []);
     setStats(res.stats || {total:0,enabled:0,available:0});
@@ -1524,7 +1535,7 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
     const cfg = await apiFetch("/sunny/proxy-config");
     setProxyCfg(cfg || {proxy_enabled:true});
   };
-  useEffect(()=>{void load().catch((e:any)=>notify("fail", e.message || String(e)))},[page, pageSize, query, status, country, timeSort]);
+  useEffect(()=>{void load().catch((e:any)=>notify("fail", e.message || String(e)))},[page, pageSize, debouncedQuery, status, country, timeSort]);
   useEffect(()=>{void loadConfig().catch((e:any)=>notify("fail", e.message || String(e)))},[]);
   useEffect(()=>{setPage(1)},[query, status, country, timeSort, pageSize]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
@@ -1710,6 +1721,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const [items,setItems]=useCachedState<AnyObj[]>("session.items",[]);
   const [fmt,setFmt]=useCachedState("session.fmt","mailbox_account");
   const [query,setQuery]=useCachedState("session.query","");
+  const debouncedQuery = useDebouncedValue(query);
   const [status,setStatus]=useCachedState("session.status","");
   const [plan,setPlan]=useCachedState("session.plan","");
   const [selected,setSelected]=useCachedState<number[]>("session.selected",[]);
@@ -1720,14 +1732,14 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const [total,setTotal]=useCachedState("session.total",0);
   const load=async()=>{
     const qs = new URLSearchParams({ page:String(page), page_size:String(pageSize), sort_by:"updated_at", sort_order:timeSort });
-    if (query.trim()) qs.set("q", query.trim());
+    if (debouncedQuery.trim()) qs.set("q", debouncedQuery.trim());
     if (status) qs.set("status", status);
     if (plan) qs.set("plan_type", plan);
     const res = await apiFetch(`/sunny/sessions?${qs.toString()}`);
     setItems(res.items||[]);
     setTotal(Number(res.total || 0));
   };
-  useEffect(()=>{void load()},[timeSort, page, pageSize, query, status, plan]);
+  useEffect(()=>{void load()},[timeSort, page, pageSize, debouncedQuery, status, plan]);
   useEffect(()=>{setPage(1)},[timeSort, pageSize, query, status, plan]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
   const allChecked = items.length > 0 && items.every((x)=>selected.includes(x.id));
@@ -1861,8 +1873,5 @@ function LogCard({ t, title, logs, busy, onClear }: { t: typeof zh; title: strin
     </div>
   </Card>;
 }
-
-
-
 
 

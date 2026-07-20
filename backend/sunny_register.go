@@ -159,8 +159,12 @@ func serializeSunnyMailbox(m SunnyMailbox, groups map[uint]string, planType ...s
 	if len(planType) > 1 {
 		accessToken = planType[1]
 	}
+	accountID := uint(0)
+	if len(planType) > 2 {
+		accountID = uint(intValue(planType[2], 0))
+	}
 	return map[string]any{
-		"id": m.ID, "group_id": m.GroupID, "group_name": groups[m.GroupID], "email": m.Email,
+		"id": m.ID, "account_id": accountID, "group_id": m.GroupID, "group_name": groups[m.GroupID], "email": m.Email,
 		"password": m.Password, "client_id": m.ClientID, "refresh_token": m.RefreshToken, "openai_rt": m.OpenAIRT, "access_token": accessToken,
 		"raw": m.Raw, "account_type": fallback(m.AccountType, "free"), "plan_type": plan, "status": status, "enabled": m.Enabled,
 		"last_error": m.LastError, "latest_mail": jsonMap(m.LatestMailJSON),
@@ -285,6 +289,19 @@ func (s *Server) sunnyMailboxAccessTokensByEmail(emails []string) map[string]str
 	return out
 }
 
+func (s *Server) sunnyAccountIDsByEmail(emails []string) map[string]uint {
+	out := map[string]uint{}
+	if len(emails) == 0 {
+		return out
+	}
+	var accounts []SunnyAccount
+	s.db.Select("id", "email").Where("email IN ?", emails).Find(&accounts)
+	for _, account := range accounts {
+		out[sunnyEmailKey(account.Email)] = account.ID
+	}
+	return out
+}
+
 func sunnyPlanTypeForMailbox(m SunnyMailbox, sessionPlans map[string]string, accountExists map[string]bool) string {
 	key := sunnyEmailKey(m.Email)
 	if plan := normalizeSunnyPlanType(m.AccountType); plan != "" && plan != "free" {
@@ -360,11 +377,12 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			sessionPlans := s.sunnySessionPlanTypesByEmail(emails)
 			accountExists := s.sunnyAccountPresenceByEmail(emails)
 			accessTokens := s.sunnyMailboxAccessTokensByEmail(emails)
+			accountIDs := s.sunnyAccountIDsByEmail(emails)
 			filtered := []map[string]any{}
 			for _, m := range allRows {
 				plan := sunnyPlanTypeForMailbox(m, sessionPlans, accountExists)
 				if normalizeSunnyPlanType(plan) == planFilter {
-					filtered = append(filtered, serializeSunnyMailbox(m, gm, plan, accessTokens[sunnyEmailKey(m.Email)]))
+					filtered = append(filtered, serializeSunnyMailbox(m, gm, plan, accessTokens[sunnyEmailKey(m.Email)], strconv.FormatUint(uint64(accountIDs[sunnyEmailKey(m.Email)]), 10)))
 				}
 			}
 			total := int64(len(filtered))
@@ -391,9 +409,10 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		sessionPlans := s.sunnySessionPlanTypesByEmail(emails)
 		accountExists := s.sunnyAccountPresenceByEmail(emails)
 		accessTokens := s.sunnyMailboxAccessTokensByEmail(emails)
+		accountIDs := s.sunnyAccountIDsByEmail(emails)
 		items := []map[string]any{}
 		for _, m := range rows {
-			items = append(items, serializeSunnyMailbox(m, gm, sunnyPlanTypeForMailbox(m, sessionPlans, accountExists), accessTokens[sunnyEmailKey(m.Email)]))
+			items = append(items, serializeSunnyMailbox(m, gm, sunnyPlanTypeForMailbox(m, sessionPlans, accountExists), accessTokens[sunnyEmailKey(m.Email)], strconv.FormatUint(uint64(accountIDs[sunnyEmailKey(m.Email)]), 10)))
 		}
 		writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": size, "statuses": sunnyMailboxStatuses})
 		return
@@ -2374,6 +2393,18 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 		"created_at":      formatTime(sess.CreatedAt), "updated_at": formatTime(sess.UpdatedAt),
 	}
 }
+
+func (s *Server) serializeSunnySessionList(sess SunnySession, accounts map[string]SunnyAccount, mailboxes map[string]SunnyMailbox) map[string]any {
+	item := s.serializeSunnySession(sess, accounts, mailboxes)
+	delete(item, "session_json")
+	delete(item, "storage_state_json")
+	delete(item, "raw_mailbox_line")
+	delete(item, "mailbox_password")
+	delete(item, "mailbox_client_id")
+	delete(item, "mailbox_refresh_token")
+	delete(item, "id_token")
+	return item
+}
 func (s *Server) sunnySessionSidecars(rows []SunnySession) (map[string]SunnyAccount, map[string]SunnyMailbox) {
 	emails := []string{}
 	for _, row := range rows {
@@ -2397,6 +2428,29 @@ func (s *Server) sunnySessionSidecars(rows []SunnySession) (map[string]SunnyAcco
 	return accounts, mailboxes
 }
 
+func (s *Server) sunnySessionListSidecars(rows []SunnySession) (map[string]SunnyAccount, map[string]SunnyMailbox) {
+	emails := make([]string, 0, len(rows))
+	for _, row := range rows {
+		emails = append(emails, row.Email)
+	}
+	accounts := map[string]SunnyAccount{}
+	mailboxes := map[string]SunnyMailbox{}
+	if len(emails) == 0 {
+		return accounts, mailboxes
+	}
+	var accRows []SunnyAccount
+	s.db.Select("id", "email", "status", "account_type", "openai_rt").Where("email IN ?", emails).Find(&accRows)
+	for _, account := range accRows {
+		accounts[sunnyEmailKey(account.Email)] = account
+	}
+	var mailboxRows []SunnyMailbox
+	s.db.Select("id", "email", "status", "account_type", "openai_rt").Where("email IN ?", emails).Find(&mailboxRows)
+	for _, mailbox := range mailboxRows {
+		mailboxes[sunnyEmailKey(mailbox.Email)] = mailbox
+	}
+	return accounts, mailboxes
+}
+
 func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []string) {
 	if len(parts) == 0 && r.Method == http.MethodGet {
 		q := r.URL.Query()
@@ -2411,15 +2465,32 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		if pageSize > 100 {
 			pageSize = 100
 		}
-		var rows []SunnySession
-		s.db.Find(&rows)
-		accounts, mailboxes := s.sunnySessionSidecars(rows)
-		itemsAll := []map[string]any{}
 		kw := strings.ToLower(strings.TrimSpace(q.Get("q")))
 		statusFilter := strings.TrimSpace(q.Get("status"))
 		planFilter := strings.ToLower(strings.TrimSpace(q.Get("plan_type")))
+		if statusFilter == "" && planFilter == "" {
+			query := s.db.Model(&SunnySession{})
+			if kw != "" {
+				query = query.Where("LOWER(email) LIKE ?", "%"+kw+"%")
+			}
+			var total int64
+			query.Count(&total)
+			var rows []SunnySession
+			query.Select("id", "account_id", "email", "access_token", "refresh_token", "session_json", "expires_at", "last_refresh_at", "created_at", "updated_at").Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "created_at": "created_at", "last_refresh_at": "last_refresh_at"}, "updated_at desc")).Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows)
+			accounts, mailboxes := s.sunnySessionListSidecars(rows)
+			items := make([]map[string]any, 0, len(rows))
+			for _, row := range rows {
+				items = append(items, s.serializeSunnySessionList(row, accounts, mailboxes))
+			}
+			writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": pageSize})
+			return
+		}
+		var rows []SunnySession
+		s.db.Select("id", "account_id", "email", "access_token", "refresh_token", "session_json", "expires_at", "last_refresh_at", "created_at", "updated_at").Find(&rows)
+		accounts, mailboxes := s.sunnySessionListSidecars(rows)
+		itemsAll := []map[string]any{}
 		for _, row := range rows {
-			item := s.serializeSunnySession(row, accounts, mailboxes)
+			item := s.serializeSunnySessionList(row, accounts, mailboxes)
 			if kw != "" && !strings.Contains(strings.ToLower(text(item["email"])), kw) {
 				continue
 			}
