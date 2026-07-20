@@ -174,6 +174,18 @@ func serializeSunnyMailbox(m SunnyMailbox, groups map[uint]string, planType ...s
 	}
 }
 
+func serializeSunnyMailboxList(m SunnyMailbox, groups map[uint]string, plan, accessToken string, accountID uint, summary bool) map[string]any {
+	item := serializeSunnyMailbox(m, groups, plan, accessToken, strconv.FormatUint(uint64(accountID), 10))
+	if !summary {
+		return item
+	}
+	item["has_openai_rt"] = strings.TrimSpace(m.OpenAIRT) != ""
+	for _, key := range []string{"password", "client_id", "refresh_token", "openai_rt", "access_token", "raw", "last_error", "latest_mail", "last_mail_at"} {
+		delete(item, key)
+	}
+	return item
+}
+
 func normalizeSunnyPlanType(v string) string {
 	v = strings.TrimSpace(strings.ToLower(v))
 	v = strings.Trim(v, "\"'")
@@ -302,6 +314,53 @@ func (s *Server) sunnyAccountIDsByEmail(emails []string) map[string]uint {
 	return out
 }
 
+type sunnyMailboxLinkedData struct {
+	sessionPlans  map[string]string
+	accountExists map[string]bool
+	accessTokens  map[string]string
+	accountIDs    map[string]uint
+	accountRTs    map[string]string
+}
+
+func (s *Server) sunnyMailboxLinkedDataByEmail(emails []string) sunnyMailboxLinkedData {
+	linked := sunnyMailboxLinkedData{
+		sessionPlans:  map[string]string{},
+		accountExists: map[string]bool{},
+		accessTokens:  map[string]string{},
+		accountIDs:    map[string]uint{},
+		accountRTs:    map[string]string{},
+	}
+	if len(emails) == 0 {
+		return linked
+	}
+	var accounts []SunnyAccount
+	s.db.Select("id", "email", "access_token", "openai_rt").Where("email IN ?", emails).Find(&accounts)
+	for _, account := range accounts {
+		key := sunnyEmailKey(account.Email)
+		linked.accountExists[key] = true
+		linked.accountIDs[key] = account.ID
+		linked.accountRTs[key] = account.OpenAIRT
+		if strings.TrimSpace(account.AccessToken) != "" {
+			linked.accessTokens[key] = account.AccessToken
+		}
+	}
+	var sessions []SunnySession
+	s.db.Select("email", "access_token", "session_json").Where("email IN ?", emails).Find(&sessions)
+	for _, session := range sessions {
+		key := sunnyEmailKey(session.Email)
+		plan := sunnyPlanTypeFromSessionJSON(session.SessionJSON)
+		if plan != "" {
+			linked.sessionPlans[key] = plan
+		} else if linked.sessionPlans[key] == "" {
+			linked.sessionPlans[key] = "free"
+		}
+		if linked.accessTokens[key] == "" {
+			linked.accessTokens[key] = fallback(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON))
+		}
+	}
+	return linked
+}
+
 func sunnyPlanTypeForMailbox(m SunnyMailbox, sessionPlans map[string]string, accountExists map[string]bool) string {
 	key := sunnyEmailKey(m.Email)
 	if plan := normalizeSunnyPlanType(m.AccountType); plan != "" && plan != "free" {
@@ -342,6 +401,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 	}
 	if len(parts) == 0 && r.Method == http.MethodGet {
 		q := r.URL.Query()
+		summary := boolValue(q.Get("summary"), false)
 		page := intValue(q.Get("page"), 1)
 		if page < 1 {
 			page = 1
@@ -368,21 +428,27 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		}
 		if planFilter := normalizeSunnyPlanType(q.Get("plan_type")); planFilter != "" {
 			var allRows []SunnyMailbox
-			query.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Find(&allRows)
+			allQuery := query
+			if summary {
+				allQuery = allQuery.Select("id", "group_id", "email", "openai_rt", "account_type", "status", "enabled", "registered_at", "created_at", "updated_at")
+			}
+			allQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Find(&allRows)
 			gm := s.sunnyGroupMap()
 			emails := []string{}
 			for _, m := range allRows {
 				emails = append(emails, m.Email)
 			}
-			sessionPlans := s.sunnySessionPlanTypesByEmail(emails)
-			accountExists := s.sunnyAccountPresenceByEmail(emails)
-			accessTokens := s.sunnyMailboxAccessTokensByEmail(emails)
-			accountIDs := s.sunnyAccountIDsByEmail(emails)
+			linked := s.sunnyMailboxLinkedDataByEmail(emails)
 			filtered := []map[string]any{}
 			for _, m := range allRows {
-				plan := sunnyPlanTypeForMailbox(m, sessionPlans, accountExists)
+				key := sunnyEmailKey(m.Email)
+				plan := sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists)
 				if normalizeSunnyPlanType(plan) == planFilter {
-					filtered = append(filtered, serializeSunnyMailbox(m, gm, plan, accessTokens[sunnyEmailKey(m.Email)], strconv.FormatUint(uint64(accountIDs[sunnyEmailKey(m.Email)]), 10)))
+					item := serializeSunnyMailboxList(m, gm, plan, linked.accessTokens[key], linked.accountIDs[key], summary)
+					if summary && strings.TrimSpace(linked.accountRTs[key]) != "" {
+						item["has_openai_rt"] = true
+					}
+					filtered = append(filtered, item)
 				}
 			}
 			total := int64(len(filtered))
@@ -400,19 +466,25 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		var total int64
 		query.Count(&total)
 		var rows []SunnyMailbox
-		query.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Offset((page - 1) * size).Limit(size).Find(&rows)
+		listQuery := query
+		if summary {
+			listQuery = listQuery.Select("id", "group_id", "email", "openai_rt", "account_type", "status", "enabled", "registered_at", "created_at", "updated_at")
+		}
+		listQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Offset((page - 1) * size).Limit(size).Find(&rows)
 		gm := s.sunnyGroupMap()
 		emails := []string{}
 		for _, m := range rows {
 			emails = append(emails, m.Email)
 		}
-		sessionPlans := s.sunnySessionPlanTypesByEmail(emails)
-		accountExists := s.sunnyAccountPresenceByEmail(emails)
-		accessTokens := s.sunnyMailboxAccessTokensByEmail(emails)
-		accountIDs := s.sunnyAccountIDsByEmail(emails)
+		linked := s.sunnyMailboxLinkedDataByEmail(emails)
 		items := []map[string]any{}
 		for _, m := range rows {
-			items = append(items, serializeSunnyMailbox(m, gm, sunnyPlanTypeForMailbox(m, sessionPlans, accountExists), accessTokens[sunnyEmailKey(m.Email)], strconv.FormatUint(uint64(accountIDs[sunnyEmailKey(m.Email)]), 10)))
+			key := sunnyEmailKey(m.Email)
+			item := serializeSunnyMailboxList(m, gm, sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists), linked.accessTokens[key], linked.accountIDs[key], summary)
+			if summary && strings.TrimSpace(linked.accountRTs[key]) != "" {
+				item["has_openai_rt"] = true
+			}
+			items = append(items, item)
 		}
 		writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": size, "statuses": sunnyMailboxStatuses})
 		return
@@ -440,6 +512,12 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		var m SunnyMailbox
 		if id == 0 || s.db.First(&m, id).Error != nil {
 			writeError(w, 404, "mailbox not found")
+			return
+		}
+		if len(parts) == 1 && r.Method == http.MethodGet {
+			key := sunnyEmailKey(m.Email)
+			linked := s.sunnyMailboxLinkedDataByEmail([]string{m.Email})
+			writeJSON(w, 200, serializeSunnyMailboxList(m, s.sunnyGroupMap(), sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists), linked.accessTokens[key], linked.accountIDs[key], false))
 			return
 		}
 		if len(parts) == 1 && r.Method == http.MethodPut {
@@ -1849,11 +1927,17 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 		db.Count(&total)
 		var proxies []SunnyProxy
 		db.Order(sunnySortClause(r.URL.Query().Get("sort_by"), r.URL.Query().Get("sort_order"), map[string]string{"last_checked_at": "last_checked_at", "updated_at": "updated_at", "created_at": "created_at"}, "updated_at desc")).Limit(pageSize).Offset((page - 1) * pageSize).Find(&proxies)
-		var allTotal, enabledTotal, disabledTotal, invalidTotal int64
-		s.db.Model(&SunnyProxy{}).Count(&allTotal)
-		s.db.Model(&SunnyProxy{}).Where("status = ? AND enabled = ?", "enabled", true).Count(&enabledTotal)
-		s.db.Model(&SunnyProxy{}).Where("status = ?", "disabled").Count(&disabledTotal)
-		s.db.Model(&SunnyProxy{}).Where("status = ? OR (last_check_ok = ? AND last_checked_at IS NOT NULL)", "invalid", false).Count(&invalidTotal)
+		var proxyStats struct {
+			Total    int64 `gorm:"column:total"`
+			Enabled  int64 `gorm:"column:enabled"`
+			Disabled int64 `gorm:"column:disabled"`
+			Invalid  int64 `gorm:"column:invalid"`
+		}
+		s.db.Model(&SunnyProxy{}).Select(`
+			COUNT(*) AS total,
+			COALESCE(SUM(CASE WHEN status = 'enabled' AND enabled = 1 THEN 1 ELSE 0 END), 0) AS enabled,
+			COALESCE(SUM(CASE WHEN status = 'disabled' THEN 1 ELSE 0 END), 0) AS disabled,
+			COALESCE(SUM(CASE WHEN status = 'invalid' OR (last_check_ok = 0 AND last_checked_at IS NOT NULL) THEN 1 ELSE 0 END), 0) AS invalid`).Scan(&proxyStats)
 		var countries []string
 		s.db.Model(&SunnyProxy{}).Where("country <> ''").Distinct().Order("country asc").Pluck("country", &countries)
 		items := make([]map[string]any, 0, len(proxies))
@@ -1862,7 +1946,7 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 		}
 		writeJSON(w, 200, map[string]any{
 			"items": items, "total": total, "page": page, "page_size": pageSize, "countries": countries,
-			"stats": map[string]any{"total": allTotal, "enabled": enabledTotal, "disabled": disabledTotal, "invalid": invalidTotal},
+			"stats": map[string]any{"total": proxyStats.Total, "enabled": proxyStats.Enabled, "disabled": proxyStats.Disabled, "invalid": proxyStats.Invalid},
 		})
 		return
 	}
