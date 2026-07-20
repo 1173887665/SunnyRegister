@@ -36,24 +36,18 @@ export PYTHON_TASK_TYPES="sunny_register,sunny_login,sunny_refresh_session"
 export PORT="${SUNNYREGISTER_PORT:-8000}"
 export DISPLAY="${WORKER_DISPLAY:-${DISPLAY:-:99}}"
 
-if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
-  if [[ "${ENABLE_XVFB:-true}" != "true" && "${ENABLE_XVFB:-true}" != "1" ]]; then
-    echo "DISPLAY $DISPLAY is unavailable and ENABLE_XVFB is disabled." >&2
-    exit 1
-  fi
+# Background Camoufox does not need a display. Keep Xvfb/noVNC disabled by
+# default so an idle server does not retain graphical processes or memory.
+if [[ "${ENABLE_XVFB:-false}" == "true" || "${ENABLE_XVFB:-false}" == "1" ]] && ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
   Xvfb "$DISPLAY" -screen 0 "${XVFB_WHD:-1600x900x24}" -nolisten tcp -ac >"$LOGS/xvfb.log" 2>&1 &
   echo $! > "$RUNTIME/xvfb.pid"
-  for _ in $(seq 1 50); do
-    xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && break
-    sleep 0.1
-  done
-  if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
-    echo "Xvfb failed to start. Check logs/xvfb.log." >&2
-    exit 1
-  fi
 fi
 
-if [[ "${ENABLE_NOVNC:-true}" == "true" || "${ENABLE_NOVNC:-true}" == "1" ]]; then
+if [[ "${ENABLE_NOVNC:-false}" == "true" || "${ENABLE_NOVNC:-false}" == "1" ]]; then
+  if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+    echo "ENABLE_NOVNC requires a display; set ENABLE_XVFB=true or provide WORKER_DISPLAY." >&2
+    exit 1
+  fi
   x11vnc -display "$DISPLAY" -forever -shared -nopw -quiet -listen 127.0.0.1 -rfbport 5900 >"$LOGS/x11vnc.log" 2>&1 &
   echo $! > "$RUNTIME/x11vnc.pid"
   websockify --web=/usr/share/novnc/ "127.0.0.1:${NOVNC_PORT:-6080}" localhost:5900 >"$LOGS/novnc.log" 2>&1 &
@@ -106,6 +100,6 @@ fi
 echo "SunnyRegister is ready: http://127.0.0.1:${PORT}"
 echo "Username: ${ADMIN_USERNAME:-admin}"
 echo "Password: stored in ${DATA}/admin_password.txt or ADMIN_PASSWORD; it is not printed for security"
-if [[ "${ENABLE_NOVNC:-true}" == "true" || "${ENABLE_NOVNC:-true}" == "1" ]]; then
+if [[ "${ENABLE_NOVNC:-false}" == "true" || "${ENABLE_NOVNC:-false}" == "1" ]]; then
   echo "noVNC: http://127.0.0.1:${NOVNC_PORT:-6080}/vnc.html"
 fi

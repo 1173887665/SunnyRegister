@@ -7,8 +7,8 @@ ENV PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     ACCOUNT_MANAGER_DATABASE_URL=sqlite:////app/data/account_manager.db \
     DISPLAY=:99 \
-    ENABLE_XVFB=true \
-    ENABLE_NOVNC=true \
+    ENABLE_XVFB=false \
+    ENABLE_NOVNC=false \
     NOVNC_PORT=6080 \
     TZ=Asia/Shanghai
 

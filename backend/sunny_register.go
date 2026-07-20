@@ -650,15 +650,24 @@ func (s *Server) sunnyMailboxProxyURL() string {
 }
 
 func fetchOutlookLatestMail(email, clientID, refreshToken string, limit int, proxyURL string) (map[string]any, error) {
-	token, endpoint, err := refreshHotmailAccessTokenCached(email, clientID, refreshToken, proxyURL)
-	if err != nil {
-		return nil, err
+	// Microsoft can issue a token from more than one compatible endpoint, while
+	// IMAP accepts only one of them for certain legacy Outlook accounts. Pair
+	// each refresh attempt with IMAP authentication instead of treating the
+	// first token response as proof that it is usable for IMAP.
+	errors := []string{}
+	for _, endpoint := range hotmailTokenEndpoints {
+		token, err := refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken, endpoint, proxyURL)
+		if err != nil {
+			errors = append(errors, endpoint.Name+" token: "+err.Error())
+			continue
+		}
+		items, err := fetchLatestMailsViaIMAP(email, token, limit, proxyURL)
+		if err == nil {
+			return map[string]any{"email": email, "token_endpoint": endpoint.Name, "items": items, "count": len(items), "limit": limit}, nil
+		}
+		errors = append(errors, endpoint.Name+" IMAP: "+err.Error())
 	}
-	items, err := fetchLatestMailsViaIMAP(email, token, limit, proxyURL)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"email": email, "token_endpoint": endpoint, "items": items, "count": len(items), "limit": limit}, nil
+	return nil, fmt.Errorf("Outlook IMAP authentication failed for all compatible endpoints: %s", strings.Join(errors, " | "))
 }
 
 type hotmailTokenEndpoint struct {
@@ -709,6 +718,40 @@ func refreshHotmailAccessTokenCached(email, clientID, refreshToken, proxyURL str
 		ExpiresAt: time.Now().Add(50 * time.Minute),
 	})
 	return token, endpoint, nil
+}
+
+func refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken string, ep hotmailTokenEndpoint, proxyURL string) (string, error) {
+	client := &http.Client{Timeout: 20 * time.Second}
+	if proxyURL != "" {
+		if u, err := url.Parse(proxyURL); err == nil {
+			client.Transport = &http.Transport{Proxy: http.ProxyURL(u)}
+		}
+	}
+	form := url.Values{}
+	form.Set("client_id", clientID)
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	if ep.Scope != "" {
+		form.Set("scope", ep.Scope)
+	}
+	if ep.Resource != "" {
+		form.Set("resource", ep.Resource)
+	}
+	req, _ := http.NewRequest(http.MethodPost, ep.URL, strings.NewReader(form.Encode()))
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	var payload map[string]any
+	_ = json.Unmarshal(raw, &payload)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && text(payload["access_token"]) != "" {
+		return text(payload["access_token"]), nil
+	}
+	return "", fmt.Errorf("%s", firstText(payload["error_description"], payload["error"], fmt.Sprintf("HTTP %d", resp.StatusCode)))
 }
 
 func refreshHotmailAccessToken(email, clientID, refreshToken, proxyURL string) (string, string, error) {
@@ -874,8 +917,28 @@ func fetchLatestMailsViaIMAP(emailAddr, accessToken string, limit int, proxyURL 
 	if err := write("A1 AUTHENTICATE XOAUTH2 %s", auth); err != nil {
 		return nil, err
 	}
-	if out, err := readUntil("A1"); err != nil || !strings.Contains(out, "A1 OK") {
-		return nil, fmt.Errorf("IMAP XOAUTH2 鐠併倛鐦夋径杈Е: %s", strings.TrimSpace(out))
+	// Outlook may issue a SASL error continuation before it sends A1 NO. Send
+	// the required empty response so rejected candidates fail immediately rather
+	// than leaving the request blocked until the socket timeout.
+	var authOut strings.Builder
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("IMAP XOAUTH2 response failed: %w", err)
+		}
+		authOut.WriteString(line)
+		if strings.HasPrefix(line, "+") {
+			if err := write(""); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "A1 ") {
+			break
+		}
+	}
+	if !strings.Contains(authOut.String(), "A1 OK") {
+		return nil, fmt.Errorf("IMAP XOAUTH2 authentication failed: %s", strings.TrimSpace(authOut.String()))
 	}
 	if err := write("A2 SELECT INBOX"); err != nil {
 		return nil, err

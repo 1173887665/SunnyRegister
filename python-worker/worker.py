@@ -41,6 +41,11 @@ def _secret_value(env_key: str, file_key: str) -> str:
 
 
 WORKER_TOKEN = _secret_value("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE")
+# A browser driver can occasionally remain busy after its browser disconnects. The
+# worker already runs each task in a dedicated process; reclaim an inactive child
+# after 15 minutes so its browser, IMAP sockets and memory cannot leak forever.
+TASK_IDLE_TIMEOUT_SECONDS = max(60, int(os.getenv("SUNNY_TASK_IDLE_TIMEOUT_SECONDS", "900")))
+TASK_WATCH_INTERVAL_SECONDS = max(5, int(os.getenv("SUNNY_TASK_WATCH_INTERVAL_SECONDS", "15")))
 
 app = FastAPI(title="SunnyRegister Python Automation Worker", version="1.0.0")
 _state_lock = threading.Lock()
@@ -58,12 +63,9 @@ def _check_token(auth: str | None) -> None:
 
 @app.on_event("startup")
 def on_startup() -> None:
-    from sunny_core.browser_backend import camoufox_runtime_error
-
-    runtime_error = camoufox_runtime_error()
-    if runtime_error:
-        raise RuntimeError(runtime_error)
-    print("[worker] SunnyRegister automation worker ready", flush=True)
+    # Do not import or validate Playwright/Camoufox here. Browser automation is
+    # lazy-loaded by the isolated task subprocess only when a task is accepted.
+    print("[worker] SunnyRegister automation worker ready (browser lazy loading enabled)", flush=True)
 
 
 class ExecuteRequest(BaseModel):
@@ -98,6 +100,8 @@ def health() -> dict:
         "python": sys.executable,
         "sunny_db_path": sunny_db_path,
         "sunny_db_error": sunny_db_error,
+        "task_isolation": "subprocess",
+        "task_idle_timeout_seconds": TASK_IDLE_TIMEOUT_SECONDS,
     }
 
 
@@ -173,6 +177,32 @@ def _start_task_process(task_id: str) -> subprocess.Popen:
 
 
 def _watch_task_process(task_id: str, process: subprocess.Popen) -> None:
+    last_signature: tuple[str, str, str] | None = None
+    last_activity = time.monotonic()
+    reclaimed_reason = ""
+    while process.poll() is None:
+        try:
+            from sunny_core.db import SunnyDB
+
+            db = SunnyDB(task_id, ensure_schema=False)
+            try:
+                task = db.task()
+                signature = (str(task.get("updated_at") or ""), str(task.get("progress_current") or ""), str(task.get("status") or ""))
+            finally:
+                db.close()
+            if signature != last_signature:
+                last_signature = signature
+                last_activity = time.monotonic()
+        except Exception:
+            # SQLite may briefly be locked by the task; avoid false-positive cleanup.
+            last_activity = time.monotonic()
+        if time.monotonic() - last_activity >= TASK_IDLE_TIMEOUT_SECONDS:
+            reclaimed_reason = f"Python 自动化任务连续 {TASK_IDLE_TIMEOUT_SECONDS // 60} 分钟无状态更新，已自动终止卡死子进程并释放浏览器/邮件资源"
+            print(f"[worker] reclaiming stalled task {task_id}", flush=True)
+            _terminate_process_tree(process)
+            break
+        time.sleep(TASK_WATCH_INTERVAL_SECONDS)
+
     return_code = process.wait()
     with _state_lock:
         if _processes.get(task_id) is process:
@@ -187,7 +217,7 @@ def _watch_task_process(task_id: str, process: subprocess.Popen) -> None:
             if status == "cancel_requested":
                 db.mark_cancelled("用户已停止注册任务")
             elif return_code != 0 and status not in {"succeeded", "failed", "cancelled", "interrupted"}:
-                message = f"SunnyRegister Worker 子进程异常退出，退出码 {return_code}"
+                message = reclaimed_reason or f"SunnyRegister Worker 子进程异常退出，退出码 {return_code}"
                 summary = db.fail_unfinished_mailboxes(message)
                 db.update_task(
                     status="failed",
