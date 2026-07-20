@@ -5,26 +5,35 @@ $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 $Failures = [System.Collections.Generic.List[string]]::new()
 
-$trackedSensitive = git ls-files | Select-String -Pattern '(^|/)(\.env|data|secrets|backups)(/|$)|\.(db|sqlite|pem|key|p12|log)$'
+$sensitivePathPattern = '(^|/)(\.env|data|secrets|backups?|exports?|screenshots?|logs?)(/|$)|\.(db|db3|sqlite|sqlite3|pem|key|p12|pfx|session|log)$'
+$trackedSensitive = git ls-files | Select-String -Pattern $sensitivePathPattern
 if ($trackedSensitive) { $Failures.Add("Tracked sensitive/runtime files:`n$($trackedSensitive -join "`n")") }
 
-$historySensitive = git log --all --format=oneline -- data backend/data .env secrets 2>$null
+$historySensitive = git log --all --format= --name-only 2>$null | Select-String -Pattern $sensitivePathPattern
 if ($historySensitive) { $Failures.Add("Sensitive paths exist in Git history; purge history before making the repository public.") }
 
-$patterns = 'ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'
+$patterns = 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY'
 $matches = git grep -n -I -E $patterns -- . ':!frontend/package-lock.json' 2>$null
 if ($matches) { $Failures.Add("Possible committed secrets:`n$($matches -join "`n")") }
 
 $previousErrorAction = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 docker compose version *> $null
-$composeAvailable = $LASTEXITCODE -eq 0
+$composeMode = if ($LASTEXITCODE -eq 0) { "v2" } else { "" }
+if (-not $composeMode) {
+  docker-compose version *> $null
+  if ($LASTEXITCODE -eq 0) { $composeMode = "v1" }
+}
 $ErrorActionPreference = $previousErrorAction
-if (-not $composeAvailable) {
-  $Failures.Add("Docker Compose v2 is unavailable; production compose configuration was not validated.")
+if (-not $composeMode) {
+  $Failures.Add("Docker Compose is unavailable; production compose configuration was not validated.")
 } else {
   $ErrorActionPreference = "Continue"
-  docker compose --env-file .env.production.example -f docker-compose.production.yml config --quiet
+  if ($composeMode -eq "v2") {
+    docker compose --env-file .env.production.example -f docker-compose.production.yml config --quiet
+  } else {
+    docker-compose --env-file .env.production.example -f docker-compose.production.yml config --quiet
+  }
   $composeValid = $LASTEXITCODE -eq 0
   $ErrorActionPreference = $previousErrorAction
   if (-not $composeValid) {

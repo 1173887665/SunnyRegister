@@ -7,7 +7,7 @@ SunnyRegister 提供两份 Compose：
 | `docker-compose.yml` | 本地开发、局域网试用 | 默认 `0.0.0.0:8000` |
 | `docker-compose.production.yml` | 云服务器生产部署 | 默认 `127.0.0.1:8000` |
 
-生产服务器必须使用 `docker-compose.production.yml`。完整 Cloudflare 接入流程见根目录 [README.md](../README.md)。
+生产服务器必须使用 `docker-compose.production.yml`。公网接入与生产安全配置见 [生产部署说明](PRODUCTION_DEPLOY.md)。
 
 ## 服务结构
 

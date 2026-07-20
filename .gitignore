@@ -7,12 +7,22 @@ data/
 backend/data/
 secrets/
 backups/
+exports/
+screenshots/
 .runtime/
 logs/
 bin/
 *.db
 *.db-*
+*.sqlite
+*.sqlite3
+*.db3
 *.log
+*.pem
+*.key
+*.p12
+*.pfx
+*.session
 
 # Build outputs
 backend/*.exe
@@ -39,6 +49,7 @@ tmp_*
 *.tmp
 *.bak
 *.swp
+.envrc
 .idea/
 .vscode/
 .DS_Store

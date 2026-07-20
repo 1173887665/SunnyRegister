@@ -25,11 +25,11 @@ cp .env.production.example .env
 关键配置：
 
 ```dotenv
-SUNNYREGISTER_DOMAIN=sunnyregister.xingyu013.work
+SUNNYREGISTER_DOMAIN=register.example.com
 SUNNYREGISTER_BIND=127.0.0.1
 SUNNYREGISTER_PORT=8000
 SUNNYREGISTER_PUBLIC_CHECK=false
-ADMIN_USERNAME=sunnyadmin
+ADMIN_USERNAME=admin
 ```
 
 The registration task proxy is used for Outlook IMAP before trying a direct
@@ -68,7 +68,7 @@ secrets/python_worker_token
 推荐在现有 Tunnel 中新增：
 
 ```text
-Public hostname: sunnyregister.xingyu013.work
+Public hostname: register.example.com
 Service:         http://127.0.0.1:8000
 ```
 
@@ -100,7 +100,7 @@ SQLite 与配置保存在 `sunnyregister-data` volume。更新脚本生成的 `b
 docker compose -f docker-compose.production.yml --env-file .env config --quiet
 docker compose -f docker-compose.production.yml --env-file .env ps
 curl -fsS http://127.0.0.1:8000/api/ready
-curl -fsS https://sunnyregister.xingyu013.work/api/ready
+curl -fsS https://register.example.com/api/ready
 ```
 
 不要对公网开放 `8000`、`8765`、`5900` 或 `6080`。

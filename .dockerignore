@@ -14,9 +14,19 @@ data
 backend/data
 secrets
 backups
+exports
+screenshots
 *.db
 *.db-*
+*.sqlite
+*.sqlite3
+*.db3
 *.log
+*.pem
+*.key
+*.p12
+*.pfx
+*.session
 
 # Local build artifacts
 frontend/node_modules
