@@ -541,6 +541,52 @@ def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str,
     return data
 
 
+def _persist_registration_checkpoint(
+    db: SunnyDB,
+    mailbox: dict[str, Any],
+    account,
+    checkpoint: str,
+    snapshot: dict[str, Any],
+    original_status: str,
+) -> None:
+    mailbox_id = max(0, int(mailbox.get("id") or 0))
+    email = str(mailbox.get("email") or account.email or "")
+    if mailbox_id <= 0 or not email:
+        return
+    candidate = "已接码" if checkpoint == "phone_bound" else "已注册"
+    current_status = db.mailbox_status(mailbox_id)
+    completed_status = _highest_mailbox_progress(
+        _highest_mailbox_progress(original_status, current_status),
+        candidate,
+    )
+    refresh_token = str(snapshot.get("refresh_token") or snapshot.get("openai_rt") or "").strip()
+    access_token = str(snapshot.get("access_token") or "").strip()
+    fields: dict[str, Any] = {
+        "mailbox_id": mailbox_id,
+        "status": _account_status_for_mailbox(completed_status),
+        "account_type": snapshot.get("plan_type") or account.account_type,
+        "last_error": "",
+        "metadata_json": json.dumps(
+            {"task_id": db.task_id, "source": "sunny_register", "checkpoint": checkpoint, "completed_status": completed_status},
+            ensure_ascii=False,
+        ),
+    }
+    if refresh_token:
+        fields["openai_rt"] = refresh_token
+    if access_token:
+        fields["access_token"] = access_token
+    if snapshot.get("phone_number"):
+        fields["phone_number"] = str(snapshot.get("phone_number") or "")
+    account_id = db.upsert_account(email, **fields)
+    if access_token or snapshot.get("session_json"):
+        db.upsert_session(email, account_id, snapshot, account.raw)
+    db.mark_mailbox(mailbox_id, completed_status, openai_rt=refresh_token)
+    db.event(
+        f"[{email}] [系统] 已保存任务阶段检查点：{completed_status}",
+        detail={"email": email, "scope": "selected", "checkpoint": checkpoint, "completed_status": completed_status},
+    )
+
+
 def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict[str, Any], index: int, total: int) -> tuple[bool, dict[str, Any] | str]:
     db.ensure_not_cancelled()
     email = mailbox.get("email") or f"mailbox-{index}"
@@ -556,6 +602,21 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     mailbox_id = max(0, int(mailbox.get("id") or 0))
     is_registered_mailbox = bool(account.openai_rt) or str(mailbox.get("status") or "") in {"registered", "已注册", "phone_bound", "已接码", "已反代", "reverse_proxied", "PLUS试用中", "登录刷新"}
     original_mailbox_status = str(mailbox.get("status") or ("已注册" if is_registered_mailbox else "未注册"))
+    original_completed_status = original_mailbox_status if _MAILBOX_PROGRESS_RANK.get(original_mailbox_status, -1) > 0 else ""
+    db.upsert_account(
+        str(email),
+        mailbox_id=mailbox_id,
+        status=_account_status_for_mailbox(original_completed_status) if original_completed_status else "pending",
+        metadata_json=json.dumps(
+            {
+                "task_id": db.task_id,
+                "source": "sunny_register",
+                "checkpoint": "task_started",
+                "completed_status": original_completed_status,
+            },
+            ensure_ascii=False,
+        ),
+    )
     db.event(f"[{email}] [系统] 开始注册/登录 {index}/{total}，阶段={_stage_label(stage)}", detail={"email": email, "scope": "selected", "stage": stage})
     mode_label = "后台浏览器自动（Camoufox Headless，无窗口）" if headless else "可视浏览器自动（Chromium Visible，有窗口）"
     db.event(f"[{email}] [认证] 执行方式：{mode_label}", detail={"email": email, "scope": "selected", "execution_mode": execution_mode, "headless": headless})
@@ -570,6 +631,16 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     else:
         db.event(f"[{email}] [代理] 注册/登录流量使用服务器系统网络直连出口", detail={"email": email, "scope": "selected", "proxy": "", "proxy_mode": "direct"})
     db.mark_mailbox(mailbox_id, "登录刷新" if is_registered_mailbox else "注册中")
+
+    def save_progress(checkpoint: str, snapshot: dict[str, Any]) -> None:
+        _persist_registration_checkpoint(
+            db,
+            mailbox,
+            account,
+            checkpoint,
+            snapshot,
+            original_mailbox_status,
+        )
 
     wants_rt = stage in {CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY}
     phone_provider = None
@@ -610,6 +681,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             require_refresh_token=require_refresh_token,
             should_cancel=db.cancel_requested,
             execution_mode=execution_mode,
+            on_progress=save_progress,
         )
         db.ensure_not_cancelled()
         if session.get("phone_binding_skipped_reason"):
@@ -627,7 +699,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             openai_rt=rt_value,
             access_token=session.get("access_token", ""),
             last_error="",
-            metadata_json=json.dumps({"task_id": db.task_id, "source": "sunny_register", "stage": stage, "phone_skipped_reason": phone_skipped_reason}, ensure_ascii=False),
+            metadata_json=json.dumps({"task_id": db.task_id, "source": "sunny_register", "stage": stage, "checkpoint": "flow_completed", "completed_status": mailbox_status, "phone_skipped_reason": phone_skipped_reason}, ensure_ascii=False),
         )
         db.upsert_session(email, account_id, session, account.raw)
         action = str(session.get("auth_action") or "login")
@@ -685,9 +757,14 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
         return True, result
     except Exception as exc:
         if _is_cancel_exception(exc):
-            if mailbox_id > 0:
-                db.mark_mailbox(mailbox_id, "失败", "任务已由用户停止，当前邮箱未完成本次注册流程")
-            db.event(f"[{email}] [系统] 用户已停止任务，当前邮箱未完成本次注册流程并已标记为失败", "warning", detail={"email": email, "scope": "selected", "cancelled": True})
+            current_status = db.mailbox_status(mailbox_id)
+            completed_status = _highest_mailbox_progress(original_mailbox_status, current_status)
+            if _MAILBOX_PROGRESS_RANK.get(completed_status, -1) > 0:
+                db.mark_mailbox(mailbox_id, completed_status)
+                db.event(f"[{email}] [系统] 用户已停止任务，账号保留在上一个完成状态：{completed_status}", "warning", detail={"email": email, "scope": "selected", "cancelled": True, "completed_status": completed_status})
+            else:
+                db.mark_mailbox(mailbox_id, "失败", "任务已由用户停止，当前邮箱尚未完成 ChatGPT 注册")
+                db.event(f"[{email}] [系统] 用户已停止任务，当前邮箱尚未完成 ChatGPT 注册并已标记为失败", "warning", detail={"email": email, "scope": "selected", "cancelled": True})
             raise
         err_text = str(exc)
         err = f"[{email}] {err_text}"

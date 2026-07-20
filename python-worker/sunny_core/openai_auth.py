@@ -238,13 +238,14 @@ def random_profile() -> tuple[str, str]:
 class OpenAIEmailRegisterFlow:
     """SunnyRegister in-project email register/login flow, following the original register-or-login implementation."""
 
-    def __init__(self, account: MailAccount, proxy_url: str, headless: bool, log: Callable[[str], None] | None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = ""):
+    def __init__(self, account: MailAccount, proxy_url: str, headless: bool, log: Callable[[str], None] | None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None):
         self.account = account
         self.proxy_url = proxy_url
         self.headless = headless
         self.execution_mode = (execution_mode or ("background" if headless else "visible")).strip().lower()
         self.log = log or (lambda _m: None)
         self.should_cancel = should_cancel or (lambda: False)
+        self.on_progress = on_progress
         self.phone_provider = phone_provider
         self.otp_reader: HotmailReader | None = None
         self.existing_account = existing_account
@@ -266,6 +267,14 @@ class OpenAIEmailRegisterFlow:
             self._check_cancelled()
             time.sleep(min(0.5, max(0.0, deadline - time.time())))
         self._check_cancelled()
+
+    def _emit_progress(self, stage: str, data: dict[str, Any] | None = None) -> None:
+        if not self.on_progress:
+            return
+        try:
+            self.on_progress(stage, dict(data or {}))
+        except Exception as exc:
+            self.log(f"[系统] 保存任务阶段检查点失败：{stage}: {exc}")
 
     def run(self) -> dict[str, Any]:
         self.log(f"[认证] 开始注册或登录: {self.account.email}")
@@ -1399,8 +1408,11 @@ class OpenAIEmailRegisterFlow:
                     raise RuntimeError(f"验证码已提交但手机号绑定未完成：{self._page_text_summary(page, 220)}")
                 self.phone_provider("success", self.account.email, {**phone, "code": code})
                 self.phone_verification_completed = True
+                self._emit_progress("phone_bound", {"phone_number": number})
                 return True
             except Exception as exc:
+                if isinstance(exc, TaskCancelledError) or self.should_cancel():
+                    raise
                 last_error = f"{provider_name}: {exc}"
                 self.phone_provider("bad", self.account.email, {**phone, "error": str(exc)})
                 self.log(f"[接码] {last_error}，准备切换下一个接码资源")
@@ -1475,7 +1487,9 @@ class OpenAIEmailRegisterFlow:
             "session_json": session_json,
             "storage_state_json": storage_state,
             "phone_bound": self.phone_verification_completed,
+            "auth_action": self.auth_action if self.auth_action != "unknown" else "login",
         }
+        self._emit_progress("registered", result)
         if not self.require_refresh_token:
             self.log("[Session] 仅注册阶段：已读取 ChatGPT Session，不执行 Codex OAuth / 不获取 Refresh Token")
             return result
@@ -1757,7 +1771,7 @@ class OpenAIEmailRegisterFlow:
             return str(page.url)
 
 
-def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool = True, log: Callable[[str], None] | None = None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "") -> dict[str, Any]:
+def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool = True, log: Callable[[str], None] | None = None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None) -> dict[str, Any]:
     if should_cancel and should_cancel():
         raise TaskCancelledError("Task cancelled by user")
     if account.openai_rt and require_refresh_token:
@@ -1774,7 +1788,9 @@ def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool 
             "openai_rt": payload.get("refresh_token") or account.openai_rt,
             "token_record": normalize_auth_record(account.email, payload),
         })
+        if on_progress:
+            on_progress("phone_bound", session)
         return session
-    return OpenAIEmailRegisterFlow(account, proxy_url, headless, log, phone_provider=phone_provider, existing_account=existing_account, require_refresh_token=require_refresh_token, should_cancel=should_cancel, execution_mode=execution_mode).run()
+    return OpenAIEmailRegisterFlow(account, proxy_url, headless, log, phone_provider=phone_provider, existing_account=existing_account, require_refresh_token=require_refresh_token, should_cancel=should_cancel, execution_mode=execution_mode, on_progress=on_progress).run()
 
 

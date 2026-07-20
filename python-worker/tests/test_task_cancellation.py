@@ -67,6 +67,7 @@ class TaskCancellationTests(unittest.TestCase):
                     id integer primary key,
                     mailbox_id integer,
                     status text,
+                    sub2api_status text default '',
                     metadata_json text
                 );
                 """
@@ -74,15 +75,19 @@ class TaskCancellationTests(unittest.TestCase):
             task_id = "task-cancel-test"
             conn.execute(
                 "insert into tasks(id,status,payload_json,result_json,progress_total) values(?,?,?,?,?)",
-                (task_id, "cancel_requested", json.dumps({"mailbox_ids": [1, 2]}), "{}", 2),
+                (task_id, "cancel_requested", json.dumps({"mailbox_ids": [1, 2, 3]}), "{}", 3),
             )
             conn.executemany(
                 "insert into sunny_mailboxes(id,status) values(?,?)",
-                [(1, "已注册"), (2, "注册中")],
+                [(1, "已注册"), (2, "注册中"), (3, "已接码")],
             )
             conn.execute(
                 "insert into sunny_accounts(id,mailbox_id,status,metadata_json) values(?,?,?,?)",
                 (1, 1, "registered", json.dumps({"task_id": task_id})),
+            )
+            conn.execute(
+                "insert into sunny_accounts(id,mailbox_id,status,sub2api_status,metadata_json) values(?,?,?,?,?)",
+                (2, 3, "phone_bound", "imported", json.dumps({"task_id": task_id, "completed_status": "已接码"})),
             )
             conn.commit()
             conn.close()
@@ -96,14 +101,15 @@ class TaskCancellationTests(unittest.TestCase):
                 finally:
                     db.close()
 
-            self.assertEqual(summary["completed_mailbox_ids"], [1])
+            self.assertEqual(summary["completed_mailbox_ids"], [1, 3])
             self.assertEqual(summary["failed_mailbox_ids"], [2])
             self.assertEqual(rows[0]["status"], "已注册")
             self.assertEqual(rows[0]["last_error"], "")
             self.assertEqual(rows[1]["status"], "失败")
             self.assertIn("停止", rows[1]["last_error"])
+            self.assertEqual(rows[2]["status"], "已反代")
             self.assertEqual(task["status"], "cancelled")
-            self.assertEqual(task["success_count"], 1)
+            self.assertEqual(task["success_count"], 2)
             self.assertEqual(task["error_count"], 1)
 
 

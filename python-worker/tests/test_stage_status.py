@@ -25,6 +25,9 @@ class FakeDB:
     def cancel_requested(self) -> bool:
         return False
 
+    def mailbox_status(self, mailbox_id) -> str:
+        return self.mailbox_updates[-1]["status"] if self.mailbox_updates else "未注册"
+
     def event(self, *args, **kwargs) -> None:
         self.events.append((args, kwargs))
 
@@ -125,6 +128,27 @@ class StageStatusTests(unittest.TestCase):
         self.assertEqual(db.mailbox_updates[-1]["status"], "已反代")
         self.assertEqual(db.account_updates[-1]["status"], "reverse_proxied")
         self.assertEqual(result["completed_status"], "已反代")
+
+    def test_registration_checkpoint_can_be_saved_before_phone_stage(self):
+        db = FakeDB()
+        account = MailAccount(
+            email="user@example.com",
+            password="password",
+            client_id="client-id",
+            refresh_token="outlook-refresh-token",
+            raw="user@example.com----password----client-id----outlook-refresh-token",
+        )
+        worker._persist_registration_checkpoint(
+            db,
+            mailbox(),
+            account,
+            "registered",
+            {"access_token": "access-token", "session_json": {"accessToken": "access-token"}},
+            "未注册",
+        )
+        self.assertEqual(db.mailbox_updates[-1]["status"], "已注册")
+        self.assertEqual(db.account_updates[-1]["status"], "registered")
+        self.assertEqual(len(db.sessions), 1)
 
 class SessionFallbackTests(unittest.TestCase):
     def test_refresh_token_failure_keeps_chatgpt_session(self):

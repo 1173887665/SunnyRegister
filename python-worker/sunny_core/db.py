@@ -239,11 +239,18 @@ class SunnyDB:
                 ).fetchall()
                 mailbox_ids = [int(row["mailbox_id"] or 0) for row in rows if int(row["mailbox_id"] or 0) > 0]
 
-        completed_ids: set[int] = set()
+        completed_statuses: dict[int, str] = {}
+        progress_rank = {"已注册": 1, "已接码": 2, "PLUS试用中": 2, "已反代": 3}
+
+        def remember_completed(mailbox_id: int, status: str) -> None:
+            current = completed_statuses.get(mailbox_id, "")
+            if progress_rank.get(status, 0) >= progress_rank.get(current, 0):
+                completed_statuses[mailbox_id] = status
+
         if mailbox_ids:
             marks = ",".join("?" for _ in mailbox_ids)
             rows = self.conn.execute(
-                f"select mailbox_id,status,metadata_json from sunny_accounts where mailbox_id in ({marks})",
+                f"select mailbox_id,status,sub2api_status,metadata_json from sunny_accounts where mailbox_id in ({marks})",
                 mailbox_ids,
             ).fetchall()
             for row in rows:
@@ -251,25 +258,52 @@ class SunnyDB:
                     metadata = json.loads(row["metadata_json"] or "{}")
                 except Exception:
                     metadata = {}
-                if (
-                    isinstance(metadata, dict)
-                    and str(metadata.get("task_id") or "") == self.task_id
-                    and str(row["status"] or "").lower() not in {"failed", "error"}
-                ):
-                    completed_ids.add(int(row["mailbox_id"] or 0))
+                if not isinstance(metadata, dict) or str(metadata.get("task_id") or "") != self.task_id:
+                    continue
+                completed_status = str(metadata.get("completed_status") or "").strip()
+                if not completed_status:
+                    account_status = str(row["status"] or "").lower()
+                    completed_status = {
+                        "registered": "已注册",
+                        "phone_bound": "已接码",
+                        "reverse_proxied": "已反代",
+                    }.get(account_status, "")
+                if completed_status in {"已注册", "已接码", "已反代", "PLUS试用中"}:
+                    remember_completed(int(row["mailbox_id"] or 0), completed_status)
 
-        failed_ids = [mailbox_id for mailbox_id in mailbox_ids if mailbox_id not in completed_ids]
+                if str(row["sub2api_status"] or "").lower() in {"imported", "success", "succeeded"}:
+                    remember_completed(int(row["mailbox_id"] or 0), "已反代")
+
+        mailbox_marks = ",".join("?" for _ in mailbox_ids)
+        if mailbox_marks:
+            mailbox_rows = self.conn.execute(
+                f"select id,status from sunny_mailboxes where id in ({mailbox_marks})",
+                mailbox_ids,
+            ).fetchall()
+            for row in mailbox_rows:
+                current_status = str(row["status"] or "").strip()
+                if current_status in {"已注册", "已接码", "已反代", "PLUS试用中"}:
+                    remember_completed(int(row["id"]), current_status)
+
+        for mailbox_id, completed_status in completed_statuses.items():
+            self.conn.execute(
+                "update sunny_mailboxes set status=?,last_error='',updated_at=? where id=?",
+                (completed_status, now_sql(), mailbox_id),
+            )
+        failed_ids = [mailbox_id for mailbox_id in mailbox_ids if mailbox_id not in completed_statuses]
         if failed_ids:
             marks = ",".join("?" for _ in failed_ids)
             self.conn.execute(
                 f"update sunny_mailboxes set status='失败',last_error=?,updated_at=? where id in ({marks})",
                 [reason, now_sql(), *failed_ids],
             )
+        if completed_statuses or failed_ids:
             self.conn.commit()
         return {
-            "completed": len(completed_ids),
+            "completed": len(completed_statuses),
             "failed": len(failed_ids),
-            "completed_mailbox_ids": sorted(completed_ids),
+            "completed_mailbox_ids": sorted(completed_statuses),
+            "completed_mailbox_statuses": {str(key): value for key, value in completed_statuses.items()},
             "failed_mailbox_ids": failed_ids,
         }
 
@@ -571,6 +605,12 @@ class SunnyDB:
         values.append(mailbox_id)
         self.conn.execute(f"update sunny_mailboxes set {','.join(sets)} where id=?", values)
         self.conn.commit()
+
+    def mailbox_status(self, mailbox_id: int) -> str:
+        if mailbox_id <= 0:
+            return ""
+        row = self.conn.execute("select status from sunny_mailboxes where id=?", (mailbox_id,)).fetchone()
+        return str(row["status"] if row else "")
 
     def mark_mailbox_by_email(self, email: str, status: str, error: str = "", openai_rt: str = "") -> None:
         if not email:
