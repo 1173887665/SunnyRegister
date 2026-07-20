@@ -397,6 +397,19 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 }
 .sr-account-table td { height:54px; padding:0 14px; border-bottom:1px solid rgba(15,23,42,.06); color:#334155; text-align:center; vertical-align:middle; }
 .sr-account-table td > * { margin-left:auto; margin-right:auto; }
+.sr-session-field-button {
+  min-width: 42px;
+  height: 30px;
+  border: 1px solid rgba(13, 148, 136, .24);
+  border-radius: 9px;
+  background: rgba(20, 184, 166, .10);
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 900;
+  transition: background-color .16s ease, border-color .16s ease, transform .16s ease;
+}
+.sr-session-field-button:hover { border-color: rgba(13, 148, 136, .48); background: rgba(20, 184, 166, .18); transform: translateY(-1px); }
+.dark .sr-session-field-button { border-color: rgba(45, 212, 191, .28); background: rgba(45, 212, 191, .10); color: #5eead4; }
 .dark .sr-account-table th { background:rgba(255,255,255,.04); border-color:var(--border-soft); color:var(--text-muted); }
 .dark .sr-account-table td { border-color:var(--border-soft); color:var(--text-secondary); }
 .sr-status { display:inline-flex; align-items:center; justify-content:center; min-width:54px; border-radius:999px; background:#f1f5f9; color:#64748b; padding:4px 10px; font-size:12px; font-weight:800; }
@@ -1014,6 +1027,12 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .dark .sr-empty-icon { background:var(--bg-pane); border-color:var(--border); }
 .sr-modal-mask { position:fixed; inset:0; z-index:500; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.62); padding:36px; }
 .sr-modal { width:min(900px, 100%); max-height:90vh; overflow:hidden; border-radius:28px; background:#fff; color:#111827; box-shadow:0 25px 80px rgba(0,0,0,.35); display:flex; flex-direction:column; }
+.sr-session-field-modal { width:min(780px, 100%); }
+.sr-session-field-body { position:relative; min-height:260px; display:flex; }
+.sr-session-field-value { width:100%; max-height:52vh; margin:0; overflow:auto; border:1px solid #dbe7e7; border-radius:14px; background:#f8fbfb; padding:18px; color:#16313a; font:13px/1.65 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; text-align:left; white-space:pre-wrap; overflow-wrap:anywhere; }
+.sr-session-field-value.error { border-color:rgba(239,68,68,.28); background:rgba(254,242,242,.92); color:#dc2626; }
+.dark .sr-session-field-value { border-color:rgba(148,163,184,.20); background:rgba(8,25,33,.88); color:#d7f5f0; }
+.dark .sr-session-field-value.error { border-color:rgba(248,113,113,.32); background:rgba(127,29,29,.16); color:#fca5a5; }
 .sr-register-modal { width:min(980px, calc(100vw - 72px)); max-height:min(860px, calc(100vh - 64px)); border-radius:30px; }
 .sr-register-modal .sr-modal-head { padding:0 36px; display:grid; grid-template-columns:40px 1fr 40px; }
 .sr-register-modal .sr-modal-head h3 { grid-column:2; text-align:center; }
