@@ -144,7 +144,7 @@ func (s *Server) sub2APIAccountPayload(item AccountRecord, targetPlatform string
 		"source_account_id": item.ID,
 		"source_email":      item.Email,
 		"source_status":     item.DisplayStatus,
-		"imported_at":       time.Now().UTC().Format(time.RFC3339),
+		"imported_at":       formatTime(time.Now()),
 	}
 	if text(p["email_service"]) != "" {
 		extra["email_service"] = p["email_service"]

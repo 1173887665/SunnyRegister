@@ -24,6 +24,8 @@ try {
 }
 
 $env:PYTHONUTF8 = "1"
+$env:TZ = if ($env:TZ) { $env:TZ } else { "Asia/Shanghai" }
+$env:SUNNY_TIMEZONE = $env:TZ
 $env:ACCOUNT_MANAGER_DATABASE_URL = "sqlite:///$((Join-Path $Root 'data\account_manager.db').Replace('\','/'))"
 
 Set-Location $WorkerDir

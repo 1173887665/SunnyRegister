@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func newSunnySessionTestServer(t *testing.T) *Server {
 		t.Fatalf("get test database: %v", err)
 	}
 	sqlDB.SetMaxOpenConns(1)
-	if err := db.AutoMigrate(&SunnyMailbox{}, &SunnyAccount{}, &SunnySession{}); err != nil {
+	if err := db.AutoMigrate(&SunnyMailboxGroup{}, &SunnyMailbox{}, &SunnyAccount{}, &SunnySession{}, &Task{}, &TaskEvent{}, &SunnyKVConfig{}, &SunnyProxy{}); err != nil {
 		t.Fatalf("migrate test database: %v", err)
 	}
 	now := time.Now()
@@ -110,5 +111,75 @@ func TestSunnySessionFieldIsLoadedOnDemand(t *testing.T) {
 		if rec.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("field %s response is cacheable", test.field)
 		}
+	}
+}
+
+func TestSunnyHealthBanMarkers(t *testing.T) {
+	for _, title := range []string{
+		"Access Deactivated",
+		"Your account [C-75ROCz5moZsB] has been deactivated",
+		"[c-Ab12CD34] verification notice",
+	} {
+		if !sunnyHealthBanMarker.MatchString(title) {
+			t.Fatalf("title %q was not recognized as banned", title)
+		}
+	}
+	for _, title := range []string{"Welcome to ChatGPT", "Access restored"} {
+		if sunnyHealthBanMarker.MatchString(title) {
+			t.Fatalf("title %q was incorrectly recognized as banned", title)
+		}
+	}
+}
+
+func TestExtractSunnyHeaderReadsSubjectOnly(t *testing.T) {
+	headerText := "Subject: Access Deactivated\r\nDate: Tue, 21 Jul 2026 06:00:00 +0800\r\n\r\n"
+	raw := "* 5 FETCH (BODY[HEADER.FIELDS (SUBJECT DATE)] {" + strconv.Itoa(len(headerText)) + "}\r\n" + headerText + ")\r\nF1 OK FETCH completed\r\n"
+	header, ok := extractSunnyHeader(raw, 5, "F1")
+	if !ok {
+		t.Fatalf("header was not parsed")
+	}
+	if header.Subject != "Access Deactivated" || header.Date.IsZero() {
+		t.Fatalf("unexpected parsed header: %#v", header)
+	}
+}
+
+func TestSunnyHealthTaskMarksAccountBanned(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	previousFetch := sunnyFetchOutlookMailSubjects
+	sunnyFetchOutlookMailSubjects = func(email, clientID, refreshToken string, limit int, proxyURL string) ([]string, error) {
+		if email != "session@example.com" || limit != 5 {
+			t.Fatalf("unexpected health query: email=%s limit=%d", email, limit)
+		}
+		return []string{"Account notice [C-75ROCz5moZsB]"}, nil
+	}
+	defer func() { sunnyFetchOutlookMailSubjects = previousFetch }()
+
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	task := s.createTask(sunnyHealthTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
+	s.executeSunnyAccountHealthCheckTask(&task, map[string]any{"session_ids": []uint{session.ID}})
+
+	var mailbox SunnyMailbox
+	var account SunnyAccount
+	if err := s.db.Where("email = ?", session.Email).First(&mailbox).Error; err != nil {
+		t.Fatalf("load mailbox: %v", err)
+	}
+	if err := s.db.Where("email = ?", session.Email).First(&account).Error; err != nil {
+		t.Fatalf("load account: %v", err)
+	}
+	if mailbox.Status != "已封禁" || account.Status != "已封禁" {
+		t.Fatalf("banned status not synchronized: mailbox=%q account=%q", mailbox.Status, account.Status)
+	}
+	if mailbox.LastHealthCheckedAt == nil || account.LastHealthCheckedAt == nil {
+		t.Fatalf("last health timestamps were not persisted")
+	}
+	if err := s.db.First(&task, "id = ?", task.ID).Error; err != nil {
+		t.Fatalf("reload task: %v", err)
+	}
+	result := jsonMap(task.ResultJSON)
+	if task.Status != TaskSucceeded || intValue(result["banned"], 0) != 1 || intValue(result["alive"], 0) != 0 {
+		t.Fatalf("unexpected health task result: status=%s result=%#v", task.Status, result)
 	}
 }

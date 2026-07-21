@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -264,7 +265,32 @@ func formatTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
-	return t.UTC().Format(time.RFC3339)
+	return t.In(applicationLocation()).Format(time.RFC3339)
+}
+
+var sunnyApplicationLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+
+func applicationLocation() *time.Location {
+	return sunnyApplicationLocation
+}
+
+func configureApplicationTimezone() {
+	name := strings.TrimSpace(os.Getenv("SUNNY_TIMEZONE"))
+	if name == "" {
+		name = strings.TrimSpace(os.Getenv("TZ"))
+	}
+	if name == "" {
+		name = "Asia/Shanghai"
+	}
+	location, err := time.LoadLocation(name)
+	if err != nil {
+		log.Printf("load timezone %s failed, using Asia/Shanghai: %v", name, err)
+		location = time.FixedZone("Asia/Shanghai", 8*60*60)
+	}
+	sunnyApplicationLocation = location
+	time.Local = location
+	_ = os.Setenv("TZ", name)
+	_ = os.Setenv("SUNNY_TIMEZONE", name)
 }
 
 func nullableTime(valid bool, t time.Time) any {

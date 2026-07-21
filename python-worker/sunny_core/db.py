@@ -4,7 +4,7 @@ import json
 import os
 import sqlite3
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -25,6 +25,14 @@ def now_sql() -> str:
         return datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def app_timezone() -> ZoneInfo:
+    tz_name = os.getenv("SUNNY_TIMEZONE") or os.getenv("TZ") or "Asia/Shanghai"
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return ZoneInfo("Asia/Shanghai")
 
 
 class SunnyTaskCancelled(RuntimeError):
@@ -76,6 +84,7 @@ class SunnyDB:
                 "sub2api_id": "text DEFAULT ''",
                 "last_error": "text DEFAULT ''",
                 "metadata_json": "text DEFAULT '{}'",
+                "last_health_checked_at": "datetime",
                 "created_at": "datetime",
                 "updated_at": "datetime",
             },
@@ -83,6 +92,7 @@ class SunnyDB:
                 "openai_rt": "text DEFAULT ''",
                 "registered_at": "datetime",
                 "last_error": "text DEFAULT ''",
+                "last_health_checked_at": "datetime",
             },
             "sunny_sessions": {
                 "refresh_token": "text DEFAULT ''",
@@ -359,7 +369,7 @@ class SunnyDB:
                 select * from sunny_phones
                 where enabled=1 and coalesce(status,'available') not in ('disabled','full','in_use')
                   and coalesce(success_count,0) < coalesce(max_success,3)
-                  and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now'))
+                  and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now','localtime'))
                 order by success_count asc, id asc limit 1
                 """
             ).fetchone()
@@ -378,7 +388,7 @@ class SunnyDB:
             raise
 
     def mark_phone_success(self, phone_id: int, code: str = "") -> None:
-        until = (datetime.now(timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+        until = (datetime.now(app_timezone()) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
         self.conn.execute(
             "update sunny_phones set success_count=coalesce(success_count,0)+1, status=case when coalesce(success_count,0)+1>=coalesce(max_success,3) then 'full' else 'cooldown' end, cooldown_until=?, last_code=?, last_used_at=?, updated_at=? where id=?",
             (until, code, now_sql(), now_sql(), phone_id),
@@ -398,7 +408,7 @@ class SunnyDB:
             select count(*) as n from sunny_phones
             where enabled=1 and coalesce(status,'available') not in ('disabled','full','in_use')
               and coalesce(success_count,0) < coalesce(max_success,3)
-              and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now'))
+              and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now','localtime'))
             """
         ).fetchone()
         return int(row["n"] if row else 0)
@@ -457,7 +467,7 @@ class SunnyDB:
                   and (?='' or service=?)
                   and coalesce(status,'available') not in ('disabled','in_use','full')
                   and coalesce(success_count,0) < coalesce(max_success,3)
-                  and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now'))
+                  and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now','localtime'))
                 order by success_count asc, last_used_at asc, id asc
                 limit 1
                 """,
@@ -512,7 +522,7 @@ class SunnyDB:
     def mark_sms_provider_number_success(self, provider: str, phone_number: str, code: str = "") -> None:
         if not phone_number:
             return
-        until = (datetime.now(timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+        until = (datetime.now(app_timezone()) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
         self.conn.execute(
             """
             update sunny_sms_provider_numbers

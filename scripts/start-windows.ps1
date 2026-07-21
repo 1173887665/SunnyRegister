@@ -104,6 +104,9 @@ $env:PYTHON_WORKER_URL = "http://127.0.0.1:8765"
 $env:PYTHON_TASK_TYPES = "sunny_register,sunny_login,sunny_refresh_session"
 $env:TZ = if ($env:TZ) { $env:TZ } else { "Asia/Shanghai" }
 $env:SUNNY_TIMEZONE = $env:TZ
+$env:SUNNY_HEALTHCHECK_ENABLED = if ($env:SUNNY_HEALTHCHECK_ENABLED) { $env:SUNNY_HEALTHCHECK_ENABLED } else { "true" }
+$env:SUNNY_HEALTHCHECK_TIME = if ($env:SUNNY_HEALTHCHECK_TIME) { $env:SUNNY_HEALTHCHECK_TIME } else { "06:00" }
+$env:SUNNY_HEALTHCHECK_CONCURRENCY = if ($env:SUNNY_HEALTHCHECK_CONCURRENCY) { $env:SUNNY_HEALTHCHECK_CONCURRENCY } else { "2" }
 $env:PORT = if ($env:SUNNYREGISTER_PORT) { $env:SUNNYREGISTER_PORT } else { "8000" }
 
 $worker = Start-Process -FilePath $WorkerPython `

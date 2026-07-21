@@ -53,6 +53,7 @@ type loginFailure struct {
 func main() {
 	loadDotEnv(".env")
 	loadDotEnv("../.env")
+	configureApplicationTimezone()
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
 		resp, err := http.Get("http://127.0.0.1:" + fallback(os.Getenv("PORT"), "8000") + "/api/health")
 		if err != nil || resp.StatusCode >= 500 {
@@ -84,6 +85,7 @@ func main() {
 		sessionTTL: 12 * time.Hour, secureCookies: secureCookies, production: production,
 	}
 	go s.sunnyWarmSMSProviderOptions()
+	go s.sunnyAccountHealthScheduleLoop()
 	log.Printf("admin login enabled: username=%s password_file=%s", adminUser, adminPasswordFile())
 	go s.runtimeLoop()
 	mux := http.NewServeMux()

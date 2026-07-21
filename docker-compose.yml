@@ -24,7 +24,10 @@ services:
       PYTHON_WORKER_TOKEN: ${PYTHON_WORKER_TOKEN:-}
       PYTHON_TASK_TYPES: ${PYTHON_TASK_TYPES:-sunny_register,sunny_login,sunny_refresh_session}
       TZ: ${TZ:-Asia/Shanghai}
-      SUNNY_TIMEZONE: ${TZ:-Asia/Shanghai}
+      SUNNY_TIMEZONE: ${SUNNY_TIMEZONE:-Asia/Shanghai}
+      SUNNY_HEALTHCHECK_ENABLED: ${SUNNY_HEALTHCHECK_ENABLED:-true}
+      SUNNY_HEALTHCHECK_TIME: ${SUNNY_HEALTHCHECK_TIME:-06:00}
+      SUNNY_HEALTHCHECK_CONCURRENCY: ${SUNNY_HEALTHCHECK_CONCURRENCY:-2}
       SUNNY_CONTAINERIZED: "true"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -55,7 +58,7 @@ services:
       PYTHON_WORKER_TOKEN: ${PYTHON_WORKER_TOKEN:-}
       PYTHONUTF8: "1"
       TZ: ${TZ:-Asia/Shanghai}
-      SUNNY_TIMEZONE: ${TZ:-Asia/Shanghai}
+      SUNNY_TIMEZONE: ${SUNNY_TIMEZONE:-Asia/Shanghai}
       SUNNY_CONTAINERIZED: "true"
       DISPLAY: ${WORKER_DISPLAY:-:99}
       ENABLE_XVFB: ${ENABLE_XVFB:-false}

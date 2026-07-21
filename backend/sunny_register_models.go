@@ -16,23 +16,24 @@ type SunnyMailboxGroup struct {
 func (SunnyMailboxGroup) TableName() string { return "sunny_mailbox_groups" }
 
 type SunnyMailbox struct {
-	ID             uint         `gorm:"primaryKey" json:"id"`
-	GroupID        uint         `gorm:"index" json:"group_id"`
-	Email          string       `gorm:"uniqueIndex;index" json:"email"`
-	Password       string       `gorm:"type:text" json:"password"`
-	ClientID       string       `gorm:"type:text" json:"client_id"`
-	RefreshToken   string       `gorm:"type:text" json:"refresh_token"`
-	OpenAIRT       string       `gorm:"column:openai_rt;type:text" json:"openai_rt"`
-	Raw            string       `gorm:"type:text" json:"raw"`
-	AccountType    string       `gorm:"index;default:free" json:"account_type"`
-	Status         string       `gorm:"index;default:unused" json:"status"`
-	Enabled        bool         `gorm:"default:true" json:"enabled"`
-	LastError      string       `gorm:"type:text" json:"last_error"`
-	LatestMailJSON string       `gorm:"type:text;default:'{}'" json:"latest_mail_json"`
-	LastMailAt     sql.NullTime `json:"last_mail_at"`
-	RegisteredAt   sql.NullTime `json:"registered_at"`
-	CreatedAt      time.Time    `json:"created_at"`
-	UpdatedAt      time.Time    `json:"updated_at"`
+	ID                  uint         `gorm:"primaryKey" json:"id"`
+	GroupID             uint         `gorm:"index" json:"group_id"`
+	Email               string       `gorm:"uniqueIndex;index" json:"email"`
+	Password            string       `gorm:"type:text" json:"password"`
+	ClientID            string       `gorm:"type:text" json:"client_id"`
+	RefreshToken        string       `gorm:"type:text" json:"refresh_token"`
+	OpenAIRT            string       `gorm:"column:openai_rt;type:text" json:"openai_rt"`
+	Raw                 string       `gorm:"type:text" json:"raw"`
+	AccountType         string       `gorm:"index;default:free" json:"account_type"`
+	Status              string       `gorm:"index;default:unused" json:"status"`
+	Enabled             bool         `gorm:"default:true" json:"enabled"`
+	LastError           string       `gorm:"type:text" json:"last_error"`
+	LatestMailJSON      string       `gorm:"type:text;default:'{}'" json:"latest_mail_json"`
+	LastMailAt          sql.NullTime `json:"last_mail_at"`
+	LastHealthCheckedAt *time.Time   `gorm:"index" json:"last_health_checked_at"`
+	RegisteredAt        sql.NullTime `json:"registered_at"`
+	CreatedAt           time.Time    `json:"created_at"`
+	UpdatedAt           time.Time    `json:"updated_at"`
 }
 
 func (SunnyMailbox) TableName() string { return "sunny_mailboxes" }
@@ -72,21 +73,22 @@ type SunnyProxy struct {
 func (SunnyProxy) TableName() string { return "sunny_proxies" }
 
 type SunnyAccount struct {
-	ID            uint      `gorm:"primaryKey" json:"id"`
-	MailboxID     uint      `gorm:"index" json:"mailbox_id"`
-	Email         string    `gorm:"uniqueIndex;index" json:"email"`
-	GroupName     string    `gorm:"index" json:"group_name"`
-	Status        string    `gorm:"index;default:pending" json:"status"`
-	AccountType   string    `gorm:"index;default:free" json:"account_type"`
-	OpenAIRT      string    `gorm:"column:openai_rt;type:text" json:"openai_rt"`
-	AccessToken   string    `gorm:"type:text" json:"access_token"`
-	PhoneNumber   string    `gorm:"index" json:"phone_number"`
-	Sub2APIStatus string    `gorm:"index" json:"sub2api_status"`
-	Sub2APIID     string    `json:"sub2api_id"`
-	LastError     string    `gorm:"type:text" json:"last_error"`
-	MetadataJSON  string    `gorm:"type:text;default:'{}'" json:"metadata_json"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID                  uint       `gorm:"primaryKey" json:"id"`
+	MailboxID           uint       `gorm:"index" json:"mailbox_id"`
+	Email               string     `gorm:"uniqueIndex;index" json:"email"`
+	GroupName           string     `gorm:"index" json:"group_name"`
+	Status              string     `gorm:"index;default:pending" json:"status"`
+	AccountType         string     `gorm:"index;default:free" json:"account_type"`
+	OpenAIRT            string     `gorm:"column:openai_rt;type:text" json:"openai_rt"`
+	AccessToken         string     `gorm:"type:text" json:"access_token"`
+	PhoneNumber         string     `gorm:"index" json:"phone_number"`
+	Sub2APIStatus       string     `gorm:"index" json:"sub2api_status"`
+	Sub2APIID           string     `json:"sub2api_id"`
+	LastError           string     `gorm:"type:text" json:"last_error"`
+	MetadataJSON        string     `gorm:"type:text;default:'{}'" json:"metadata_json"`
+	LastHealthCheckedAt *time.Time `gorm:"index" json:"last_health_checked_at"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 func (SunnyAccount) TableName() string { return "sunny_accounts" }

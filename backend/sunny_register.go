@@ -2489,20 +2489,24 @@ type sunnySessionListRow struct {
 }
 
 type sunnySessionAccountSummary struct {
-	ID              uint   `gorm:"column:id"`
-	Email           string `gorm:"column:email"`
-	Status          string `gorm:"column:status"`
-	AccountType     string `gorm:"column:account_type"`
-	HasAccessToken  int    `gorm:"column:has_access_token"`
-	HasRefreshToken int    `gorm:"column:has_refresh_token"`
+	ID                  uint       `gorm:"column:id"`
+	Email               string     `gorm:"column:email"`
+	Status              string     `gorm:"column:status"`
+	AccountType         string     `gorm:"column:account_type"`
+	HasAccessToken      int        `gorm:"column:has_access_token"`
+	HasRefreshToken     int        `gorm:"column:has_refresh_token"`
+	LastHealthCheckedAt *time.Time `gorm:"column:last_health_checked_at"`
 }
 
 type sunnySessionMailboxSummary struct {
-	ID           uint   `gorm:"column:id"`
-	Email        string `gorm:"column:email"`
-	Status       string `gorm:"column:status"`
-	AccountType  string `gorm:"column:account_type"`
-	HasSecretKey int    `gorm:"column:has_secret_key"`
+	ID                  uint       `gorm:"column:id"`
+	Email               string     `gorm:"column:email"`
+	Status              string     `gorm:"column:status"`
+	AccountType         string     `gorm:"column:account_type"`
+	HasSecretKey        int        `gorm:"column:has_secret_key"`
+	GroupID             uint       `gorm:"column:group_id"`
+	GroupName           string     `gorm:"column:group_name"`
+	LastHealthCheckedAt *time.Time `gorm:"column:last_health_checked_at"`
 }
 
 const sunnySessionListColumns = `id, account_id, email, updated_at,
@@ -2528,13 +2532,21 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 	if plan == "" && row.ID != 0 {
 		plan = "free"
 	}
+	lastHealthCheckedAt := account.LastHealthCheckedAt
+	if mailbox.LastHealthCheckedAt != nil {
+		lastHealthCheckedAt = mailbox.LastHealthCheckedAt
+	}
+	lastHealthText := ""
+	if lastHealthCheckedAt != nil {
+		lastHealthText = formatTime(*lastHealthCheckedAt)
+	}
 	return map[string]any{
 		"id": row.ID, "account_id": row.AccountID, "email": row.Email,
-		"status": status, "plan_type": plan,
+		"status": status, "plan_type": plan, "group_id": mailbox.GroupID, "group_name": mailbox.GroupName,
 		"has_access_token":  row.HasAccessToken != 0 || account.HasAccessToken != 0,
 		"has_refresh_token": row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
 		"has_secret_key":    row.HasSecretKey != 0 || mailbox.HasSecretKey != 0,
-		"updated_at":        formatTime(row.UpdatedAt),
+		"updated_at":        formatTime(row.UpdatedAt), "last_health_checked_at": lastHealthText,
 	}
 }
 func (s *Server) sunnySessionSidecars(rows []SunnySession) (map[string]SunnyAccount, map[string]SunnyMailbox) {
@@ -2571,15 +2583,18 @@ func (s *Server) sunnySessionListSidecars(rows []sunnySessionListRow) (map[strin
 		return accounts, mailboxes
 	}
 	var accRows []sunnySessionAccountSummary
-	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type,
+	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, last_health_checked_at,
 		CASE WHEN access_token IS NOT NULL AND access_token <> '' THEN 1 ELSE 0 END AS has_access_token,
 		CASE WHEN openai_rt IS NOT NULL AND openai_rt <> '' THEN 1 ELSE 0 END AS has_refresh_token`).Where("email IN ?", emails).Find(&accRows)
 	for _, account := range accRows {
 		accounts[sunnyEmailKey(account.Email)] = account
 	}
 	var mailboxRows []sunnySessionMailboxSummary
-	s.db.Model(&SunnyMailbox{}).Select(`id, email, status, account_type,
-		CASE WHEN email IS NOT NULL AND email <> '' AND password IS NOT NULL AND password <> '' AND client_id IS NOT NULL AND client_id <> '' AND refresh_token IS NOT NULL AND refresh_token <> '' THEN 1 ELSE 0 END AS has_secret_key`).Where("email IN ?", emails).Find(&mailboxRows)
+	s.db.Model(&SunnyMailbox{}).Select(`sunny_mailboxes.id, sunny_mailboxes.email, sunny_mailboxes.status, sunny_mailboxes.account_type,
+		sunny_mailboxes.group_id, sunny_mailboxes.last_health_checked_at, sunny_mailbox_groups.name AS group_name,
+		CASE WHEN sunny_mailboxes.email IS NOT NULL AND sunny_mailboxes.email <> '' AND sunny_mailboxes.password IS NOT NULL AND sunny_mailboxes.password <> '' AND sunny_mailboxes.client_id IS NOT NULL AND sunny_mailboxes.client_id <> '' AND sunny_mailboxes.refresh_token IS NOT NULL AND sunny_mailboxes.refresh_token <> '' THEN 1 ELSE 0 END AS has_secret_key`).
+		Joins("LEFT JOIN sunny_mailbox_groups ON sunny_mailbox_groups.id = sunny_mailboxes.group_id").
+		Where("sunny_mailboxes.email IN ?", emails).Find(&mailboxRows)
 	for _, mailbox := range mailboxRows {
 		mailboxes[sunnyEmailKey(mailbox.Email)] = mailbox
 	}
@@ -2648,15 +2663,32 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		kw := strings.ToLower(strings.TrimSpace(q.Get("q")))
 		statusFilter := strings.TrimSpace(q.Get("status"))
 		planFilter := strings.ToLower(strings.TrimSpace(q.Get("plan_type")))
+		groupFilter := uint(intValue(q.Get("group_id"), 0))
+		sortBy := strings.TrimSpace(q.Get("sort_by"))
 		if statusFilter == "" && planFilter == "" {
 			query := s.db.Model(&SunnySession{})
 			if kw != "" {
 				query = query.Where("LOWER(email) LIKE ?", "%"+kw+"%")
 			}
+			if groupFilter != 0 {
+				mailboxEmails := s.db.Model(&SunnyMailbox{}).Select("email").Where("group_id = ?", groupFilter)
+				query = query.Where("email IN (?)", mailboxEmails)
+			}
 			var total int64
 			query.Count(&total)
+			orderClause := sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "created_at": "created_at", "last_refresh_at": "last_refresh_at"}, "updated_at desc")
+			if sortBy == "last_health_checked_at" {
+				order := "DESC"
+				if strings.EqualFold(q.Get("sort_order"), "asc") {
+					order = "ASC"
+				}
+				orderClause = `COALESCE(
+					(SELECT last_health_checked_at FROM sunny_mailboxes WHERE sunny_mailboxes.email = sunny_sessions.email),
+					(SELECT last_health_checked_at FROM sunny_accounts WHERE sunny_accounts.email = sunny_sessions.email)
+				) ` + order + ", sunny_sessions.id DESC"
+			}
 			var rows []sunnySessionListRow
-			query.Select(sunnySessionListColumns).Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "created_at": "created_at", "last_refresh_at": "last_refresh_at"}, "updated_at desc")).Offset((page - 1) * pageSize).Limit(pageSize).Scan(&rows)
+			query.Select(sunnySessionListColumns).Order(orderClause).Offset((page - 1) * pageSize).Limit(pageSize).Scan(&rows)
 			accounts, mailboxes := s.sunnySessionListSidecars(rows)
 			items := make([]map[string]any, 0, len(rows))
 			for _, row := range rows {
@@ -2680,11 +2712,13 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			if planFilter != "" && strings.ToLower(text(item["plan_type"])) != planFilter {
 				continue
 			}
+			if groupFilter != 0 && uint(intValue(item["group_id"], 0)) != groupFilter {
+				continue
+			}
 			itemsAll = append(itemsAll, item)
 		}
-		sortBy := q.Get("sort_by")
 		if sortBy == "" {
-			sortBy = "updated_at"
+			sortBy = "last_health_checked_at"
 		}
 		desc := strings.ToLower(q.Get("sort_order")) != "asc"
 		sort.SliceStable(itemsAll, func(i, j int) bool {
@@ -2704,6 +2738,16 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			end = total
 		}
 		writeJSON(w, 200, map[string]any{"items": itemsAll[start:end], "total": total, "page": page, "page_size": pageSize})
+		return
+	}
+	if len(parts) == 1 && parts[0] == "health-check" && r.Method == http.MethodPost {
+		body, _ := parseBody(r)
+		task, err := s.createSunnyHealthTask(body)
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, serializeTask(task))
 		return
 	}
 	if len(parts) == 1 && parts[0] == "export" && r.Method == http.MethodPost {
