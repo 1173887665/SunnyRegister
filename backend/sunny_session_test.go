@@ -175,11 +175,50 @@ func TestSunnyHealthTaskMarksAccountBanned(t *testing.T) {
 	if mailbox.LastHealthCheckedAt == nil || account.LastHealthCheckedAt == nil {
 		t.Fatalf("last health timestamps were not persisted")
 	}
+	if mailbox.StatusChangedAt == nil || account.StatusChangedAt == nil {
+		t.Fatalf("status change timestamps were not persisted")
+	}
 	if err := s.db.First(&task, "id = ?", task.ID).Error; err != nil {
 		t.Fatalf("reload task: %v", err)
 	}
 	result := jsonMap(task.ResultJSON)
 	if task.Status != TaskSucceeded || intValue(result["banned"], 0) != 1 || intValue(result["alive"], 0) != 0 {
 		t.Fatalf("unexpected health task result: status=%s result=%#v", task.Status, result)
+	}
+}
+
+func TestSunnyHealthTaskAliveDoesNotChangeEditOrStatusTime(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	previousFetch := sunnyFetchOutlookMailSubjects
+	sunnyFetchOutlookMailSubjects = func(email, clientID, refreshToken string, limit int, proxyURL string) ([]string, error) {
+		return []string{"Your weekly account update"}, nil
+	}
+	defer func() { sunnyFetchOutlookMailSubjects = previousFetch }()
+
+	var session SunnySession
+	var beforeMailbox SunnyMailbox
+	var beforeAccount SunnyAccount
+	s.db.Where("email = ?", "session@example.com").First(&session)
+	s.db.Where("email = ?", session.Email).First(&beforeMailbox)
+	s.db.Where("email = ?", session.Email).First(&beforeAccount)
+	statusTime := beforeMailbox.UpdatedAt.Add(-time.Hour)
+	s.db.Model(&SunnyMailbox{}).Where("id = ?", beforeMailbox.ID).UpdateColumn("status_changed_at", statusTime)
+	s.db.Model(&SunnyAccount{}).Where("id = ?", beforeAccount.ID).UpdateColumn("status_changed_at", statusTime)
+
+	task := s.createTask(sunnyHealthTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
+	s.executeSunnyAccountHealthCheckTask(&task, map[string]any{"session_ids": []uint{session.ID}})
+
+	var afterMailbox SunnyMailbox
+	var afterAccount SunnyAccount
+	s.db.First(&afterMailbox, beforeMailbox.ID)
+	s.db.First(&afterAccount, beforeAccount.ID)
+	if !afterMailbox.UpdatedAt.Equal(beforeMailbox.UpdatedAt) || !afterAccount.UpdatedAt.Equal(beforeAccount.UpdatedAt) {
+		t.Fatalf("alive health check changed edit time: mailbox=%v/%v account=%v/%v", beforeMailbox.UpdatedAt, afterMailbox.UpdatedAt, beforeAccount.UpdatedAt, afterAccount.UpdatedAt)
+	}
+	if afterMailbox.StatusChangedAt == nil || !afterMailbox.StatusChangedAt.Equal(statusTime) || afterAccount.StatusChangedAt == nil || !afterAccount.StatusChangedAt.Equal(statusTime) {
+		t.Fatalf("alive health check changed status time: mailbox=%v account=%v", afterMailbox.StatusChangedAt, afterAccount.StatusChangedAt)
+	}
+	if afterMailbox.LastHealthCheckedAt == nil || afterAccount.LastHealthCheckedAt == nil {
+		t.Fatalf("alive health check did not persist health time")
 	}
 }

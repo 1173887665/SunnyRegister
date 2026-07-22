@@ -60,9 +60,32 @@ func openDB() *gorm.DB {
 		log.Fatalf("migrate sqlite failed: %v", err)
 	}
 	ensureSunnySchema(db)
+	ensureSunnyStatusTriggers(db)
 	ensureSunnyIndexes(db)
 	sanitizeHistoricalTaskData(db)
 	return db
+}
+
+func ensureSunnyStatusTriggers(db *gorm.DB) {
+	for _, table := range []string{"sunny_mailboxes", "sunny_accounts"} {
+		updateTrigger := "trg_" + table + "_status_changed"
+		updateStatement := "CREATE TRIGGER IF NOT EXISTS " + updateTrigger +
+			" AFTER UPDATE OF status ON " + table +
+			" WHEN OLD.status IS NOT NEW.status BEGIN UPDATE " + table +
+			" SET status_changed_at = CASE WHEN NEW.updated_at IS NOT OLD.updated_at THEN NEW.updated_at ELSE datetime('now','localtime') END" +
+			" WHERE id = NEW.id; END"
+		if err := db.Exec(updateStatement).Error; err != nil {
+			log.Printf("create status timestamp trigger failed: %v", err)
+		}
+		insertTrigger := "trg_" + table + "_status_created"
+		insertStatement := "CREATE TRIGGER IF NOT EXISTS " + insertTrigger +
+			" AFTER INSERT ON " + table +
+			" WHEN NEW.status_changed_at IS NULL BEGIN UPDATE " + table +
+			" SET status_changed_at = COALESCE(NEW.created_at, NEW.updated_at, datetime('now','localtime')) WHERE id = NEW.id; END"
+		if err := db.Exec(insertStatement).Error; err != nil {
+			log.Printf("create initial status timestamp trigger failed: %v", err)
+		}
+	}
 }
 
 func ensureSunnyIndexes(db *gorm.DB) {
@@ -74,6 +97,8 @@ func ensureSunnyIndexes(db *gorm.DB) {
 		"CREATE INDEX IF NOT EXISTS idx_sunny_accounts_email ON sunny_accounts(email)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_accounts_health_checked ON sunny_accounts(last_health_checked_at DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_mailboxes_health_checked ON sunny_mailboxes(last_health_checked_at DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_sunny_accounts_status_changed ON sunny_accounts(status_changed_at DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_sunny_mailboxes_status_changed ON sunny_mailboxes(status_changed_at DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_proxies_status_enabled_checked ON sunny_proxies(status, enabled, last_checked_at)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_proxies_country_status ON sunny_proxies(country, status)",
 		"CREATE INDEX IF NOT EXISTS idx_task_events_task_id_id ON task_events(task_id, id)",
@@ -126,12 +151,14 @@ func ensureSunnySchema(db *gorm.DB) {
 			"last_error":             "text DEFAULT ''",
 			"metadata_json":          "text DEFAULT '{}'",
 			"last_health_checked_at": "datetime",
+			"status_changed_at":      "datetime",
 		},
 		"sunny_mailboxes": {
 			"openai_rt":              "text DEFAULT ''",
 			"registered_at":          "datetime",
 			"last_error":             "text DEFAULT ''",
 			"last_health_checked_at": "datetime",
+			"status_changed_at":      "datetime",
 		},
 		"sunny_sessions": {
 			"refresh_token":      "text DEFAULT ''",
@@ -153,7 +180,10 @@ func ensureSunnySchema(db *gorm.DB) {
 		if db.Migrator().HasColumn(table, "open_airt") && db.Migrator().HasColumn(table, "openai_rt") {
 			db.Exec("UPDATE " + table + " SET openai_rt = open_airt WHERE coalesce(openai_rt,'') = '' AND coalesce(open_airt,'') <> ''")
 		}
+		db.Exec("UPDATE " + table + " SET status_changed_at = updated_at WHERE status_changed_at IS NULL")
 	}
+	db.Exec("UPDATE sunny_mailboxes SET status = '已接码' WHERE status = 'PLUS试用中'")
+	db.Exec("UPDATE sunny_accounts SET status = 'phone_bound' WHERE status = 'PLUS试用中'")
 }
 
 func seedProviderDefinitions(db *gorm.DB) {

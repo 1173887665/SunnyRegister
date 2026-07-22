@@ -311,6 +311,7 @@ class OpenAIEmailRegisterFlow:
                 signin_url = self._create_openai_signin_url(context, page)
                 otp_min_timestamp = time.time() - 10
                 page.goto(signin_url, wait_until="domcontentloaded", timeout=90000)
+                self._emit_progress("browser_started")
                 if self.headless:
                     self.log("[认证] 已打开 OpenAI 认证页，后台状态机开始自动处理注册/登录")
                 else:
@@ -516,6 +517,7 @@ class OpenAIEmailRegisterFlow:
         while time.time() < deadline:
             self._check_cancelled()
             if self._has_chatgpt_session(page):
+                self._emit_progress("auth_completed")
                 return
             signature = self._progress_signature(page)
             if signature and signature != last_progress_signature:
@@ -564,6 +566,7 @@ class OpenAIEmailRegisterFlow:
                     if not about_you_recovery_attempted and now - about_you_at >= 40 and self._about_you_current_values_ok(page):
                         about_you_recovery_attempted = True
                         if self._recover_after_profile_submit(page):
+                            self._emit_progress("auth_completed")
                             return
                         email_code_submitted = False
                         about_you_submitted = False
@@ -581,6 +584,7 @@ class OpenAIEmailRegisterFlow:
             if "email-verification" in url or self._has_otp_input(page):
                 if not email_code_submitted:
                     self._submit_email_code(page, otp_min_timestamp)
+                    self._emit_progress("email_verified")
                     email_code_submitted = True
                 self._sleep_checked(2)
                 continue
@@ -705,6 +709,7 @@ class OpenAIEmailRegisterFlow:
         self.log("[认证] 填写邮箱并继续")
         inputs[0].fill(self.account.email)
         self._click_continue(page)
+        self._emit_progress("email_submitted")
         return True
 
     def _has_otp_input(self, page) -> bool:
@@ -1362,6 +1367,7 @@ class OpenAIEmailRegisterFlow:
             number = str(phone.get("number") or "").strip()
             provider_name = str(phone.get("provider_name") or phone.get("provider") or "接码资源")
             try:
+                self._emit_progress("phone_started", {"phone_number": number})
                 self.log(f"[接码] 第 {attempt} 次手机号绑定尝试，使用 {provider_name}：{number}")
                 digits = re.sub(r"\D", "", number)
                 local = digits[-10:] if digits.startswith("1") and len(digits) > 10 else digits
@@ -1387,6 +1393,7 @@ class OpenAIEmailRegisterFlow:
                 code = self.phone_provider("code", self.account.email, phone)
                 if not code:
                     raise RuntimeError("接码供应商未返回短信验证码")
+                self._emit_progress("phone_code_received", {"phone_number": number})
                 code_inputs = self._visible_inputs(page, ['input[autocomplete="one-time-code"]', 'input[inputmode="numeric"]', 'input[name="code"]'])
                 if len(code_inputs) >= 6:
                     for i, ch in enumerate(str(code)[:6]):

@@ -85,6 +85,7 @@ class SunnyDB:
                 "last_error": "text DEFAULT ''",
                 "metadata_json": "text DEFAULT '{}'",
                 "last_health_checked_at": "datetime",
+                "status_changed_at": "datetime",
                 "created_at": "datetime",
                 "updated_at": "datetime",
             },
@@ -93,6 +94,7 @@ class SunnyDB:
                 "registered_at": "datetime",
                 "last_error": "text DEFAULT ''",
                 "last_health_checked_at": "datetime",
+                "status_changed_at": "datetime",
             },
             "sunny_sessions": {
                 "refresh_token": "text DEFAULT ''",
@@ -117,6 +119,37 @@ class SunnyDB:
             refreshed = {str(row["name"]) for row in self.conn.execute(f"pragma table_info({table})").fetchall()}
             if table in {"sunny_accounts", "sunny_mailboxes"} and "open_airt" in refreshed and "openai_rt" in refreshed:
                 self.conn.execute(f"update {table} set openai_rt=open_airt where coalesce(openai_rt,'')='' and coalesce(open_airt,'')<>''")
+
+        for table in ("sunny_accounts", "sunny_mailboxes"):
+            columns = {str(row["name"]) for row in self.conn.execute(f"pragma table_info({table})").fetchall()}
+            if "status_changed_at" not in columns:
+                continue
+            self.conn.execute(f"update {table} set status_changed_at=updated_at where status_changed_at is null")
+            self.conn.execute(
+                f"""create trigger if not exists trg_{table}_status_changed
+                after update of status on {table}
+                when old.status is not new.status
+                begin
+                    update {table}
+                    set status_changed_at=case
+                        when new.updated_at is not old.updated_at then new.updated_at
+                        else datetime('now','localtime')
+                    end
+                    where id=new.id;
+                end"""
+            )
+            self.conn.execute(
+                f"""create trigger if not exists trg_{table}_status_created
+                after insert on {table}
+                when new.status_changed_at is null
+                begin
+                    update {table}
+                    set status_changed_at=coalesce(new.created_at,new.updated_at,datetime('now','localtime'))
+                    where id=new.id;
+                end"""
+            )
+        self.conn.execute("update sunny_mailboxes set status='已接码' where status='PLUS试用中'")
+        self.conn.execute("update sunny_accounts set status='phone_bound' where status='PLUS试用中'")
         self.conn.execute(
             """
             create table if not exists sunny_sms_provider_numbers (
@@ -250,7 +283,7 @@ class SunnyDB:
                 mailbox_ids = [int(row["mailbox_id"] or 0) for row in rows if int(row["mailbox_id"] or 0) > 0]
 
         completed_statuses: dict[int, str] = {}
-        progress_rank = {"已注册": 1, "已接码": 2, "PLUS试用中": 2, "已反代": 3}
+        progress_rank = {"已注册": 1, "已接码": 2, "已反代": 3}
 
         def remember_completed(mailbox_id: int, status: str) -> None:
             current = completed_statuses.get(mailbox_id, "")
@@ -278,7 +311,7 @@ class SunnyDB:
                         "phone_bound": "已接码",
                         "reverse_proxied": "已反代",
                     }.get(account_status, "")
-                if completed_status in {"已注册", "已接码", "已反代", "PLUS试用中"}:
+                if completed_status in {"已注册", "已接码", "已反代"}:
                     remember_completed(int(row["mailbox_id"] or 0), completed_status)
 
                 if str(row["sub2api_status"] or "").lower() in {"imported", "success", "succeeded"}:
@@ -292,7 +325,7 @@ class SunnyDB:
             ).fetchall()
             for row in mailbox_rows:
                 current_status = str(row["status"] or "").strip()
-                if current_status in {"已注册", "已接码", "已反代", "PLUS试用中"}:
+                if current_status in {"已注册", "已接码", "已反代"}:
                     remember_completed(int(row["id"]), current_status)
 
         for mailbox_id, completed_status in completed_statuses.items():
@@ -562,9 +595,11 @@ class SunnyDB:
         self.conn.commit()
 
     def upsert_account(self, email: str, **fields: Any) -> int:
-        row = self.conn.execute("select id from sunny_accounts where email=?", (email,)).fetchone()
+        row = self.conn.execute("select id,status from sunny_accounts where email=?", (email,)).fetchone()
         base = {"email": email, "updated_at": now_sql(), **fields}
         if row:
+            if "status" in base and str(base["status"] or "") != str(row["status"] or ""):
+                base["status_changed_at"] = base["updated_at"]
             sets = ",".join(f"{k}=?" for k in base)
             self.conn.execute(f"update sunny_accounts set {sets} where id=?", [*base.values(), row["id"]])
             account_id = int(row["id"])
@@ -603,7 +638,7 @@ class SunnyDB:
     def mark_mailbox(self, mailbox_id: int, status: str, error: str = "", openai_rt: str = "") -> None:
         if mailbox_id <= 0:
             return
-        success_statuses = {"已注册", "已接码", "已反代", "PLUS试用中"}
+        success_statuses = {"已注册", "已接码", "已反代"}
         sets = ["status=?", "last_error=?", "updated_at=?"]
         values: list[Any] = [status, error, now_sql()]
         if openai_rt:
@@ -625,7 +660,7 @@ class SunnyDB:
     def mark_mailbox_by_email(self, email: str, status: str, error: str = "", openai_rt: str = "") -> None:
         if not email:
             return
-        success_statuses = {"已注册", "已接码", "已反代", "PLUS试用中"}
+        success_statuses = {"已注册", "已接码", "已反代"}
         sets = ["status=?", "last_error=?", "updated_at=?"]
         values: list[Any] = [status, error, now_sql()]
         if openai_rt:

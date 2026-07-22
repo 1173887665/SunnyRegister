@@ -15,9 +15,49 @@ type AnyObj = Record<string, any>;
 type ToastState = { type: "ok" | "fail"; text: string } | null;
 type LogEntry = { id: number | string; time: string; level: string; module: string; message: string; email?: string; rawMessage?: string; detail?: AnyObj };
 type RegisterStage = "register_only" | "codex_phone_bind" | "import_reverse_proxy";
+type RegistrationProgressState = "pending" | "running" | "completed" | "abnormal";
+type AccountRegistrationProgress = {
+  email: string;
+  stage: RegisterStage;
+  checkpoint: string;
+  current: number;
+  total: number;
+  state: RegistrationProgressState;
+  error?: string;
+  updatedAt: number;
+};
+type RegistrationTaskProgress = {
+  taskId: string;
+  stage: RegisterStage;
+  accounts: Record<string, AccountRegistrationProgress>;
+  order: string[];
+};
 const REGISTER_ONLY: RegisterStage = "register_only";
 const CODEX_PHONE_BIND: RegisterStage = "codex_phone_bind";
 const IMPORT_REVERSE_PROXY: RegisterStage = "import_reverse_proxy";
+
+function registrationStageTotal(stage: RegisterStage): number {
+  return stage === IMPORT_REVERSE_PROXY ? 12 : stage === CODEX_PHONE_BIND ? 10 : 7;
+}
+
+function createRegistrationTaskProgress(taskId: string, stage: RegisterStage, emails: string[]): RegistrationTaskProgress {
+  const normalized = Array.from(new Set(emails.map((email) => String(email || "").trim()).filter(Boolean)));
+  const total = registrationStageTotal(stage);
+  return {
+    taskId,
+    stage,
+    order: normalized,
+    accounts: Object.fromEntries(normalized.map((email) => [email.toLowerCase(), {
+      email,
+      stage,
+      checkpoint: "queued",
+      current: 0,
+      total,
+      state: "pending" as RegistrationProgressState,
+      updatedAt: Date.now(),
+    }])),
+  };
+}
 
 const sunnyStateCache = new Map<string, unknown>();
 function useCachedState<T>(key: string, initial: T | (() => T)): [T, Dispatch<SetStateAction<T>>] {
@@ -81,13 +121,14 @@ const zh: AnyObj = new Proxy({
   smsbowerProvider: "SMSBower 接码供应商", smsbowerDesc: "当自建手机号池不可用或无可用号码时，注册机会使用 SMSBower API 自动获取一次性手机号。", smsbowerSwitch: "启用 SMSBower", smsbowerReady: "SMSBower 已配置", smsbowerApiKey: "API Key", smsbowerCountry: "默认国家", smsbowerService: "默认服务", smsbowerMaxPrice: "最大价格", smsbowerBaseURL: "接口地址", smsbowerCheck: "检测余额", smsbowerBalance: "余额：{balance}", smsbowerSaved: "SMSBower 配置已保存",
   smspoolProvider: "SMSPool 接码供应商", smspoolDesc: "SMSPool 临时号码平台，可在自建手机号池和 SMSBower 不可用时自动购买一次性接码号码。", smspoolSwitch: "启用 SMSPool", smspoolReady: "SMSPool 已配置", smspoolApiKey: "API Key", smspoolCountry: "默认国家", smspoolService: "默认服务", refreshProviderOptions: "获取列表", smspoolMaxPrice: "最大价格", smspoolBaseURL: "接口地址", smspoolCheck: "检测余额", smspoolBalance: "余额：{balance}", smspoolSaved: "SMSPool 配置已保存",
   proxyTip: "管理注册机发起注册/登录请求时使用的出站代理池；批量检测仅检测代理服务连通性，不访问 ChatGPT 官网。", proxyPool: "代理池", proxyEnabled: "启用", proxyDisabled: "停用", proxyAvailable: "失效", proxySearch: "搜索代理地址...", proxyCountry: "国家", proxyAllCountry: "全部国家", proxyAddress: "代理地址", proxyBatchCheck: "批量检测", proxyBatchDelete: "批量删除", proxyBatchEdit: "批量修改", proxyAdd: "新增代理", proxyEdit: "编辑代理", proxyCheckDone: "代理检测完成", proxyNoData: "暂无代理", proxyNoDataDesc: "请先新增代理地址，再对启用代理进行批量检测。", proxyStatusEnabled: "启用", proxyStatusDisabled: "停用", proxyStatusInvalid: "失效", proxyLastChecked: "上次检测", proxyLatency: "延迟", proxyCountryPlaceholder: "例如 US / HK / JP / Brazil", proxyAddressPlaceholder: "每行一个代理，例如 http://user:pass@host:port 或 socks5://host:port", proxyConfirmDelete: "确认删除该代理？此操作不可撤销。", proxyConfirmBatchDelete: "确认删除选中的代理？此操作不可撤销。", proxyTrafficSwitch: "注册流量代理", proxyTrafficOn: "代理开启", proxyTrafficOff: "代理关闭", proxyTrafficOnHint: "注册/登录请求走代理池", proxyTrafficOffHint: "使用服务器系统网络出口", proxySwitchSaved: "代理出口设置已更新",
-  selected: "已选", clearSelection: "清除选择", globalLogs: "全局日志", selectedLogs: "当前邮箱日志", clearLogs: "清除", latest: "查询最近邮件", done: "操作完成", failed: "操作失败", file: "选择文件", status: "状态", prev: "上一页", next: "下一页", pageSize: "每页", pageInfo: "第 {page} / {pages} 页", pageRange: "显示 {from} 至 {to} 共 {total} 条结果", noLogs: "暂无日志", total: "总计", yes: "是", no: "否", step: "步骤",
+  selected: "已选", selectedItems: "已选 {count} 项", clearSelection: "清除选择", globalLogs: "全局日志", selectedLogs: "当前邮箱日志", registrationTaskProgress: "注册任务进度", accountRegistrationProgress: "账户注册进度", clearLogs: "清除", latest: "查询最近邮件", done: "操作完成", failed: "操作失败", file: "选择文件", status: "状态", prev: "上一页", next: "下一页", pageSize: "每页", pageInfo: "第 {page} / {pages} 页", pageRange: "显示 {from} 至 {to} 共 {total} 条结果", noLogs: "暂无日志", noRegistrationTask: "暂无注册任务", noAccountProgress: "暂无正在处理的邮箱账户", taskTotal: "任务总数", taskCompleted: "当前完成", completedAccounts: "已完成注册", pendingAccounts: "未完成注册", abnormalAccounts: "注册状态异常", currentStep: "当前步骤", total: "总计", yes: "是", no: "否", step: "步骤",
+  progressSteps: { queued: "等待任务调度", initializing: "初始化邮箱任务", proxy_ready: "代理与出口准备完成", browser_started: "启动隔离浏览器", email_submitted: "提交注册邮箱", email_verified: "完成邮箱验证码验证", auth_completed: "完成注册或登录认证", registered: "保存 ChatGPT Session", phone_started: "分配手机号并开始接码", phone_code_received: "收到并提交手机验证码", phone_bound: "完成 Codex 接码绑定", reverse_importing: "正在导入反代平台", reverse_imported: "完成反代平台导入", stage_incomplete: "目标阶段未完成", cancelled: "任务已由用户中断", failed: "注册流程异常" },
   logProxy: "代理", logMailbox: "邮箱", logPhone: "手机", logSession: "Session", logAuth: "认证", logSystem: "系统",
   defaultGroup: "默认分组", allGroups: "全部分组", mailboxGroup: "所属分组", importMailboxes: "导入邮箱", manualImport: "手动导入", fileImport: "文件导入", dragFile: "拖拽邮箱文件到这里，或点击选择文件", importToGroup: "导入到分组", addGroup: "新建分组", enterGroup: "输入分组名后回车", validationOk: "校验通过", validationFailed: "校验失败", mailboxList: "邮箱列表", enabled: "启用", updatedAt: "更新时间", actions: "操作", queryMailbox: "搜索邮箱...", allStatus: "全部状态", allPlanTypes: "全部套餐", edit: "编辑", delete: "删除", batchDelete: "批量删除", batchEdit: "批量编辑", confirmDeleteMailbox: "确认删除该邮箱记录？此操作不可撤销。", confirmBatchDeleteMailbox: "确认删除选中的邮箱记录？此操作不可撤销。", queryMail: "邮件查询", currentMailbox: "当前邮箱", getMail: "获取邮件", mailFetchCount: "查询数量", mailFetchCountSuffix: "封", mailList: "邮件列表", sender: "发件人", receiver: "收件人", time: "时间", subject: "主题", content: "邮件内容", emptyMail: "暂无邮件", mailboxName: "邮箱名", password: "密码", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "批量编辑邮箱", applyToSelected: "应用到选中的邮箱",
   autoRegister: "自动注册", interruptTask: "停止", interruptingTask: "停止中...", interruptTaskTip: "停止整批注册任务，包括提交、排队、Worker 启动和邮箱执行阶段。", interruptTaskRequested: "已请求停止整批注册任务，正在关闭任务进程、浏览器与邮箱读取资源", interruptTaskFailed: "停止任务失败", registerTaskRunning: "当前注册任务正在执行，请等待任务结束或先停止任务", manualNew: "手动新增", searchAccount: "搜索账号邮箱...", refreshQuota: "刷新额度", refreshList: "刷新列表", refreshDone: "列表已刷新", loadingData: "正在更新数据...", refreshStatus: "刷新账号状态", statusChangedAt: "状态变更时间", planType: "套餐类型", email: "邮箱", trialLink: "试用链接", registeredAt: "注册时间", operation: "操作", noData: "暂无数据", noDataDesc: "当前平台没有找到任何账号记录。请先到邮箱配置中导入邮箱，然后选择邮箱进行自动注册。", chooseMailbox: "请选择邮箱", createTaskLog: "创建 ChatGPT 注册任务，数量", taskSubmitted: "注册任务已提交，正在开始执行", taskCreated: "自动注册任务已创建", taskDone: "任务完成", taskFailed: "任务失败", taskPollRecovered: "检测到上次注册任务仍在进行，已恢复日志轮询", taskPollLost: "任务状态轮询暂时失败，将继续等待任务状态：{error}", taskPollTimeout: "任务状态轮询时间较长，仍将继续等待；可使用停止按钮中断任务", importDone: "导入完成", exportDone: "导出完成", manualNewTip: "请到邮箱配置中手动新增邮箱", autoRegisterTitle: "自动注册 ChatGPT", step1Title: "选择注册身份", step1Desc: "当前优先使用自建 Outlook 邮箱池进行邮箱验证。", systemMailbox: "系统邮箱", systemMailboxPoolDisabled: "系统邮箱池功能未启用，请先启用邮箱池功能", smsConfigDisabled: "请前往接码配置页面启用接码配置", registerStageUnavailable: "请先启用至少一种邮箱注册方式", googleMailboxDisabled: "Google 邮箱功能未启用，请先启用对应的邮箱功能", microsoftMailboxDisabled: "Microsoft 邮箱功能未启用，请先启用对应的邮箱功能", systemMailboxDesc: "使用邮箱池自动收取验证码并完成注册", googleDesc: "预留身份，后续接入 Google 账号", microsoftDesc: "预留身份，后续接入 Microsoft 账号", step2Title: "选择执行方式", step2Desc: "支持后台浏览器自动与可视浏览器自动；后台模式不显示窗口，更适合批量执行。", protocolMode: "协议模式", protocolDesc: "占位能力，暂未开放选择", backgroundMode: "后台浏览器自动", backgroundDesc: "无窗口 Headless 执行，仍使用隔离无痕浏览器上下文自动注册", visibleMode: "可视浏览器自动", visibleDesc: "会打开浏览器窗口，适合排查人机验证或页面异常", registerCount: "注册数量", concurrency: "并发数", identityLabel: "注册身份", modeLabel: "执行方式", registerAccounts: "注册账号", verifyStrategy: "验证策略：使用 Outlook IMAP/XOAUTH2 自动读取验证码", step3Title: "选择注册阶段", step3Desc: "控制本次任务执行到哪个阶段，默认仅完成 ChatGPT 注册/登录与 Session 存储。", registerOnly: "仅注册 ChatGPT", registerOnlyDesc: "注册或登录成功后，只读取并保存 ChatGPT Session 信息", codexPhoneBind: "Codex接码绑定", codexPhoneBindDesc: "注册/登录后继续使用接码配置完成手机验证并获取 Refresh Token", importReverseProxy: "导入反代平台", importReverseProxyDesc: "完成账号 Session/RT 后导入已配置的 sub2api 反代平台", stageLabel: "注册阶段", startAutoRegister: "开始自动注册", cancel: "取消", noMailbox: "暂无邮箱", noMailboxDesc: "请点击右上角“导入邮箱”添加自建 Outlook 邮箱池。", inbox: "收件箱", fillOrChooseMailboxFile: "请先填写或选择邮箱文件",
   sub2apiDesc: "用于“导入反代平台”阶段。填写 sub2api 地址与管理员 Key 后，注册任务可将已获取 Session/RT 的 GPT 账号导入平台。", baseURL: "Base URL", adminToken: "Admin Token", accountNamePrefix: "账号名前缀", targetGroup: "目标分组", targetGroupPlaceholder: "请选择目标分组", noGroupsFetch: "暂无分组，请点击右侧“获取”", fetch: "获取", priority: "优先级", check: "检测", configUnchanged: "配置未更改", fillURLToken: "请先填写 Base URL 和 Admin Token", fetchedGroups: "已获取 {count} 个目标分组", fillURLTokenShort: "请先填写 URL 和 Token", checking: "检测中...", checkPassedGroups: "检测通过，发现 {count} 个分组", checkFailed: "检测失败：{error}", lineFormatPhone: "+手机号----https://接码链接", sessionJSON: "Auth Session", accessToken: "Access Token", mailboxAccountExport: "邮箱账户", exportFormat: "导出内容", selectExportRows: "请选择需要导出的账号", tokenPreview: "Token预览", sessionRefreshToken: "Refresh Token", secretKey: "Secret Key", allInfo: "全部信息", sessionFieldTitle: "查看 {field}", sessionFieldLoading: "正在获取 {field}，请耐心等待...", sessionFieldEmpty: "该账户暂无 {field}", updated: "更新时间", groupFilter: "所属分组", lastHealthCheckedAt: "最近测活时间", healthCheck: "测活", healthChecking: "测活中...", healthCheckSummary: "测活完成：测试 {total} 个，存活 {alive} 个，封禁 {banned} 个，失败 {failed} 个", healthAlive: "账户 {email}：存活", healthBanned: "账户 {email}：已封禁", alreadyBanned: "该账户已被封禁，无需测活", healthNoSelection: "请选择需要测活的账户",
   linkedMailboxConfig: "联动邮箱配置", linkedPhoneConfig: "联动接码配置", linkedReverseConfig: "联动反代配置", resourceReady: "可用", resourceMissing: "不可用", usablePhones: "可用手机号 {count} 个", existingRTReady: "所选账号已有 RT，无需接码", sub2apiReady: "sub2api 已配置", sub2apiMissing: "sub2api 未完整配置", stageDisabledTip: "该阶段依赖的配置暂不可用，请先完成对应菜单配置。",
-  statusLabels: { "未注册": "未注册", "已注册": "已注册", "registered": "已注册", "已接码": "已接码", "phone_bound": "已接码", "已反代": "已反代", "reverse_proxied": "已反代", "PLUS试用中": "PLUS试用中", "已封禁": "已封禁", "需二验": "需二验", "注册中": "注册中", "登录刷新": "登录刷新", "失败": "失败", "failed": "失败", "禁用": "禁用" },
+  statusLabels: { "未注册": "未注册", "已注册": "已注册", "registered": "已注册", "已接码": "已接码", "phone_bound": "已接码", "已反代": "已反代", "reverse_proxied": "已反代", "已封禁": "已封禁", "需二验": "需二验", "注册中": "注册中", "登录刷新": "登录刷新", "失败": "失败", "failed": "失败", "禁用": "禁用" },
 }, {
   get(target, prop) {
     if (typeof prop === 'string') return prop in target ? (target as AnyObj)[prop] : prop;
@@ -103,17 +144,18 @@ const en = {
   phonePool: "Self-managed Phone Pool", phonePoolGlobalSwitch: "Use Self-managed Phone Pool", importPhones: "Import Phones", phonePoolSwitchTip: "When disabled, SunnyRegister will not allocate numbers from this phone pool. You can switch to external SMS providers later.", phonePoolOn: "Usable for SMS", phonePoolOff: "Not used for SMS", phoneImportHelp: "One long-lived SMS record per line. The first character must be +, and the phone number and SMS URL must be separated with exactly four hyphens: ----.", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "Invalid phone import format", phoneSearch: "Search phone number...", phoneNumber: "Phone Number", smsLink: "SMS Link", usedCount: "Used Count", countFilter: "Count", allCount: "All Counts", lastUsedAt: "Last Used", phoneEdit: "Edit Phone", phoneStatusEnabled: "Enabled", phoneStatusDisabled: "Disabled", phoneConfirmDelete: "Delete this phone number? This cannot be undone.", phoneConfirmBatchDelete: "Delete selected phone numbers? This cannot be undone.", smsbowerProvider: "SMSBower Provider", smsbowerDesc: "When the self-managed phone pool is unavailable or empty, SunnyRegister can use SMSBower API to rent a one-time number automatically.", smsbowerSwitch: "Enable SMSBower", smsbowerReady: "SMSBower configured", smsbowerApiKey: "API Key", smsbowerCountry: "Default Country", smsbowerService: "Default Service", smsbowerMaxPrice: "Max Price", smsbowerBaseURL: "API URL", smsbowerCheck: "Check Balance", smsbowerBalance: "Balance: {balance}", smsbowerSaved: "SMSBower config saved", smspoolProvider: "SMSPool Provider", smspoolDesc: "SMSPool is a temporary-number provider used when the self-managed phone pool and SMSBower are unavailable.", smspoolSwitch: "Enable SMSPool", smspoolReady: "SMSPool configured", smspoolApiKey: "API Key", smspoolCountry: "Default Country", smspoolService: "Default Service", refreshProviderOptions: "Fetch options", smspoolMaxPrice: "Max Price", smspoolBaseURL: "API URL", smspoolCheck: "Check Balance", smspoolBalance: "Balance: {balance}", smspoolSaved: "SMSPool config saved",
   proxyTip: "Manage the outbound proxy pool for register/login requests. Batch check only tests proxy server connectivity and does not access chatgpt.com.",
   proxyPool: "Proxy Pool", proxyEnabled: "Enabled", proxyAvailable: "Invalid", proxySearch: "Search proxy address...", proxyCountry: "Country", proxyAllCountry: "All Countries", proxyAddress: "Proxy Address", proxyBatchCheck: "Batch Check", proxyBatchDelete: "Batch Delete", proxyBatchEdit: "Batch Edit", proxyAdd: "Add Proxy", proxyEdit: "Edit Proxy", proxyCheckDone: "Proxy check completed", proxyNoData: "No Proxies", proxyNoDataDesc: "Add proxy addresses first, then batch-check enabled proxies.", proxyStatusEnabled: "Enabled", proxyStatusDisabled: "Disabled", proxyStatusInvalid: "Invalid", proxyLastChecked: "Last Checked", proxyLatency: "Latency", proxyCountryPlaceholder: "e.g. US / HK / JP / Brazil", proxyAddressPlaceholder: "One proxy per line, e.g. http://user:pass@host:port or socks5://host:port", proxyConfirmDelete: "Delete this proxy? This cannot be undone.", proxyConfirmBatchDelete: "Delete selected proxies? This cannot be undone.", proxyTrafficSwitch: "Register Traffic Proxy", proxyTrafficOn: "Proxy On", proxyTrafficOff: "Proxy Off", proxyTrafficOnHint: "Register/login requests use proxy pool", proxyTrafficOffHint: "Use server/system network", proxySwitchSaved: "Proxy outlet setting updated",
-  selected: "Selected", clearSelection: "Clear Selection", globalLogs: "Global Logs", selectedLogs: "Current Mailbox Logs", clearLogs: "Clear", latest: "Latest Mail", done: "Done", failed: "Failed", file: "Choose File", status: "Status", prev: "Prev", next: "Next", pageSize: "Per page", pageInfo: "Page {page} / {pages}", pageRange: "Showing {from} to {to} of {total} results", noLogs: "No logs", total: "Total", yes: "Yes", no: "No", step: "STEP",
+  selected: "Selected", selectedItems: "{count} selected", clearSelection: "Clear Selection", globalLogs: "Global Logs", selectedLogs: "Current Mailbox Logs", registrationTaskProgress: "Registration Progress", accountRegistrationProgress: "Account Progress", clearLogs: "Clear", latest: "Latest Mail", done: "Done", failed: "Failed", file: "Choose File", status: "Status", prev: "Prev", next: "Next", pageSize: "Per page", pageInfo: "Page {page} / {pages}", pageRange: "Showing {from} to {to} of {total} results", noLogs: "No logs", noRegistrationTask: "No registration task yet", noAccountProgress: "No mailbox account is being processed", taskTotal: "Task Total", taskCompleted: "Completed", completedAccounts: "Completed Accounts", pendingAccounts: "Pending Accounts", abnormalAccounts: "Abnormal Accounts", currentStep: "Current Step", total: "Total", yes: "Yes", no: "No", step: "STEP",
+  progressSteps: { queued: "Waiting for task scheduling", initializing: "Initializing mailbox task", proxy_ready: "Proxy and network outlet ready", browser_started: "Starting isolated browser", email_submitted: "Submitting registration email", email_verified: "Email verification completed", auth_completed: "Registration or login authenticated", registered: "ChatGPT Session saved", phone_started: "Allocating phone and starting SMS", phone_code_received: "Phone code received and submitted", phone_bound: "Codex phone binding completed", reverse_importing: "Importing to reverse proxy", reverse_imported: "Reverse proxy import completed", stage_incomplete: "Target stage incomplete", cancelled: "Task interrupted by user", failed: "Registration flow failed" },
   logProxy: "Proxy", logMailbox: "Mailbox", logPhone: "Phone", logSession: "Session", logAuth: "Auth", logSystem: "System",
   defaultGroup: "Default Group", allGroups: "All Groups", mailboxGroup: "Group", importMailboxes: "Import Mailboxes", manualImport: "Manual", fileImport: "File", dragFile: "Drag mailbox file here, or click to choose a file", importToGroup: "Import to group", addGroup: "New Group", enterGroup: "Type group name and press Enter", validationOk: "Validation passed", validationFailed: "Validation failed", mailboxList: "Mailbox List", enabled: "Enabled", updatedAt: "Updated", actions: "Actions", queryMailbox: "Search mailbox...",
   allStatus: "All Status", allPlanTypes: "All Plans", edit: "Edit", delete: "Delete", batchDelete: "Batch Delete", batchEdit: "Batch Edit", confirmDeleteMailbox: "Delete this mailbox record? This cannot be undone.", confirmBatchDeleteMailbox: "Delete the selected mailbox records? This cannot be undone.", queryMail: "Mail Query", currentMailbox: "Current Mailbox", getMail: "Get Mail", mailFetchCount: "Count", mailFetchCountSuffix: "mails", mailList: "Mail List", sender: "Sender", receiver: "Receiver", time: "Time", subject: "Subject", content: "Content", emptyMail: "No mails", mailboxName: "Mailbox", password: "Password", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "Batch Edit Mailboxes", applyToSelected: "Apply to selected mailboxes",
   autoRegister: "Auto Register", interruptTask: "Stop", interruptingTask: "Stopping...", interruptTaskTip: "Stop the entire registration batch during submission, queueing, Worker startup or mailbox execution.", interruptTaskRequested: "Stop requested for the entire batch; closing task processes, browsers and mailbox readers", interruptTaskFailed: "Failed to stop task", registerTaskRunning: "A registration task is running. Wait for it to finish or stop it first.", manualNew: "Manual Add", searchAccount: "Search account email...", refreshQuota: "Refresh Quota", refreshList: "Refresh List", refreshDone: "List refreshed", loadingData: "Updating data...", refreshStatus: "Refresh Account Status", statusChangedAt: "Status Changed At", planType: "Plan Type", email: "Email", trialLink: "Trial Link", registeredAt: "Registered At", operation: "Action", noData: "No Data", noDataDesc: "No mailbox records were found. Import mailboxes in Mailbox settings, then select mailboxes to start auto registration.", chooseMailbox: "Please select mailboxes", createTaskLog: "Created ChatGPT register task, count", taskSubmitted: "Registration task submitted and starting", taskCreated: "Auto register task created", taskDone: "Task completed", taskFailed: "Task failed", taskPollRecovered: "Detected an unfinished registration task and resumed log polling", taskPollLost: "Task status polling temporarily failed; the app will keep waiting: {error}", taskPollTimeout: "Task polling is taking longer than expected. The app will keep waiting; use Stop to interrupt it.", importDone: "Import completed", exportDone: "Export completed", manualNewTip: "Please add mailboxes manually in Mailbox settings", autoRegisterTitle: "Auto Register ChatGPT", step1Title: "Choose Identity", step1Desc: "The self-managed Outlook mailbox pool is used first for email verification.", systemMailbox: "System Mailbox", systemMailboxPoolDisabled: "System mailbox pool is not enabled. Please enable the mailbox pool first.", smsConfigDisabled: "Please enable SMS settings on the SMS configuration page first.", registerStageUnavailable: "Please enable at least one mailbox registration method first.", googleMailboxDisabled: "Google mailbox is not enabled. Please enable the corresponding mailbox feature first.", microsoftMailboxDisabled: "Microsoft mailbox is not enabled. Please enable the corresponding mailbox feature first.", systemMailboxDesc: "Use mailbox pool to receive verification codes and complete registration", googleDesc: "Reserved identity; Google account integration will be added later", microsoftDesc: "Reserved identity; Microsoft account integration will be added later", step2Title: "Choose Execution Mode", step2Desc: "Background browser and visible browser automation are supported. Background mode runs without a window and is better for batches.", protocolMode: "Protocol Mode", protocolDesc: "Reserved; not selectable yet", backgroundMode: "Background Browser", backgroundDesc: "Run headless without a visible window while still using an isolated incognito browser context", visibleMode: "Visible Browser", visibleDesc: "Open a browser window for easier challenge or page issue troubleshooting", registerCount: "Register Count", concurrency: "Concurrency", identityLabel: "Identity", modeLabel: "Execution Mode", registerAccounts: "Accounts", verifyStrategy: "Verification: read code automatically with Outlook IMAP/XOAUTH2", step3Title: "Choose Registration Stage", step3Desc: "Control how far this task should run. Default only completes ChatGPT registration/login and Session storage.", registerOnly: "Register ChatGPT Only", registerOnlyDesc: "After register/login, only read and save ChatGPT Session info", codexPhoneBind: "Codex Phone Binding", codexPhoneBindDesc: "Continue phone verification with SMS settings and acquire Refresh Token", importReverseProxy: "Import Reverse Proxy", importReverseProxyDesc: "Import the account into configured sub2api after Session/RT is ready", stageLabel: "Stage", startAutoRegister: "Start Auto Register", cancel: "Cancel", noMailbox: "No Mailboxes", noMailboxDesc: "Click 'Import Mailboxes' in the upper-right corner to add your Outlook mailbox pool.", inbox: "Inbox", fillOrChooseMailboxFile: "Please fill in or choose a mailbox file",
   sub2apiDesc: "Used by the 'Import Reverse Proxy' stage. After Base URL and Admin Key are configured, registration tasks can import GPT accounts with Session/RT into the platform.", baseURL: "Base URL", adminToken: "Admin Token", accountNamePrefix: "Account Name Prefix", targetGroup: "Target Group", targetGroupPlaceholder: "Select target groups", noGroupsFetch: "No groups yet. Click 'Fetch' on the right.", fetch: "Fetch", priority: "Priority", check: "Check", configUnchanged: "Configuration unchanged", fillURLToken: "Please fill in Base URL and Admin Token first", fetchedGroups: "Fetched {count} target groups", fillURLTokenShort: "Please fill in URL and Token first", checking: "Checking...", checkPassedGroups: "Check passed, found {count} groups", checkFailed: "Check failed: {error}", lineFormatPhone: "+phone----https://sms-url", sessionJSON: "Auth Session", accessToken: "Access Token", mailboxAccountExport: "Mailbox Account", exportFormat: "Export Content", selectExportRows: "Please select accounts to export", tokenPreview: "Token Preview", sessionRefreshToken: "Refresh Token", secretKey: "Secret Key", allInfo: "All Info", sessionFieldTitle: "View {field}", sessionFieldLoading: "Fetching {field}. Please wait...", sessionFieldEmpty: "This account has no {field}", updated: "Updated", groupFilter: "Group", lastHealthCheckedAt: "Last Health Check", healthCheck: "Health Check", healthChecking: "Checking...", healthCheckSummary: "Health check complete: tested {total}, alive {alive}, banned {banned}, failed {failed}", healthAlive: "Account {email}: alive", healthBanned: "Account {email}: banned", alreadyBanned: "This account is already banned; no check was performed", healthNoSelection: "Select accounts to check",
   linkedMailboxConfig: "Uses Mailbox config", linkedPhoneConfig: "Uses SMS config", linkedReverseConfig: "Uses Reverse Proxy config", resourceReady: "Ready", resourceMissing: "Unavailable", usablePhones: "{count} usable phones", existingRTReady: "Selected accounts already have RT; SMS is not required", sub2apiReady: "sub2api configured", sub2apiMissing: "sub2api incomplete", stageDisabledTip: "The configuration required by this stage is unavailable. Complete the linked menu first.",
-  statusLabels: { "未注册": "Unregistered", "已注册": "Registered", "registered": "Registered", "已接码": "Phone Bound", "phone_bound": "Phone Bound", "已反代": "Reverse Proxied", "reverse_proxied": "Reverse Proxied", "PLUS试用中": "PLUS Trial", "已封禁": "Banned", "需二验": "Needs 2FA", "注册中": "Registering", "登录刷新": "Refreshing Login", "失败": "Failed", "failed": "Failed", "禁用": "Disabled" },
+  statusLabels: { "未注册": "Unregistered", "已注册": "Registered", "registered": "Registered", "已接码": "Phone Bound", "phone_bound": "Phone Bound", "已反代": "Reverse Proxied", "reverse_proxied": "Reverse Proxied", "已封禁": "Banned", "需二验": "Needs 2FA", "注册中": "Registering", "登录刷新": "Refreshing Login", "失败": "Failed", "failed": "Failed", "禁用": "Disabled" },
 };
 
-const MAILBOX_STATUSES = ["未注册", "已注册", "已接码", "已反代", "PLUS试用中", "已封禁", "需二验"];
+const MAILBOX_STATUSES = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验"];
 const PLAN_TYPE_OPTIONS = ["free", "plus", "k12", "team", "pro"];
 function template(text: string, values: Record<string, string | number>) {
   return text.replace(/\{(\w+)\}/g, (_, key) => String(values[key] ?? ""));
@@ -191,6 +233,13 @@ type SortOrder = "asc" | "desc";
 function nextSortOrder(v: SortOrder): SortOrder { return v === "asc" ? "desc" : "asc"; }
 function SortTimeHeader({ label, order, onToggle }: { label: string; order: SortOrder; onToggle: () => void }) {
   return <button type="button" className="sr-sort-th" onClick={onToggle} title={order === "asc" ? "ASC" : "DESC"}><span>{label}</span><span className="sr-sort-icon">{order === "asc" ? "↑" : "↓"}</span></button>;
+}
+function SelectionSummary({ t, count, onClear }: { t: typeof zh; count: number; onClear: () => void }) {
+  if (count <= 0) return null;
+  return <div className="sr-selection-summary" aria-live="polite">
+    <span>{template(t.selectedItems, { count })}</span>
+    <button type="button" className="sr-clear-selection" onClick={onClear}>{t.clearSelection}</button>
+  </div>;
 }
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 function pageCount(total: number, pageSize: number) {
@@ -306,12 +355,15 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const [stage, setStage] = useCachedState<RegisterStage>("workbench.stage", "register_only");
   const [globalLogs, setGlobalLogs] = useCachedState<LogEntry[]>("workbench.globalLogs", []);
   const [selectedLogs, setSelectedLogs] = useCachedState<LogEntry[]>("workbench.selectedLogs", []);
+  const [registrationProgress, setRegistrationProgress] = useCachedState<RegistrationTaskProgress | null>("workbench.registrationProgress", null);
+  const [globalCardView, setGlobalCardView] = useCachedState<"progress" | "logs">("workbench.globalCardView", "progress");
+  const [accountCardView, setAccountCardView] = useCachedState<"progress" | "logs">("workbench.accountCardView", "progress");
   const [, setCurrentLogEmail] = useCachedState("workbench.currentLogEmail", "");
   const pollingTaskIdsRef = useRef<Set<string>>(new Set());
   const resumedTaskIdsRef = useRef<Set<string>>(new Set());
   const stopAfterSubmitRef = useRef(false);
   const load = () => trackListLoad(async () => {
-    const params = new URLSearchParams({ page: String(pageNo), page_size: String(pageSize), enabled: "true", sort_by: "updated_at", sort_order: timeSort });
+    const params = new URLSearchParams({ page: String(pageNo), page_size: String(pageSize), enabled: "true", sort_by: "status_changed_at", sort_order: timeSort });
     params.set("summary", "true");
     if (debouncedQuery.trim()) params.set("q", debouncedQuery.trim());
     if (groupFilter) params.set("group_id", String(groupFilter));
@@ -361,6 +413,9 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     setStopRequested(false);
     stopAfterSubmitRef.current = false;
     setAutoOpen(false);
+    const availableRows = [...rows, ...Object.values(selectedRowCache)];
+    const taskEmails = ids.map((mailboxId) => String(availableRows.find((row) => Number(row.id) === mailboxId)?.email || "")).filter(Boolean);
+    setRegistrationProgress(createRegistrationTaskProgress("", stage, taskEmails));
     const sep = batchSeparatorLog(`========= SunnyRegister ${t.autoRegister} · ${formatDateTime(new Date())} =========`);
     setGlobalLogs((old) => [localLog(`${t.createTaskLog} ${ids.length}`), sep, ...old]);
     setSelectedLogs((old) => [sep, ...old]);
@@ -370,6 +425,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       setGlobalLogs((old) => [localLog(t.taskSubmitted), ...old].slice(0, 160));
       const taskId = String(res.id || res.task_id || "");
       if (!taskId) throw new Error(t.taskFailed);
+      setRegistrationProgress((old) => old ? { ...old, taskId } : createRegistrationTaskProgress(taskId, stage, taskEmails));
       setActiveTaskId(taskId);
       setActiveTaskMailboxIds(ids);
       setSubmittingTask(false);
@@ -379,6 +435,10 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
         await requestTaskCancellation(taskId);
       }
     } catch (e: any) {
+      setRegistrationProgress((old) => old ? {
+        ...old,
+        accounts: Object.fromEntries(Object.entries(old.accounts).map(([key, value]) => [key, { ...value, state: "abnormal", checkpoint: "failed", error: e.message || String(e), updatedAt: Date.now() }])),
+      } : old);
       notify("fail", e.message || String(e));
       setSubmittingTask(false);
       setBusy(false);
@@ -411,6 +471,77 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     }
     await requestTaskCancellation(taskId);
   }
+  function applyRegistrationProgressEvents(taskId: string, events: AnyObj[]) {
+    if (!events.length) return;
+    setRegistrationProgress((old) => {
+      const firstDetail = events[0]?.detail || {};
+      const eventStage = ([REGISTER_ONLY, CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY].includes(firstDetail.stage) ? firstDetail.stage : stage) as RegisterStage;
+      const next: RegistrationTaskProgress = old && (!old.taskId || old.taskId === taskId)
+        ? { ...old, taskId, accounts: { ...old.accounts }, order: [...old.order] }
+        : createRegistrationTaskProgress(taskId, eventStage, []);
+      for (const event of events) {
+        const detail = event.detail || {};
+        const email = String(detail.email || event.email || "").trim();
+        if (!email) continue;
+        const key = email.toLowerCase();
+        const accountStage = ([REGISTER_ONLY, CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY].includes(detail.stage) ? detail.stage : next.stage) as RegisterStage;
+        const total = Math.max(1, Number(detail.total || registrationStageTotal(accountStage)));
+        const previous = next.accounts[key] || { email, stage: accountStage, checkpoint: "queued", current: 0, total, state: "pending", updatedAt: 0 };
+        const state = (["pending", "running", "completed", "abnormal"].includes(detail.state) ? detail.state : "running") as RegistrationProgressState;
+        const current = state === "completed" ? total : Math.min(total, Math.max(Number(previous.current || 0), Number(detail.current || 0)));
+        next.accounts[key] = {
+          ...previous,
+          email,
+          stage: accountStage,
+          checkpoint: String(detail.checkpoint || previous.checkpoint || "queued"),
+          current,
+          total,
+          state,
+          error: String(detail.error || previous.error || ""),
+          updatedAt: Date.now(),
+        };
+        if (!next.order.some((item) => item.toLowerCase() === key)) next.order.push(email);
+      }
+      return next;
+    });
+  }
+  function reconcileRegistrationProgress(taskId: string, task: AnyObj) {
+    setRegistrationProgress((old) => {
+      if (!old || (old.taskId && old.taskId !== taskId)) return old;
+      const next = { ...old, taskId, accounts: { ...old.accounts }, order: [...old.order] };
+      const resultItems = Array.isArray(task.result?.items) ? task.result.items : [];
+      for (const item of resultItems) {
+        const email = String(item.email || "").trim();
+        if (!email) continue;
+        const key = email.toLowerCase();
+        const previous = next.accounts[key] || { email, stage: next.stage, checkpoint: "queued", current: 0, total: registrationStageTotal(next.stage), state: "pending", updatedAt: 0 };
+        const complete = item.stage_complete !== false;
+        next.accounts[key] = { ...previous, email, state: complete ? "completed" : "abnormal", current: complete ? previous.total : previous.current, checkpoint: complete ? ({ register_only: "registered", codex_phone_bind: "phone_bound", import_reverse_proxy: "reverse_imported" }[previous.stage] || "registered") : "stage_incomplete", error: String(item.stage_error || previous.error || ""), updatedAt: Date.now() };
+        if (!next.order.some((value) => value.toLowerCase() === key)) next.order.push(email);
+      }
+      const errorTexts = Array.isArray(task.result?.errors) ? task.result.errors : [];
+      for (const raw of errorTexts) {
+        const match = String(raw || "").match(/^\[([^\]]+@[^\]]+)\]/);
+        if (!match) continue;
+        const key = match[1].toLowerCase();
+        const previous = next.accounts[key];
+        if (previous) next.accounts[key] = { ...previous, state: "abnormal", checkpoint: "failed", error: String(raw), updatedAt: Date.now() };
+      }
+      if (task.status === "failed") {
+        for (const key of Object.keys(next.accounts)) {
+          const account = next.accounts[key];
+          if (account.state === "running") next.accounts[key] = { ...account, state: "abnormal", checkpoint: "failed", error: account.error || String(task.error || t.taskFailed), updatedAt: Date.now() };
+        }
+      }
+      if (task.status === "cancelled" || task.status === "interrupted") {
+        for (const key of Object.keys(next.accounts)) {
+          const account = next.accounts[key];
+          if (account.state === "running") next.accounts[key] = { ...account, state: "pending", checkpoint: "cancelled", updatedAt: Date.now() };
+        }
+      }
+      return next;
+    });
+  }
   async function poll(id: string, ids: number[]) {
     const taskId = String(id || "");
     if (!taskId) {
@@ -434,7 +565,9 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
           const items = ev.items || [];
           if (items.length) {
             last = Math.max(...items.map((x: AnyObj) => x.id));
-            const entries: LogEntry[] = items.map((item: AnyObj) => logFromEvent(item));
+            const progressEvents = items.filter((item: AnyObj) => item.type === "registration_progress" || item.detail?.progress_type === "account_registration");
+            applyRegistrationProgressEvents(taskId, progressEvents);
+            const entries: LogEntry[] = items.filter((item: AnyObj) => !progressEvents.includes(item)).map((item: AnyObj) => logFromEvent(item));
             setGlobalLogs((old) => [...entries, ...old].slice(0, 200));
             const scoped = entries.filter((x) => x.email && (!emails.length || emails.includes(x.email.toLowerCase())));
             if (scoped.length) {
@@ -445,6 +578,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
             }
           }
           if (task.terminal) {
+            reconcileRegistrationProgress(taskId, task);
             setBusy(false);
             setStopRequested(false);
             setActiveTaskId("");
@@ -550,12 +684,12 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const clearWorkbenchSelection = () => { setSelected([]); setSelectedRowCache({}); };
   return <div className="space-y-5">
     <div className="grid gap-4 lg:grid-cols-2">
-      <LogCard t={t} title={t.globalLogs} logs={globalLogs} busy={busy} onClear={()=>setGlobalLogs([])}/>
-      <LogCard t={t} title={t.selectedLogs} logs={selectedLogs} busy={busy} onClear={()=>setSelectedLogs([])}/>
+      <LogCard t={t} title={t.globalLogs} progressTitle={t.registrationTaskProgress} view={globalCardView} onView={setGlobalCardView} logs={globalLogs} busy={busy} onClear={()=>setGlobalLogs([])} progressContent={<TaskRegistrationProgress t={t} progress={registrationProgress}/>}/>
+      <LogCard t={t} title={t.selectedLogs} progressTitle={t.accountRegistrationProgress} view={accountCardView} onView={setAccountCardView} logs={selectedLogs} busy={busy} onClear={()=>setSelectedLogs([])} progressContent={<AccountRegistrationProgressList t={t} progress={registrationProgress}/>}/>
     </div>
     <Card className="sr-toolbar rounded-[18px] p-5">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-4"><h2 className="text-2xl font-bold text-slate-950 dark:text-white">ChatGPT</h2><span className="text-sm text-slate-400">{t.selected}: {selected.length}</span>{selected.length > 0 && <button className="sr-clear-selection" onClick={clearWorkbenchSelection}>{t.clearSelection}</button>}</div>
+        <div className="flex items-center gap-4"><h2 className="text-2xl font-bold text-slate-950 dark:text-white">ChatGPT</h2><SelectionSummary t={t} count={selected.length} onClear={clearWorkbenchSelection}/></div>
         <div className="flex flex-wrap gap-2">
           <button className="sr-btn sr-danger-btn disabled:cursor-not-allowed disabled:opacity-50" title={activeTaskId || submittingTask ? t.interruptTaskTip : ""} onClick={cancelActiveTask} disabled={(!activeTaskId && !submittingTask) || stopRequested}><X className="h-4 w-4"/>{stopRequested ? t.interruptingTask : t.interruptTask}</button>
           <span title={busy ? t.registerTaskRunning : !selected.length ? t.chooseMailbox : ""}>
@@ -579,7 +713,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     </Card>
     <Card className="sr-table-card overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
       <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
-      <table className="sr-account-table"><thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>selectCurrentPage(e.target.checked)}/></th><th>{t.email}</th><th>{t.mailboxGroup}</th><th>{t.status}</th><th>{t.planType}</th><th><SortTimeHeader label={t.statusChangedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.operation}</th></tr></thead><tbody>{rows.length ? pagedRows.map((r) => <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} onChange={(e)=>selectRow(r,e.target.checked)}/></td><td>{r.email}</td><td>{r.group_name || t.defaultGroup}</td><td><StatusBadge t={t} status={r.status || "未注册"} /></td><td><PlanTypeBadge value={r.account?.plan_type || r.plan_type} /></td><td>{formatDateTime(r.updated_at || r.account?.updated_at)}</td><td><button className="sr-link inline-flex items-center gap-1" title={t.refreshStatus} disabled={busy} onClick={()=>refreshAccountStatus(r)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button></td></tr>) : <tr><td colSpan={7}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.noDataDesc}</p></div></td></tr>}</tbody></table>
+      <table className="sr-account-table"><thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>selectCurrentPage(e.target.checked)}/></th><th>{t.email}</th><th>{t.mailboxGroup}</th><th>{t.status}</th><th>{t.planType}</th><th><SortTimeHeader label={t.statusChangedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.operation}</th></tr></thead><tbody>{rows.length ? pagedRows.map((r) => <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} onChange={(e)=>selectRow(r,e.target.checked)}/></td><td>{r.email}</td><td>{r.group_name || t.defaultGroup}</td><td><StatusBadge t={t} status={r.status || "未注册"} /></td><td><PlanTypeBadge value={r.account?.plan_type || r.plan_type} /></td><td>{formatDateTime(r.status_changed_at)}</td><td><button className="sr-link inline-flex items-center gap-1" title={t.refreshStatus} disabled={busy} onClick={()=>refreshAccountStatus(r)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button></td></tr>) : <tr><td colSpan={7}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.noDataDesc}</p></div></td></tr>}</tbody></table>
       <PaginationBar t={t} total={total} page={safePageNo} pageSize={pageSize} setPage={setPageNo} setPageSize={setPageSize} />
     </Card>
     {autoOpen && <AutoRegisterModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} selectedNeedPhone={selectedRows.some((m)=>m.has_openai_rt !== true)} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} identity={identity} setIdentity={setIdentity} mode={mode} setMode={setMode} stage={stage} setStage={setStage} onClose={()=>setAutoOpen(false)} onStart={()=>createRegisterTask()} notify={notify} />}
@@ -760,7 +894,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
               <SelectBox className="sr-select-like" value={groupFilter} onChange={(v)=>setGroupFilter(Number(v))} options={[{value:0,label:t.allGroups}, ...groups.map((g)=>({value:g.id,label:g.name || t.defaultGroup}))]} />
               <SelectBox className="sr-select-like" value={statusFilter} onChange={(v)=>setStatusFilter(String(v))} options={[{value:"",label:t.allStatus}, ...MAILBOX_STATUSES.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))]} />
             </div>
-            <div className="sr-mailbox-actions flex flex-nowrap items-center gap-2">{selected.length > 0 && <button className="sr-clear-selection" onClick={()=>setSelected([])}>{t.clearSelection}</button>}{selected.length > 0 && <ConfirmBubble message={t.confirmBatchDeleteMailbox} detail={`${selected.length} ${t.selected}`} onConfirm={batchDelete}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.batchDelete} ({selected.length})</Button></ConfirmBubble>}{selected.length > 0 && <Button variant="outline" className="rounded-xl border-emerald-200 text-emerald-700" onClick={()=>setBatchEditing(true)}>{t.batchEdit} ({selected.length})</Button>}<button className="sr-text-btn" onClick={load}><RefreshCw className="h-4 w-4"/>{t.refresh}</button><Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setImportOpen(true)}><Download className="mr-2 h-4 w-4"/>{t.importMailboxes}</Button></div>
+            <div className="sr-mailbox-actions flex flex-nowrap items-center gap-2"><SelectionSummary t={t} count={selected.length} onClear={()=>setSelected([])}/>{selected.length > 0 && <ConfirmBubble message={t.confirmBatchDeleteMailbox} detail={`${selected.length} ${t.selected}`} onConfirm={batchDelete}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.batchDelete} ({selected.length})</Button></ConfirmBubble>}{selected.length > 0 && <Button variant="outline" className="rounded-xl border-emerald-200 text-emerald-700" onClick={()=>setBatchEditing(true)}>{t.batchEdit} ({selected.length})</Button>}<button className="sr-text-btn" onClick={load}><RefreshCw className="h-4 w-4"/>{t.refresh}</button><Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setImportOpen(true)}><Download className="mr-2 h-4 w-4"/>{t.importMailboxes}</Button></div>
           </div>
         </div>
         <div className="sr-table-card sr-mailbox-table-panel overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
@@ -796,7 +930,6 @@ function StatusBadge({ t, status }: { t: typeof zh; status: string }) {
     "已注册": "blue",
     "已接码": "green",
     "已反代": "cyan",
-    "PLUS试用中": "violet",
     "已封禁": "red",
     "需二验": "amber",
     "注册中": "amber",
@@ -1258,7 +1391,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
             <SelectBox className="sr-select-like" value={countFilter} onChange={(v)=>setCountFilter(String(v))} options={countOptions} />
           </div>
           <div className="flex flex-nowrap gap-2">
-            {selected.length > 0 && <button className="sr-clear-selection" onClick={()=>setSelected([])}>{t.clearSelection}</button>}
+            <SelectionSummary t={t} count={selected.length} onClear={()=>setSelected([])}/>
             {selected.length > 0 && <ConfirmBubble message={t.phoneConfirmBatchDelete} detail={`${selected.length} ${t.selected}`} onConfirm={batchDelete}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.batchDelete} ({selected.length})</Button></ConfirmBubble>}
             <button className="sr-text-btn" onClick={()=>run(t.refreshDone, load)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
             <Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setImportOpen(true)}><Download className="mr-2 h-4 w-4"/>{t.importPhones}</Button>
@@ -1692,7 +1825,7 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
           <SelectBox className="sr-select-like" value={country} onChange={(v)=>setCountry(String(v))} options={countryOptions} />
         </div>
         <div className="flex flex-wrap gap-2">
-          {selected.length > 0 && <button className="sr-clear-selection" onClick={()=>setSelected([])}>{t.clearSelection}</button>}
+          <SelectionSummary t={t} count={selected.length} onClear={()=>setSelected([])}/>
           {selected.length > 0 && <Button variant="outline" className="rounded-xl" onClick={()=>setBatchEditing({country:"",status:"启用"})}>{t.proxyBatchEdit} ({selected.length})</Button>}
           {selected.length > 0 && <ConfirmBubble message={t.proxyConfirmBatchDelete} detail={`${selected.length} ${t.selected}`} onConfirm={batchDeleteProxy}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.proxyBatchDelete} ({selected.length})</Button></ConfirmBubble>}
           <button className="sr-text-btn" onClick={refreshProxyList}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
@@ -1850,7 +1983,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       <SelectBox className="sr-select-like" value={group} onChange={(v)=>setGroup(String(v))} options={[{value:"",label:t.allGroups}, ...groups.map((item)=>({value:String(item.id),label:item.name}))]} />
       <SelectBox className="sr-select-like" value={status} onChange={(v)=>setStatus(String(v))} options={[{value:"",label:t.allStatus}, ...SESSION_STATUS_OPTIONS.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))]} />
       <SelectBox className="sr-select-like" value={plan} onChange={(v)=>setPlan(String(v))} options={[{value:"",label:t.planType}, ...SESSION_PLAN_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))]} />
-      {selected.length > 0 && <button className="sr-clear-selection" onClick={()=>setSelected([])}>{t.clearSelection}</button>}
+      <SelectionSummary t={t} count={selected.length} onClear={()=>setSelected([])}/>
       <div className="ml-auto flex items-center gap-2">
         <button className="sr-text-btn" disabled={healthBusy || selected.length === 0} title={selected.length === 0 ? t.healthNoSelection : t.healthCheck} onClick={()=>runHealthCheck(selected)}>{healthBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Activity className="h-4 w-4"/>}{healthBusy ? t.healthChecking : t.healthCheck}</button>
         <button className="sr-text-btn" disabled={healthBusy} onClick={refreshSessionList}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
@@ -1974,16 +2107,72 @@ function localizedLogMessage(t: typeof zh, entry: LogEntry) {
   }
   return msg;
 }
-function LogCard({ t, title, logs, busy, onClear }: { t: typeof zh; title: string; logs: LogEntry[]; busy: boolean; onClear: () => void }) {
+function progressAccounts(progress: RegistrationTaskProgress | null): AccountRegistrationProgress[] {
+  if (!progress) return [];
+  return progress.order.map((email) => progress.accounts[email.toLowerCase()]).filter(Boolean);
+}
+
+function RegistrationProgressBar({ current, total, tone = "normal" }: { current: number; total: number; tone?: "normal" | "danger" }) {
+  const safeTotal = Math.max(1, Number(total || 0));
+  const safeCurrent = Math.min(safeTotal, Math.max(0, Number(current || 0)));
+  return <div className={cn("sr-registration-progress-track", tone === "danger" && "danger")} aria-valuemin={0} aria-valuemax={safeTotal} aria-valuenow={safeCurrent} role="progressbar">
+    <span style={{ width: `${(safeCurrent / safeTotal) * 100}%` }} />
+  </div>;
+}
+
+function ProgressEmailGroup({ title, accounts, tone = "normal" }: { title: string; accounts: AccountRegistrationProgress[]; tone?: "normal" | "danger" }) {
+  return <details className={cn("sr-progress-email-group", tone === "danger" && "danger")}>
+    <summary><span>{title}</span><b>{accounts.length}</b></summary>
+    <div className="sr-progress-email-list">{accounts.length ? accounts.map((account) => <div key={account.email} title={account.error || account.email}>{account.email}</div>) : <span>-</span>}</div>
+  </details>;
+}
+
+function TaskRegistrationProgress({ t, progress }: { t: typeof zh; progress: RegistrationTaskProgress | null }) {
+  const accounts = progressAccounts(progress);
+  if (!progress || !accounts.length) return <div className="sr-progress-empty">{t.noRegistrationTask}</div>;
+  const completed = accounts.filter((account) => account.state === "completed");
+  const abnormal = accounts.filter((account) => account.state === "abnormal");
+  const pending = accounts.filter((account) => account.state !== "completed" && account.state !== "abnormal");
+  return <div className="sr-progress-panel">
+    <div className="sr-task-progress-labels"><span>{t.taskTotal} <b>{accounts.length}</b></span><span>{t.taskCompleted} <b>{completed.length}</b></span></div>
+    <RegistrationProgressBar current={completed.length} total={accounts.length}/>
+    <div className="sr-progress-groups">
+      <ProgressEmailGroup title={t.completedAccounts} accounts={completed}/>
+      <ProgressEmailGroup title={t.pendingAccounts} accounts={pending}/>
+      <ProgressEmailGroup title={t.abnormalAccounts} accounts={abnormal} tone="danger"/>
+    </div>
+  </div>;
+}
+
+function AccountRegistrationProgressList({ t, progress }: { t: typeof zh; progress: RegistrationTaskProgress | null }) {
+  const accounts = progressAccounts(progress);
+  const running = accounts.filter((account) => account.state === "running");
+  const visible = (running.length ? running : accounts.filter((account) => account.updatedAt > 0).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3));
+  if (!visible.length) return <div className="sr-progress-empty">{t.noAccountProgress}</div>;
+  return <div className="sr-account-progress-list">
+    {visible.map((account) => <details key={account.email} className={cn("sr-account-progress-item", account.state === "abnormal" && "danger")}>
+      <summary>
+        <div className="sr-account-progress-heading"><span title={account.email}>{account.email}</span><b>{account.current}/{account.total}</b></div>
+        <RegistrationProgressBar current={account.current} total={account.total} tone={account.state === "abnormal" ? "danger" : "normal"}/>
+      </summary>
+      <div className="sr-account-progress-step"><span>{t.currentStep}</span><b>{t.progressSteps?.[account.checkpoint] || account.checkpoint}</b>{account.error ? <small title={account.error}>{account.error}</small> : null}</div>
+    </details>)}
+  </div>;
+}
+
+function LogCard({ t, title, progressTitle, view, onView, logs, busy, onClear, progressContent }: { t: typeof zh; title: string; progressTitle: string; view: "progress" | "logs"; onView: (view: "progress" | "logs") => void; logs: LogEntry[]; busy: boolean; onClear: () => void; progressContent: React.ReactNode }) {
   return <Card className="sr-log-card rounded-[30px] p-5">
-    <div className="mb-4 flex items-center justify-between">
-      <h2 className="text-xl font-black text-[#063b36] dark:text-emerald-50">{title}</h2>
+    <div className="mb-4 flex items-center justify-between gap-3">
+      <div className="sr-log-tabs" role="tablist">
+        <button type="button" role="tab" aria-selected={view === "progress"} className={cn(view === "progress" && "active")} onClick={()=>onView("progress")}>{progressTitle}</button>
+        <button type="button" role="tab" aria-selected={view === "logs"} className={cn(view === "logs" && "active")} onClick={()=>onView("logs")}>{title}</button>
+      </div>
       <div className="flex items-center gap-2">
-        <button type="button" className="sr-log-clear-btn" onClick={onClear} disabled={!logs.length}>{t.clearLogs}</button>
+        {view === "logs" ? <button type="button" className="sr-log-clear-btn" onClick={onClear} disabled={!logs.length}>{t.clearLogs}</button> : null}
         {busy?<Loader2 className="h-5 w-5 animate-spin text-[var(--accent)]"/>:<Settings2 className="h-5 w-5 text-[var(--accent)]"/>}
       </div>
     </div>
-    <div className="log-box sr-register-log rounded-[24px] p-4">
+    {view === "progress" ? progressContent : <div className="log-box sr-register-log rounded-[24px] p-4">
       {logs.length ? logs.map((x)=><div key={x.id} className={cn("sr-log-line", `level-${x.level}`)}>
         <div className="sr-log-meta">
           <span className="sr-log-time">[{x.time}]</span>
@@ -1992,6 +2181,6 @@ function LogCard({ t, title, logs, busy, onClear }: { t: typeof zh; title: strin
         </div>
         <div className="sr-log-message">{localizedLogMessage(t, x)}</div>
       </div>) : <div className="sr-log-empty">{t.noLogs}</div>}
-    </div>
+    </div>}
   </Card>;
 }

@@ -56,6 +56,28 @@ func TestLoginRequiresExplicitUsername(t *testing.T) {
 	}
 }
 
+func TestLogoutInvalidatesSessionAndDisablesCaching(t *testing.T) {
+	s := newAuthTestServer()
+	token := s.newSession()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	req.AddCookie(&http.Cookie{Name: s.sessionCookieName(), Value: token})
+	rec := httptest.NewRecorder()
+	s.serveHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("logout status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if cacheControl := rec.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "no-store") {
+		t.Fatalf("logout response is cacheable: %q", cacheControl)
+	}
+	check := httptest.NewRequest(http.MethodGet, "/api/auth/check", nil)
+	check.AddCookie(&http.Cookie{Name: s.sessionCookieName(), Value: token})
+	checkRec := httptest.NewRecorder()
+	s.serveHTTP(checkRec, check)
+	if !strings.Contains(checkRec.Body.String(), `"authenticated":false`) {
+		t.Fatalf("logged-out session remained valid: %s", checkRec.Body.String())
+	}
+}
+
 func TestLoginRateLimit(t *testing.T) {
 	s := newAuthTestServer()
 	for attempt := 0; attempt < 5; attempt++ {

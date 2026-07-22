@@ -22,13 +22,33 @@ REGISTER_ONLY = "register_only"
 CODEX_PHONE_BIND = "codex_phone_bind"
 IMPORT_REVERSE_PROXY = "import_reverse_proxy"
 
+_REGISTRATION_PROGRESS_STEPS = {
+    "initializing": 1,
+    "proxy_ready": 2,
+    "browser_started": 3,
+    "email_submitted": 4,
+    "email_verified": 5,
+    "auth_completed": 6,
+    "registered": 7,
+    "phone_started": 8,
+    "phone_code_received": 9,
+    "phone_bound": 10,
+    "reverse_importing": 11,
+    "reverse_imported": 12,
+}
+
+_REGISTRATION_STAGE_TOTALS = {
+    REGISTER_ONLY: 7,
+    CODEX_PHONE_BIND: 10,
+    IMPORT_REVERSE_PROXY: 12,
+}
+
 _MAILBOX_PROGRESS_RANK = {
     "未注册": 0,
     "已注册": 1,
     "registered": 1,
     "已接码": 2,
     "phone_bound": 2,
-    "PLUS试用中": 2,
     "已反代": 3,
     "reverse_proxied": 3,
 }
@@ -62,7 +82,7 @@ def _highest_mailbox_progress(current: str, candidate: str) -> str:
 def _account_status_for_mailbox(status: str) -> str:
     if status == "已反代":
         return "reverse_proxied"
-    if status in {"已接码", "PLUS试用中"}:
+    if status == "已接码":
         return "phone_bound"
     return "registered"
 
@@ -92,6 +112,39 @@ def _stage_label(stage: str) -> str:
         CODEX_PHONE_BIND: "Codex接码绑定",
         IMPORT_REVERSE_PROXY: "导入反代平台",
     }.get(stage, stage)
+
+
+def _registration_stage_total(stage: str) -> int:
+    return _REGISTRATION_STAGE_TOTALS.get(stage, _REGISTRATION_STAGE_TOTALS[REGISTER_ONLY])
+
+
+def _emit_registration_progress(
+    db: SunnyDB,
+    email: str,
+    stage: str,
+    checkpoint: str,
+    *,
+    state: str = "running",
+    error: str = "",
+) -> None:
+    total = _registration_stage_total(stage)
+    current = min(total, max(0, _REGISTRATION_PROGRESS_STEPS.get(checkpoint, 0)))
+    db.event(
+        f"[{email}] registration progress {current}/{total}: {checkpoint}",
+        level="error" if state == "abnormal" else "info",
+        typ="registration_progress",
+        detail={
+            "scope": "selected",
+            "progress_type": "account_registration",
+            "email": email,
+            "stage": stage,
+            "checkpoint": checkpoint,
+            "current": current,
+            "total": total,
+            "state": state,
+            "error": str(error or "")[:500],
+        },
+    )
 
 
 def _is_cancel_exception(exc: BaseException) -> bool:
@@ -591,6 +644,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     db.ensure_not_cancelled()
     email = mailbox.get("email") or f"mailbox-{index}"
     stage = _stage(payload)
+    _emit_registration_progress(db, str(email), stage, "initializing")
     proxies = _prepare_register_proxy(db, payload, str(email), index - 1)
     execution_mode = str(payload.get("execution_mode") or payload.get("mode") or "background").strip().lower()
     if execution_mode not in {"background", "visible", "protocol"}:
@@ -600,7 +654,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     headless = bool(payload.get("headless", execution_mode != "visible"))
     account = account_from_row(mailbox)
     mailbox_id = max(0, int(mailbox.get("id") or 0))
-    is_registered_mailbox = bool(account.openai_rt) or str(mailbox.get("status") or "") in {"registered", "已注册", "phone_bound", "已接码", "已反代", "reverse_proxied", "PLUS试用中", "登录刷新"}
+    is_registered_mailbox = bool(account.openai_rt) or str(mailbox.get("status") or "") in {"registered", "已注册", "phone_bound", "已接码", "已反代", "reverse_proxied", "登录刷新"}
     original_mailbox_status = str(mailbox.get("status") or ("已注册" if is_registered_mailbox else "未注册"))
     original_completed_status = original_mailbox_status if _MAILBOX_PROGRESS_RANK.get(original_mailbox_status, -1) > 0 else ""
     db.upsert_account(
@@ -630,17 +684,20 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             db.event(f"[{email}] [代理] 注册/登录流量使用代理池代理: {proxy_label}（代理池检测为轻量 TCP 连通检测，不等同于目标站点可访问）", detail={"email": email, "scope": "selected", "proxy": proxy_label, "proxy_mode": "proxy_pool"})
     else:
         db.event(f"[{email}] [代理] 注册/登录流量使用服务器系统网络直连出口", detail={"email": email, "scope": "selected", "proxy": "", "proxy_mode": "direct"})
+    _emit_registration_progress(db, str(email), stage, "proxy_ready")
     db.mark_mailbox(mailbox_id, "登录刷新" if is_registered_mailbox else "注册中")
 
     def save_progress(checkpoint: str, snapshot: dict[str, Any]) -> None:
-        _persist_registration_checkpoint(
-            db,
-            mailbox,
-            account,
-            checkpoint,
-            snapshot,
-            original_mailbox_status,
-        )
+        _emit_registration_progress(db, str(email), stage, checkpoint)
+        if checkpoint in {"registered", "phone_bound"}:
+            _persist_registration_checkpoint(
+                db,
+                mailbox,
+                account,
+                checkpoint,
+                snapshot,
+                original_mailbox_status,
+            )
 
     wants_rt = stage in {CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY}
     phone_provider = None
@@ -732,12 +789,14 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                 db.event(f"[{email}] [反代] 没有 Refresh Token，已停止导入 sub2api", "warning", detail={"email": email, "scope": "selected"})
             else:
                 try:
+                    _emit_registration_progress(db, str(email), stage, "reverse_importing")
                     result["sub2api"] = _import_sub2api(db, email, account_id, session)
                     mailbox_status = _highest_mailbox_progress(mailbox_status, "已反代")
                     db.mark_mailbox(mailbox_id, mailbox_status, openai_rt=rt_value)
                     db.upsert_account(email, mailbox_id=mailbox_id, status="reverse_proxied", last_error="")
                     result["completed_status"] = mailbox_status
                     result["stage_complete"] = True
+                    _emit_registration_progress(db, str(email), stage, "reverse_imported")
                 except Exception as exc:
                     stage_error = str(exc)
                     result["stage_complete"] = False
@@ -754,6 +813,19 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             db.event(f"[{email}] [接码] 后续接码阶段未完成，账号保留为{mailbox_status}: {stage_error}", "warning", detail={"email": email, "scope": "selected", "completed_status": mailbox_status})
         result["has_access_token"] = bool(result.pop("access_token", ""))
         result["has_refresh_token"] = bool(result.pop("refresh_token", ""))
+        terminal_checkpoint = {
+            REGISTER_ONLY: "registered",
+            CODEX_PHONE_BIND: "phone_bound",
+            IMPORT_REVERSE_PROXY: "reverse_imported",
+        }.get(stage, "registered")
+        _emit_registration_progress(
+            db,
+            str(email),
+            stage,
+            terminal_checkpoint if result.get("stage_complete") else "stage_incomplete",
+            state="completed" if result.get("stage_complete") else "abnormal",
+            error=str(result.get("stage_error") or ""),
+        )
         return True, result
     except Exception as exc:
         if _is_cancel_exception(exc):
@@ -775,6 +847,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             db.mark_mailbox(mailbox_id, "失败", err_text)
         db.upsert_account(email, mailbox_id=mailbox_id, status="failed", last_error=err_text)
         db.event(err, "error", detail={"email": email, "scope": "selected", "traceback": traceback.format_exc()[-3000:]})
+        _emit_registration_progress(db, str(email), stage, "failed", state="abnormal", error=err_text)
         return False, err
 
 

@@ -31,6 +31,7 @@ type SunnyMailbox struct {
 	LatestMailJSON      string       `gorm:"type:text;default:'{}'" json:"latest_mail_json"`
 	LastMailAt          sql.NullTime `json:"last_mail_at"`
 	LastHealthCheckedAt *time.Time   `gorm:"index" json:"last_health_checked_at"`
+	StatusChangedAt     *time.Time   `gorm:"index" json:"status_changed_at"`
 	RegisteredAt        sql.NullTime `json:"registered_at"`
 	CreatedAt           time.Time    `json:"created_at"`
 	UpdatedAt           time.Time    `json:"updated_at"`
@@ -87,6 +88,7 @@ type SunnyAccount struct {
 	LastError           string     `gorm:"type:text" json:"last_error"`
 	MetadataJSON        string     `gorm:"type:text;default:'{}'" json:"metadata_json"`
 	LastHealthCheckedAt *time.Time `gorm:"index" json:"last_health_checked_at"`
+	StatusChangedAt     *time.Time `gorm:"index" json:"status_changed_at"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 }

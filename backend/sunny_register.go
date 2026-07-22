@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -39,7 +38,7 @@ const (
 	defaultGroupName = "默认分组"
 )
 
-var sunnyMailboxStatuses = []string{"未注册", "已注册", "已接码", "已反代", "PLUS试用中", "已封禁", "需二验"}
+var sunnyMailboxStatuses = []string{"未注册", "已注册", "已接码", "已反代", "已封禁", "需二验"}
 
 func (s *Server) handleSunny(w http.ResponseWriter, r *http.Request, rest string) {
 	rest = strings.Trim(rest, "/")
@@ -171,7 +170,15 @@ func serializeSunnyMailbox(m SunnyMailbox, groups map[uint]string, planType ...s
 		"last_mail_at":  nullableTime(m.LastMailAt.Valid, m.LastMailAt.Time),
 		"registered_at": nullableTime(m.RegisteredAt.Valid, m.RegisteredAt.Time),
 		"created_at":    formatTime(m.CreatedAt), "updated_at": formatTime(m.UpdatedAt),
+		"status_changed_at": nullableTime(m.StatusChangedAt != nil, pointerTime(m.StatusChangedAt)),
 	}
+}
+
+func pointerTime(value *time.Time) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return *value
 }
 
 func serializeSunnyMailboxList(m SunnyMailbox, groups map[uint]string, plan, accessToken string, accountID uint, summary bool) map[string]any {
@@ -430,9 +437,9 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			var allRows []SunnyMailbox
 			allQuery := query
 			if summary {
-				allQuery = allQuery.Select("id", "group_id", "email", "openai_rt", "account_type", "status", "enabled", "registered_at", "created_at", "updated_at")
+				allQuery = allQuery.Select("id", "group_id", "email", "openai_rt", "account_type", "status", "enabled", "registered_at", "status_changed_at", "created_at", "updated_at")
 			}
-			allQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Find(&allRows)
+			allQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "status_changed_at": "status_changed_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Find(&allRows)
 			gm := s.sunnyGroupMap()
 			emails := []string{}
 			for _, m := range allRows {
@@ -468,9 +475,9 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		var rows []SunnyMailbox
 		listQuery := query
 		if summary {
-			listQuery = listQuery.Select("id", "group_id", "email", "openai_rt", "account_type", "status", "enabled", "registered_at", "created_at", "updated_at")
+			listQuery = listQuery.Select("id", "group_id", "email", "openai_rt", "account_type", "status", "enabled", "registered_at", "status_changed_at", "created_at", "updated_at")
 		}
-		listQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Offset((page - 1) * size).Limit(size).Find(&rows)
+		listQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "status_changed_at": "status_changed_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Offset((page - 1) * size).Limit(size).Find(&rows)
 		gm := s.sunnyGroupMap()
 		emails := []string{}
 		for _, m := range rows {
@@ -552,7 +559,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			if gid := uint(intValue(body["group_id"], 0)); gid > 0 {
 				m.GroupID = gid
 			}
-			if v := text(body["status"]); v != "" {
+			if v := normalizeSunnyMailboxStatus(text(body["status"])); v != "" {
 				m.Status = v
 			}
 			if v := fallback(text(body["plan_type"]), text(body["account_type"])); v != "" && v != "-" {
@@ -610,11 +617,19 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 		gid = s.sunnyEnsureDefaultGroup()
 	}
 	enabled := boolValue(body["enabled"], true)
-	status := fallback(text(body["status"]), "未注册")
+	status := fallback(normalizeSunnyMailboxStatus(text(body["status"])), "未注册")
 	if openaiRT != "" && status == "未注册" {
 		status = "已注册"
 	}
 	return SunnyMailbox{GroupID: gid, Email: email, Password: password, ClientID: clientID, RefreshToken: refreshToken, OpenAIRT: openaiRT, Raw: raw, AccountType: fallback(normalizeSunnyPlanType(fallback(text(body["plan_type"]), text(body["account_type"]))), "free"), Status: status, Enabled: enabled, LatestMailJSON: "{}"}, nil
+}
+
+func normalizeSunnyMailboxStatus(status string) string {
+	status = strings.TrimSpace(status)
+	if status == "PLUS试用中" {
+		return "已接码"
+	}
+	return status
 }
 
 func parseSunnyMailboxLine(raw string) (map[string]string, error) {
@@ -715,15 +730,15 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 	proxyURL := s.sunnyMailboxProxyURL()
 	payload, err := fetchOutlookLatestMail(m.Email, m.ClientID, m.RefreshToken, limit, proxyURL)
 	if err != nil {
-		m.LastError = err.Error()
-		s.db.Save(m)
+		s.db.Model(m).UpdateColumn("last_error", err.Error())
 		writeError(w, 502, err.Error())
 		return
 	}
-	m.LatestMailJSON = dumpJSON(payload)
-	m.LastMailAt = sql.NullTime{Time: time.Now(), Valid: true}
-	m.LastError = ""
-	s.db.Save(m)
+	s.db.Model(m).UpdateColumns(map[string]any{
+		"latest_mail_json": dumpJSON(payload),
+		"last_mail_at":     time.Now(),
+		"last_error":       "",
+	})
 	writeJSON(w, 200, payload)
 }
 

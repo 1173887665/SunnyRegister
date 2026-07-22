@@ -197,19 +197,25 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 		} else {
 			result["checked"] = result["checked"].(int) + 1
 			now := time.Now()
-			updates := map[string]any{"last_health_checked_at": now}
 			if outcome.Banned {
 				result["banned"] = result["banned"].(int) + 1
 				item["status"] = "banned"
-				updates["status"] = "已封禁"
-				updates["last_error"] = "测活邮件标题命中账户封禁标记"
 				s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s：已封禁", outcome.Email), "log", "warning", nil)
+				s.db.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).UpdateColumns(map[string]any{
+					"last_health_checked_at": now, "status": "已封禁", "status_changed_at": now,
+					"last_error": "测活邮件标题命中账户封禁标记", "updated_at": now,
+				})
+				s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).UpdateColumns(map[string]any{
+					"last_health_checked_at": now, "status": "已封禁", "status_changed_at": now,
+					"last_error": "测活邮件标题命中账户封禁标记", "updated_at": now,
+				})
 			} else {
 				result["alive"] = result["alive"].(int) + 1
 				s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s：存活", outcome.Email), "log", "info", nil)
+				// A successful health check is not a mailbox edit or an account status change.
+				s.db.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).UpdateColumn("last_health_checked_at", now)
+				s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).UpdateColumn("last_health_checked_at", now)
 			}
-			s.db.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).Updates(updates)
-			s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).Updates(updates)
 		}
 		items = append(items, item)
 		current := task.ProgressCurrent + 1

@@ -1,11 +1,11 @@
 ﻿import { BrowserRouter, Route, Routes, NavLink, useLocation } from "react-router-dom";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Languages, Link2, LogOut, Moon, Sun } from "lucide-react";
 import { API, cn } from "@/lib/utils";
 import { I18nProvider, useI18n } from "@/lib/i18n-context";
 import { useTopBarGsap } from "@/lib/useSunnyGsap";
 import SunnyRegister from "@/pages/SunnyRegister";
-import { Button } from "@/components/ui/button";
+import PublicLanding from "@/pages/PublicLanding";
 
 function words(language: string) {
   return language === "en-US"
@@ -13,7 +13,7 @@ function words(language: string) {
     : { app: "SunnyRegister", sub: "GPT 账号注册与管理", home: "工作台", settings: "设置", loginTitle: "欢迎回来", loginDesc: "请输入管理员账号与密码。", user: "用户名", pass: "密码", submit: "登录", checking: "验证中...", failed: "登录失败", loading: "加载中...", logout: "退出登录" };
 }
 
-function TopBar({ theme, setTheme }: { theme: string; setTheme: (v: string) => void }) {
+function TopBar({ theme, setTheme, onLogout }: { theme: string; setTheme: (v: string) => void; onLogout: () => Promise<void> }) {
   const { language, toggleLanguage } = useI18n();
   const c = words(language);
   const location = useLocation();
@@ -39,18 +39,18 @@ function TopBar({ theme, setTheme }: { theme: string; setTheme: (v: string) => v
         <div className="flex shrink-0 items-center justify-end gap-2 justify-self-end">
           <button className="round-tool" onClick={() => setTheme(theme === "light" ? "dark" : "light")} title={theme}>{theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}</button>
           <button className="round-tool min-w-12 px-3 text-xs font-bold" onClick={toggleLanguage}><Languages className="h-4 w-4" />{language === "zh-CN" ? "中" : "EN"}</button>
-          <button className="round-tool" title={c.logout} aria-label={c.logout} onClick={async () => { await fetch(API + "/auth/logout", { method: "POST", credentials: "include" }).catch(() => undefined); window.location.reload(); }}><LogOut className="h-4 w-4" /></button>
+          <button className="round-tool" title={c.logout} aria-label={c.logout} onClick={onLogout}><LogOut className="h-4 w-4" /></button>
         </div>
       </div>
     </header>
   );
 }
 
-function Shell({ theme, setTheme }: { theme: string; setTheme: (v: string) => void }) {
+function Shell({ theme, setTheme, onLogout }: { theme: string; setTheme: (v: string) => void; onLogout: () => Promise<void> }) {
   return (
     <BrowserRouter>
       <div className="min-h-screen bg-[var(--bg-base)]">
-        <TopBar theme={theme} setTheme={setTheme} />
+        <TopBar theme={theme} setTheme={setTheme} onLogout={onLogout} />
         <main className="mx-auto max-w-7xl px-4 py-6 md:px-6 md:py-8">
           <Routes>
             <Route path="/" element={<SunnyRegister />} />
@@ -67,34 +67,28 @@ function Shell({ theme, setTheme }: { theme: string; setTheme: (v: string) => vo
   );
 }
 
-function LoginScreen({ onLogin }: { onLogin: () => void }) {
-  const { language, toggleLanguage } = useI18n();
-  const c = words(language);
-  const [username, setUsername] = useState("");
-  const [pw, setPw] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  async function submit(e: React.FormEvent) {
-    e.preventDefault(); setLoading(true); setError("");
-    try {
-      const res = await fetch(API + "/auth/login", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password: pw }) });
-      const data = await res.json();
-      if (data.ok) { onLogin(); } else setError(data.error || c.failed);
-    } catch { setError(c.failed); } finally { setLoading(false); }
-  }
-  return <div className="flex min-h-screen items-center justify-center bg-[var(--bg-base)] p-4"><form onSubmit={submit} autoComplete="off" className="login-card w-full max-w-sm space-y-4 rounded-[32px] border border-[var(--border)] bg-[var(--bg-card)] p-6"><div className="flex items-center justify-between"><div className="brand-mark"><Link2 className="h-5 w-5" /></div><button type="button" className="round-tool" onClick={toggleLanguage}><Languages className="h-4 w-4" /></button></div><div><h1 className="text-2xl font-black tracking-tight">{c.loginTitle}</h1><p className="mt-2 text-sm text-[var(--text-muted)]">{c.loginDesc}</p></div><input className="control-surface h-12" value={username} onChange={(e) => setUsername(e.target.value)} placeholder={c.user} autoComplete="off" autoFocus /><input className="control-surface h-12" type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder={c.pass} autoComplete="new-password" />{error && <p className="text-sm text-red-500">{error}</p>}<Button className="h-12 w-full rounded-full" disabled={loading || !username || !pw}>{loading ? c.checking : c.submit}</Button></form></div>;
-}
-
 function AppContent() {
   const { language } = useI18n();
   const c = words(language);
   const [theme, setTheme] = useState(() => localStorage.getItem("theme") === "dark" ? "dark" : "light");
   const [authState, setAuthState] = useState<"loading" | "open" | "locked" | "authed">("loading");
+  const [logoutNotice, setLogoutNotice] = useState(false);
   useEffect(() => { document.documentElement.classList.toggle("light", theme === "light"); localStorage.setItem("theme", theme); }, [theme]);
-  useEffect(() => { fetch(API + "/auth/check", { credentials: "include" }).then((r) => r.json()).then((data) => { if (!data.required) setAuthState("open"); else if (data.authenticated) setAuthState("authed"); else setAuthState("locked"); }).catch(() => setAuthState("locked")); }, []);
+  useEffect(() => { fetch(API + "/auth/check", { credentials: "include", cache: "no-store" }).then((r) => r.json()).then((data) => { if (!data.required) setAuthState("open"); else if (data.authenticated) setAuthState("authed"); else setAuthState("locked"); }).catch(() => setAuthState("locked")); }, []);
+  const logout = useCallback(async () => {
+    let completed = false;
+    try {
+      const response = await fetch(API + "/auth/logout", { method: "POST", credentials: "include", cache: "no-store" });
+      completed = response.ok;
+    } finally {
+      window.history.replaceState(null, "", "/");
+      setAuthState("locked");
+      setLogoutNotice(completed);
+    }
+  }, []);
   if (authState === "loading") return <div className="flex h-screen items-center justify-center bg-[var(--bg-base)] text-sm text-[var(--text-muted)]">{c.loading}</div>;
-  if (authState === "locked") return <LoginScreen onLogin={() => setAuthState("authed")} />;
-  return <Shell theme={theme} setTheme={setTheme} />;
+  if (authState === "locked") return <PublicLanding onLogin={() => { setLogoutNotice(false); setAuthState("authed"); }} logoutNotice={logoutNotice} onNoticeDone={() => setLogoutNotice(false)} />;
+  return <Shell theme={theme} setTheme={setTheme} onLogout={logout} />;
 }
 
 export default function App() { return <I18nProvider><AppContent /></I18nProvider>; }

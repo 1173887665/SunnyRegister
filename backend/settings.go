@@ -9,6 +9,8 @@ import (
 )
 
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request, rest string) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
 	if rest == "/check" && r.Method == http.MethodGet {
 		writeJSON(w, 200, map[string]any{"required": true, "authenticated": s.hasValidSession(r), "username_required": true})
 		return
