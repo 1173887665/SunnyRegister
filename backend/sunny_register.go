@@ -762,11 +762,26 @@ func (s *Server) sunnyMailboxProxyURL() string {
 }
 
 func fetchOutlookLatestMail(email, clientID, refreshToken string, limit int, proxyURL string) (map[string]any, error) {
+	// The imported four-field credential can be issued for Graph, legacy
+	// IMAP/POP3, or an application that grants both. Detect the usable audience
+	// instead of assuming every successful refresh token is an IMAP token.
 	// Microsoft can issue a token from more than one compatible endpoint, while
 	// IMAP accepts only one of them for certain legacy Outlook accounts. Pair
 	// each refresh attempt with IMAP authentication instead of treating the
 	// first token response as proof that it is usable for IMAP.
 	errors := []string{}
+	for _, endpoint := range hotmailGraphTokenEndpoints {
+		token, err := refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken, endpoint, proxyURL)
+		if err != nil {
+			errors = append(errors, endpoint.Name+" token: "+err.Error())
+			continue
+		}
+		items, err := fetchLatestMailsViaGraph(email, token, limit, proxyURL)
+		if err == nil {
+			return map[string]any{"email": email, "token_endpoint": endpoint.Name, "mail_protocol": "graph", "items": items, "count": len(items), "limit": limit}, nil
+		}
+		errors = append(errors, endpoint.Name+" Graph: "+err.Error())
+	}
 	for _, endpoint := range hotmailTokenEndpoints {
 		token, err := refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken, endpoint, proxyURL)
 		if err != nil {
@@ -775,11 +790,11 @@ func fetchOutlookLatestMail(email, clientID, refreshToken string, limit int, pro
 		}
 		items, err := fetchLatestMailsViaIMAP(email, token, limit, proxyURL)
 		if err == nil {
-			return map[string]any{"email": email, "token_endpoint": endpoint.Name, "items": items, "count": len(items), "limit": limit}, nil
+			return map[string]any{"email": email, "token_endpoint": endpoint.Name, "mail_protocol": "imap", "items": items, "count": len(items), "limit": limit}, nil
 		}
 		errors = append(errors, endpoint.Name+" IMAP: "+err.Error())
 	}
-	return nil, fmt.Errorf("Outlook IMAP authentication failed for all compatible endpoints: %s", strings.Join(errors, " | "))
+	return nil, fmt.Errorf("Outlook Graph/IMAP authentication failed for all compatible endpoints: %s", strings.Join(errors, " | "))
 }
 
 type hotmailTokenEndpoint struct {
@@ -799,6 +814,14 @@ var hotmailTokenEndpoints = []hotmailTokenEndpoint{
 	{Name: "COMMON", URL: "https://login.microsoftonline.com/common/oauth2/v2.0/token", Scope: "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"},
 	{Name: "COMMON-noscope", URL: "https://login.microsoftonline.com/common/oauth2/v2.0/token"},
 }
+
+var hotmailGraphTokenEndpoints = []hotmailTokenEndpoint{
+	{Name: "GRAPH-LIVE", URL: "https://login.live.com/oauth20_token.srf", Scope: "https://graph.microsoft.com/.default"},
+	{Name: "GRAPH-CONSUMERS", URL: "https://login.microsoftonline.com/consumers/oauth2/v2.0/token", Scope: "https://graph.microsoft.com/.default"},
+	{Name: "GRAPH-COMMON", URL: "https://login.microsoftonline.com/common/oauth2/v2.0/token", Scope: "https://graph.microsoft.com/.default"},
+}
+
+var outlookGraphMessagesURL = "https://graph.microsoft.com/v1.0/me/messages"
 
 type hotmailAccessTokenCacheEntry struct {
 	Token     string
@@ -904,6 +927,119 @@ func refreshHotmailAccessToken(email, clientID, refreshToken, proxyURL string) (
 		errors = append(errors, ep.Name+": "+msg)
 	}
 	return "", "", fmt.Errorf("Outlook token 刷新失败，所有 sunny 兼容端点均失败：%s", strings.Join(errors, " | "))
+}
+
+func fetchLatestMailsViaGraph(emailAddr, accessToken string, limit int, proxyURL string) ([]map[string]any, error) {
+	if limit < 1 {
+		limit = 5
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	endpoint, err := url.Parse(outlookGraphMessagesURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Graph messages URL: %w", err)
+	}
+	query := endpoint.Query()
+	query.Set("$top", strconv.Itoa(limit))
+	query.Set("$orderby", "receivedDateTime desc")
+	query.Set("$select", "id,subject,from,toRecipients,receivedDateTime,bodyPreview,body,isRead")
+	endpoint.RawQuery = query.Encode()
+
+	client := &http.Client{Timeout: 25 * time.Second}
+	if strings.TrimSpace(proxyURL) != "" {
+		proxy, parseErr := url.Parse(proxyURL)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid Graph proxy URL: %w", parseErr)
+		}
+		client.Transport = &http.Transport{Proxy: http.ProxyURL(proxy)}
+	}
+	req, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Prefer", `outlook.body-content-type="html"`)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("Graph request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, fmt.Errorf("Graph response read failed: %w", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("Graph returned invalid JSON (HTTP %d)", resp.StatusCode)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		detail := ""
+		if graphError, ok := payload["error"].(map[string]any); ok {
+			detail = strings.TrimSpace(strings.Join([]string{text(graphError["code"]), text(graphError["message"])}, ": "))
+		}
+		return nil, fmt.Errorf("Graph HTTP %d: %s", resp.StatusCode, fallback(detail, string(raw[:min(len(raw), 300)])))
+	}
+	values, _ := payload["value"].([]any)
+	items := make([]map[string]any, 0, len(values))
+	for _, rawMessage := range values {
+		message, ok := rawMessage.(map[string]any)
+		if ok {
+			items = append(items, graphMailItem(emailAddr, message))
+		}
+	}
+	return items, nil
+}
+
+func graphMailItem(emailAddr string, message map[string]any) map[string]any {
+	sender := ""
+	if from, ok := message["from"].(map[string]any); ok {
+		if address, ok := from["emailAddress"].(map[string]any); ok {
+			name, emailAddress := text(address["name"]), text(address["address"])
+			sender = emailAddress
+			if name != "" {
+				sender = name
+				if emailAddress != "" {
+					sender += " <" + emailAddress + ">"
+				}
+			}
+		}
+	}
+	recipients := []string{}
+	if values, ok := message["toRecipients"].([]any); ok {
+		for _, rawRecipient := range values {
+			recipient, _ := rawRecipient.(map[string]any)
+			address, _ := recipient["emailAddress"].(map[string]any)
+			if value := text(address["address"]); value != "" {
+				recipients = append(recipients, value)
+			}
+		}
+	}
+	bodyRaw, bodyType := text(message["bodyPreview"]), "text"
+	if body, ok := message["body"].(map[string]any); ok {
+		bodyRaw = fallback(text(body["content"]), bodyRaw)
+		bodyType = strings.ToLower(text(body["contentType"]))
+	}
+	bodyText := bodyRaw
+	if bodyType == "html" {
+		bodyText = html.UnescapeString(regexp.MustCompile(`<[^>]+>`).ReplaceAllString(bodyRaw, " "))
+	}
+	bodyText = strings.TrimSpace(regexp.MustCompile(`\s+`).ReplaceAllString(bodyText, " "))
+	subject := text(message["subject"])
+	otp := ""
+	for _, pattern := range []string{`(?i)(?:OpenAI|ChatGPT|verification|verify|code)[^\d]{0,120}(\d{6})`, `\b(\d{6})\b`} {
+		if match := regexp.MustCompile(pattern).FindStringSubmatch(subject + "\n" + bodyText); len(match) > 1 {
+			otp = match[1]
+			break
+		}
+	}
+	return map[string]any{
+		"id": text(message["id"]), "email": emailAddr, "subject": subject, "from": sender,
+		"to": strings.Join(recipients, ", "), "date": text(message["receivedDateTime"]),
+		"body": bodyText, "body_preview": fallback(text(message["bodyPreview"]), bodyText[:min(len(bodyText), 1200)]),
+		"raw_html": bodyRaw, "otp": otp, "source": "graph",
+	}
 }
 
 func dialOutlookIMAPS(proxyURL string) (*tls.Conn, error) {

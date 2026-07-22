@@ -9,6 +9,7 @@ import re
 import socket
 import ssl
 import time
+from datetime import datetime
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
 from html import unescape
@@ -23,6 +24,8 @@ from .proxy import normalize_proxy_url
 OUTLOOK_IMAP_HOST = "outlook.office365.com"
 OUTLOOK_IMAP_PORT = 993
 IMAP_SCOPE = "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
+GRAPH_SCOPE = "https://graph.microsoft.com/.default"
+GRAPH_MESSAGES_URL = "https://graph.microsoft.com/v1.0/me/messages"
 
 
 @dataclasses.dataclass
@@ -90,6 +93,12 @@ TOKEN_ENDPOINTS = [
     {"name": "CONSUMERS-noscope", "url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token", "scope": ""},
     {"name": "COMMON", "url": "https://login.microsoftonline.com/common/oauth2/v2.0/token", "scope": IMAP_SCOPE},
     {"name": "COMMON-noscope", "url": "https://login.microsoftonline.com/common/oauth2/v2.0/token", "scope": ""},
+]
+
+GRAPH_TOKEN_ENDPOINTS = [
+    {"name": "GRAPH-LIVE", "url": "https://login.live.com/oauth20_token.srf", "scope": GRAPH_SCOPE},
+    {"name": "GRAPH-CONSUMERS", "url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token", "scope": GRAPH_SCOPE},
+    {"name": "GRAPH-COMMON", "url": "https://login.microsoftonline.com/common/oauth2/v2.0/token", "scope": GRAPH_SCOPE},
 ]
 
 
@@ -181,10 +190,12 @@ class HotmailReader:
         self.log = log or (lambda _m: None)
         self.proxy_url = proxy_url
         self.imap: imaplib.IMAP4_SSL | None = None
+        self.graph_access_token = ""
+        self.graph_proxies: dict[str, str] | None = None
         self.seen: set[str] = set()
 
     def connect(self, access_token: str | None = None) -> None:
-        self.log(f"[{self.account.email}] Connecting Outlook IMAP for OTP")
+        self.log(f"[{self.account.email}] Connecting Outlook mailbox for OTP")
         if access_token is not None:
             self._connect_with_access_token_routes(access_token, "provided")
             return
@@ -192,6 +203,8 @@ class HotmailReader:
         request_routes = [None]
         if self.proxy_url:
             request_routes.append({"http": self.proxy_url, "https": self.proxy_url})
+        if self._connect_graph_routes(request_routes, errors):
+            return
         for endpoint in TOKEN_ENDPOINTS:
             for request_proxies in request_routes:
                 route_name = "proxy" if request_proxies else "direct"
@@ -204,7 +217,85 @@ class HotmailReader:
                     self.log(f"[{self.account.email}] Outlook IMAP connect via {endpoint['name']}/{route_name} failed: {exc}")
                     self.close()
                     time.sleep(0.5)
-        raise RuntimeError("All Outlook IMAP auth attempts failed -> " + " | ".join(errors))
+        raise RuntimeError("All Outlook Graph/IMAP auth attempts failed -> " + " | ".join(errors))
+
+    def _connect_graph_routes(self, request_routes, errors: list[str]) -> bool:
+        for endpoint in GRAPH_TOKEN_ENDPOINTS:
+            for request_proxies in request_routes:
+                route_name = "proxy" if request_proxies else "direct"
+                try:
+                    token = _request_outlook_access_token(self.account, endpoint, request_proxies, self.log)
+                    self._graph_request(token, request_proxies, limit=1)
+                    self.graph_access_token = token
+                    self.graph_proxies = request_proxies
+                    self.log(f"[{self.account.email}] Outlook Graph connected via {endpoint['name']}/{route_name}")
+                    return True
+                except Exception as exc:
+                    errors.append(f"{endpoint['name']}/{route_name}: {exc}")
+                    self.log(f"[{self.account.email}] Outlook Graph connect via {endpoint['name']}/{route_name} failed: {exc}")
+        return False
+
+    def _graph_request(self, access_token: str, proxies, limit: int) -> list[dict[str, Any]]:
+        params = {
+            "$top": str(max(1, min(50, limit))),
+            "$orderby": "receivedDateTime desc",
+            "$select": "id,subject,from,toRecipients,receivedDateTime,bodyPreview,body,isRead",
+        }
+        response = requests.get(
+            GRAPH_MESSAGES_URL,
+            params=params,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {access_token}",
+                "Prefer": 'outlook.body-content-type="html"',
+            },
+            timeout=25,
+            proxies=proxies,
+        )
+        if not response.ok:
+            try:
+                payload = response.json()
+                detail = payload.get("error", {}).get("message") or payload.get("error")
+            except Exception:
+                detail = response.text[:300]
+            raise RuntimeError(f"Graph HTTP {response.status_code}: {detail}")
+        payload = response.json()
+        return list(payload.get("value") or [])
+
+    def _graph_messages(self, limit: int) -> list[dict[str, Any]]:
+        if not self.graph_access_token:
+            return []
+        messages = self._graph_request(self.graph_access_token, self.graph_proxies, limit)
+        return [self._graph_message_item(message) for message in messages]
+
+    def _graph_message_item(self, message: dict[str, Any]) -> dict[str, Any]:
+        sender = message.get("from", {}).get("emailAddress", {}) or {}
+        sender_text = str(sender.get("address") or "")
+        if sender.get("name"):
+            sender_text = f"{sender['name']} <{sender_text}>" if sender_text else str(sender["name"])
+        recipients = []
+        for recipient in message.get("toRecipients") or []:
+            address = recipient.get("emailAddress", {}) or {}
+            if address.get("address"):
+                recipients.append(str(address["address"]))
+        body_info = message.get("body") or {}
+        body_raw = str(body_info.get("content") or message.get("bodyPreview") or "")
+        body_text = html_to_text(body_raw) if str(body_info.get("contentType") or "").lower() == "html" else body_raw
+        subject = str(message.get("subject") or "")
+        return {
+            "id": str(message.get("id") or ""),
+            "email": self.account.email,
+            "folder": "Graph",
+            "subject": subject,
+            "from": sender_text,
+            "to": ", ".join(recipients),
+            "date": str(message.get("receivedDateTime") or ""),
+            "body": body_text,
+            "body_preview": str(message.get("bodyPreview") or body_text)[:1200],
+            "raw_html": body_raw,
+            "otp": extract_otp(subject + "\n" + body_text),
+            "source": "graph",
+        }
 
     def _imap_proxy_candidates(self) -> list[str]:
         dedicated_proxy = os.getenv("OUTLOOK_IMAP_PROXY", "").strip()
@@ -345,6 +436,8 @@ class HotmailReader:
             except Exception:
                 pass
         self.imap = None
+        self.graph_access_token = ""
+        self.graph_proxies = None
 
     def _select_folder(self, folder: str) -> bool:
         assert self.imap is not None
@@ -358,6 +451,9 @@ class HotmailReader:
         return False
 
     def latest_message(self) -> dict[str, Any]:
+        if self.graph_access_token:
+            items = self._graph_messages(1)
+            return items[0] if items else {"email": self.account.email, "empty": True, "source": "graph"}
         assert self.imap is not None
         for folder in ("INBOX", "Junk", "Junk Email"):
             try:
@@ -390,12 +486,18 @@ class HotmailReader:
         return {"email": self.account.email, "empty": True}
 
     def wait_for_code(self, min_timestamp: float, timeout: int = 180) -> str:
-        if self.imap is None:
+        if self.imap is None and not self.graph_access_token:
             self.connect()
         started = time.time()
         last_notice = 0.0
         while time.time() - started < timeout:
+            if self.graph_access_token:
+                code = self._scan_graph(min_timestamp)
+                if code:
+                    return code
             for folder in ("INBOX", "Junk", "Junk Email"):
+                if self.imap is None:
+                    break
                 code = self._scan_folder(folder, min_timestamp)
                 if code:
                     return code
@@ -405,6 +507,30 @@ class HotmailReader:
                 last_notice = time.time()
             time.sleep(5)
         raise TimeoutError("Timed out waiting for OpenAI email OTP")
+
+    def _scan_graph(self, min_timestamp: float) -> str:
+        try:
+            for item in self._graph_messages(30):
+                key = f"graph:{item.get('id', '')}"
+                if key in self.seen:
+                    continue
+                try:
+                    received = datetime.fromisoformat(str(item.get("date") or "").replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    received = time.time()
+                if received + 30 < min_timestamp:
+                    continue
+                haystack = f"{item.get('subject', '')}\n{item.get('from', '')}\n{item.get('body', '')}"
+                if not re.search(r"openai|chatgpt", haystack, flags=re.I):
+                    continue
+                self.seen.add(key)
+                code = extract_otp(haystack)
+                if code:
+                    self.log(f"[{self.account.email}] Received OpenAI OTP from Graph ({len(code)} digits, redacted)")
+                    return code
+        except Exception as exc:
+            self.log(f"[{self.account.email}] Outlook Graph OTP scan failed: {exc}")
+        return ""
 
     def _scan_folder(self, folder: str, min_timestamp: float) -> str:
         assert self.imap is not None
@@ -449,12 +575,11 @@ class HotmailReader:
 
 def latest_outlook_mail(email: str, client_id: str, refresh_token: str, proxy_url: str = "") -> dict[str, Any]:
     account = MailAccount(email, "", client_id, refresh_token, "")
-    access, endpoint = refresh_hotmail_access_token(account, proxy_url)
     reader = HotmailReader(account, lambda _m: None, proxy_url)
     try:
-        reader.connect(access)
+        reader.connect()
         msg = reader.latest_message()
-        msg["token_endpoint"] = endpoint
+        msg["mail_protocol"] = "graph" if reader.graph_access_token else "imap"
         return msg
     finally:
         reader.close()
