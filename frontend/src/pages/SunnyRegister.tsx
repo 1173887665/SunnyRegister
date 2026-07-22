@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
-import { Activity, ChevronDown, CircleHelp, Download, Inbox, Loader2, Plus, RefreshCw, Save, Search, Settings2, Upload, X } from "lucide-react";
+import { Activity, ChevronDown, CircleHelp, Copy, Download, Inbox, Loader2, Plus, RefreshCw, Save, Search, Settings2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -114,7 +114,7 @@ function ListLoadingOverlay({ loading, label }: { loading: boolean; label: strin
 const zh: AnyObj = new Proxy({
   workbench: "工作台", mailbox: "邮箱配置", phone: "接码配置", sub2api: "反代配置", proxy: "代理配置", session: "账户管理",
   title: "SunnyRegister 注册机控制台", desc: "使用自建 Outlook/Hotmail 邮箱池注册/登录 GPT 账户，并统一管理账户状态、Session、RT 和日志。",
-  register: "注册或登录", refresh: "刷新", import: "导入", save: "保存", export: "导出", newGroup: "新建分组", move: "迁移到分组",
+  register: "注册或登录", refresh: "刷新", import: "导入", save: "保存", export: "导出", copy: "复制", copySuccess: "复制成功", newGroup: "新建分组", move: "迁移到分组",
   mailboxTip: "格式：email----password----client_id----refresh_token。Outlook 与 Hotmail 均自动兼容 Graph API、IMAP/POP3 与 Graph/IMAP 双令牌凭证。",
   mailboxPoolName: "自建邮箱池", mailboxPoolGlobalSwitch: "使用自建邮箱池", mailboxPoolSwitchTip: "关闭后，注册机不会从自建 Outlook/Hotmail 邮箱池分配邮箱。",
   phoneTip: "格式：+手机号----接码链接。成功后冷却 5 小时，最多 3 次。", phonePool: "自建手机号池", phonePoolGlobalSwitch: "使用自建手机号池", importPhones: "导入手机号", phonePoolSwitchTip: "关闭后，注册机不会从自建手机号池分配号码；后续可切换为外部接码平台。", phonePoolOn: "可用于接码", phonePoolOff: "不用于接码", phoneImportHelp: "每行一个长效接码：第一个字符必须是 +，手机号与接码链接之间必须使用四个中横线 ---- 连接。", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "手机号导入格式错误", phoneSearch: "搜索手机号...", phoneNumber: "手机号", smsLink: "接码链接", usedCount: "已用次数", countFilter: "次数筛选", allCount: "全部次数", lastUsedAt: "最近使用时间", phoneEdit: "编辑手机号", phoneStatusEnabled: "启用", phoneStatusDisabled: "停用", phoneConfirmDelete: "确认删除该手机号？此操作不可撤销。", phoneConfirmBatchDelete: "确认删除选中的手机号？此操作不可撤销。",
@@ -138,7 +138,7 @@ const zh: AnyObj = new Proxy({
 const en = {
   workbench: "Workbench", mailbox: "Mailbox", phone: "SMS", sub2api: "Reverse Proxy", proxy: "Proxy", session: "Account Management",
   title: "SunnyRegister Console", desc: "Register/login GPT accounts with a self-managed Outlook/Hotmail mailbox pool, then manage account status, sessions, RTs and logs.",
-  register: "Register / Login", refresh: "Refresh", import: "Import", save: "Save", export: "Export", newGroup: "New Group", move: "Move Group",
+  register: "Register / Login", refresh: "Refresh", import: "Import", save: "Save", export: "Export", copy: "Copy", copySuccess: "Copied", newGroup: "New Group", move: "Move Group",
   mailboxTip: "Format: email----password----client_id----refresh_token. Outlook and Hotmail both support Graph API, IMAP/POP3, and dual Graph/IMAP credentials automatically.", mailboxPoolName: "Self-managed Mailbox Pool", mailboxPoolGlobalSwitch: "Use Self-managed Mailbox Pool", mailboxPoolSwitchTip: "When disabled, SunnyRegister will not allocate mailboxes from the self-managed Outlook/Hotmail pool.",
   phoneTip: "Format: +phone----SMS URL. Cooldown 5 hours after success, max 3 successes.",
   phonePool: "Self-managed Phone Pool", phonePoolGlobalSwitch: "Use Self-managed Phone Pool", importPhones: "Import Phones", phonePoolSwitchTip: "When disabled, SunnyRegister will not allocate numbers from this phone pool. You can switch to external SMS providers later.", phonePoolOn: "Usable for SMS", phonePoolOff: "Not used for SMS", phoneImportHelp: "One long-lived SMS record per line. The first character must be +, and the phone number and SMS URL must be separated with exactly four hyphens: ----.", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "Invalid phone import format", phoneSearch: "Search phone number...", phoneNumber: "Phone Number", smsLink: "SMS Link", usedCount: "Used Count", countFilter: "Count", allCount: "All Counts", lastUsedAt: "Last Used", phoneEdit: "Edit Phone", phoneStatusEnabled: "Enabled", phoneStatusDisabled: "Disabled", phoneConfirmDelete: "Delete this phone number? This cannot be undone.", phoneConfirmBatchDelete: "Delete selected phone numbers? This cannot be undone.", smsbowerProvider: "SMSBower Provider", smsbowerDesc: "When the self-managed phone pool is unavailable or empty, SunnyRegister can use SMSBower API to rent a one-time number automatically.", smsbowerSwitch: "Enable SMSBower", smsbowerReady: "SMSBower configured", smsbowerApiKey: "API Key", smsbowerCountry: "Default Country", smsbowerService: "Default Service", smsbowerMaxPrice: "Max Price", smsbowerBaseURL: "API URL", smsbowerCheck: "Check Balance", smsbowerBalance: "Balance: {balance}", smsbowerSaved: "SMSBower config saved", smspoolProvider: "SMSPool Provider", smspoolDesc: "SMSPool is a temporary-number provider used when the self-managed phone pool and SMSBower are unavailable.", smspoolSwitch: "Enable SMSPool", smspoolReady: "SMSPool configured", smspoolApiKey: "API Key", smspoolCountry: "Default Country", smspoolService: "Default Service", refreshProviderOptions: "Fetch options", smspoolMaxPrice: "Max Price", smspoolBaseURL: "API URL", smspoolCheck: "Check Balance", smspoolBalance: "Balance: {balance}", smspoolSaved: "SMSPool config saved",
@@ -159,6 +159,28 @@ const MAILBOX_STATUSES = ["未注册", "已注册", "已接码", "已反代", "�
 const PLAN_TYPE_OPTIONS = ["free", "plus", "k12", "team", "pro"];
 function template(text: string, values: Record<string, string | number>) {
   return text.replace(/\{(\w+)\}/g, (_, key) => String(values[key] ?? ""));
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall through for HTTP deployments where Clipboard API may be unavailable.
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard copy failed");
 }
 
 function Tip({ text }: { text: string }) { return <span title={text} className="inline-flex"><CircleHelp className="tip-icon h-4 w-4" /></span>; }
@@ -2011,13 +2033,22 @@ function SessionFieldModal({ t, item, field, onClose, notify }: { t: typeof zh; 
       .finally(()=>{ if(active) setLoading(false); });
     return ()=>{ active=false; };
   },[item.id,field]);
+  async function copyValue() {
+    if (loading || error || !value) return;
+    try {
+      await copyTextToClipboard(value);
+      notify("ok", t.copySuccess);
+    } catch (e: any) {
+      notify("fail", e.message || String(e));
+    }
+  }
   return createPortal(<div className="sr-modal-mask"><div className="sr-modal sr-session-field-modal">
     <div className="sr-modal-head"><h3>{template(t.sessionFieldTitle,{field:label})}</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div>
     <div className="sr-modal-body sr-session-field-body">
       <ListLoadingOverlay loading={loading} label={template(t.sessionFieldLoading,{field:label})}/>
       {!loading && <pre className={cn("sr-session-field-value",error&&"error")}>{error || value || template(t.sessionFieldEmpty,{field:label})}</pre>}
     </div>
-    <div className="sr-modal-foot"><button onClick={onClose}>{t.done}</button></div>
+    <div className="sr-modal-foot"><button className="sr-copy-button inline-flex items-center gap-2" disabled={loading || Boolean(error) || !value} onClick={copyValue}><Copy className="h-4 w-4"/>{t.copy}</button></div>
   </div></div>, document.body);
 }
 

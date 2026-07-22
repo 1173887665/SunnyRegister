@@ -1124,6 +1124,14 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 
 .sr-modal-foot { height:72px; display:flex; align-items:center; justify-content:flex-end; border-top:1px solid #eef2f7; padding:0 30px; }
 .sr-modal-foot button { border:1px solid #e5e7eb; border-radius:12px; padding:9px 18px; color:#475569; }
+.sr-modal-foot .sr-copy-button {
+  border-color:transparent;
+  color:#fff;
+  background:linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow:0 10px 24px rgba(16,185,129,.16);
+}
+.sr-modal-foot .sr-copy-button:hover:not(:disabled) { transform:translateY(-1px); box-shadow:0 14px 30px rgba(16,185,129,.22); }
+.sr-modal-foot .sr-copy-button:disabled { cursor:not-allowed; opacity:.45; box-shadow:none; }
 .sr-mailbox-modal { width:min(760px, 100%); }
 .sr-import-tabs {
   display:inline-flex;
