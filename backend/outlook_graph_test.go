@@ -41,6 +41,26 @@ func TestFetchLatestMailsViaGraph(t *testing.T) {
 	}
 }
 
+func TestFetchLatestMailsViaGraphSupportsHotmailAddress(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"value":[{"id":"hotmail-message","subject":"Security notice","receivedDateTime":"2026-07-22T08:00:00Z","bodyPreview":"Account notice","body":{"contentType":"text","content":"Account notice"}}]}`))
+	}))
+	defer server.Close()
+
+	originalURL := outlookGraphMessagesURL
+	outlookGraphMessagesURL = server.URL
+	defer func() { outlookGraphMessagesURL = originalURL }()
+
+	items, err := fetchLatestMailsViaGraph("reader@hotmail.com", "graph-access-token", 3, "")
+	if err != nil {
+		t.Fatalf("fetch Hotmail Graph messages: %v", err)
+	}
+	if len(items) != 1 || items[0]["email"] != "reader@hotmail.com" || items[0]["source"] != "graph" {
+		t.Fatalf("unexpected Hotmail Graph result: %#v", items)
+	}
+}
+
 func TestFetchLatestMailsViaGraphRejectsUnauthorizedToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

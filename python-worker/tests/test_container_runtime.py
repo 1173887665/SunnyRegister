@@ -5,16 +5,16 @@ import unittest
 from unittest.mock import Mock, patch
 
 from sunny_core.browser_backend import camoufox_runtime_error
-from sunny_core.mailbox import HotmailReader, MailAccount
+from sunny_core.mailbox import HotmailReader, MailAccount, parse_account_line
 
 
-def account() -> MailAccount:
+def account(email: str = "user@example.com") -> MailAccount:
     return MailAccount(
-        email="user@example.com",
+        email=email,
         password="password",
         client_id="client-id",
         refresh_token="refresh-token",
-        raw="user@example.com----password----client-id----refresh-token",
+        raw=f"{email}----password----client-id----refresh-token",
     )
 
 
@@ -101,6 +101,41 @@ class OutlookGraphCredentialTests(unittest.TestCase):
             reader.connect()
 
         connect_imap.assert_called_once_with("imap-access-token", "LIVE token-direct")
+
+
+class HotmailCredentialCompatibilityTests(unittest.TestCase):
+    def test_hotmail_four_field_credential_is_accepted(self) -> None:
+        parsed = parse_account_line("reader@hotmail.com----password----client-id----refresh-token")
+
+        self.assertEqual(parsed.email, "reader@hotmail.com")
+        self.assertEqual(parsed.client_id, "client-id")
+        self.assertEqual(parsed.refresh_token, "refresh-token")
+
+    def test_hotmail_dual_token_prefers_graph(self) -> None:
+        response = Mock()
+        response.ok = True
+        response.json.return_value = {"value": []}
+        reader = HotmailReader(account("reader@hotmail.com"), None)
+        with (
+            patch("sunny_core.mailbox._request_outlook_access_token", return_value="dual-access-token"),
+            patch("sunny_core.mailbox.requests.get", return_value=response),
+            patch.object(reader, "_connect_with_access_token_routes") as connect_imap,
+        ):
+            reader.connect()
+
+        self.assertEqual(reader.graph_access_token, "dual-access-token")
+        connect_imap.assert_not_called()
+
+    def test_hotmail_imap_pop3_credential_falls_back_to_imap(self) -> None:
+        reader = HotmailReader(account("reader@hotmail.com"), None)
+        with (
+            patch.object(reader, "_connect_graph_routes", return_value=False),
+            patch("sunny_core.mailbox._request_outlook_access_token", return_value="outlook-scope-token"),
+            patch.object(reader, "_connect_with_access_token_routes") as connect_imap,
+        ):
+            reader.connect()
+
+        connect_imap.assert_called_once_with("outlook-scope-token", "LIVE token-direct")
 
 
 if __name__ == "__main__":

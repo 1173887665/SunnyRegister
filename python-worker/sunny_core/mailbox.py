@@ -183,7 +183,7 @@ class ProxiedIMAP4SSL(imaplib.IMAP4_SSL):
 
 
 class HotmailReader:
-    """Outlook XOAUTH2 IMAP reader rewritten from the register-machine implementation."""
+    """Microsoft Outlook/Hotmail reader with Graph-first and IMAP fallback."""
 
     def __init__(self, account: MailAccount, log: Callable[[str], None] | None, proxy_url: str = ""):
         self.account = account
