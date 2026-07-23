@@ -114,7 +114,7 @@ function ListLoadingOverlay({ loading, label }: { loading: boolean; label: strin
 const zh: AnyObj = new Proxy({
   workbench: "工作台", mailbox: "邮箱配置", phone: "接码配置", sub2api: "反代配置", proxy: "代理配置", session: "账户管理",
   title: "SunnyRegister 注册机控制台", desc: "使用自建 Outlook/Hotmail 邮箱池注册/登录 GPT 账户，并统一管理账户状态、Session、RT 和日志。",
-  register: "注册或登录", refresh: "刷新", import: "导入", save: "保存", export: "导出", copy: "复制", copySuccess: "复制成功", newGroup: "新建分组", move: "迁移到分组",
+  register: "注册或登录", refresh: "刷新", import: "导入", save: "保存", export: "导出", copy: "复制", copySuccess: "复制成功", secretKeyUnavailable: "该邮箱凭证信息不完整，无法复制 SK", newGroup: "新建分组", move: "迁移到分组",
   mailboxTip: "格式：email----password----client_id----refresh_token。Outlook 与 Hotmail 均自动兼容 Graph API、IMAP/POP3 与 Graph/IMAP 双令牌凭证。",
   mailboxPoolName: "自建邮箱池", mailboxPoolGlobalSwitch: "使用自建邮箱池", mailboxPoolSwitchTip: "关闭后，注册机不会从自建 Outlook/Hotmail 邮箱池分配邮箱。",
   phoneTip: "格式：+手机号----接码链接。成功后冷却 5 小时，最多 3 次。", phonePool: "自建手机号池", phonePoolGlobalSwitch: "使用自建手机号池", importPhones: "导入手机号", phonePoolSwitchTip: "关闭后，注册机不会从自建手机号池分配号码；后续可切换为外部接码平台。", phonePoolOn: "可用于接码", phonePoolOff: "不用于接码", phoneImportHelp: "每行一个长效接码：第一个字符必须是 +，手机号与接码链接之间必须使用四个中横线 ---- 连接。", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "手机号导入格式错误", phoneSearch: "搜索手机号...", phoneNumber: "手机号", smsLink: "接码链接", usedCount: "已用次数", countFilter: "次数筛选", allCount: "全部次数", lastUsedAt: "最近使用时间", phoneEdit: "编辑手机号", phoneStatusEnabled: "启用", phoneStatusDisabled: "停用", phoneConfirmDelete: "确认删除该手机号？此操作不可撤销。", phoneConfirmBatchDelete: "确认删除选中的手机号？此操作不可撤销。",
@@ -138,7 +138,7 @@ const zh: AnyObj = new Proxy({
 const en = {
   workbench: "Workbench", mailbox: "Mailbox", phone: "SMS", sub2api: "Reverse Proxy", proxy: "Proxy", session: "Account Management",
   title: "SunnyRegister Console", desc: "Register/login GPT accounts with a self-managed Outlook/Hotmail mailbox pool, then manage account status, sessions, RTs and logs.",
-  register: "Register / Login", refresh: "Refresh", import: "Import", save: "Save", export: "Export", copy: "Copy", copySuccess: "Copied", newGroup: "New Group", move: "Move Group",
+  register: "Register / Login", refresh: "Refresh", import: "Import", save: "Save", export: "Export", copy: "Copy", copySuccess: "Copied", secretKeyUnavailable: "This mailbox credential is incomplete and its SK cannot be copied", newGroup: "New Group", move: "Move Group",
   mailboxTip: "Format: email----password----client_id----refresh_token. Outlook and Hotmail both support Graph API, IMAP/POP3, and dual Graph/IMAP credentials automatically.", mailboxPoolName: "Self-managed Mailbox Pool", mailboxPoolGlobalSwitch: "Use Self-managed Mailbox Pool", mailboxPoolSwitchTip: "When disabled, SunnyRegister will not allocate mailboxes from the self-managed Outlook/Hotmail pool.",
   phoneTip: "Format: +phone----SMS URL. Cooldown 5 hours after success, max 3 successes.",
   phonePool: "Self-managed Phone Pool", phonePoolGlobalSwitch: "Use Self-managed Phone Pool", importPhones: "Import Phones", phonePoolSwitchTip: "When disabled, SunnyRegister will not allocate numbers from this phone pool. You can switch to external SMS providers later.", phonePoolOn: "Usable for SMS", phonePoolOff: "Not used for SMS", phoneImportHelp: "One long-lived SMS record per line. The first character must be +, and the phone number and SMS URL must be separated with exactly four hyphens: ----.", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "Invalid phone import format", phoneSearch: "Search phone number...", phoneNumber: "Phone Number", smsLink: "SMS Link", usedCount: "Used Count", countFilter: "Count", allCount: "All Counts", lastUsedAt: "Last Used", phoneEdit: "Edit Phone", phoneStatusEnabled: "Enabled", phoneStatusDisabled: "Disabled", phoneConfirmDelete: "Delete this phone number? This cannot be undone.", phoneConfirmBatchDelete: "Delete selected phone numbers? This cannot be undone.", smsbowerProvider: "SMSBower Provider", smsbowerDesc: "When the self-managed phone pool is unavailable or empty, SunnyRegister can use SMSBower API to rent a one-time number automatically.", smsbowerSwitch: "Enable SMSBower", smsbowerReady: "SMSBower configured", smsbowerApiKey: "API Key", smsbowerCountry: "Default Country", smsbowerService: "Default Service", smsbowerMaxPrice: "Max Price", smsbowerBaseURL: "API URL", smsbowerCheck: "Check Balance", smsbowerBalance: "Balance: {balance}", smsbowerSaved: "SMSBower config saved", smspoolProvider: "SMSPool Provider", smspoolDesc: "SMSPool is a temporary-number provider used when the self-managed phone pool and SMSBower are unavailable.", smspoolSwitch: "Enable SMSPool", smspoolReady: "SMSPool configured", smspoolApiKey: "API Key", smspoolCountry: "Default Country", smspoolService: "Default Service", refreshProviderOptions: "Fetch options", smspoolMaxPrice: "Max Price", smspoolBaseURL: "API URL", smspoolCheck: "Check Balance", smspoolBalance: "Balance: {balance}", smspoolSaved: "SMSPool config saved",
@@ -155,7 +155,7 @@ const en = {
   statusLabels: { "未注册": "Unregistered", "已注册": "Registered", "registered": "Registered", "已接码": "Phone Bound", "phone_bound": "Phone Bound", "已反代": "Reverse Proxied", "reverse_proxied": "Reverse Proxied", "已封禁": "Banned", "需二验": "Needs 2FA", "注册中": "Registering", "登录刷新": "Refreshing Login", "失败": "Failed", "failed": "Failed", "禁用": "Disabled" },
 };
 
-const MAILBOX_STATUSES = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验"];
+const MAILBOX_STATUSES = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "失败"];
 const PLAN_TYPE_OPTIONS = ["free", "plus", "k12", "team", "pro"];
 const PROTOCOL_MODE_COPY = {
   zh: {
@@ -202,7 +202,7 @@ function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) { re
 function SelectBox({ value, onChange, options, className }: { value: string | number; onChange: (v: string | number) => void; options: { value: string | number; label: React.ReactNode }[]; className?: string }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
-  const [menuRect, setMenuRect] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null);
+  const [menuRect, setMenuRect] = useState<{ left: number; top: number; width: number; maxHeight: number; zIndex: number } | null>(null);
   const active = options.find((x) => String(x.value) === String(value)) || options[0];
   const updateRect = () => {
     const rect = wrapRef.current?.getBoundingClientRect();
@@ -218,6 +218,7 @@ function SelectBox({ value, onChange, options, className }: { value: string | nu
         top: openUp ? Math.max(12, rect.top - Math.min(desiredHeight, maxHeight) - 8) : rect.bottom + 8,
         width: rect.width,
         maxHeight,
+        zIndex: wrapRef.current?.closest(".sr-modal-mask") ? 600 : 220,
       });
     }
   };
@@ -232,7 +233,7 @@ function SelectBox({ value, onChange, options, className }: { value: string | nu
       window.removeEventListener("resize", onMove);
     };
   }, [open]);
-  const menu = open && menuRect ? createPortal(<div className={cn("sr-custom-select-menu sr-custom-select-menu-portal", className?.includes("sr-page-size-select") && "sr-page-size-select-menu", className?.includes("sr-mailbox-group-select") && "sr-mailbox-group-select-menu")} style={{ position: "fixed", left: menuRect.left, top: menuRect.top, width: menuRect.width, maxHeight: menuRect.maxHeight, overflowY: "auto", right: "auto", zIndex: 5000 }}>
+  const menu = open && menuRect ? createPortal(<div className={cn("sr-custom-select-menu sr-custom-select-menu-portal", className?.includes("sr-page-size-select") && "sr-page-size-select-menu", className?.includes("sr-mailbox-group-select") && "sr-mailbox-group-select-menu")} style={{ position: "fixed", left: menuRect.left, top: menuRect.top, width: menuRect.width, maxHeight: menuRect.maxHeight, overflowY: "auto", right: "auto", zIndex: menuRect.zIndex }}>
       {options.map((opt) => <button type="button" key={String(opt.value)} className={cn("sr-custom-select-option", String(opt.value) === String(value) && "active")} onMouseDown={(e)=>e.preventDefault()} onClick={() => { onChange(opt.value); setOpen(false); }}>{opt.label}</button>)}
     </div>, document.body) : null;
   return <div ref={wrapRef} className={cn("sr-custom-select", className)} tabIndex={0} onBlur={() => window.setTimeout(() => setOpen(false), 120)}>
@@ -898,6 +899,18 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
       notify("fail", e.message || String(e));
     }
   }
+  async function copyMailboxSecretKey(m: AnyObj) {
+    try {
+      const detail = await trackListLoad(() => apiFetch(`/sunny/mailboxes/${m.id}`));
+      const fields = [detail.email, detail.password, detail.client_id, detail.refresh_token].map((value) => String(value || "").trim());
+      const secretKey = fields.every(Boolean) ? fields.join("----") : String(detail.raw || "").trim();
+      if (!secretKey) throw new Error(t.secretKeyUnavailable);
+      await copyTextToClipboard(secretKey);
+      notify("ok", t.copySuccess);
+    } catch (e: any) {
+      notify("fail", e.message || String(e));
+    }
+  }
   async function batchDelete(){
     if (!selected.length) return;
     await run(t.done, async()=>{ await Promise.all(selected.map((id)=>apiFetch(`/sunny/mailboxes/${id}`,{method:"DELETE"}))); setSelected([]); });
@@ -924,7 +937,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
       </div>
       {mailboxPoolEnabled && <div className="sr-mailbox-expanded mt-5 space-y-4">
         <div className="sr-toolbar sr-toolbar-compact sr-mailbox-toolbar sr-mailbox-inner-toolbar rounded-[18px] p-4">
-          <div className="sr-mailbox-toolbar-row flex flex-nowrap items-center justify-between gap-2">
+          <div className="sr-mailbox-toolbar-row gap-2">
             <div className="sr-mailbox-filters flex min-w-0 flex-nowrap gap-2">
               <div className="sr-mailbox-search relative"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/><input className="sr-search" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={t.queryMailbox}/></div>
               <SelectBox className="sr-select-like" value={groupFilter} onChange={(v)=>setGroupFilter(Number(v))} options={[{value:0,label:t.allGroups}, ...groups.map((g)=>({value:g.id,label:g.name || t.defaultGroup}))]} />
@@ -936,17 +949,18 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
         <div className="sr-table-card sr-mailbox-table-panel overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
           <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
           <table className="sr-account-table">
-            <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/></th><th>{t.mailbox}</th><th>{t.importToGroup}</th><th>{t.status}</th><th>{t.planType}</th><th>{t.enabled}</th><th><SortTimeHeader label={t.updatedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.actions}</th></tr></thead>
+            <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/></th><th>{t.mailbox}</th><th>{t.mailboxGroup}</th><th>{t.status}</th><th>{t.planType}</th><th>SK</th><th>{t.enabled}</th><th><SortTimeHeader label={t.updatedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.actions}</th></tr></thead>
             <tbody>{items.length ? items.map((m)=><tr key={m.id}>
               <td><input type="checkbox" checked={selected.includes(m.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,m.id])) : selected.filter((id)=>id!==m.id))}/></td>
               <td><div className="font-semibold">{m.email}</div></td>
-              <td><SelectBox className="sr-mini-select-like" value={m.group_id || 0} onChange={(v)=>run(t.done,()=>apiFetch(`/sunny/mailboxes/${m.id}`,{method:"PUT",body:JSON.stringify({group_id:Number(v)})}))} options={groups.map((g)=>({value:g.id,label:g.name || t.defaultGroup}))} /></td>
+              <td>{m.group_name || t.defaultGroup}</td>
               <td><StatusBadge t={t} status={m.status || "未注册"} /></td>
               <td><PlanTypeBadge value={m.plan_type} /></td>
+              <td><button className="sr-session-field-button" title={t.copy} onClick={()=>void copyMailboxSecretKey(m)}>SK</button></td>
               <td><button className={cn("sr-toggle", m.enabled && "on")} onClick={()=>run(t.done,()=>apiFetch(`/sunny/mailboxes/${m.id}`,{method:"PUT",body:JSON.stringify({enabled:!m.enabled})}))}>{m.enabled ? "ON" : "OFF"}</button></td>
               <td>{formatDateTime(m.updated_at)}</td>
               <td><div className="flex flex-wrap gap-2"><button className="sr-link" onClick={()=>void openMailboxMail(m)}>{t.queryMail}</button><button className="sr-link" onClick={()=>void openMailboxEditor(m)}>{t.edit}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={m.email || ""} onConfirm={()=>deleteMailbox(m)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td>
-            </tr>) : <tr><td colSpan={8}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noMailbox}</div><p className="mt-2 text-sm text-slate-400">{t.noMailboxDesc}</p></div></td></tr>}</tbody>
+            </tr>) : <tr><td colSpan={9}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noMailbox}</div><p className="mt-2 text-sm text-slate-400">{t.noMailboxDesc}</p></div></td></tr>}</tbody>
           </table>
           <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
         </div>
@@ -1015,7 +1029,7 @@ function MailboxEditModal({ t, mailbox, groups, onClose, onSaved, notify }: { t:
         <div><Label>{t.clientId}</Label><Input value={form.client_id||""} onChange={(e)=>setForm({...form,client_id:e.target.value})}/></div>
         <div><Label>{t.refreshToken}</Label><Input value={form.refresh_token||""} onChange={(e)=>setForm({...form,refresh_token:e.target.value})}/></div>
         <div><Label>{t.openaiAccessToken}</Label><Input value={form.access_token||""} onChange={(e)=>setForm({...form,access_token:e.target.value})}/></div>
-        <div><Label>{t.importToGroup}</Label><SelectBox value={form.group_id||0} onChange={(v)=>setForm({...form,group_id:Number(v)})} options={groups.map((g)=>({value:g.id,label:g.name || t.defaultGroup}))} /></div>
+        <div><Label>{t.mailboxGroup}</Label><SelectBox value={form.group_id||0} onChange={(v)=>setForm({...form,group_id:Number(v)})} options={groups.map((g)=>({value:g.id,label:g.name || t.defaultGroup}))} /></div>
         <div><Label>{t.status}</Label><SelectBox value={form.status||MAILBOX_STATUSES[0]} onChange={(v)=>setForm({...form,status:String(v)})} options={MAILBOX_STATUSES.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))} /></div>
         <div><Label>{t.planType}</Label><SelectBox value={form.plan_type === "-" ? "free" : (form.plan_type || form.account_type || "free")} onChange={(v)=>setForm({...form,plan_type:String(v),account_type:String(v)})} options={PLAN_TYPE_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))} /></div>
         <div className="flex items-end"><button className={cn("sr-toggle", form.enabled && "on")} onClick={()=>setForm({...form,enabled:!form.enabled})}>{form.enabled ? "ON" : "OFF"}</button></div>
@@ -1045,7 +1059,7 @@ function MailboxBatchEditModal({ t, selected, groups, onClose, onSaved, notify }
     <div className="sr-modal-body space-y-4">
       <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 text-sm font-bold text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200">{t.selected}: {selected.length}</div>
       <div className="grid gap-4 md:grid-cols-2">
-        <div><Label>{t.importToGroup}</Label><SelectBox value={form.group_id||0} onChange={(v)=>setForm({...form,group_id:Number(v)})} options={groups.map((g)=>({value:g.id,label:g.name || t.defaultGroup}))} /></div>
+        <div><Label>{t.mailboxGroup}</Label><SelectBox value={form.group_id||0} onChange={(v)=>setForm({...form,group_id:Number(v)})} options={groups.map((g)=>({value:g.id,label:g.name || t.defaultGroup}))} /></div>
         <div><Label>{t.status}</Label><SelectBox value={form.status||MAILBOX_STATUSES[0]} onChange={(v)=>setForm({...form,status:String(v)})} options={MAILBOX_STATUSES.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))} /></div>
         <div><Label>{t.planType}</Label><SelectBox value={form.plan_type||"free"} onChange={(v)=>setForm({...form,plan_type:String(v)})} options={PLAN_TYPE_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))} /></div>
         <div><Label>{t.enabled}</Label><button className={cn("sr-toggle", form.enabled && "on")} onClick={()=>setForm({...form,enabled:!form.enabled})}>{form.enabled ? "ON" : "OFF"}</button></div>
@@ -1968,7 +1982,7 @@ function ProxyBatchEditModal({ t, count, form, setForm, onClose, onSaved }: { t:
   </div></div>;
 }
 const SESSION_PLAN_OPTIONS = PLAN_TYPE_OPTIONS;
-const SESSION_STATUS_OPTIONS = [...MAILBOX_STATUSES, "失败"];
+const SESSION_STATUS_OPTIONS = MAILBOX_STATUSES;
 type SessionFieldName = "access_token" | "refresh_token" | "secret_key";
 const SESSION_FIELD_LABELS: Record<SessionFieldName, string> = { access_token: "AT", refresh_token: "RT", secret_key: "SK" };
 function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", text: string) => void }) {

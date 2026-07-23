@@ -1542,25 +1542,40 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .sunny-page .sr-mailbox-toolbar .sr-mailbox-toolbar-row,
 .sunny-page .sr-mailbox-toolbar .sr-mailbox-filters,
 .sunny-page .sr-mailbox-toolbar .sr-mailbox-actions {
-  flex-wrap: nowrap;
   align-items: center;
 }
+.sunny-page .sr-mailbox-toolbar .sr-mailbox-toolbar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+.sunny-page .sr-mailbox-toolbar .sr-mailbox-filters,
+.sunny-page .sr-mailbox-toolbar .sr-mailbox-actions {
+  flex-wrap: nowrap;
+}
 .sunny-page .sr-mailbox-toolbar .sr-mailbox-search {
-  width: 280px;
-  flex: 0 0 280px;
-  min-width: 0;
+  width: 220px;
+  min-width: 180px;
+  flex: 1 1 220px;
 }
 .sunny-page .sr-mailbox-toolbar .sr-select-like {
-  width: 142px;
+  width: 128px;
 }
 .sunny-page .sr-mailbox-toolbar .sr-mailbox-actions {
+  justify-self: end;
   white-space: nowrap;
 }
 .sunny-page .sr-mailbox-toolbar .sr-mailbox-actions :is(button, .inline-flex) {
   white-space: nowrap;
 }
-@media (max-width: 1120px) {
-  .sunny-page .sr-mailbox-toolbar .sr-mailbox-toolbar-row,
+@media (max-width: 1380px) {
+  .sunny-page .sr-mailbox-toolbar .sr-mailbox-toolbar-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sunny-page .sr-mailbox-toolbar .sr-mailbox-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
   .sunny-page .sr-mailbox-toolbar .sr-mailbox-filters,
   .sunny-page .sr-mailbox-toolbar .sr-mailbox-actions {
     flex-wrap: wrap;
