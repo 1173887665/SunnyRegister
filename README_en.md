@@ -29,13 +29,14 @@ SunnyRegister provides a unified web console for managing mailboxes, phone numbe
 
 - **Frontend**: React, TypeScript, Vite, GSAP
 - **Backend**: Go, GORM, SQLite
-- **Automation worker**: Python, FastAPI, Playwright, Camoufox
+- **Automation worker**: Python, FastAPI, curl_cffi, Playwright, Camoufox
 - **Deployment**: Docker Compose, Xvfb, noVNC
 
 ## Features
 
 - Outlook mailbox pool import, grouping, status management, and mail retrieval
 - Batch GPT account registration or login with concurrency controls and live logs
+- Pure HTTP/TLS protocol registration without starting a browser or loading page assets; currently available for the Register ChatGPT Only stage
 - Self-managed phone pool plus SMSBower and SMSPool integrations
 - Registration proxy pool, connectivity checks, and outbound proxy controls
 - Session, access token, and account metadata management and export

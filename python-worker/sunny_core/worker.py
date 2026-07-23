@@ -14,6 +14,7 @@ from .db import SunnyDB, SunnyTaskCancelled, now_sql
 from .mailbox import account_from_row, parse_account_line
 from .openai_auth import TaskCancelledError, login_or_register, refresh_openai_access_token
 from .phone_pool import wait_sms_code
+from .protocol_auth import login_or_register_protocol
 from .proxy import build_proxy, proxy_target_tls_check, redact_proxy_url
 from .smsbower import SMSBowerClient
 from .smspool import SMSPoolClient
@@ -26,6 +27,7 @@ _REGISTRATION_PROGRESS_STEPS = {
     "initializing": 1,
     "proxy_ready": 2,
     "browser_started": 3,
+    "protocol_started": 3,
     "email_submitted": 4,
     "email_verified": 5,
     "auth_completed": 6,
@@ -649,9 +651,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     execution_mode = str(payload.get("execution_mode") or payload.get("mode") or "background").strip().lower()
     if execution_mode not in {"background", "visible", "protocol"}:
         execution_mode = "background"
-    if execution_mode == "protocol":
-        raise RuntimeError("协议模式暂未开放，请选择后台浏览器自动或可视浏览器自动")
-    headless = bool(payload.get("headless", execution_mode != "visible"))
+    headless = execution_mode == "background"
     account = account_from_row(mailbox)
     mailbox_id = max(0, int(mailbox.get("id") or 0))
     is_registered_mailbox = bool(account.openai_rt) or str(mailbox.get("status") or "") in {"registered", "已注册", "phone_bound", "已接码", "已反代", "reverse_proxied", "登录刷新"}
@@ -672,7 +672,12 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
         ),
     )
     db.event(f"[{email}] [系统] 开始注册/登录 {index}/{total}，阶段={_stage_label(stage)}", detail={"email": email, "scope": "selected", "stage": stage})
-    mode_label = "后台浏览器自动（Camoufox Headless，无窗口）" if headless else "可视浏览器自动（Chromium Visible，有窗口）"
+    if execution_mode == "protocol":
+        mode_label = "纯协议注册（HTTP/TLS，不启动浏览器）"
+    elif headless:
+        mode_label = "后台浏览器自动（Camoufox Headless，无窗口）"
+    else:
+        mode_label = "可视浏览器自动（Chromium Visible，有窗口）"
     db.event(f"[{email}] [认证] 执行方式：{mode_label}", detail={"email": email, "scope": "selected", "execution_mode": execution_mode, "headless": headless})
     if proxies.get("register"):
         proxy_label = redact_proxy_url(proxies["register"])
@@ -703,7 +708,14 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     phone_provider = None
     require_refresh_token = False
     phone_skipped_reason = ""
-    if wants_rt:
+    if wants_rt and execution_mode == "protocol":
+        phone_skipped_reason = "协议模式仅执行 ChatGPT 注册/登录与 Session 获取，不启动浏览器 OAuth；Codex 接码绑定和反代导入阶段已跳过。"
+        db.event(
+            f"[{email}] [系统] {phone_skipped_reason}",
+            "warning",
+            detail={"email": email, "scope": "selected", "stage": stage, "execution_mode": execution_mode},
+        )
+    elif wants_rt:
         sms_cfg = db.get_config("phone")
         db.event(
             f"[{email}] [接码] 接码资源检查：自建号池可用 {db.usable_phone_count()} 个，SMSBower={'启用' if db.smsbower_available() else '不可用'}，SMSPool={'启用' if db.smspool_available() else '不可用'}",
@@ -728,18 +740,28 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
 
     try:
         db.ensure_not_cancelled()
-        session = login_or_register(
-            account,
-            proxies["register"],
-            headless,
-            lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
-            phone_provider=phone_provider,
-            existing_account=is_registered_mailbox or task_type == "sunny_login",
-            require_refresh_token=require_refresh_token,
-            should_cancel=db.cancel_requested,
-            execution_mode=execution_mode,
-            on_progress=save_progress,
-        )
+        if execution_mode == "protocol":
+            session = login_or_register_protocol(
+                account,
+                proxies["register"],
+                lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
+                existing_account=is_registered_mailbox or task_type == "sunny_login",
+                should_cancel=db.cancel_requested,
+                on_progress=save_progress,
+            )
+        else:
+            session = login_or_register(
+                account,
+                proxies["register"],
+                headless,
+                lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
+                phone_provider=phone_provider,
+                existing_account=is_registered_mailbox or task_type == "sunny_login",
+                require_refresh_token=require_refresh_token,
+                should_cancel=db.cancel_requested,
+                execution_mode=execution_mode,
+                on_progress=save_progress,
+            )
         db.ensure_not_cancelled()
         if session.get("phone_binding_skipped_reason"):
             phone_skipped_reason = str(session.get("phone_binding_skipped_reason") or "")
@@ -752,7 +774,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             email,
             mailbox_id=mailbox_id,
             status=_account_status_for_mailbox(mailbox_status),
-            account_type=account.account_type,
+            account_type=session.get("plan_type") or account.account_type,
             openai_rt=rt_value,
             access_token=session.get("access_token", ""),
             last_error="",

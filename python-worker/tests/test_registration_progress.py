@@ -23,6 +23,15 @@ def test_registration_stage_totals_include_previous_stages() -> None:
     assert _registration_stage_total(IMPORT_REVERSE_PROXY) == 12
 
 
+def test_protocol_checkpoint_shares_the_execution_start_milestone() -> None:
+    recorder = EventRecorder()
+    _emit_registration_progress(recorder, "user@example.com", REGISTER_ONLY, "protocol_started")
+
+    event = recorder.events[0]
+    assert event["detail"]["current"] == 3
+    assert event["detail"]["total"] == 7
+
+
 def test_progress_event_is_structured_and_clamped_to_selected_stage() -> None:
     recorder = EventRecorder()
     _emit_registration_progress(recorder, "user@example.com", REGISTER_ONLY, "reverse_imported")

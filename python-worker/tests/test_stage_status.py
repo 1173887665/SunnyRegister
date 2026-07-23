@@ -85,6 +85,44 @@ class StageStatusTests(unittest.TestCase):
             ok, result = worker._run_one(db, "sunny_register", payload, mailbox(status), 1, 1)
         return db, ok, result
 
+    def test_protocol_mode_dispatches_without_browser_executor(self):
+        db = FakeDB()
+        payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "protocol"}
+        session = {
+            "access_token": "protocol-access",
+            "auth_action": "register",
+            "plan_type": "plus",
+            "session_json": {"accessToken": "protocol-access", "account": {"planType": "plus"}},
+        }
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
+            patch.object(worker, "login_or_register_protocol", return_value=session) as protocol_executor,
+            patch.object(worker, "login_or_register") as browser_executor,
+        ):
+            ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
+
+        self.assertTrue(ok)
+        self.assertTrue(result["stage_complete"])
+        browser_executor.assert_not_called()
+        protocol_executor.assert_called_once()
+        self.assertEqual(db.account_updates[-1]["account_type"], "plus")
+
+    def test_protocol_mode_does_not_allocate_phone_resources(self):
+        db = FakeDB()
+        payload = {"registration_stage": worker.CODEX_PHONE_BIND, "execution_mode": "protocol"}
+        session = {"access_token": "protocol-access", "auth_action": "register"}
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
+            patch.object(worker, "_combined_phone_provider") as phone_allocator,
+            patch.object(worker, "login_or_register_protocol", return_value=session),
+        ):
+            ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
+
+        self.assertTrue(ok)
+        self.assertFalse(result["stage_complete"])
+        self.assertEqual(result["completed_status"], "已注册")
+        phone_allocator.assert_not_called()
+
     def test_missing_phone_resources_keeps_registered_status(self):
         db, ok, result = self.run_one(worker.CODEX_PHONE_BIND, {"access_token": "access", "auth_action": "register"})
         self.assertTrue(ok)
