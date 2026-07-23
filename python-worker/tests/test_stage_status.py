@@ -8,6 +8,7 @@ from sunny_core import worker
 from sunny_core.browser_backend import open_registration_browser
 from sunny_core.mailbox import MailAccount
 from sunny_core.openai_auth import BrowserDriverDisconnectedError, DEFAULT_REDIRECT_URI, OpenAIEmailRegisterFlow
+from sunny_core.protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationError
 
 
 class FakeDB:
@@ -106,6 +107,53 @@ class StageStatusTests(unittest.TestCase):
         browser_executor.assert_not_called()
         protocol_executor.assert_called_once()
         self.assertEqual(db.account_updates[-1]["account_type"], "plus")
+
+    def test_protocol_challenge_falls_back_to_headless_browser_only(self):
+        db = FakeDB()
+        payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "protocol"}
+        challenge = ProtocolChallengeRequired("Sentinel requires a browser challenge")
+        challenge.traffic = {"requests": 4, "total_bytes": 2048}
+        browser_session = {
+            "access_token": "browser-access",
+            "auth_action": "register",
+            "plan_type": "free",
+            "session_json": {"accessToken": "browser-access"},
+        }
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "http://proxy.example:8080", "mode": "pool"}),
+            patch.object(worker, "login_or_register_protocol", side_effect=challenge) as protocol_executor,
+            patch.object(worker, "login_or_register", return_value=browser_session) as browser_executor,
+        ):
+            ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
+
+        self.assertTrue(ok)
+        self.assertTrue(result["stage_complete"])
+        protocol_executor.assert_called_once()
+        browser_executor.assert_called_once()
+        args, kwargs = browser_executor.call_args
+        self.assertEqual(args[1], "http://proxy.example:8080")
+        self.assertIs(args[2], True)
+        self.assertIsNone(kwargs["phone_provider"])
+        self.assertFalse(kwargs["require_refresh_token"])
+        self.assertEqual(kwargs["execution_mode"], "protocol_headless_fallback")
+        self.assertEqual(db.sessions[-1]["session"]["execution_mode"], "protocol_headless_fallback")
+        self.assertEqual(db.sessions[-1]["session"]["protocol_fallback"], "headless")
+        self.assertEqual(db.sessions[-1]["session"]["protocol_traffic"]["total_bytes"], 2048)
+        self.assertTrue(any("后台无头浏览器" in str(args[0]) for args, _kwargs in db.events))
+
+    def test_protocol_non_challenge_error_does_not_start_browser(self):
+        db = FakeDB()
+        payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "protocol"}
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
+            patch.object(worker, "login_or_register_protocol", side_effect=ProtocolRegistrationError("invalid protocol response")),
+            patch.object(worker, "login_or_register") as browser_executor,
+        ):
+            ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
+
+        self.assertFalse(ok)
+        self.assertIn("invalid protocol response", str(result))
+        browser_executor.assert_not_called()
 
     def test_protocol_mode_does_not_allocate_phone_resources(self):
         db = FakeDB()

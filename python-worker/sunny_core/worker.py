@@ -14,7 +14,7 @@ from .db import SunnyDB, SunnyTaskCancelled, now_sql
 from .mailbox import account_from_row, parse_account_line
 from .openai_auth import TaskCancelledError, login_or_register, refresh_openai_access_token
 from .phone_pool import wait_sms_code
-from .protocol_auth import login_or_register_protocol
+from .protocol_auth import ProtocolChallengeRequired, login_or_register_protocol
 from .proxy import build_proxy, proxy_target_tls_check, redact_proxy_url
 from .smsbower import SMSBowerClient
 from .smspool import SMSPoolClient
@@ -741,14 +741,54 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     try:
         db.ensure_not_cancelled()
         if execution_mode == "protocol":
-            session = login_or_register_protocol(
-                account,
-                proxies["register"],
-                lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
-                existing_account=is_registered_mailbox or task_type == "sunny_login",
-                should_cancel=db.cancel_requested,
-                on_progress=save_progress,
-            )
+            try:
+                session = login_or_register_protocol(
+                    account,
+                    proxies["register"],
+                    lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
+                    existing_account=is_registered_mailbox or task_type == "sunny_login",
+                    should_cancel=db.cancel_requested,
+                    on_progress=save_progress,
+                )
+            except ProtocolChallengeRequired as challenge:
+                db.ensure_not_cancelled()
+                protocol_traffic = getattr(challenge, "traffic", None)
+                db.event(
+                    f"[{email}] [认证] 协议模式遇到浏览器挑战，切换到后台无头浏览器继续注册/登录",
+                    "warning",
+                    detail={
+                        "email": email,
+                        "scope": "selected",
+                        "execution_mode": "protocol_headless_fallback",
+                        "protocol_error": str(challenge),
+                        "protocol_traffic": protocol_traffic if isinstance(protocol_traffic, dict) else {},
+                    },
+                )
+                session = login_or_register(
+                    account,
+                    proxies["register"],
+                    True,
+                    lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
+                    phone_provider=None,
+                    existing_account=is_registered_mailbox or task_type == "sunny_login",
+                    require_refresh_token=False,
+                    should_cancel=db.cancel_requested,
+                    execution_mode="protocol_headless_fallback",
+                    on_progress=save_progress,
+                )
+                session["requested_execution_mode"] = "protocol"
+                session["execution_mode"] = "protocol_headless_fallback"
+                session["protocol_fallback"] = "headless"
+                if isinstance(protocol_traffic, dict):
+                    session["protocol_traffic"] = protocol_traffic
+                db.event(
+                    f"[{email}] [认证] 协议模式的后台无头浏览器接管已完成",
+                    detail={
+                        "email": email,
+                        "scope": "selected",
+                        "execution_mode": "protocol_headless_fallback",
+                    },
+                )
         else:
             session = login_or_register(
                 account,
@@ -789,6 +829,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             "email": email,
             "account_id": account_id,
             "auth_action": action,
+            "execution_mode": str(session.get("execution_mode") or execution_mode),
             "stage": stage,
             "access_token": session.get("access_token", ""),
             "refresh_token": rt_value,
@@ -800,6 +841,8 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
         }
         if isinstance(session.get("protocol_traffic"), dict):
             result["protocol_traffic"] = session["protocol_traffic"]
+        if session.get("protocol_fallback"):
+            result["protocol_fallback"] = str(session["protocol_fallback"])
         if post_registration_error:
             result["stage_error"] = post_registration_error
         db.event(f"[{email}] [认证] 识别为{action_label}成功，已保存 ChatGPT Session" + (" 和 Refresh Token" if result["refresh_token"] else ""), detail={"email": email, "scope": "selected", **result})
