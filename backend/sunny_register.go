@@ -101,7 +101,26 @@ func (s *Server) sunnyMailboxGroups(w http.ResponseWriter, r *http.Request, part
 		s.sunnyEnsureDefaultGroup()
 		var rows []SunnyMailboxGroup
 		s.db.Order("id asc").Find(&rows)
-		writeJSON(w, 200, map[string]any{"items": rows})
+		var countRows []struct {
+			GroupID uint  `gorm:"column:group_id"`
+			Count   int64 `gorm:"column:mailbox_count"`
+		}
+		s.db.Model(&SunnyMailbox{}).
+			Select("group_id, COUNT(*) AS mailbox_count").
+			Group("group_id").
+			Scan(&countRows)
+		counts := map[uint]int64{}
+		for _, row := range countRows {
+			counts[row.GroupID] = row.Count
+		}
+		items := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			items = append(items, map[string]any{
+				"id": row.ID, "name": row.Name, "description": row.Description,
+				"mailbox_count": counts[row.ID], "created_at": row.CreatedAt, "updated_at": row.UpdatedAt,
+			})
+		}
+		writeJSON(w, 200, map[string]any{"items": items})
 		return
 	}
 	if len(parts) == 0 && r.Method == http.MethodPost {
@@ -112,7 +131,10 @@ func (s *Server) sunnyMailboxGroups(w http.ResponseWriter, r *http.Request, part
 			writeError(w, 400, err.Error())
 			return
 		}
-		writeJSON(w, 200, g)
+		writeJSON(w, 200, map[string]any{
+			"id": g.ID, "name": g.Name, "description": g.Description,
+			"mailbox_count": 0, "created_at": g.CreatedAt, "updated_at": g.UpdatedAt,
+		})
 		return
 	}
 	if len(parts) == 1 {
@@ -128,16 +150,47 @@ func (s *Server) sunnyMailboxGroups(w http.ResponseWriter, r *http.Request, part
 				writeError(w, 404, "group not found")
 				return
 			}
-			if text(body["name"]) != "" {
-				g.Name = text(body["name"])
+			if name := strings.TrimSpace(text(body["name"])); name != "" {
+				g.Name = name
 			}
-			g.Description = text(body["description"])
-			s.db.Save(&g)
-			writeJSON(w, 200, g)
+			if description, ok := body["description"]; ok {
+				g.Description = text(description)
+			}
+			if err := s.db.Save(&g).Error; err != nil {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": "mailbox_group_name_conflict", "detail": "邮箱分组名称已存在"})
+				return
+			}
+			var mailboxCount int64
+			s.db.Model(&SunnyMailbox{}).Where("group_id = ?", id).Count(&mailboxCount)
+			writeJSON(w, 200, map[string]any{
+				"id": g.ID, "name": g.Name, "description": g.Description,
+				"mailbox_count": mailboxCount, "created_at": g.CreatedAt, "updated_at": g.UpdatedAt,
+			})
 			return
 		}
 		if r.Method == http.MethodDelete {
-			s.db.Delete(&SunnyMailboxGroup{}, id)
+			var g SunnyMailboxGroup
+			if s.db.First(&g, id).Error != nil {
+				writeError(w, http.StatusNotFound, "group not found")
+				return
+			}
+			if g.Name == defaultGroupName {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": "default_mailbox_group", "detail": "默认分组不能删除"})
+				return
+			}
+			var mailboxCount int64
+			s.db.Model(&SunnyMailbox{}).Where("group_id = ?", id).Count(&mailboxCount)
+			if mailboxCount > 0 {
+				writeJSON(w, http.StatusConflict, map[string]any{
+					"error": "mailbox_group_not_empty", "detail": "该邮箱分组下存在邮箱账户，请移除后再删除分组",
+					"mailbox_count": mailboxCount,
+				})
+				return
+			}
+			if err := s.db.Delete(&g).Error; err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 			writeJSON(w, 200, map[string]any{"ok": true})
 			return
 		}
