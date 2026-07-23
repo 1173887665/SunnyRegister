@@ -143,7 +143,10 @@ class SentinelBrowserRuntime:
         try:
             self._browser = self._manager.__enter__()
             if hasattr(self._browser, "new_context"):
-                self._context = self._browser.new_context(locale="ja-JP")
+                # Camoufox's patched Firefox protocol does not accept Playwright's
+                # isMobile viewport field. Disabling the default viewport prevents
+                # Browser.setDefaultViewport from emitting that incompatible field.
+                self._context = self._browser.new_context(no_viewport=True, locale="ja-JP")
                 self._owns_context = True
             else:
                 self._context = self._browser

@@ -273,14 +273,90 @@ class StageStatusTests(unittest.TestCase):
         )
         request = post.call_args
         self.assertEqual(request.args[0], "https://sub2api.example/api/v1/admin/accounts/import/codex-session")
-        self.assertEqual(request.kwargs["headers"], {"x-api-key": "admin-secret"})
+        self.assertEqual(request.kwargs["headers"]["X-API-Key"], "admin-secret")
+        self.assertEqual(request.kwargs["headers"]["Accept"], "application/json")
+        self.assertFalse(request.kwargs["allow_redirects"])
         payload = request.kwargs["json"]
-        self.assertEqual(payload["group_ids"], [2, 3])
+        self.assertEqual(set(payload), {"contents", "update_existing"})
         self.assertTrue(payload["update_existing"])
         self.assertEqual(len(payload["contents"]), 1)
         imported_auth = __import__("json").loads(payload["contents"][0])
         self.assertEqual(imported_auth["auth_mode"], "agentIdentity")
         self.assertEqual(imported_auth["agent_identity"]["agent_runtime_id"], "runtime-id")
+
+    def test_agent_identity_import_reports_html_gateway_response(self):
+        db = FakeDB({
+            "sub2api": {
+                "enabled": True,
+                "base_url": "https://sub2api.example",
+                "admin_token": "admin-secret",
+            }
+        })
+        auth_json = {
+            "auth_mode": "agentIdentity",
+            "agent_identity": {
+                "agent_runtime_id": "runtime-id",
+                "agent_private_key": "private-key",
+                "account_id": "account-id",
+                "chatgpt_user_id": "user-id",
+            },
+        }
+        response = Mock(
+            status_code=200,
+            text="<!doctype html><html><head><title>502 Bad gateway</title></head></html>",
+            headers={"Content-Type": "text/html; charset=UTF-8"},
+            url="https://sub2api.example/api/v1/admin/accounts/import/codex-session",
+        )
+        response.json.side_effect = ValueError("unexpected character")
+        with (
+            patch.object(worker, "create_agent_identity_auth", return_value=auth_json),
+            patch.object(worker.requests, "post", return_value=response),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "返回非 JSON 内容.*502 Bad gateway"):
+                worker._import_sub2api_agent_identity(
+                    db,
+                    "user@example.com",
+                    7,
+                    {"access_token": "access-token", "plan_type": "plus"},
+                    "",
+                )
+
+    def test_agent_identity_import_does_not_follow_login_redirect(self):
+        db = FakeDB({
+            "sub2api": {
+                "enabled": True,
+                "base_url": "https://sub2api.example",
+                "admin_token": "admin-secret",
+            }
+        })
+        auth_json = {
+            "auth_mode": "agentIdentity",
+            "agent_identity": {
+                "agent_runtime_id": "runtime-id",
+                "agent_private_key": "private-key",
+                "account_id": "account-id",
+                "chatgpt_user_id": "user-id",
+            },
+        }
+        response = Mock(
+            status_code=302,
+            text="",
+            headers={"Location": "/login"},
+            url="https://sub2api.example/api/v1/admin/accounts/import/codex-session",
+        )
+        with (
+            patch.object(worker, "create_agent_identity_auth", return_value=auth_json),
+            patch.object(worker.requests, "post", return_value=response) as post,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "发生重定向到 /login"):
+                worker._import_sub2api_agent_identity(
+                    db,
+                    "user@example.com",
+                    7,
+                    {"access_token": "access-token", "plan_type": "plus"},
+                    "",
+                )
+        self.assertFalse(post.call_args.kwargs["allow_redirects"])
 
     def test_agent_identity_import_normalizes_api_v1_base_url(self):
         self.assertEqual(

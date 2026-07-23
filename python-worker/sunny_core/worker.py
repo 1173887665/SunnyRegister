@@ -3,6 +3,8 @@
 import json
 import os
 import random
+import re
+import time
 import traceback
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Any
@@ -614,7 +616,7 @@ def _import_sub2api_agent_identity(
     session: dict[str, Any],
     proxy_url: str,
 ) -> dict[str, Any]:
-    cfg, base_url, token = _sub2api_config(db)
+    _cfg, base_url, token = _sub2api_config(db)
     access_token = str(session.get("access_token") or "").strip()
     if not access_token:
         raise RuntimeError("当前账号没有 Access Token，无法创建 Agent Identity")
@@ -629,28 +631,28 @@ def _import_sub2api_agent_identity(
     auth_content = json.dumps(auth_json, ensure_ascii=False, separators=(",", ":"))
     payload = {
         "contents": [auth_content],
-        "name": f"{str(cfg.get('name_prefix') or '')}{email}",
-        "group_ids": _sub2api_group_ids(cfg.get("group_ids")),
-        "concurrency": int(cfg.get("concurrency") or 3),
-        "priority": int(cfg.get("priority") or 50),
         "update_existing": True,
-        "extra": {"import_source": "sunnyregister_agent_identity", "email": email},
     }
     db.ensure_not_cancelled()
     endpoint = _sub2api_codex_import_url(base_url)
-    resp = requests.post(endpoint, headers={"x-api-key": token}, json=payload, timeout=90)
+    headers = {
+        "X-API-Key": token,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "SunnyRegister/1.0",
+    }
+    resp = _post_sub2api_agent_identity(db, endpoint, headers, payload)
     if resp.status_code in {400, 404, 422} and "content" in str(resp.text or "").lower():
         # Older Sub2API builds accepted a single content field. Only retry
         # schema-level rejections, so a successful import is never duplicated.
         legacy_payload = {**payload, "content": auth_content}
         legacy_payload.pop("contents", None)
-        resp = requests.post(endpoint, headers={"x-api-key": token}, json=legacy_payload, timeout=90)
+        resp = _post_sub2api_agent_identity(db, endpoint, headers, legacy_payload)
     if not (200 <= resp.status_code < 300):
-        raise RuntimeError(f"sub2api Agent Identity 导入失败: HTTP {resp.status_code} {resp.text[:500]}")
-    try:
-        response_json = resp.json()
-    except Exception as exc:
-        raise RuntimeError("sub2api Agent Identity 导入返回了无效 JSON") from exc
+        raise RuntimeError(
+            f"sub2api Agent Identity 导入失败: {_sub2api_response_diagnostic(resp, endpoint)}"
+        )
+    response_json = _sub2api_response_json(resp, endpoint)
     result = response_json.get("data") if isinstance(response_json, dict) and isinstance(response_json.get("data"), dict) else response_json
     if not isinstance(result, dict):
         raise RuntimeError("sub2api Agent Identity 导入结果格式无效")
@@ -670,6 +672,86 @@ def _import_sub2api_agent_identity(
         detail={"email": email, "scope": "selected", "account_id": account_id, "auth_mode": "agentIdentity"},
     )
     return result
+
+
+def _post_sub2api_agent_identity(
+    db: SunnyDB,
+    endpoint: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+):
+    """Post one import payload, retrying only transient gateway failures."""
+    response = None
+    for attempt in range(3):
+        db.ensure_not_cancelled()
+        try:
+            response = requests.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=90,
+                allow_redirects=False,
+            )
+        except requests.RequestException as exc:
+            if attempt >= 2:
+                raise RuntimeError(f"sub2api Agent Identity 导入请求失败: {exc}") from exc
+            db.event(
+                f"[反代] sub2api 导入请求异常，准备重试 {attempt + 1}/2",
+                "warning",
+                detail={"scope": "global", "attempt": attempt + 1},
+            )
+            time.sleep(1.5 * (attempt + 1))
+            continue
+        status = int(getattr(response, "status_code", 0) or 0)
+        if status not in {429, 502, 503, 504} or attempt >= 2:
+            return response
+        db.event(
+            f"[反代] sub2api 网关暂时不可用，准备重试 {attempt + 1}/2（HTTP {status}）",
+            "warning",
+            detail={"scope": "global", "attempt": attempt + 1, "status": status},
+        )
+        time.sleep(1.5 * (attempt + 1))
+    if response is None:
+        raise RuntimeError("sub2api Agent Identity 导入请求未返回响应")
+    return response
+
+
+def _sub2api_response_diagnostic(response: Any, endpoint: str) -> str:
+    status = int(getattr(response, "status_code", 0) or 0)
+    headers = getattr(response, "headers", {}) or {}
+    content_type = str(headers.get("Content-Type") or headers.get("content-type") or "unknown")
+    location = str(headers.get("Location") or headers.get("location") or "").strip()
+    final_url = str(getattr(response, "url", "") or endpoint)
+    body = str(getattr(response, "text", "") or "").strip()
+    lowered = body.lower()
+    if 300 <= status < 400:
+        target = location or "未提供 Location"
+        return f"HTTP {status}，接口发生重定向到 {target}；请检查 Base URL、Cloudflare 与鉴权配置"
+    if "<html" in lowered or "<!doctype" in lowered:
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", body, flags=re.IGNORECASE | re.DOTALL)
+        title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else "HTML 页面"
+        return (
+            f"HTTP {status}，服务返回 HTML（{title}，Content-Type={content_type}，URL={final_url}）；"
+            "请检查 sub2api API 路径、Cloudflare 回源状态及 Admin Token"
+        )
+    summary = re.sub(r"\s+", " ", body)[:500] or "空响应"
+    return f"HTTP {status}，Content-Type={content_type}，URL={final_url}，响应={summary}"
+
+
+def _sub2api_response_json(response: Any, endpoint: str) -> dict[str, Any]:
+    try:
+        value = response.json()
+    except Exception:
+        body = str(getattr(response, "text", "") or "").strip()
+        try:
+            value = json.loads(body)
+        except Exception as exc:
+            raise RuntimeError(
+                f"sub2api Agent Identity 导入返回非 JSON 内容: {_sub2api_response_diagnostic(response, endpoint)}"
+            ) from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("sub2api Agent Identity 导入结果必须是 JSON 对象")
+    return value
 
 
 def _sub2api_codex_import_url(base_url: str) -> str:
