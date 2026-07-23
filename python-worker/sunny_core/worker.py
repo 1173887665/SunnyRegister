@@ -798,6 +798,8 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             "stage_complete": stage == REGISTER_ONLY or (stage == CODEX_PHONE_BIND and has_rt),
             "phone_skipped_reason": phone_skipped_reason,
         }
+        if isinstance(session.get("protocol_traffic"), dict):
+            result["protocol_traffic"] = session["protocol_traffic"]
         if post_registration_error:
             result["stage_error"] = post_registration_error
         db.event(f"[{email}] [认证] 识别为{action_label}成功，已保存 ChatGPT Session" + (" 和 Refresh Token" if result["refresh_token"] else ""), detail={"email": email, "scope": "selected", **result})
@@ -862,13 +864,17 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             raise
         err_text = str(exc)
         err = f"[{email}] {err_text}"
+        traffic = getattr(exc, "traffic", None)
         if "Phone verification required" in err_text or "phone verification" in err_text.lower():
             db.mark_mailbox(mailbox_id, "需二验", err_text)
             db.event(f"[{email}] [接码] 账号需要手机号二次验证，但当前没有可用接码配置，本账号流程已停止", "warning", detail={"email": email, "scope": "selected"})
         else:
             db.mark_mailbox(mailbox_id, "失败", err_text)
         db.upsert_account(email, mailbox_id=mailbox_id, status="failed", last_error=err_text)
-        db.event(err, "error", detail={"email": email, "scope": "selected", "traceback": traceback.format_exc()[-3000:]})
+        error_detail = {"email": email, "scope": "selected", "traceback": traceback.format_exc()[-3000:]}
+        if isinstance(traffic, dict):
+            error_detail["protocol_traffic"] = traffic
+        db.event(err, "error", detail=error_detail)
         _emit_registration_progress(db, str(email), stage, "failed", state="abnormal", error=err_text)
         return False, err
 

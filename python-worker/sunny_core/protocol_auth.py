@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import secrets
 import string
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
-from urllib.parse import unquote, urlencode
+from urllib.parse import unquote, urlencode, urlsplit
 
 from .mailbox import HotmailReader, MailAccount
 from .proxy import normalize_proxy_url
@@ -41,6 +43,76 @@ class ProtocolRegistrationError(RuntimeError):
 
 class ProtocolChallengeRequired(ProtocolRegistrationError):
     pass
+
+
+@dataclass
+class ProtocolTrafficMeter:
+    requests: int = 0
+    request_header_bytes: int = 0
+    request_body_bytes: int = 0
+    response_header_bytes: int = 0
+    response_body_bytes: int = 0
+
+    @staticmethod
+    def _header_bytes(headers: Any) -> int:
+        if not headers:
+            return 0
+        try:
+            return sum(len(str(key).encode("utf-8")) + len(str(value).encode("utf-8")) + 4 for key, value in headers.items()) + 2
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _body_bytes(kwargs: dict[str, Any]) -> int:
+        value = kwargs.get("data")
+        if value is None and kwargs.get("json") is not None:
+            value = json.dumps(kwargs["json"], separators=(",", ":"), ensure_ascii=False)
+        if value is None:
+            return 0
+        if isinstance(value, bytes):
+            return len(value)
+        if isinstance(value, str):
+            return len(value.encode("utf-8"))
+        if isinstance(value, dict):
+            return len(urlencode(value, doseq=True).encode("utf-8"))
+        return len(str(value).encode("utf-8"))
+
+    def record(self, method: str, url: str, request_headers: Any, kwargs: dict[str, Any], response: Any) -> None:
+        self.requests += 1
+        request_target = urlsplit(url)
+        path = request_target.path or "/"
+        if request_target.query:
+            path = f"{path}?{request_target.query}"
+        self.request_header_bytes += len(f"{method.upper()} {path} HTTP/1.1\r\n".encode("utf-8")) + self._header_bytes(request_headers)
+        self.request_body_bytes += self._body_bytes(kwargs)
+        response_headers = getattr(response, "headers", None)
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        self.response_header_bytes += len(f"HTTP/1.1 {status_code:03d}\r\n".encode("ascii")) + self._header_bytes(response_headers)
+        content_length = ""
+        try:
+            content_length = str((response_headers or {}).get("content-length") or "").strip()
+        except Exception:
+            pass
+        if content_length.isdigit():
+            self.response_body_bytes += int(content_length)
+        else:
+            content = getattr(response, "content", b"")
+            if isinstance(content, bytes):
+                self.response_body_bytes += len(content)
+            else:
+                self.response_body_bytes += len(str(content or "").encode("utf-8"))
+
+    def snapshot(self) -> dict[str, int | str]:
+        total = self.request_header_bytes + self.request_body_bytes + self.response_header_bytes + self.response_body_bytes
+        return {
+            "measurement": "estimated_http_application_bytes_excluding_tls_tcp_overhead",
+            "requests": self.requests,
+            "request_header_bytes": self.request_header_bytes,
+            "request_body_bytes": self.request_body_bytes,
+            "response_header_bytes": self.response_header_bytes,
+            "response_body_bytes": self.response_body_bytes,
+            "total_bytes": total,
+        }
 
 
 def _json_response(response, step: str) -> dict[str, Any]:
@@ -93,8 +165,10 @@ class ProtocolRegistrationFlow:
         self.reader: HotmailReader | None = None
         self.device_id = ""
         self.auth_url = ""
+        self.auth_page_url = ""
         self.auth_action = "login" if existing_account else "unknown"
         self.generated_password = ""
+        self.traffic = ProtocolTrafficMeter()
 
     def _check_cancelled(self) -> None:
         if self.should_cancel():
@@ -134,7 +208,24 @@ class ProtocolRegistrationFlow:
         try:
             response = self.session.request(method, url, **kwargs)
         except Exception as exc:
-            raise ProtocolRegistrationError(f"{step} request failed: {exc}") from exc
+            error = ProtocolRegistrationError(f"{step} request failed: {exc}")
+            error.traffic = self.traffic.snapshot()
+            raise error from exc
+        request_headers = dict(getattr(self.session, "headers", {}) or {})
+        request_headers.update(dict(kwargs.get("headers") or {}))
+        self.traffic.record(method, url, request_headers, kwargs, response)
+        if os.environ.get("SUNNY_PROTOCOL_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
+            response_url = str(getattr(response, "url", "") or url)
+            parsed = urlsplit(response_url)
+            cookie_names: set[str] = set()
+            try:
+                cookie_names = {str(cookie.name) for cookie in self.session.cookies.jar if getattr(cookie, "name", "")}
+            except Exception:
+                pass
+            self.log(
+                f"[协议] {step}: HTTP {getattr(response, 'status_code', 0)} "
+                f"{parsed.scheme}://{parsed.netloc}{parsed.path} cookies={','.join(sorted(cookie_names)) or '-'}"
+            )
         self._check_cancelled()
         return response
 
@@ -183,10 +274,18 @@ class ProtocolRegistrationFlow:
                 str(pow_meta.get("difficulty") or "0"),
             )
         turnstile = payload.get("turnstile") if isinstance(payload.get("turnstile"), dict) else {}
-        if turnstile.get("required") and not turnstile.get("dx"):
-            raise ProtocolChallengeRequired(f"Sentinel {flow} requires an interactive Turnstile challenge")
-        # Most protocol responses accept an empty t when no interactive widget
-        # is required. A server-side rejection is surfaced without browser fallback.
+        turnstile_required = bool(turnstile.get("required"))
+        has_device_challenge = bool(str(turnstile.get("dx") or "").strip())
+        self.log(
+            f"[认证] Sentinel {flow}：PoW={'是' if bool(pow_meta.get('required')) else '否'}，"
+            f"Turnstile={'是' if turnstile_required else '否'}，设备挑战={'是' if has_device_challenge else '否'}"
+        )
+        if turnstile_required or has_device_challenge:
+            error = ProtocolChallengeRequired(
+                f"Sentinel {flow} requires a browser challenge; protocol mode cannot continue safely"
+            )
+            error.traffic = self.traffic.snapshot()
+            raise error
         return json.dumps(
             {
                 "p": proof,
@@ -260,6 +359,7 @@ class ProtocolRegistrationFlow:
         )
         if auth_page.status_code >= 400:
             raise _response_error(auth_page, "OpenAI authorization initialization")
+        self.auth_page_url = str(getattr(auth_page, "url", "") or self.auth_url)
         self.device_id = self._cookie("oai-did") or self.device_id
 
     def _authorize_email(self) -> dict[str, Any]:
@@ -342,33 +442,54 @@ class ProtocolRegistrationFlow:
                 continue
         raise TimeoutError("Timed out waiting for OpenAI email OTP")
 
-    def _verify_email(self, continue_url: str) -> dict[str, Any]:
+    def _verify_email(
+        self,
+        continue_url: str,
+        *,
+        request_code: bool = True,
+        load_page: bool = True,
+        min_timestamp: float = 0.0,
+    ) -> dict[str, Any]:
         verification_url = continue_url or f"{AUTH_BASE_URL}/email-verification"
-        page = self._request(
-            "GET",
-            verification_url,
-            step="Load email verification stage",
-            headers={"accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
-        )
-        if page.status_code >= 400:
-            raise _response_error(page, "Load email verification stage")
-        sent_at = time.time() - 5
-        sent = self._request(
-            "GET",
-            SEND_EMAIL_OTP_URL,
-            step="Send email verification code",
-            headers={
-                "accept": "application/json, text/plain, */*",
-                "referer": verification_url,
-                "oai-device-id": self.device_id,
-                **generate_datadog_trace_headers(),
-            },
-        )
-        if sent.status_code != 200:
-            raise _response_error(sent, "Send email verification code")
-        self.log("[邮箱] 协议模式已请求发送 OpenAI 邮箱验证码")
+        if load_page:
+            page = self._request(
+                "GET",
+                verification_url,
+                step="Load email verification stage",
+                headers={"accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
+            )
+            if page.status_code >= 400:
+                raise _response_error(page, "Load email verification stage")
+        else:
+            self.log("[邮箱] 邮箱验证页已由认证初始化加载，跳过重复页面请求")
+        sent_at = min_timestamp or (time.time() - 5)
+        if request_code:
+            sent_at = time.time() - 5
+            sent = self._request(
+                "GET",
+                SEND_EMAIL_OTP_URL,
+                step="Send email verification code",
+                headers={
+                    "accept": "application/json, text/plain, */*",
+                    "referer": verification_url,
+                    "oai-device-id": self.device_id,
+                    **generate_datadog_trace_headers(),
+                },
+            )
+            if sent.status_code != 200:
+                raise _response_error(sent, "Send email verification code")
+            try:
+                sent_payload = sent.json()
+                sent_payload = sent_payload if isinstance(sent_payload, dict) else {}
+            except Exception:
+                sent_payload = {}
+            sent_continue_url = str(sent_payload.get("continue_url") or "").strip()
+            if sent_continue_url:
+                verification_url = sent_continue_url
+            self.log("[邮箱] 协议模式已请求发送 OpenAI 邮箱验证码")
+        else:
+            self.log("[邮箱] 认证初始化已自动发送验证码，跳过重复发码")
         code = self._wait_for_email_code(sent_at)
-        sentinel = self._sentinel_header("email_otp_validate")
         validated = self._request(
             "POST",
             VALIDATE_EMAIL_OTP_URL,
@@ -377,10 +498,10 @@ class ProtocolRegistrationFlow:
                 "accept": "application/json",
                 "content-type": "application/json",
                 "origin": AUTH_BASE_URL,
-                "referer": f"{AUTH_BASE_URL}/email-verification",
-                "oai-device-id": self.device_id,
-                "openai-sentinel-token": sentinel,
-                **generate_datadog_trace_headers(),
+                "referer": verification_url,
+                "sec-fetch-dest": "empty",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-site": "same-origin",
             },
             data=json.dumps({"code": code}, separators=(",", ":")),
         )
@@ -473,6 +594,7 @@ class ProtocolRegistrationFlow:
             "plan_type": plan_type,
             "auth_action": self.auth_action if self.auth_action != "unknown" else "login",
             "execution_mode": "protocol",
+            "protocol_traffic": self.traffic.snapshot(),
         }
         self._emit("registered", result)
         return result
@@ -486,8 +608,18 @@ class ProtocolRegistrationFlow:
             self.reader.connect()
             self.session = self.session or self._new_session()
             self._emit("protocol_started")
+            auth_started_at = time.time() - 5
             self._start_next_auth()
-            state = self._authorize_email()
+            initial_path = urlsplit(self.auth_page_url).path.rstrip("/")
+            initial_otp_redirect = initial_path == "/email-verification"
+            if initial_otp_redirect:
+                state = {
+                    "page": {"type": "email_otp_verification"},
+                    "continue_url": self.auth_page_url,
+                }
+                self.log("[认证] 初始化已进入邮箱验证阶段，跳过重复提交邮箱")
+            else:
+                state = self._authorize_email()
             page_type = str((state.get("page") or {}).get("type") or "")
             continue_url = str(state.get("continue_url") or "")
             self.log(f"[认证] 协议认证状态：{page_type or 'unknown'}")
@@ -503,7 +635,12 @@ class ProtocolRegistrationFlow:
             elif page_type in {"email_otp_verification", "email_otp_send"}:
                 self.auth_action = "login" if self.existing_account else self.auth_action
 
-            state = self._verify_email(continue_url)
+            state = self._verify_email(
+                continue_url,
+                request_code=not initial_otp_redirect,
+                load_page=not initial_otp_redirect,
+                min_timestamp=auth_started_at,
+            )
             page_type = str((state.get("page") or {}).get("type") or "")
             continue_url = str(state.get("continue_url") or continue_url)
             if page_type in {"about_you", "create_account", "name_and_birthdate"} or self.auth_action == "register":
@@ -513,7 +650,18 @@ class ProtocolRegistrationFlow:
                 self.auth_action = "login"
             result = self._finish_session(continue_url)
             self.log("[认证] 纯协议注册/登录完成，已读取 ChatGPT Session")
+            traffic = result["protocol_traffic"]
+            self.log(f"[系统] 协议模式 HTTP 应用层流量：{traffic['total_bytes']} bytes / {traffic['requests']} requests（不含 TLS/TCP 开销）")
             return result
+        except Exception as exc:
+            if not hasattr(exc, "traffic"):
+                exc.traffic = self.traffic.snapshot()
+            traffic = exc.traffic
+            self.log(
+                f"[系统] 协议模式失败前 HTTP 应用层流量估算：{traffic['total_bytes']} bytes / "
+                f"{traffic['requests']} requests（不含 TLS/TCP 开销）"
+            )
+            raise
         finally:
             if self.reader:
                 self.reader.close()

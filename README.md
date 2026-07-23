@@ -36,7 +36,7 @@ SunnyRegister 通过统一的 Web 控制台管理邮箱、手机号、代理、�
 
 - Outlook/Hotmail 邮箱池导入、分组、状态管理与邮件查询，兼容 Graph API、IMAP/POP3 与 Graph/IMAP 双令牌凭证
 - GPT 账号批量注册或登录、并发控制、实时日志与任务中断
-- 纯 HTTP/TLS 协议注册模式，不启动浏览器并减少页面资源流量；当前用于“仅注册 ChatGPT”阶段
+- 纯 HTTP/TLS 协议注册模式，不启动浏览器并减少页面资源流量；当前用于“仅注册 ChatGPT”阶段，远端要求浏览器挑战时会停止并记录原因与流量统计
 - 自建手机号池以及 SMSBower、SMSPool 接码配置
 - 注册流量代理池、可用性检测和出站代理控制
 - Session、Access Token 和账号资料管理与导出
