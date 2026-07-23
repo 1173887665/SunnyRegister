@@ -18,9 +18,9 @@ from curl_cffi import requests as curl_requests
 
 AUTH_API_BASE = "https://auth.openai.com/api/accounts"
 AUTH_MODE = "agentIdentity"
-AGENT_VERSION = "0.138.0-alpha.6"
-AGENT_HARNESS_ID = "codex-cli"
-RUNNING_LOCATION = "local"
+AGENT_VERSION = "standalone-script-1"
+AGENT_HARNESS_ID = "sunnyregister"
+RUNNING_LOCATION = "custom-python"
 
 
 def decode_jwt_claims(token: str) -> dict[str, Any]:
@@ -68,7 +68,43 @@ def _session(proxy_url: str):
 
 def _response_error(response, action: str) -> RuntimeError:
     body = str(getattr(response, "text", "") or "")[:500]
+    lowered = body.lower()
+    if "unsupported_country_region_territory" in lowered:
+        return RuntimeError(f"{action}失败: 当前网络出口所在地区不受 OpenAI 支持，请检查注册代理（HTTP 403）")
+    if "just a moment" in lowered or "challenges.cloudflare.com" in lowered:
+        return RuntimeError(f"{action}失败: 当前网络出口触发 Cloudflare 浏览器挑战，请更换健康代理后重试（HTTP 403）")
     return RuntimeError(f"{action}失败: HTTP {getattr(response, 'status_code', 0)} {body}")
+
+
+def _post_with_retry(
+    client,
+    url: str,
+    *,
+    action: str,
+    log: Callable[[str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    **kwargs,
+):
+    response = None
+    for attempt in range(3):
+        _check_cancelled(should_cancel)
+        try:
+            response = client.post(url, **kwargs)
+        except Exception:
+            if attempt >= 2:
+                raise
+            if log:
+                log(f"[反代] {action}网络请求失败，正在重试 {attempt + 1}/2")
+            time.sleep(1.5 * (attempt + 1))
+            continue
+        status = int(getattr(response, "status_code", 0) or 0)
+        if status < 500 and status != 429:
+            return response
+        if attempt < 2:
+            if log:
+                log(f"[反代] {action}暂时不可用，正在重试 {attempt + 1}/2（HTTP {status}）")
+            time.sleep(1.5 * (attempt + 1))
+    return response
 
 
 def create_agent_identity_auth(
@@ -83,6 +119,9 @@ def create_agent_identity_auth(
     """Create an in-memory Codex auth.json record without logging secrets."""
     _check_cancelled(should_cancel)
     claims = decode_jwt_claims(access_token)
+    expires_at = int(claims.get("exp") or 0)
+    if expires_at and expires_at <= int(time.time()) + 30:
+        raise RuntimeError("Access Token 已过期，无法创建 Agent Identity")
     auth_claims = claims.get("https://api.openai.com/auth")
     profile_claims = claims.get("https://api.openai.com/profile")
     auth_claims = auth_claims if isinstance(auth_claims, dict) else {}
@@ -99,8 +138,12 @@ def create_agent_identity_auth(
     try:
         if log:
             log("[反代] 正在创建 Codex Agent Identity")
-        response = client.post(
+        response = _post_with_retry(
+            client,
             f"{AUTH_API_BASE}/v1/agent/register",
+            action="Agent Identity 注册",
+            log=log,
+            should_cancel=should_cancel,
             headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
             json={
                 "abom": {
@@ -127,8 +170,12 @@ def create_agent_identity_auth(
         signature = base64.b64encode(private_obj.sign(f"{runtime_id}:{timestamp}".encode("utf-8"))).decode("ascii")
         task_id = ""
         try:
-            task_response = client.post(
+            task_response = _post_with_retry(
+                client,
                 f"{AUTH_API_BASE}/v1/agent/{runtime_id}/task/register",
+                action="Agent task 预注册",
+                log=log,
+                should_cancel=should_cancel,
                 headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
                 json={"timestamp": timestamp, "signature": signature},
                 timeout=30,

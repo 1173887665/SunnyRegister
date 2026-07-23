@@ -123,6 +123,8 @@ def test_protocol_registration_completes_without_browser() -> None:
     assert result["plan_type"] == "plus"
     assert result["auth_action"] == "register"
     assert result["execution_mode"] == "protocol"
+    assert result["protocol_challenge_strategy"] == "native_headless"
+    assert result["sentinel_runtime_used"] is False
     assert result["protocol_traffic"]["requests"] == 17
     assert result["protocol_traffic"]["total_bytes"] > 0
     assert checkpoints == ["protocol_started", "email_submitted", "email_verified", "auth_completed", "registered"]
@@ -176,12 +178,46 @@ def test_sentinel_device_challenge_stops_protocol_flow() -> None:
     flow.device_id = "device-id"
 
     try:
-        flow._sentinel_header("oauth_create_account")
+        flow._sentinel_headers("oauth_create_account")
     except ProtocolChallengeRequired as exc:
         assert "browser challenge" in str(exc)
         assert getattr(exc, "traffic")["requests"] == 1
     else:
         raise AssertionError("device challenge must stop protocol mode")
+
+
+def test_sentinel_protocol_strategy_uses_narrow_runtime_headers() -> None:
+    class FakeRuntime:
+        def build_headers(self, **kwargs):
+            assert kwargs["flow"] == "oauth_create_account"
+            assert kwargs["device_id"] == "device-id"
+            return {
+                "openai-sentinel-token": "runtime-token",
+                "openai-sentinel-so-token": "observer-token",
+            }
+
+    flow = ProtocolRegistrationFlow(
+        MailAccount("user@outlook.com", "password", "client-id", "refresh-token", "raw"),
+        session=FakeSession(
+            [
+                FakeResponse(
+                    payload={
+                        "token": "sentinel-challenge",
+                        "proofofwork": {"required": False},
+                        "turnstile": {"required": True, "dx": "device-challenge"},
+                    }
+                )
+            ]
+        ),
+        challenge_strategy="sentinel_protocol",
+    )
+    flow.device_id = "device-id"
+    flow._sentinel_runtime = FakeRuntime()
+
+    headers = flow._sentinel_headers("oauth_create_account")
+
+    assert headers["openai-sentinel-token"] == "runtime-token"
+    assert headers["openai-sentinel-so-token"] == "observer-token"
 
 
 def test_verify_email_can_reuse_page_loaded_by_auth_redirect() -> None:

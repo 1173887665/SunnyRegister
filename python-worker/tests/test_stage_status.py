@@ -107,6 +107,7 @@ class StageStatusTests(unittest.TestCase):
         self.assertTrue(result["stage_complete"])
         browser_executor.assert_not_called()
         protocol_executor.assert_called_once()
+        self.assertEqual(protocol_executor.call_args.kwargs["challenge_strategy"], "native_headless")
         self.assertEqual(db.account_updates[-1]["account_type"], "plus")
 
     def test_protocol_challenge_falls_back_to_headless_browser_only(self):
@@ -154,6 +155,27 @@ class StageStatusTests(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertIn("invalid protocol response", str(result))
+        browser_executor.assert_not_called()
+
+    def test_sentinel_protocol_strategy_does_not_start_full_browser_on_challenge(self):
+        db = FakeDB()
+        payload = {
+            "registration_stage": worker.REGISTER_ONLY,
+            "execution_mode": "protocol",
+            "protocol_challenge_strategy": "sentinel_protocol",
+        }
+        challenge = ProtocolChallengeRequired("Sentinel runtime failed")
+        challenge.traffic = {"requests": 2, "total_bytes": 512}
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
+            patch.object(worker, "login_or_register_protocol", side_effect=challenge) as protocol_executor,
+            patch.object(worker, "login_or_register") as browser_executor,
+        ):
+            ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
+
+        self.assertFalse(ok)
+        self.assertIn("Sentinel runtime failed", str(result))
+        self.assertEqual(protocol_executor.call_args.kwargs["challenge_strategy"], "sentinel_protocol")
         browser_executor.assert_not_called()
 
     def test_protocol_mode_continues_phone_stage_with_headless_oauth(self):
@@ -255,9 +277,20 @@ class StageStatusTests(unittest.TestCase):
         payload = request.kwargs["json"]
         self.assertEqual(payload["group_ids"], [2, 3])
         self.assertTrue(payload["update_existing"])
-        imported_auth = __import__("json").loads(payload["content"])
+        self.assertEqual(len(payload["contents"]), 1)
+        imported_auth = __import__("json").loads(payload["contents"][0])
         self.assertEqual(imported_auth["auth_mode"], "agentIdentity")
         self.assertEqual(imported_auth["agent_identity"]["agent_runtime_id"], "runtime-id")
+
+    def test_agent_identity_import_normalizes_api_v1_base_url(self):
+        self.assertEqual(
+            worker._sub2api_codex_import_url("https://sub2api.example/api/v1"),
+            "https://sub2api.example/api/v1/admin/accounts/import/codex-session",
+        )
+        self.assertEqual(
+            worker._sub2api_codex_import_url("https://sub2api.example/api/v1/admin"),
+            "https://sub2api.example/api/v1/admin/accounts/import/codex-session",
+        )
 
     def test_missing_phone_resources_keeps_registered_status(self):
         db, ok, result = self.run_one(worker.CODEX_PHONE_BIND, {"access_token": "access", "auth_action": "register"})

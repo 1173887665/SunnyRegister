@@ -626,8 +626,9 @@ def _import_sub2api_agent_identity(
         should_cancel=db.cancel_requested,
         log=lambda message: db.event(message, detail={"email": email, "scope": "selected"}),
     )
+    auth_content = json.dumps(auth_json, ensure_ascii=False, separators=(",", ":"))
     payload = {
-        "content": json.dumps(auth_json, ensure_ascii=False, separators=(",", ":")),
+        "contents": [auth_content],
         "name": f"{str(cfg.get('name_prefix') or '')}{email}",
         "group_ids": _sub2api_group_ids(cfg.get("group_ids")),
         "concurrency": int(cfg.get("concurrency") or 3),
@@ -636,12 +637,14 @@ def _import_sub2api_agent_identity(
         "extra": {"import_source": "sunnyregister_agent_identity", "email": email},
     }
     db.ensure_not_cancelled()
-    resp = requests.post(
-        f"{base_url}/api/v1/admin/accounts/import/codex-session",
-        headers={"x-api-key": token},
-        json=payload,
-        timeout=90,
-    )
+    endpoint = _sub2api_codex_import_url(base_url)
+    resp = requests.post(endpoint, headers={"x-api-key": token}, json=payload, timeout=90)
+    if resp.status_code in {400, 404, 422} and "content" in str(resp.text or "").lower():
+        # Older Sub2API builds accepted a single content field. Only retry
+        # schema-level rejections, so a successful import is never duplicated.
+        legacy_payload = {**payload, "content": auth_content}
+        legacy_payload.pop("contents", None)
+        resp = requests.post(endpoint, headers={"x-api-key": token}, json=legacy_payload, timeout=90)
     if not (200 <= resp.status_code < 300):
         raise RuntimeError(f"sub2api Agent Identity 导入失败: HTTP {resp.status_code} {resp.text[:500]}")
     try:
@@ -667,6 +670,20 @@ def _import_sub2api_agent_identity(
         detail={"email": email, "scope": "selected", "account_id": account_id, "auth_mode": "agentIdentity"},
     )
     return result
+
+
+def _sub2api_codex_import_url(base_url: str) -> str:
+    cleaned = str(base_url or "").strip().rstrip("/")
+    parsed = urlsplit(cleaned)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("sub2api Base URL 必须是完整的 http:// 或 https:// 地址")
+    endpoint = "/api/v1/admin/accounts/import/codex-session"
+    if cleaned.endswith(endpoint):
+        return cleaned
+    for suffix in ("/api/v1/admin", "/api/v1"):
+        if cleaned.endswith(suffix):
+            return cleaned[: -len(suffix)] + endpoint
+    return cleaned + endpoint
 
 
 def _persist_registration_checkpoint(
@@ -725,6 +742,9 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     if execution_mode not in {"background", "visible", "protocol"}:
         execution_mode = "background"
     headless = execution_mode == "background"
+    protocol_challenge_strategy = str(payload.get("protocol_challenge_strategy") or "native_headless").strip().lower()
+    if protocol_challenge_strategy not in {"native_headless", "sentinel_protocol"}:
+        protocol_challenge_strategy = "native_headless"
     account = account_from_row(mailbox)
     mailbox_id = max(0, int(mailbox.get("id") or 0))
     is_registered_mailbox = bool(account.openai_rt) or str(mailbox.get("status") or "") in {"registered", "已注册", "phone_bound", "已接码", "已反代", "reverse_proxied", "登录刷新"}
@@ -746,7 +766,11 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     )
     db.event(f"[{email}] [系统] 开始注册/登录 {index}/{total}，阶段={_stage_label(stage)}", detail={"email": email, "scope": "selected", "stage": stage})
     if execution_mode == "protocol":
-        mode_label = "纯协议注册（HTTP/TLS，不启动浏览器）"
+        mode_label = (
+            "协议注册（Sentinel 协议运行时，仅证明生成使用窄范围 Camoufox）"
+            if protocol_challenge_strategy == "sentinel_protocol"
+            else "协议注册（本项目原生后台浏览器挑战接管）"
+        )
     elif headless:
         mode_label = "后台浏览器自动（Camoufox Headless，无窗口）"
     else:
@@ -820,10 +844,24 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                     existing_account=is_registered_mailbox or task_type == "sunny_login",
                     should_cancel=db.cancel_requested,
                     on_progress=save_progress,
+                    challenge_strategy=protocol_challenge_strategy,
                 )
             except ProtocolChallengeRequired as challenge:
                 db.ensure_not_cancelled()
                 protocol_traffic = getattr(challenge, "traffic", None)
+                if protocol_challenge_strategy == "sentinel_protocol":
+                    db.event(
+                        f"[{email}] [认证] Sentinel 协议运行时未能生成有效证明，任务不会切换到完整浏览器接管: {challenge}",
+                        "error",
+                        detail={
+                            "email": email,
+                            "scope": "selected",
+                            "execution_mode": "protocol",
+                            "protocol_challenge_strategy": protocol_challenge_strategy,
+                            "protocol_traffic": protocol_traffic if isinstance(protocol_traffic, dict) else {},
+                        },
+                    )
+                    raise
                 db.event(
                     f"[{email}] [认证] 协议模式遇到浏览器挑战，切换到后台无头浏览器继续注册/登录",
                     "warning",

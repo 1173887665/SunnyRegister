@@ -1129,6 +1129,14 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .sr-choice.disabled.active { border-color:#e5e7eb; background:#f8fafc; box-shadow:none; }
 .sr-choice b { display:block; font-size:18px; margin-bottom:8px; }
 .sr-choice span { display:block; color:#9ca3af; line-height:1.35; white-space:pre-line; }
+.sr-protocol-strategy { margin-top:12px; display:flex; align-items:center; gap:8px; padding:7px; border:1px solid rgba(45,212,191,.28); border-radius:12px; background:rgba(240,253,250,.72); }
+.sr-protocol-strategy > span { padding:0 8px; color:#64748b; font-size:13px; white-space:nowrap; }
+.sr-protocol-strategy button { min-height:36px; padding:0 14px; border:1px solid transparent; border-radius:9px; color:#475569; font-size:13px; font-weight:600; background:transparent; }
+.sr-protocol-strategy button:hover { background:#fff; border-color:#ccfbf1; }
+.sr-protocol-strategy button.active { color:#047857; border-color:#99f6e4; background:#fff; box-shadow:0 2px 9px rgba(13,148,136,.1); }
+.dark .sr-protocol-strategy { background:rgba(15,23,42,.65); border-color:rgba(45,212,191,.2); }
+.dark .sr-protocol-strategy button { color:#cbd5e1; }
+.dark .sr-protocol-strategy button:hover, .dark .sr-protocol-strategy button.active { background:#0f172a; border-color:rgba(45,212,191,.38); color:#5eead4; }
 .sr-modal-input { margin-top:6px; width:100%; height:44px; border:1px solid #e5e7eb; border-radius:9px; text-align:center; font-size:18px; outline:none; }
 .sr-modal label span { color:#9ca3af; font-weight:700; }
 .sr-summary { margin-top:24px; border:1px solid #e5e7eb; border-radius:16px; background:#fafafa; padding:16px 20px; line-height:1.8; }
@@ -1438,6 +1446,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 @media (max-width: 900px) { .sr-mail-layout { grid-template-columns:1fr; } .sr-mail-list { max-height:320px; border-right:0; border-bottom:1px solid #e5e7eb; } }
 @media (max-width: 1100px) { .sr-choice-grid.four { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width: 760px) { .sr-choice-grid.two, .sr-choice-grid.three, .sr-choice-grid.four { grid-template-columns:1fr; } .sr-modal-body { padding:18px; } }
+@media (max-width: 760px) { .sr-protocol-strategy { align-items:stretch; flex-direction:column; } .sr-protocol-strategy > span { padding:4px 8px; } }
 
 
 /* SunnyRegister control sizing normalization: controls in the same action row should feel like one system. */

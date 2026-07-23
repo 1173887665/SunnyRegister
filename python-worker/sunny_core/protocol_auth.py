@@ -18,6 +18,7 @@ from .proxy import normalize_proxy_url
 from .sentinel import (
     SENTINEL_FRAME_URL,
     SENTINEL_REQ_URL,
+    SentinelBrowserRuntime,
     SentinelTokenGenerator,
     generate_datadog_trace_headers,
 )
@@ -154,6 +155,7 @@ class ProtocolRegistrationFlow:
         should_cancel: Callable[[], bool] | None = None,
         on_progress: Callable[[str, dict[str, Any]], None] | None = None,
         session: Any | None = None,
+        challenge_strategy: str = "native_headless",
     ):
         self.account = account
         self.proxy_url = normalize_proxy_url(proxy_url)
@@ -169,6 +171,10 @@ class ProtocolRegistrationFlow:
         self.auth_action = "login" if existing_account else "unknown"
         self.generated_password = ""
         self.traffic = ProtocolTrafficMeter()
+        self.challenge_strategy = (
+            challenge_strategy if challenge_strategy in {"native_headless", "sentinel_protocol"} else "native_headless"
+        )
+        self._sentinel_runtime: SentinelBrowserRuntime | None = None
 
     def _check_cancelled(self) -> None:
         if self.should_cancel():
@@ -242,10 +248,11 @@ class ProtocolRegistrationFlow:
                 pass
         return ""
 
-    def _sentinel_header(self, flow: str) -> str:
+    def _sentinel_headers(self, flow: str) -> dict[str, str]:
         self._check_cancelled()
         generator = SentinelTokenGenerator(self.device_id, USER_AGENT)
-        proof = generator.requirements_token()
+        requirements_proof = generator.requirements_token()
+        proof = requirements_proof
         response = self._request(
             "POST",
             SENTINEL_REQ_URL,
@@ -280,22 +287,43 @@ class ProtocolRegistrationFlow:
             f"[认证] Sentinel {flow}：PoW={'是' if bool(pow_meta.get('required')) else '否'}，"
             f"Turnstile={'是' if turnstile_required else '否'}，设备挑战={'是' if has_device_challenge else '否'}"
         )
+        if self.challenge_strategy == "sentinel_protocol":
+            try:
+                if self._sentinel_runtime is None:
+                    self._sentinel_runtime = SentinelBrowserRuntime(
+                        self.session,
+                        proxy_url=self.proxy_url,
+                        log=self.log,
+                        should_cancel=self.should_cancel,
+                    )
+                return self._sentinel_runtime.build_headers(
+                    challenge_payload=payload,
+                    cached_proof=requirements_proof,
+                    enforcement=proof,
+                    device_id=self.device_id,
+                    flow=flow,
+                )
+            except Exception as exc:
+                if self.should_cancel():
+                    raise
+                error = ProtocolChallengeRequired(f"Sentinel 协议运行时生成证明失败: {exc}")
+                error.traffic = self.traffic.snapshot()
+                raise error from exc
         if turnstile_required or has_device_challenge:
             error = ProtocolChallengeRequired(
                 f"Sentinel {flow} requires a browser challenge; protocol mode cannot continue safely"
             )
             error.traffic = self.traffic.snapshot()
             raise error
-        return json.dumps(
-            {
+        return {
+            "openai-sentinel-token": json.dumps({
                 "p": proof,
                 "t": "",
                 "c": challenge,
                 "id": self.device_id,
                 "flow": flow,
-            },
-            separators=(",", ":"),
-        )
+            }, separators=(",", ":"))
+        }
 
     def _start_next_auth(self) -> None:
         landing = self._request(
@@ -363,7 +391,7 @@ class ProtocolRegistrationFlow:
         self.device_id = self._cookie("oai-did") or self.device_id
 
     def _authorize_email(self) -> dict[str, Any]:
-        sentinel = self._sentinel_header("authorize_continue")
+        sentinel_headers = self._sentinel_headers("authorize_continue")
         response = self._request(
             "POST",
             AUTHORIZE_CONTINUE_URL,
@@ -374,7 +402,7 @@ class ProtocolRegistrationFlow:
                 "origin": AUTH_BASE_URL,
                 "referer": f"{AUTH_BASE_URL}/{'log-in' if self.existing_account else 'create-account'}",
                 "oai-device-id": self.device_id,
-                "openai-sentinel-token": sentinel,
+                **sentinel_headers,
                 **generate_datadog_trace_headers(),
             },
             data=json.dumps(
@@ -408,7 +436,7 @@ class ProtocolRegistrationFlow:
             step="Load password stage",
             headers={"accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
         )
-        sentinel = self._sentinel_header("username_password_create")
+        sentinel_headers = self._sentinel_headers("username_password_create")
         response = self._request(
             "POST",
             REGISTER_PASSWORD_URL,
@@ -419,7 +447,7 @@ class ProtocolRegistrationFlow:
                 "origin": AUTH_BASE_URL,
                 "referer": f"{AUTH_BASE_URL}/create-account/password",
                 "oai-device-id": self.device_id,
-                "openai-sentinel-token": sentinel,
+                **sentinel_headers,
                 **generate_datadog_trace_headers(),
             },
             data=json.dumps(
@@ -524,24 +552,33 @@ class ProtocolRegistrationFlow:
             )
         except ProtocolRegistrationError as exc:
             self.log(f"[认证] 协议状态推进请求未成功，继续创建账户：{exc}")
-        sentinel = self._sentinel_header("oauth_create_account")
-        response = self._request(
-            "POST",
-            CREATE_ACCOUNT_URL,
-            step="Create ChatGPT account",
-            headers={
-                "accept": "application/json",
-                "content-type": "application/json",
-                "origin": AUTH_BASE_URL,
-                "referer": f"{AUTH_BASE_URL}/about-you",
-                "oai-device-id": self.device_id,
-                "openai-sentinel-token": sentinel,
-                **generate_datadog_trace_headers(),
-            },
-            data=json.dumps({"name": name, "birthdate": birthdate}, separators=(",", ":")),
-        )
-        if response.status_code != 200:
-            raise _response_error(response, "Create ChatGPT account")
+        response = None
+        for attempt in range(3):
+            sentinel_headers = self._sentinel_headers("oauth_create_account")
+            response = self._request(
+                "POST",
+                CREATE_ACCOUNT_URL,
+                step="Create ChatGPT account",
+                headers={
+                    "accept": "application/json",
+                    "content-type": "application/json",
+                    "origin": AUTH_BASE_URL,
+                    "referer": f"{AUTH_BASE_URL}/about-you",
+                    "oai-device-id": self.device_id,
+                    **sentinel_headers,
+                    **generate_datadog_trace_headers(),
+                },
+                data=json.dumps({"name": name, "birthdate": birthdate}, separators=(",", ":")),
+            )
+            if response.status_code == 200:
+                break
+            body = str(getattr(response, "text", "") or "")
+            if "registration_disallowed" not in body or attempt >= 2:
+                raise _response_error(response, "Create ChatGPT account")
+            self.log(f"[认证] 创建账号被临时拒绝，刷新 Sentinel 证明后重试 {attempt + 1}/3")
+            time.sleep(2)
+        if response is None:
+            raise ProtocolRegistrationError("Create ChatGPT account did not return a response")
         self.auth_action = "register"
         self.log(f"[认证] 协议模式已提交基础资料：{name} / {birthdate}")
         return _json_response(response, "Create ChatGPT account")
@@ -594,6 +631,8 @@ class ProtocolRegistrationFlow:
             "plan_type": plan_type,
             "auth_action": self.auth_action if self.auth_action != "unknown" else "login",
             "execution_mode": "protocol",
+            "protocol_challenge_strategy": self.challenge_strategy,
+            "sentinel_runtime_used": self._sentinel_runtime is not None,
             "protocol_traffic": self.traffic.snapshot(),
         }
         self._emit("registered", result)
@@ -601,7 +640,10 @@ class ProtocolRegistrationFlow:
 
     def run(self) -> dict[str, Any]:
         self.log(f"[认证] 开始纯协议注册或登录：{self.account.email}")
-        self.log("[认证] 协议模式不会启动 Chromium、Camoufox 或其他浏览器")
+        if self.challenge_strategy == "sentinel_protocol":
+            self.log("[认证] 协议模式使用 Sentinel 协议运行时；仅证明生成可能启动窄范围 Camoufox")
+        else:
+            self.log("[认证] 协议模式使用本项目原生挑战接管策略")
         try:
             self._check_cancelled()
             self.reader = HotmailReader(self.account, self.log, self.proxy_url)
@@ -651,7 +693,11 @@ class ProtocolRegistrationFlow:
             result = self._finish_session(continue_url)
             self.log("[认证] 纯协议注册/登录完成，已读取 ChatGPT Session")
             traffic = result["protocol_traffic"]
-            self.log(f"[系统] 协议模式 HTTP 应用层流量：{traffic['total_bytes']} bytes / {traffic['requests']} requests（不含 TLS/TCP 开销）")
+            suffix = "；不含 Sentinel 窄浏览器运行时资源" if self._sentinel_runtime is not None else ""
+            self.log(
+                f"[系统] 协议模式 HTTP 应用层流量：{traffic['total_bytes']} bytes / "
+                f"{traffic['requests']} requests（不含 TLS/TCP 开销{suffix}）"
+            )
             return result
         except Exception as exc:
             if not hasattr(exc, "traffic"):
@@ -663,6 +709,8 @@ class ProtocolRegistrationFlow:
             )
             raise
         finally:
+            if self._sentinel_runtime:
+                self._sentinel_runtime.close()
             if self.reader:
                 self.reader.close()
             if self.session:
@@ -680,6 +728,7 @@ def login_or_register_protocol(
     existing_account: bool = False,
     should_cancel: Callable[[], bool] | None = None,
     on_progress: Callable[[str, dict[str, Any]], None] | None = None,
+    challenge_strategy: str = "native_headless",
 ) -> dict[str, Any]:
     return ProtocolRegistrationFlow(
         account,
@@ -688,4 +737,5 @@ def login_or_register_protocol(
         existing_account=existing_account,
         should_cancel=should_cancel,
         on_progress=on_progress,
+        challenge_strategy=challenge_strategy,
     ).run()

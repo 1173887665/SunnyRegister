@@ -5,9 +5,12 @@ import json
 import os
 import random
 import secrets
+import threading
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
+
+from .proxy import playwright_proxy
 
 
 SENTINEL_BASE = os.environ.get("SENTINEL_BASE_URL", "https://sentinel.openai.com")
@@ -96,6 +99,197 @@ class SentinelTokenGenerator:
             if self._fnv1a32((seed or "") + encoded)[: len(target)] <= target:
                 return "gAAAAAB" + encoded + "~S"
         return "gAAAAAB" + self._b64(None)
+
+
+class SentinelBrowserRuntime:
+    """Generate Sentinel VM tokens while registration requests stay HTTP-only."""
+
+    _sdk_lock = threading.Lock()
+    _sdk_code: str | None = None
+
+    def __init__(
+        self,
+        session: Any,
+        *,
+        proxy_url: str = "",
+        log: Callable[[str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> None:
+        self.log = log or (lambda _message: None)
+        self.should_cancel = should_cancel or (lambda: False)
+        self._manager: Any = None
+        self._browser: Any = None
+        self._context: Any = None
+        self._page: Any = None
+        self._owns_context = False
+        try:
+            from camoufox.sync_api import Camoufox  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(
+                "Sentinel 协议运行时需要 Camoufox；请安装 python-worker 依赖并执行 python -m camoufox fetch"
+            ) from exc
+
+        self._check_cancelled()
+        launch_options: dict[str, Any] = {
+            "headless": "virtual" if os.getenv("SUNNY_CONTAINERIZED", "").lower() in {"1", "true", "yes"} else True,
+            "locale": "ja-JP",
+            "block_webrtc": True,
+        }
+        proxy = playwright_proxy(proxy_url)
+        if proxy:
+            launch_options["proxy"] = proxy
+            launch_options["geoip"] = True
+        self._manager = Camoufox(**launch_options)
+        try:
+            self._browser = self._manager.__enter__()
+            if hasattr(self._browser, "new_context"):
+                self._context = self._browser.new_context(locale="ja-JP")
+                self._owns_context = True
+            else:
+                self._context = self._browser
+            self._page = self._context.new_page()
+            try:
+                self._page.goto(
+                    "https://auth.openai.com/about-you",
+                    wait_until="domcontentloaded",
+                    timeout=30_000,
+                )
+            except Exception:
+                self._page.goto("about:blank", wait_until="domcontentloaded", timeout=10_000)
+            sdk_code = self._load_sdk(session)
+            hook = "t.token=ye,t}({});"
+            replacement = "t.___n=_n,t.__Nt=Nt,t.__D=D,t.__jt=jt,t.token=ye,t}({});"
+            patched = sdk_code.replace(hook, replacement) if hook in sdk_code else sdk_code
+            self._page.evaluate("code => window.eval(code)", patched)
+            if self._page.evaluate("typeof window.SentinelSDK") != "object":
+                raise RuntimeError("Sentinel SDK 初始化失败")
+            self.log("[认证] 已启动 Sentinel 协议运行时；仅浏览器证明生成使用 Camoufox，注册请求仍走 HTTP/TLS")
+        except Exception:
+            self.close()
+            raise
+
+    def _check_cancelled(self) -> None:
+        if self.should_cancel():
+            from .openai_auth import TaskCancelledError
+
+            raise TaskCancelledError("Task cancelled by user")
+
+    @classmethod
+    def _load_sdk(cls, session: Any) -> str:
+        with cls._sdk_lock:
+            if cls._sdk_code:
+                return cls._sdk_code
+            response = session.get(SENTINEL_SDK_URL, timeout=30)
+            if int(getattr(response, "status_code", 0) or 0) >= 400:
+                raise RuntimeError(f"Sentinel SDK 获取失败: HTTP {getattr(response, 'status_code', 0)}")
+            code = str(getattr(response, "text", "") or "")
+            if not code:
+                raise RuntimeError("Sentinel SDK 返回为空")
+            cls._sdk_code = code
+            return code
+
+    @staticmethod
+    def _valid_observer_token(value: str) -> str:
+        if not value:
+            return ""
+        try:
+            decoded = base64.b64decode(value + "=" * (-len(value) % 4)).decode("utf-8", errors="ignore").lower()
+        except Exception:
+            return value
+        if any(marker in decoded for marker in ("syntaxerror", "typeerror", "error:")):
+            return ""
+        return value
+
+    def build_headers(
+        self,
+        *,
+        challenge_payload: dict[str, Any],
+        cached_proof: str,
+        enforcement: str,
+        device_id: str,
+        flow: str,
+    ) -> dict[str, str]:
+        self._check_cancelled()
+        result = self._page.evaluate(
+            """async ({chatReq, cachedProof, flow}) => {
+              const sdk = window.SentinelSDK;
+              if (typeof sdk.__D === 'function' && typeof sdk.___n === 'function') {
+                sdk.__D(chatReq, cachedProof);
+                const turnstile = chatReq.turnstile || {};
+                const observer = chatReq.so || {};
+                const t = turnstile.dx ? await sdk.___n(chatReq, turnstile.dx) : '';
+                let so = '';
+                if (observer.collector_dx && typeof sdk.__Nt === 'function') {
+                  so = await sdk.__Nt(observer.collector_dx);
+                }
+                if (!so && observer.snapshot_dx && typeof sdk.__jt === 'function') {
+                  so = await sdk.__jt(observer.snapshot_dx, cachedProof);
+                }
+                return {mode: 'internal', t, so};
+              }
+              const token = await sdk.token(flow);
+              const so = typeof sdk.sessionObserverToken === 'function'
+                ? await sdk.sessionObserverToken(flow)
+                : null;
+              return {mode: 'public', token, so};
+            }""",
+            {"chatReq": challenge_payload, "cachedProof": cached_proof, "flow": flow},
+        )
+        result = result if isinstance(result, dict) else {}
+        if result.get("mode") == "public":
+            token = result.get("token")
+            if isinstance(token, str):
+                token = json.loads(token)
+            if not isinstance(token, dict):
+                raise RuntimeError("Sentinel SDK 未返回有效 token")
+        else:
+            turnstile = challenge_payload.get("turnstile")
+            turnstile = turnstile if isinstance(turnstile, dict) else {}
+            t_value = str(result.get("t") or "")
+            if turnstile.get("required") and not t_value:
+                raise RuntimeError("Sentinel Turnstile VM 未生成 t token")
+            token = {
+                "p": enforcement,
+                "t": t_value,
+                "c": str(challenge_payload.get("token") or ""),
+                "id": device_id,
+                "flow": flow,
+            }
+        headers = {"openai-sentinel-token": json.dumps(token, separators=(",", ":"))}
+        so_value = result.get("so")
+        if isinstance(so_value, str):
+            try:
+                parsed_so = json.loads(so_value)
+            except json.JSONDecodeError:
+                parsed_so = None
+            if isinstance(parsed_so, dict):
+                headers["openai-sentinel-so-token"] = json.dumps(parsed_so, separators=(",", ":"))
+            else:
+                observer = self._valid_observer_token(so_value)
+                if observer:
+                    headers["openai-sentinel-so-token"] = json.dumps(
+                        {"so": observer, "c": str(challenge_payload.get("token") or ""), "id": device_id, "flow": flow},
+                        separators=(",", ":"),
+                    )
+        self._check_cancelled()
+        return headers
+
+    def close(self) -> None:
+        context, manager = self._context, self._manager
+        self._page = None
+        self._context = None
+        self._browser = None
+        self._manager = None
+        if self._owns_context and context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        if manager is not None:
+            try:
+                manager.__exit__(None, None, None)
+            except Exception:
+                pass
 
 
 def browser_fetch(

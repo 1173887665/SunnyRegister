@@ -76,3 +76,18 @@ def test_create_agent_identity_uses_dynamic_signing_contract_without_token_leak(
 def test_create_agent_identity_rejects_access_token_without_required_claims() -> None:
     with pytest.raises(RuntimeError, match="account_id"):
         create_agent_identity_auth(_jwt({"https://api.openai.com/auth": {}}))
+
+
+def test_create_agent_identity_rejects_expired_access_token() -> None:
+    with pytest.raises(RuntimeError, match="已过期"):
+        create_agent_identity_auth(
+            _jwt(
+                {
+                    "exp": 1,
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": "account-id",
+                        "chatgpt_user_id": "user-id",
+                    },
+                }
+            )
+        )
