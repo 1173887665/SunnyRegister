@@ -3117,7 +3117,7 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 func sunnyRegistrationStage(body map[string]any) string {
 	stage := strings.ToLower(strings.TrimSpace(firstText(body["registration_stage"], body["stage"])))
 	switch stage {
-	case "codex_phone_bind", "import_reverse_proxy":
+	case "codex_phone_bind", "import_reverse_proxy", "agent_identity_reverse_proxy":
 		return stage
 	default:
 		return "register_only"

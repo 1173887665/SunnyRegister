@@ -12,8 +12,9 @@ from sunny_core.protocol_auth import ProtocolChallengeRequired, ProtocolRegistra
 
 
 class FakeDB:
-    def __init__(self) -> None:
+    def __init__(self, configs=None) -> None:
         self.task_id = "test-task"
+        self.configs = configs or {}
         self.mailbox_updates: list[dict] = []
         self.account_updates: list[dict] = []
         self.sessions: list[dict] = []
@@ -45,7 +46,7 @@ class FakeDB:
         return False
 
     def get_config(self, key) -> dict:
-        return {}
+        return self.configs.get(key, {})
 
     def upsert_account(self, email, **fields) -> int:
         self.account_updates.append({"email": email, **fields})
@@ -155,21 +156,108 @@ class StageStatusTests(unittest.TestCase):
         self.assertIn("invalid protocol response", str(result))
         browser_executor.assert_not_called()
 
-    def test_protocol_mode_does_not_allocate_phone_resources(self):
+    def test_protocol_mode_continues_phone_stage_with_headless_oauth(self):
         db = FakeDB()
         payload = {"registration_stage": worker.CODEX_PHONE_BIND, "execution_mode": "protocol"}
-        session = {"access_token": "protocol-access", "auth_action": "register"}
+        protocol_session = {"access_token": "protocol-access", "auth_action": "register"}
+        completed_session = {
+            "access_token": "browser-access",
+            "refresh_token": "refresh-token",
+            "phone_bound": True,
+            "auth_action": "login",
+        }
+        phone_provider = Mock()
         with (
             patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
-            patch.object(worker, "_combined_phone_provider") as phone_allocator,
-            patch.object(worker, "login_or_register_protocol", return_value=session),
+            patch.object(worker, "_combined_phone_provider", return_value=phone_provider) as phone_allocator,
+            patch.object(worker, "login_or_register_protocol", return_value=protocol_session),
+            patch.object(worker, "login_or_register", return_value=completed_session) as browser_executor,
         ):
             ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
 
         self.assertTrue(ok)
-        self.assertFalse(result["stage_complete"])
-        self.assertEqual(result["completed_status"], "已注册")
+        self.assertTrue(result["stage_complete"])
+        self.assertEqual(result["completed_status"], "已接码")
+        phone_allocator.assert_called_once()
+        browser_executor.assert_called_once()
+        self.assertIs(browser_executor.call_args.kwargs["phone_provider"], phone_provider)
+        self.assertTrue(browser_executor.call_args.kwargs["require_refresh_token"])
+        self.assertEqual(browser_executor.call_args.kwargs["execution_mode"], "protocol_post_stage")
+
+    def test_agent_identity_stage_skips_phone_and_imports_with_access_token(self):
+        db = FakeDB()
+        payload = {"registration_stage": worker.AGENT_IDENTITY_REVERSE_PROXY, "execution_mode": "protocol"}
+        session = {"access_token": "protocol-access", "auth_action": "login", "plan_type": "plus"}
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "http://proxy.example:8080", "mode": "pool"}),
+            patch.object(worker, "_combined_phone_provider") as phone_allocator,
+            patch.object(worker, "login_or_register_protocol", return_value=session),
+            patch.object(worker, "login_or_register") as browser_executor,
+            patch.object(worker, "_import_sub2api_agent_identity", return_value={"created": 1}) as importer,
+        ):
+            ok, result = worker._run_one(db, "sunny_register", payload, mailbox(status="已注册"), 1, 1)
+
+        self.assertTrue(ok)
+        self.assertTrue(result["stage_complete"])
+        self.assertTrue(result["agent_identity"])
+        self.assertEqual(result["completed_status"], "已反代")
         phone_allocator.assert_not_called()
+        browser_executor.assert_not_called()
+        importer.assert_called_once_with(db, "user@example.com", 7, session, "http://proxy.example:8080")
+
+    def test_agent_identity_import_uses_codex_session_contract(self):
+        db = FakeDB({
+            "sub2api": {
+                "enabled": True,
+                "base_url": "https://sub2api.example",
+                "admin_token": "admin-secret",
+                "name_prefix": "Sunny-",
+                "group_ids": [2, "3"],
+                "concurrency": 5,
+                "priority": 1,
+            }
+        })
+        auth_json = {
+            "auth_mode": "agentIdentity",
+            "agent_identity": {
+                "agent_runtime_id": "runtime-id",
+                "agent_private_key": "private-key",
+                "account_id": "account-id",
+                "chatgpt_user_id": "user-id",
+            },
+        }
+        response = Mock(status_code=200)
+        response.json.return_value = {"data": {"created": 1, "updated": 0, "failed": 0, "items": [{"account_id": 91}]}}
+        with (
+            patch.object(worker, "create_agent_identity_auth", return_value=auth_json) as creator,
+            patch.object(worker.requests, "post", return_value=response) as post,
+        ):
+            result = worker._import_sub2api_agent_identity(
+                db,
+                "user@example.com",
+                7,
+                {"access_token": "access-token", "plan_type": "plus"},
+                "http://proxy.example:8080",
+            )
+
+        self.assertEqual(result["created"], 1)
+        creator.assert_called_once_with(
+            "access-token",
+            email="user@example.com",
+            plan_type="plus",
+            proxy_url="http://proxy.example:8080",
+            should_cancel=db.cancel_requested,
+            log=ANY,
+        )
+        request = post.call_args
+        self.assertEqual(request.args[0], "https://sub2api.example/api/v1/admin/accounts/import/codex-session")
+        self.assertEqual(request.kwargs["headers"], {"x-api-key": "admin-secret"})
+        payload = request.kwargs["json"]
+        self.assertEqual(payload["group_ids"], [2, 3])
+        self.assertTrue(payload["update_existing"])
+        imported_auth = __import__("json").loads(payload["content"])
+        self.assertEqual(imported_auth["auth_mode"], "agentIdentity")
+        self.assertEqual(imported_auth["agent_identity"]["agent_runtime_id"], "runtime-id")
 
     def test_missing_phone_resources_keeps_registered_status(self):
         db, ok, result = self.run_one(worker.CODEX_PHONE_BIND, {"access_token": "access", "auth_action": "register"})

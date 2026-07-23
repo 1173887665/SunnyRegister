@@ -10,6 +10,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
+from .agent_identity import create_agent_identity_auth
 from .db import SunnyDB, SunnyTaskCancelled, now_sql
 from .mailbox import account_from_row, parse_account_line
 from .openai_auth import TaskCancelledError, login_or_register, refresh_openai_access_token
@@ -22,6 +23,7 @@ from .smspool import SMSPoolClient
 REGISTER_ONLY = "register_only"
 CODEX_PHONE_BIND = "codex_phone_bind"
 IMPORT_REVERSE_PROXY = "import_reverse_proxy"
+AGENT_IDENTITY_REVERSE_PROXY = "agent_identity_reverse_proxy"
 
 _REGISTRATION_PROGRESS_STEPS = {
     "initializing": 1,
@@ -37,12 +39,15 @@ _REGISTRATION_PROGRESS_STEPS = {
     "phone_bound": 10,
     "reverse_importing": 11,
     "reverse_imported": 12,
+    "agent_identity_importing": 8,
+    "agent_identity_imported": 9,
 }
 
 _REGISTRATION_STAGE_TOTALS = {
     REGISTER_ONLY: 7,
     CODEX_PHONE_BIND: 10,
     IMPORT_REVERSE_PROXY: 12,
+    AGENT_IDENTITY_REVERSE_PROXY: 9,
 }
 
 _MAILBOX_PROGRESS_RANK = {
@@ -105,7 +110,7 @@ def _ids(value: Any) -> list[int]:
 
 def _stage(payload: dict[str, Any]) -> str:
     value = str(payload.get("registration_stage") or payload.get("stage") or REGISTER_ONLY).strip().lower()
-    return value if value in {REGISTER_ONLY, CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY} else REGISTER_ONLY
+    return value if value in {REGISTER_ONLY, CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY, AGENT_IDENTITY_REVERSE_PROXY} else REGISTER_ONLY
 
 
 def _stage_label(stage: str) -> str:
@@ -113,6 +118,7 @@ def _stage_label(stage: str) -> str:
         REGISTER_ONLY: "仅注册ChatGPT",
         CODEX_PHONE_BIND: "Codex接码绑定",
         IMPORT_REVERSE_PROXY: "导入反代平台",
+        AGENT_IDENTITY_REVERSE_PROXY: "绕过接码导入反代平台",
     }.get(stage, stage)
 
 
@@ -545,7 +551,7 @@ def _sub2api_group_ids(value: Any) -> list[int]:
     return out
 
 
-def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str, Any]) -> dict[str, Any]:
+def _sub2api_config(db: SunnyDB) -> tuple[dict[str, Any], str, str]:
     cfg = db.get_config("sub2api")
     if cfg.get("enabled") is False:
         raise RuntimeError("反代配置中的 sub2api 未启用")
@@ -553,6 +559,11 @@ def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str,
     token = str(cfg.get("admin_token") or "").strip()
     if not base_url or not token:
         raise RuntimeError("请先在反代配置中填写 sub2api Base URL 和 Admin Token")
+    return cfg, base_url, token
+
+
+def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str, Any]) -> dict[str, Any]:
+    cfg, base_url, token = _sub2api_config(db)
     refresh_token = str(session.get("refresh_token") or session.get("openai_rt") or "").strip()
     if not refresh_token:
         raise RuntimeError("当前账号没有 Refresh Token，无法导入 sub2api")
@@ -594,6 +605,68 @@ def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str,
     db.set_account_sub2api_status(email, "imported", str(data.get("id") or data.get("data", {}).get("id") or ""))
     db.event(f"[{email}] [反代] 已根据反代配置导入 sub2api", detail={"email": email, "scope": "selected", "account_id": account_id})
     return data
+
+
+def _import_sub2api_agent_identity(
+    db: SunnyDB,
+    email: str,
+    account_id: int,
+    session: dict[str, Any],
+    proxy_url: str,
+) -> dict[str, Any]:
+    cfg, base_url, token = _sub2api_config(db)
+    access_token = str(session.get("access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("当前账号没有 Access Token，无法创建 Agent Identity")
+    auth_json = create_agent_identity_auth(
+        access_token,
+        email=email,
+        plan_type=str(session.get("plan_type") or "free"),
+        proxy_url=proxy_url,
+        should_cancel=db.cancel_requested,
+        log=lambda message: db.event(message, detail={"email": email, "scope": "selected"}),
+    )
+    payload = {
+        "content": json.dumps(auth_json, ensure_ascii=False, separators=(",", ":")),
+        "name": f"{str(cfg.get('name_prefix') or '')}{email}",
+        "group_ids": _sub2api_group_ids(cfg.get("group_ids")),
+        "concurrency": int(cfg.get("concurrency") or 3),
+        "priority": int(cfg.get("priority") or 50),
+        "update_existing": True,
+        "extra": {"import_source": "sunnyregister_agent_identity", "email": email},
+    }
+    db.ensure_not_cancelled()
+    resp = requests.post(
+        f"{base_url}/api/v1/admin/accounts/import/codex-session",
+        headers={"x-api-key": token},
+        json=payload,
+        timeout=90,
+    )
+    if not (200 <= resp.status_code < 300):
+        raise RuntimeError(f"sub2api Agent Identity 导入失败: HTTP {resp.status_code} {resp.text[:500]}")
+    try:
+        response_json = resp.json()
+    except Exception as exc:
+        raise RuntimeError("sub2api Agent Identity 导入返回了无效 JSON") from exc
+    result = response_json.get("data") if isinstance(response_json, dict) and isinstance(response_json.get("data"), dict) else response_json
+    if not isinstance(result, dict):
+        raise RuntimeError("sub2api Agent Identity 导入结果格式无效")
+    failed = int(result.get("failed") or 0)
+    created = int(result.get("created") or 0)
+    updated = int(result.get("updated") or 0)
+    if failed > 0 or (created + updated <= 0 and int(result.get("skipped") or 0) <= 0):
+        errors = result.get("errors") or result.get("items") or []
+        raise RuntimeError(f"sub2api Agent Identity 导入未成功: {json.dumps(errors, ensure_ascii=False)[:500]}")
+    remote_id = ""
+    items = result.get("items")
+    if isinstance(items, list) and items and isinstance(items[0], dict):
+        remote_id = str(items[0].get("account_id") or "")
+    db.set_account_sub2api_status(email, "imported", remote_id)
+    db.event(
+        f"[{email}] [反代] 已使用 Agent Identity auth.json 导入 sub2api，后续请求由平台动态签名",
+        detail={"email": email, "scope": "selected", "account_id": account_id, "auth_mode": "agentIdentity"},
+    )
+    return result
 
 
 def _persist_registration_checkpoint(
@@ -708,14 +781,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     phone_provider = None
     require_refresh_token = False
     phone_skipped_reason = ""
-    if wants_rt and execution_mode == "protocol":
-        phone_skipped_reason = "协议模式仅执行 ChatGPT 注册/登录与 Session 获取，不启动浏览器 OAuth；Codex 接码绑定和反代导入阶段已跳过。"
-        db.event(
-            f"[{email}] [系统] {phone_skipped_reason}",
-            "warning",
-            detail={"email": email, "scope": "selected", "stage": stage, "execution_mode": execution_mode},
-        )
-    elif wants_rt:
+    if wants_rt:
         sms_cfg = db.get_config("phone")
         db.event(
             f"[{email}] [接码] 接码资源检查：自建号池可用 {db.usable_phone_count()} 个，SMSBower={'启用' if db.smsbower_available() else '不可用'}，SMSPool={'启用' if db.smspool_available() else '不可用'}",
@@ -732,6 +798,11 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
         elif not account.openai_rt:
             phone_skipped_reason = "无可用手机号：自建手机号池未开启/无可用号码，且 SMSBower/SMSPool 未启用或未配置 API Key。本账号只执行 ChatGPT 注册/登录，不进行接码，也不会获取 Refresh Token。"
             db.event(f"[{email}] [接码] {phone_skipped_reason}", "warning", detail={"email": email, "scope": "selected"})
+    elif stage == AGENT_IDENTITY_REVERSE_PROXY:
+        db.event(
+            f"[{email}] [接码] 当前任务选择 Agent Identity 导入，将跳过手机号绑定并使用 Access Token 生成动态签名凭证",
+            detail={"email": email, "scope": "selected", "stage": stage},
+        )
     else:
         db.event(
             f"[{email}] [接码] 当前任务阶段为“仅注册 ChatGPT”，不会调用接码供应商，也不会获取 Refresh Token",
@@ -769,9 +840,9 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                     proxies["register"],
                     True,
                     lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
-                    phone_provider=None,
+                    phone_provider=phone_provider,
                     existing_account=is_registered_mailbox or task_type == "sunny_login",
-                    require_refresh_token=False,
+                    require_refresh_token=require_refresh_token,
                     should_cancel=db.cancel_requested,
                     execution_mode="protocol_headless_fallback",
                     on_progress=save_progress,
@@ -789,6 +860,40 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                         "execution_mode": "protocol_headless_fallback",
                     },
                 )
+            else:
+                protocol_session = session
+                if wants_rt and require_refresh_token:
+                    db.event(
+                        f"[{email}] [认证] 协议注册/登录已完成，转入后台 OAuth 续段以完成接码和 Refresh Token 获取",
+                        detail={"email": email, "scope": "selected", "execution_mode": "protocol_post_stage"},
+                    )
+                    try:
+                        session = login_or_register(
+                            account,
+                            proxies["register"],
+                            True,
+                            lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
+                            phone_provider=phone_provider,
+                            existing_account=True,
+                            require_refresh_token=True,
+                            should_cancel=db.cancel_requested,
+                            execution_mode="protocol_post_stage",
+                            on_progress=save_progress,
+                        )
+                        session["requested_execution_mode"] = "protocol"
+                        session["execution_mode"] = "protocol_post_stage"
+                        if isinstance(protocol_session.get("protocol_traffic"), dict):
+                            session["protocol_traffic"] = protocol_session["protocol_traffic"]
+                    except Exception as exc:
+                        if _is_cancel_exception(exc):
+                            raise
+                        session = protocol_session
+                        session["post_registration_error"] = f"协议注册已完成，但后续接码/OAuth 阶段失败: {exc}"
+                        db.event(
+                            f"[{email}] [接码] 协议注册已完成，后续接码/OAuth 阶段失败，账号保留为已注册: {exc}",
+                            "warning",
+                            detail={"email": email, "scope": "selected", "execution_mode": "protocol_post_stage"},
+                        )
         else:
             session = login_or_register(
                 account,
@@ -872,6 +977,38 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                     db.set_account_sub2api_status(email, "failed", error=stage_error)
                     db.mark_mailbox(mailbox_id, mailbox_status, stage_error, openai_rt=rt_value)
                     db.event(f"[{email}] [反代] 导入 sub2api 失败，账号保留为{mailbox_status}: {stage_error}", "error", detail={"email": email, "scope": "selected", "completed_status": mailbox_status})
+        elif stage == AGENT_IDENTITY_REVERSE_PROXY:
+            try:
+                _emit_registration_progress(db, str(email), stage, "agent_identity_importing")
+                result["sub2api"] = _import_sub2api_agent_identity(
+                    db,
+                    email,
+                    account_id,
+                    session,
+                    proxies.get("register", ""),
+                )
+                mailbox_status = _highest_mailbox_progress(mailbox_status, "已反代")
+                db.mark_mailbox(mailbox_id, mailbox_status, openai_rt=rt_value)
+                db.upsert_account(email, mailbox_id=mailbox_id, status="reverse_proxied", last_error="")
+                result["completed_status"] = mailbox_status
+                result["stage_complete"] = True
+                result["agent_identity"] = True
+                _emit_registration_progress(db, str(email), stage, "agent_identity_imported")
+            except Exception as exc:
+                if _is_cancel_exception(exc):
+                    raise
+                stage_error = str(exc)
+                result["stage_complete"] = False
+                result["stage_error"] = stage_error
+                result["sub2api_error"] = stage_error
+                db.set_account_sub2api_status(email, "failed", error=stage_error)
+                db.mark_mailbox(mailbox_id, mailbox_status, stage_error, openai_rt=rt_value)
+                db.upsert_account(email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(mailbox_status), last_error=stage_error)
+                db.event(
+                    f"[{email}] [反代] Agent Identity 导入 sub2api 失败，账号保留为{mailbox_status}: {stage_error}",
+                    "error",
+                    detail={"email": email, "scope": "selected", "completed_status": mailbox_status},
+                )
         elif wants_rt and not result["stage_complete"]:
             stage_error = post_registration_error or phone_skipped_reason or "接码/Refresh Token 阶段未完成"
             result["stage_error"] = stage_error
@@ -884,6 +1021,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             REGISTER_ONLY: "registered",
             CODEX_PHONE_BIND: "phone_bound",
             IMPORT_REVERSE_PROXY: "reverse_imported",
+            AGENT_IDENTITY_REVERSE_PROXY: "agent_identity_imported",
         }.get(stage, "registered")
         _emit_registration_progress(
             db,

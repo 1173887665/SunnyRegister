@@ -1122,6 +1122,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .sr-choice-grid { display:grid; gap:14px; }
 .sr-choice-grid.two { grid-template-columns:repeat(2,minmax(0,1fr)); }
 .sr-choice-grid.three { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.sr-choice-grid.four { grid-template-columns:repeat(4,minmax(0,1fr)); }
 .sr-choice { text-align:left; border:1px solid #e5e7eb; background:#fff; border-radius:14px; padding:18px 20px; min-height:82px; }
 .sr-choice.active { border-color:#2563eb; background:#eff6ff; box-shadow:0 0 0 1px #2563eb inset; }
 .sr-choice.disabled { cursor:not-allowed; opacity:.48; background:#f8fafc; box-shadow:none; }
@@ -1435,7 +1436,8 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .dark .sr-mail-meta b { color:var(--text-primary); }
 .dark .sr-mail-item.active { border-color:var(--accent-2); box-shadow:inset 5px 0 0 var(--accent-2); }
 @media (max-width: 900px) { .sr-mail-layout { grid-template-columns:1fr; } .sr-mail-list { max-height:320px; border-right:0; border-bottom:1px solid #e5e7eb; } }
-@media (max-width: 760px) { .sr-choice-grid.two, .sr-choice-grid.three { grid-template-columns:1fr; } .sr-modal-body { padding:18px; } }
+@media (max-width: 1100px) { .sr-choice-grid.four { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width: 760px) { .sr-choice-grid.two, .sr-choice-grid.three, .sr-choice-grid.four { grid-template-columns:1fr; } .sr-modal-body { padding:18px; } }
 
 
 /* SunnyRegister control sizing normalization: controls in the same action row should feel like one system. */

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sunny_core.worker import (
+    AGENT_IDENTITY_REVERSE_PROXY,
     CODEX_PHONE_BIND,
     IMPORT_REVERSE_PROXY,
     REGISTER_ONLY,
@@ -21,6 +22,7 @@ def test_registration_stage_totals_include_previous_stages() -> None:
     assert _registration_stage_total(REGISTER_ONLY) == 7
     assert _registration_stage_total(CODEX_PHONE_BIND) == 10
     assert _registration_stage_total(IMPORT_REVERSE_PROXY) == 12
+    assert _registration_stage_total(AGENT_IDENTITY_REVERSE_PROXY) == 9
 
 
 def test_protocol_checkpoint_shares_the_execution_start_milestone() -> None:
