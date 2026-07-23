@@ -747,6 +747,50 @@ class BrowserEmailOTPSubmitTests(unittest.TestCase):
         api_submit.assert_called_once()
         native_submit.assert_called_once()
 
+    def test_camoufox_invalid_native_otp_requests_fresh_code_without_api_reuse(self):
+        account = MailAccount("user@example.com", "password", "client-id", "mail-rt", "raw")
+        flow = OpenAIEmailRegisterFlow(account, "", True, lambda _message: None)
+        flow.otp_reader = Mock()
+        flow.otp_reader.wait_for_code.return_value = "123456"
+        page = Mock()
+
+        with (
+            patch.object(flow, "_visible_inputs", return_value=[Mock()]),
+            patch.object(flow, "_submit_email_code_form", return_value=True),
+            patch.object(
+                flow,
+                "_wait_after_otp_submit",
+                side_effect=RuntimeError("Still on email verification page: 不正確なコード"),
+            ),
+            patch.object(flow, "_retry_with_fresh_email_code") as retry_fresh,
+            patch.object(flow, "_validate_email_code_api") as api_submit,
+        ):
+            flow._submit_email_code(page, 0)
+
+        retry_fresh.assert_called_once_with(page, "123456")
+        api_submit.assert_not_called()
+
+    def test_email_otp_api_stops_immediately_on_max_attempts(self):
+        account = MailAccount("user@example.com", "password", "client-id", "mail-rt", "raw")
+        flow = OpenAIEmailRegisterFlow(account, "", True, lambda _message: None)
+        page = Mock()
+        page.url = "https://auth.openai.com/email-verification"
+        page.evaluate.return_value = "Mozilla/5.0 Firefox/135.0"
+        response = {
+            "ok": False,
+            "status": 400,
+            "text": '{"error":{"message":"Too many tries.","code":"max_check_attempts"}}',
+        }
+
+        with (
+            patch("sunny_core.openai_auth.build_sentinel_token", return_value="sentinel-token"),
+            patch("sunny_core.openai_auth.browser_fetch", return_value=response) as fetch,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "尝试次数已达上限"):
+                flow._validate_email_code_api(page, "123456")
+
+        fetch.assert_called_once()
+
     def test_email_otp_api_attaches_sentinel_and_device_headers(self):
         account = MailAccount("user@example.com", "password", "client-id", "mail-rt", "raw")
         flow = OpenAIEmailRegisterFlow(account, "", True, lambda _message: None)

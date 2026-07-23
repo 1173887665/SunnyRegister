@@ -620,14 +620,19 @@ def _import_sub2api_agent_identity(
     access_token = str(session.get("access_token") or "").strip()
     if not access_token:
         raise RuntimeError("当前账号没有 Access Token，无法创建 Agent Identity")
-    auth_json = create_agent_identity_auth(
-        access_token,
-        email=email,
-        plan_type=str(session.get("plan_type") or "free"),
-        proxy_url=proxy_url,
-        should_cancel=db.cancel_requested,
-        log=lambda message: db.event(message, detail={"email": email, "scope": "selected"}),
-    )
+    try:
+        auth_json = create_agent_identity_auth(
+            access_token,
+            email=email,
+            plan_type=str(session.get("plan_type") or "free"),
+            proxy_url=proxy_url,
+            should_cancel=db.cancel_requested,
+            log=lambda message: db.event(message, detail={"email": email, "scope": "selected"}),
+        )
+    except Exception as exc:
+        if _is_cancel_exception(exc):
+            raise
+        raise RuntimeError(f"Agent Identity 凭证创建失败: {exc}") from exc
     auth_content = json.dumps(auth_json, ensure_ascii=False, separators=(",", ":"))
     payload = {
         "contents": [auth_content],
@@ -1125,7 +1130,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                 db.mark_mailbox(mailbox_id, mailbox_status, stage_error, openai_rt=rt_value)
                 db.upsert_account(email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(mailbox_status), last_error=stage_error)
                 db.event(
-                    f"[{email}] [反代] Agent Identity 导入 sub2api 失败，账号保留为{mailbox_status}: {stage_error}",
+                    f"[{email}] [反代] 绕过接码导入反代平台未完成，账号保留为{mailbox_status}: {stage_error}",
                     "error",
                     detail={"email": email, "scope": "selected", "completed_status": mailbox_status},
                 )

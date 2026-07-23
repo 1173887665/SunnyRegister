@@ -738,6 +738,15 @@ class OpenAIEmailRegisterFlow:
                         return
                     except RuntimeError as exc:
                         detail = str(exc)
+                        if self._is_invalid_email_otp_error(detail):
+                            self.log("[邮箱] 页面拒绝了当前验证码；不会重复提交同一验证码，正在请求并等待新验证码")
+                            self._retry_with_fresh_email_code(page, code)
+                            return
+                        if self._email_otp_validation_was_sent(journal):
+                            raise RuntimeError(
+                                "邮箱验证码已由页面提交，但注册状态未推进；为避免触发验证码尝试次数限制，"
+                                f"已停止重复提交同一验证码。关键请求：{self._email_otp_network_summary(journal)}"
+                            ) from exc
                         self.log(
                             "[邮箱] Camoufox 页面提交未推进注册状态，改用同一浏览器会话 "
                             f"Sentinel 接口校验：{detail[:220]}"
@@ -976,6 +985,79 @@ class OpenAIEmailRegisterFlow:
             return "未捕获到关键请求"
         return " | ".join(journal[-6:])[:900]
 
+    def _email_otp_validation_was_sent(self, journal: list[str]) -> bool:
+        return any(
+            item.startswith("REQ POST ") and ("email-otp" in item or "email-verification" in item)
+            for item in journal
+        )
+
+    def _is_invalid_email_otp_error(self, text: str) -> bool:
+        value = str(text or "").lower()
+        markers = (
+            "incorrect code",
+            "invalid code",
+            "wrong code",
+            "不正确的代码",
+            "验证码错误",
+            "无效验证码",
+            "不正確なコード",
+            "コードが正しくありません",
+        )
+        return any(marker.lower() in value for marker in markers)
+
+    def _reset_email_otp_submit_guard(self, page) -> None:
+        try:
+            page.evaluate("""() => {
+                document.querySelectorAll('[data-sunny-register-submitted]').forEach(el => {
+                    delete el.dataset.sunnyRegisterSubmitted;
+                });
+            }""")
+        except Exception:
+            pass
+
+    def _click_resend_email_code(self, page) -> bool:
+        selectors = [
+            'button[type="submit"][name="intent"][value="resend"]',
+            'button[type="submit"][value="resend"]',
+            'input[type="submit"][value="resend"]',
+            '[data-dd-action-name*="Resend" i]',
+        ]
+        for selector in selectors:
+            try:
+                target = page.locator(selector).first
+                if target.is_visible(timeout=800):
+                    target.click(timeout=8000)
+                    return True
+            except Exception:
+                pass
+        try:
+            return bool(page.evaluate("""() => {
+                const visible = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'; };
+                const items = Array.from(document.querySelectorAll('button,input[type="submit"],[role="button"]')).filter(visible);
+                const target = items.find(el => /resend|send again|重新发送|再送信|メールを再送信/i.test(`${el.value || ''} ${el.textContent || ''} ${el.getAttribute('aria-label') || ''}`));
+                if (!target || target.disabled || target.getAttribute('aria-disabled') === 'true') return false;
+                target.click();
+                return true;
+            }"""))
+        except Exception:
+            return False
+
+    def _retry_with_fresh_email_code(self, page, previous_code: str) -> None:
+        requested_at = time.time() - 2
+        if not self._click_resend_email_code(page):
+            raise RuntimeError("邮箱验证码无效，且页面未提供可用的重新发送按钮；请等待几分钟后重新发起任务")
+        self.log("[邮箱] 已请求新的 OpenAI 邮箱验证码")
+        fresh_code = self.otp_reader.wait_for_code(requested_at, 150)
+        if str(fresh_code) == str(previous_code):
+            raise RuntimeError("邮箱服务返回了与已拒绝验证码相同的内容；已停止重复提交，请稍后重新发起任务")
+        self._reset_email_otp_submit_guard(page)
+        if not self._recover_email_otp_page_and_fill(page, fresh_code):
+            raise RuntimeError("收到新邮箱验证码，但验证码输入框不可用")
+        if not self._submit_email_code_form(page):
+            raise RuntimeError("收到新邮箱验证码，但页面提交控件不可用")
+        self.log("[邮箱] 已提交新获取的邮箱验证码")
+        self._wait_after_otp_submit(page)
+
     def _submit_email_code_by_keyboard(self, page) -> bool:
         try:
             focused = bool(page.evaluate("""() => {
@@ -1074,11 +1156,25 @@ class OpenAIEmailRegisterFlow:
                 return str(payload.get("continue_url") or payload.get("page", {}).get("payload", {}).get("url") or "")
             token_label = "sentinel=yes" if sentinel_token else "sentinel=no"
             last_detail = f"HTTP {result.get('status') or 0} {token_label} {str(result.get('text') or '')}"
+            lowered = last_detail.lower()
+            if "max_check_attempts" in lowered or "too many tries" in lowered:
+                raise RuntimeError("邮箱验证码尝试次数已达上限；请等待几分钟后重新发起任务，系统不会继续重复提交验证码")
+            if (
+                "incorrect code" in lowered
+                or "invalid code" in lowered
+                or "不正確なコード" in last_detail
+                or "验证码错误" in last_detail
+            ):
+                raise RuntimeError("邮箱验证码被 OpenAI 拒绝；系统已停止重复提交该验证码")
             if self._is_cloudflare_challenge(last_detail) and attempt < 2:
                 self.log("[认证] EmailOtpValidate 触发 Cloudflare challenge，打开验证页")
                 self._handle_cloudflare_challenge(page, last_detail)
                 continue
-            self._sleep_checked(1)
+            status = int(result.get("status") or 0)
+            if (status == 429 or status >= 500) and attempt < 2:
+                self._sleep_checked(1)
+                continue
+            break
         if self._is_cloudflare_challenge(last_detail):
             raise RuntimeError("EmailOtpValidate was blocked by Cloudflare; change proxy or use visible browser to pass challenge")
         raise RuntimeError(f"EmailOtpValidate failed: {last_detail[:800]}")

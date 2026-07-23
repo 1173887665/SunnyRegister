@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from typing import Any, Callable
 
@@ -74,6 +75,41 @@ def _response_error(response, action: str) -> RuntimeError:
     if "just a moment" in lowered or "challenges.cloudflare.com" in lowered:
         return RuntimeError(f"{action}失败: 当前网络出口触发 Cloudflare 浏览器挑战，请更换健康代理后重试（HTTP 403）")
     return RuntimeError(f"{action}失败: HTTP {getattr(response, 'status_code', 0)} {body}")
+
+
+def _response_diagnostic(response, action: str) -> str:
+    status = int(getattr(response, "status_code", 0) or 0)
+    headers = getattr(response, "headers", {}) or {}
+    content_type = str(headers.get("Content-Type") or headers.get("content-type") or "unknown")
+    final_url = str(getattr(response, "url", "") or "")
+    body = str(getattr(response, "text", "") or "").strip()
+    lowered = body.lower()
+    if "<html" in lowered or "<!doctype" in lowered:
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", body, flags=re.IGNORECASE | re.DOTALL)
+        title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else "HTML 页面"
+        return (
+            f"{action}返回 HTML（HTTP {status}，{title}，Content-Type={content_type}"
+            f"{f'，URL={final_url}' if final_url else ''}）；请检查代理出口、Cloudflare 挑战与 OpenAI 接口可用性"
+        )
+    summary = re.sub(r"\s+", " ", body)[:500] or "空响应"
+    return (
+        f"{action}返回非 JSON 内容（HTTP {status}，Content-Type={content_type}"
+        f"{f'，URL={final_url}' if final_url else ''}，响应={summary}）"
+    )
+
+
+def _response_json_object(response, action: str) -> dict[str, Any]:
+    try:
+        value = response.json()
+    except Exception:
+        body = str(getattr(response, "text", "") or "").strip()
+        try:
+            value = json.loads(body)
+        except Exception as exc:
+            raise RuntimeError(_response_diagnostic(response, action)) from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{action}返回的 JSON 必须是对象")
+    return value
 
 
 def _post_with_retry(
@@ -157,7 +193,7 @@ def create_agent_identity_auth(
         )
         if response.status_code != 200:
             raise _response_error(response, "Agent Identity 注册")
-        data = response.json()
+        data = _response_json_object(response, "Agent Identity 注册")
         runtime_id = str(data.get("agent_runtime_id") or "").strip()
         if not runtime_id:
             raise RuntimeError("Agent Identity 注册结果缺少 agent_runtime_id")
@@ -181,7 +217,8 @@ def create_agent_identity_auth(
                 timeout=30,
             )
             if task_response.status_code == 200:
-                task_id = str(task_response.json().get("encrypted_task_id") or "").strip()
+                task_data = _response_json_object(task_response, "Agent task 预注册")
+                task_id = str(task_data.get("encrypted_task_id") or "").strip()
             elif log:
                 log(f"[反代] Agent task 预注册未完成，Sub2API 将在首次请求时重建: HTTP {task_response.status_code}")
         except Exception as exc:

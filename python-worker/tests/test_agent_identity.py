@@ -42,6 +42,17 @@ class FakeSession:
         self.closed = True
 
 
+class FakeHTMLSession(FakeSession):
+    def post(self, url: str, **kwargs):
+        self.calls.append((url, kwargs))
+        response = FakeResponse({}, status_code=200)
+        response.text = "<!doctype html><html><head><title>Just a moment...</title></head></html>"
+        response.headers = {"Content-Type": "text/html; charset=UTF-8"}
+        response.url = url
+        response.json = lambda: (_ for _ in ()).throw(ValueError("unexpected character"))
+        return response
+
+
 def test_create_agent_identity_uses_dynamic_signing_contract_without_token_leak() -> None:
     access_token = _jwt(
         {
@@ -91,3 +102,17 @@ def test_create_agent_identity_rejects_expired_access_token() -> None:
                 }
             )
         )
+
+
+def test_create_agent_identity_reports_html_instead_of_raw_json_error() -> None:
+    access_token = _jwt(
+        {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "account-id",
+                "chatgpt_user_id": "user-id",
+            }
+        }
+    )
+    with patch("sunny_core.agent_identity._session", return_value=FakeHTMLSession()):
+        with pytest.raises(RuntimeError, match="Agent Identity 注册返回 HTML.*Just a moment"):
+            create_agent_identity_auth(access_token)
