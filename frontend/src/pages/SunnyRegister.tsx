@@ -1299,6 +1299,16 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
     try{await fn(); notify("ok",label); void load();}
     catch(e:any){notify("fail",e.message||String(e));}
   }
+  async function copyPhoneValue(value: unknown) {
+    const text = String(value || "").trim();
+    if (!text) return;
+    try {
+      await copyTextToClipboard(text);
+      notify("ok", t.copySuccess);
+    } catch (e: any) {
+      notify("fail", e.message || String(e));
+    }
+  }
   async function deletePhone(p: AnyObj) {
     await run(t.done,()=>apiFetch(`/sunny/phones/${p.id}`,{method:"DELETE"}));
   }
@@ -1491,10 +1501,10 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
         <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((p)=>p.id)])) : selected.filter((id)=>!items.some((p)=>p.id===id)))}/></th><th>{t.phoneNumber}</th><th>{t.status}</th><th>{t.usedCount}</th><th>{t.smsLink}</th><th><SortTimeHeader label={t.lastUsedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.actions}</th></tr></thead>
         <tbody>{items.length ? items.map((p)=><tr key={p.id}>
           <td><input type="checkbox" checked={selected.includes(p.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,p.id])) : selected.filter((id)=>id!==p.id))}/></td>
-          <td><div className="font-semibold">{p.number}</div>{p.last_error ? <div className="mt-1 max-w-md truncate text-xs text-red-400">{p.last_error}</div> : null}</td>
+          <td><button type="button" className="sr-copyable-value font-semibold" title={`${t.copy} ${t.phoneNumber}`} onClick={()=>void copyPhoneValue(p.number)}>{p.number}</button>{p.last_error ? <div className="mt-1 max-w-md truncate text-xs text-red-400">{p.last_error}</div> : null}</td>
           <td><span className={cn("sr-status", p.display_status === "disabled" ? "sr-status-gray" : "sr-status-green")}>{phoneStatusText(t, p.display_status || "enabled")}</span></td>
           <td>{p.success_count || 0}/{p.max_success || 3}</td>
-          <td><div className="mx-auto max-w-[520px] truncate text-left text-sm text-[var(--text-secondary)]" title={p.sms_url || ""}>{p.sms_url || "-"}</div></td>
+          <td>{p.sms_url ? <button type="button" className="sr-copyable-value mx-auto block max-w-[520px] truncate text-left text-sm text-[var(--text-secondary)]" title={`${t.copy} ${t.smsLink}`} onClick={()=>void copyPhoneValue(p.sms_url)}>{p.sms_url}</button> : "-"}</td>
           <td>{formatDateTime(p.last_used_at)}</td>
           <td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" onClick={()=>setEditing(p)}>{t.edit}</button><ConfirmBubble message={t.phoneConfirmDelete} detail={p.number || ""} onConfirm={()=>deletePhone(p)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td>
         </tr>) : <tr><td colSpan={7}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.phoneImportHelp}</p></div></td></tr>}</tbody>
