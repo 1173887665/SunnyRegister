@@ -377,7 +377,7 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 	p := strings.TrimPrefix(r.URL.Path, "/api")
 	switch {
 	case p == "/health" && r.Method == http.MethodGet:
-		writeJSON(w, 200, map[string]any{"ok": true, "time": time.Now().Format(time.RFC3339)})
+		writeJSON(w, 200, map[string]any{"ok": true, "time": formatTime(time.Now())})
 	case p == "/ready" && r.Method == http.MethodGet:
 		writeJSON(w, 200, map[string]any{"ok": true})
 	case strings.HasPrefix(p, "/auth"):
