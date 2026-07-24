@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+import unittest
 from unittest.mock import patch
-
-import pytest
 
 from sunny_core.agent_identity import AUTH_MODE, create_agent_identity_auth
 
@@ -53,66 +52,71 @@ class FakeHTMLSession(FakeSession):
         return response
 
 
-def test_create_agent_identity_uses_dynamic_signing_contract_without_token_leak() -> None:
-    access_token = _jwt(
-        {
-            "https://api.openai.com/auth": {
-                "chatgpt_account_id": "account-id",
-                "chatgpt_user_id": "user-id",
-                "chatgpt_plan_type": "plus",
-            },
-            "https://api.openai.com/profile": {"email": "user@example.com"},
-        }
-    )
-    client = FakeSession()
-    logs: list[str] = []
-    with patch("sunny_core.agent_identity._session", return_value=client):
-        result = create_agent_identity_auth(access_token, log=logs.append)
-
-    assert result["auth_mode"] == AUTH_MODE == "agentIdentity"
-    identity = result["agent_identity"]
-    assert identity["agent_runtime_id"] == "runtime-id"
-    assert identity["task_id"] == "task-id"
-    assert identity["account_id"] == "account-id"
-    assert identity["chatgpt_user_id"] == "user-id"
-    assert identity["email"] == "user@example.com"
-    assert identity["plan_type"] == "plus"
-    assert len(base64.b64decode(identity["agent_private_key"])) > 32
-    assert client.closed
-    assert all(access_token not in message for message in logs)
-    assert client.calls[0][1]["headers"]["Authorization"] == f"Bearer {access_token}"
-    assert client.calls[1][1]["json"]["signature"]
-
-
-def test_create_agent_identity_rejects_access_token_without_required_claims() -> None:
-    with pytest.raises(RuntimeError, match="account_id"):
-        create_agent_identity_auth(_jwt({"https://api.openai.com/auth": {}}))
-
-
-def test_create_agent_identity_rejects_expired_access_token() -> None:
-    with pytest.raises(RuntimeError, match="已过期"):
-        create_agent_identity_auth(
-            _jwt(
-                {
-                    "exp": 1,
-                    "https://api.openai.com/auth": {
-                        "chatgpt_account_id": "account-id",
-                        "chatgpt_user_id": "user-id",
-                    },
-                }
-            )
-        )
-
-
-def test_create_agent_identity_reports_html_instead_of_raw_json_error() -> None:
-    access_token = _jwt(
-        {
-            "https://api.openai.com/auth": {
-                "chatgpt_account_id": "account-id",
-                "chatgpt_user_id": "user-id",
+class AgentIdentityTests(unittest.TestCase):
+    def test_create_agent_identity_uses_dynamic_signing_contract_without_token_leak(self) -> None:
+        access_token = _jwt(
+            {
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "account-id",
+                    "chatgpt_user_id": "user-id",
+                    "chatgpt_plan_type": "plus",
+                },
+                "https://api.openai.com/profile": {"email": "user@example.com"},
             }
-        }
-    )
-    with patch("sunny_core.agent_identity._session", return_value=FakeHTMLSession()):
-        with pytest.raises(RuntimeError, match="Agent Identity 注册返回 HTML.*Just a moment"):
-            create_agent_identity_auth(access_token)
+        )
+        client = FakeSession()
+        logs: list[str] = []
+        with patch("sunny_core.agent_identity._session", return_value=client):
+            result = create_agent_identity_auth(access_token, log=logs.append)
+
+        self.assertEqual(result["auth_mode"], AUTH_MODE)
+        self.assertEqual(AUTH_MODE, "agentIdentity")
+        identity = result["agent_identity"]
+        self.assertEqual(identity["agent_runtime_id"], "runtime-id")
+        self.assertEqual(identity["task_id"], "task-id")
+        self.assertEqual(identity["account_id"], "account-id")
+        self.assertEqual(identity["chatgpt_user_id"], "user-id")
+        self.assertEqual(identity["email"], "user@example.com")
+        self.assertEqual(identity["plan_type"], "plus")
+        self.assertGreater(len(base64.b64decode(identity["agent_private_key"])), 32)
+        self.assertTrue(client.closed)
+        self.assertTrue(all(access_token not in message for message in logs))
+        self.assertEqual(
+            client.calls[0][1]["headers"]["Authorization"],
+            f"Bearer {access_token}",
+        )
+        self.assertTrue(client.calls[1][1]["json"]["signature"])
+
+    def test_create_agent_identity_rejects_access_token_without_required_claims(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "account_id"):
+            create_agent_identity_auth(_jwt({"https://api.openai.com/auth": {}}))
+
+    def test_create_agent_identity_rejects_expired_access_token(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "已过期"):
+            create_agent_identity_auth(
+                _jwt(
+                    {
+                        "exp": 1,
+                        "https://api.openai.com/auth": {
+                            "chatgpt_account_id": "account-id",
+                            "chatgpt_user_id": "user-id",
+                        },
+                    }
+                )
+            )
+
+    def test_create_agent_identity_reports_html_instead_of_raw_json_error(self) -> None:
+        access_token = _jwt(
+            {
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "account-id",
+                    "chatgpt_user_id": "user-id",
+                }
+            }
+        )
+        with patch("sunny_core.agent_identity._session", return_value=FakeHTMLSession()):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Agent Identity 注册返回 HTML.*Just a moment",
+            ):
+                create_agent_identity_auth(access_token)
