@@ -56,6 +56,7 @@ func openDB() *gorm.DB {
 		&PlatformCapabilityOverride{}, &TaskLog{}, &Task{}, &TaskEvent{}, &Proxy{}, &SmsPoolBlacklist{},
 		&SunnyMailboxGroup{}, &SunnyMailbox{}, &SunnyPhone{}, &SunnyProxy{}, &SunnyAccount{},
 		&SunnySession{}, &SunnyKVConfig{}, &SunnySMSProviderOption{},
+		&AuditLog{}, &AuditSetting{}, &AuditExportJob{},
 	); err != nil {
 		log.Fatalf("migrate sqlite failed: %v", err)
 	}
@@ -103,6 +104,11 @@ func ensureSunnyIndexes(db *gorm.DB) {
 		"CREATE INDEX IF NOT EXISTS idx_sunny_proxies_country_status ON sunny_proxies(country, status)",
 		"CREATE INDEX IF NOT EXISTS idx_task_events_task_id_id ON task_events(task_id, id)",
 		"CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at)",
+		"CREATE INDEX IF NOT EXISTS idx_audit_logs_time_type ON audit_logs(occurred_at DESC, log_type)",
+		"CREATE INDEX IF NOT EXISTS idx_audit_logs_category_action ON audit_logs(category, action, occurred_at DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_ip ON audit_logs(actor, ip, occurred_at DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_audit_logs_task_entity ON audit_logs(task_id, entity_type, entity_id)",
+		"CREATE INDEX IF NOT EXISTS idx_audit_export_jobs_status_created ON audit_export_jobs(status, created_at DESC)",
 	}
 	for _, statement := range indexes {
 		if err := db.Exec(statement).Error; err != nil {

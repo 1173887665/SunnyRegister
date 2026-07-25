@@ -84,8 +84,10 @@ func main() {
 		sessions: map[string]time.Time{}, loginFailures: map[string]*loginFailure{},
 		sessionTTL: 12 * time.Hour, secureCookies: secureCookies, production: production,
 	}
+	s.recordAudit(AuditLog{LogType: "system", Category: "system", Action: "startup", Status: "success", Summary: "SunnyRegister 后端服务启动", DetailsJSON: dumpJSON(map[string]any{"environment": fallback(os.Getenv("SUNNY_ENV"), "development"), "timezone": time.Local.String()})})
 	go s.sunnyWarmSMSProviderOptions()
 	go s.sunnyAccountHealthScheduleLoop()
+	go s.auditMaintenanceLoop()
 	log.Printf("admin login enabled: username=%s password_file=%s", adminUser, adminPasswordFile())
 	go s.runtimeLoop()
 	mux := http.NewServeMux()
@@ -93,7 +95,7 @@ func main() {
 	addr := ":" + fallback(os.Getenv("PORT"), "8000")
 	log.Printf("SunnyRegister Go backend listening on %s", addr)
 	httpServer := &http.Server{
-		Addr: addr, Handler: s.gzipResponses(s.securityHeaders(mux)),
+		Addr: addr, Handler: s.gzipResponses(s.securityHeaders(s.auditMiddleware(mux))),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 5 * time.Minute, IdleTimeout: 60 * time.Second,
 	}
@@ -107,6 +109,7 @@ func main() {
 	select {
 	case sig := <-sigCh:
 		log.Printf("shutdown requested: %s", sig)
+		s.recordAudit(AuditLog{LogType: "system", Category: "system", Action: "shutdown", Status: "success", Summary: "SunnyRegister 后端服务停止", DetailsJSON: dumpJSON(map[string]any{"signal": sig.String()})})
 		close(s.stop)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -416,6 +419,8 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleSunny(w, r, strings.TrimPrefix(p, "/sunny"))
 	case strings.HasPrefix(p, "/actions"):
 		s.handleActions(w, r, strings.TrimPrefix(p, "/actions"))
+	case strings.HasPrefix(p, "/audit"):
+		s.handleAudit(w, r, strings.TrimPrefix(p, "/audit"))
 	default:
 		writeError(w, 404, "not found")
 	}

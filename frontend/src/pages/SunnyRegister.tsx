@@ -1292,7 +1292,7 @@ function MailboxImportModal({ t, groups, onGroupsChanged, onClose, onImported, n
     if (!trimmed) { notify("fail", t.fillOrChooseMailboxFile); return; }
     if (errors.length) { notify("fail", `${t.validationFailed}: ${errors[0]}`); return; }
     try {
-      await apiFetch("/sunny/mailboxes/import",{method:"POST",body:JSON.stringify({lines:trimmed,group_id:groupId})});
+      await apiFetch("/sunny/mailboxes/import",{method:"POST",body:JSON.stringify({lines:trimmed,group_id:groupId,import_mode:mode})});
       onImported();
     } catch(e:any) { notify("fail", e.message || String(e)); }
   }
