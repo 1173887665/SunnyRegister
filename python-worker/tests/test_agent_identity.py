@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from sunny_core.agent_identity import AUTH_MODE, create_agent_identity_auth
+from sunny_core.agent_identity import AgentIdentityUnavailableError, AUTH_MODE, create_agent_identity_auth
 
 
 def _jwt(claims: dict) -> str:
@@ -48,6 +48,22 @@ class FakeHTMLSession(FakeSession):
         response.text = "<!doctype html><html><head><title>Just a moment...</title></head></html>"
         response.headers = {"Content-Type": "text/html; charset=UTF-8"}
         response.url = url
+        response.json = lambda: (_ for _ in ()).throw(ValueError("unexpected character"))
+        return response
+
+
+class FakeCapabilityErrorSession(FakeSession):
+    def post(self, url: str, **kwargs):
+        self.calls.append((url, kwargs))
+        payload = base64.urlsafe_b64encode(json.dumps({
+            "kind": "AuthApiFailure",
+            "errorCode": "agent_registry_not_enabled",
+            "requestId": "req-test",
+        }).encode("utf-8")).decode("ascii").rstrip("=")
+        response = FakeResponse({}, status_code=200)
+        response.text = "<!doctype html><html><head><title>OpenAI</title></head></html>"
+        response.headers = {"Content-Type": "text/html; charset=UTF-8"}
+        response.url = f"https://auth.openai.com/error?payload={payload}"
         response.json = lambda: (_ for _ in ()).throw(ValueError("unexpected character"))
         return response
 
@@ -118,5 +134,21 @@ class AgentIdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 RuntimeError,
                 "Agent Identity 注册返回 HTML.*Just a moment",
+            ):
+                create_agent_identity_auth(access_token)
+
+    def test_create_agent_identity_reports_account_capability_error(self) -> None:
+        access_token = _jwt(
+            {
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "account-id",
+                    "chatgpt_user_id": "user-id",
+                }
+            }
+        )
+        with patch("sunny_core.agent_identity._session", return_value=FakeCapabilityErrorSession()):
+            with self.assertRaisesRegex(
+                AgentIdentityUnavailableError,
+                "agent_registry_not_enabled.*账户侧能力限制.*Cloudflare 无关",
             ):
                 create_agent_identity_auth(access_token)

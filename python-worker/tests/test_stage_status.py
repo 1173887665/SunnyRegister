@@ -5,6 +5,7 @@ from unittest.mock import ANY, MagicMock, Mock, patch
 from urllib.parse import parse_qs, urlparse
 
 from sunny_core import worker
+from sunny_core.agent_identity import AgentIdentityUnavailableError
 from sunny_core.browser_backend import open_registration_browser
 from sunny_core.mailbox import MailAccount
 from sunny_core.openai_auth import BrowserDriverDisconnectedError, DEFAULT_REDIRECT_URI, OpenAIEmailRegisterFlow
@@ -283,6 +284,61 @@ class StageStatusTests(unittest.TestCase):
         imported_auth = __import__("json").loads(payload["contents"][0])
         self.assertEqual(imported_auth["auth_mode"], "agentIdentity")
         self.assertEqual(imported_auth["agent_identity"]["agent_runtime_id"], "runtime-id")
+
+    def test_agent_identity_import_falls_back_to_refresh_token_oauth(self):
+        db = FakeDB({
+            "sub2api": {
+                "enabled": True,
+                "base_url": "https://sub2api.example",
+                "admin_token": "admin-secret",
+            }
+        })
+        fallback_result = {"id": 91}
+        with (
+            patch.object(
+                worker,
+                "create_agent_identity_auth",
+                side_effect=AgentIdentityUnavailableError("agent_registry_not_enabled"),
+            ),
+            patch.object(worker, "_import_sub2api", return_value=fallback_result) as fallback,
+        ):
+            result = worker._import_sub2api_agent_identity(
+                db,
+                "user@example.com",
+                7,
+                {"access_token": "access-token", "refresh_token": "refresh-token"},
+                "",
+            )
+
+        self.assertEqual(result["id"], 91)
+        self.assertEqual(result["_sunny_import_mode"], "oauth_refresh_token")
+        fallback.assert_called_once()
+        self.assertTrue(any("回退到标准 sub2api OAuth 导入" in args[0] for args, _ in db.events))
+
+    def test_agent_identity_import_without_refresh_token_is_actionable(self):
+        db = FakeDB({
+            "sub2api": {
+                "enabled": True,
+                "base_url": "https://sub2api.example",
+                "admin_token": "admin-secret",
+            }
+        })
+        with patch.object(
+            worker,
+            "create_agent_identity_auth",
+            side_effect=AgentIdentityUnavailableError("agent_registry_not_enabled"),
+        ):
+            with self.assertRaisesRegex(
+                AgentIdentityUnavailableError,
+                "没有 Refresh Token.*Codex 接码绑定",
+            ):
+                worker._import_sub2api_agent_identity(
+                    db,
+                    "user@example.com",
+                    7,
+                    {"access_token": "access-token"},
+                    "",
+                )
 
     def test_agent_identity_import_reports_html_gateway_response(self):
         db = FakeDB({

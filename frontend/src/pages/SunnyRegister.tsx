@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ConfirmBubble } from "@/components/ui/confirm-bubble";
-import { apiDownload, apiFetch, cn, triggerBrowserDownload } from "@/lib/utils";
+import { API_BASE, apiDownload, apiFetch, cn, triggerBrowserDownload } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n-context";
 import { useSunnyGsap } from "@/lib/useSunnyGsap";
 
@@ -62,19 +62,67 @@ function createRegistrationTaskProgress(taskId: string, stage: RegisterStage, em
 }
 
 const sunnyStateCache = new Map<string, unknown>();
+const SUNNY_STATE_STORAGE_PREFIX = "sunnyregister.state.";
+const persistedWorkbenchKeys = new Set([
+  "workbench.activeTaskId",
+  "workbench.activeTaskMailboxIds",
+  "workbench.globalLogs",
+  "workbench.selectedLogs",
+  "workbench.registrationProgress",
+  "workbench.globalCardView",
+  "workbench.accountCardView",
+  "workbench.currentLogEmail",
+  "workbench.taskEventCursor",
+]);
+
+function persistedStateKey(key: string) {
+  return `${SUNNY_STATE_STORAGE_PREFIX}${key}`;
+}
+
+export function clearSunnyRegisterTaskHistory() {
+  for (const key of persistedWorkbenchKeys) {
+    sunnyStateCache.delete(key);
+    try { window.localStorage.removeItem(persistedStateKey(key)); } catch { /* storage may be unavailable */ }
+  }
+}
+
 function useCachedState<T>(key: string, initial: T | (() => T)): [T, Dispatch<SetStateAction<T>>] {
   const [value, setValue] = useState<T>(() => {
     if (sunnyStateCache.has(key)) return sunnyStateCache.get(key) as T;
+    if (persistedWorkbenchKeys.has(key)) {
+      try {
+        const saved = window.localStorage.getItem(persistedStateKey(key));
+        if (saved !== null) {
+          const parsed = JSON.parse(saved) as T;
+          sunnyStateCache.set(key, parsed);
+          return parsed;
+        }
+      } catch { /* use the initial value when persisted state is invalid */ }
+    }
     return typeof initial === "function" ? (initial as () => T)() : initial;
   });
   const setCachedValue: Dispatch<SetStateAction<T>> = (next) => {
     const prev = (sunnyStateCache.has(key) ? sunnyStateCache.get(key) : value) as T;
     const resolved = typeof next === "function" ? (next as (old: T) => T)(prev) : next;
     sunnyStateCache.set(key, resolved);
+    if (persistedWorkbenchKeys.has(key)) {
+      try { window.localStorage.setItem(persistedStateKey(key), JSON.stringify(resolved)); } catch { /* in-memory cache still works */ }
+    }
     setValue(resolved);
   };
-  useEffect(() => { sunnyStateCache.set(key, value); }, [key, value]);
+  useEffect(() => {
+    sunnyStateCache.set(key, value);
+    if (persistedWorkbenchKeys.has(key)) {
+      try { window.localStorage.setItem(persistedStateKey(key), JSON.stringify(value)); } catch { /* in-memory cache still works */ }
+    }
+  }, [key, value]);
   return [value, setCachedValue];
+}
+
+function prependUniqueLogs(entries: LogEntry[], existing: LogEntry[], limit = 200): LogEntry[] {
+  if (!entries.length) return existing;
+  const known = new Set(existing.map((item) => String(item.id)));
+  return [...entries.filter((item) => !known.has(String(item.id))), ...existing].slice(0, limit);
 }
 
 function useDebouncedValue<T>(value: T, delay = 260): T {
@@ -395,9 +443,14 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const [globalCardView, setGlobalCardView] = useCachedState<"progress" | "logs">("workbench.globalCardView", "progress");
   const [accountCardView, setAccountCardView] = useCachedState<"progress" | "logs">("workbench.accountCardView", "progress");
   const [, setCurrentLogEmail] = useCachedState("workbench.currentLogEmail", "");
+  const [taskEventCursor, setTaskEventCursor] = useCachedState<{ taskId: string; last: number }>("workbench.taskEventCursor", { taskId: "", last: 0 });
+  const taskEventCursorRef = useRef(taskEventCursor);
+  const workbenchMountedRef = useRef(true);
   const pollingTaskIdsRef = useRef<Set<string>>(new Set());
   const resumedTaskIdsRef = useRef<Set<string>>(new Set());
   const stopAfterSubmitRef = useRef(false);
+  useEffect(() => { taskEventCursorRef.current = taskEventCursor; }, [taskEventCursor]);
+  useEffect(() => () => { workbenchMountedRef.current = false; }, []);
   const load = () => trackListLoad(async () => {
     const params = new URLSearchParams({ page: String(pageNo), page_size: String(pageSize), enabled: "true", sort_by: "status_changed_at", sort_order: timeSort });
     params.set("summary", "true");
@@ -462,6 +515,8 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       const taskId = String(res.id || res.task_id || "");
       if (!taskId) throw new Error(t.taskFailed);
       setRegistrationProgress((old) => old ? { ...old, taskId } : createRegistrationTaskProgress(taskId, stage, taskEmails));
+      taskEventCursorRef.current = { taskId, last: 0 };
+      setTaskEventCursor(taskEventCursorRef.current);
       setActiveTaskId(taskId);
       setActiveTaskMailboxIds(ids);
       setSubmittingTask(false);
@@ -589,31 +644,71 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     }
     if (pollingTaskIdsRef.current.has(taskId)) return;
     pollingTaskIdsRef.current.add(taskId);
-    let last = 0;
+    let last = taskEventCursorRef.current.taskId === taskId ? Number(taskEventCursorRef.current.last || 0) : 0;
     const emails = mailboxes.filter((m) => ids.includes(m.id)).map((m) => String(m.email || "").toLowerCase());
     let activeLogEmail = "";
     let failures = 0;
-    try {
-      for (let i = 0; ; i++) {
+    let stream: EventSource | null = null;
+    let streamDone = false;
+    let streamFailures = 0;
+    const applyEvents = (rawItems: AnyObj[]) => {
+      if (!workbenchMountedRef.current) return;
+      const items = rawItems
+        .filter((item) => Number(item?.id || 0) > last)
+        .sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+      if (!items.length) return;
+      last = Math.max(last, ...items.map((item) => Number(item.id || 0)));
+      taskEventCursorRef.current = { taskId, last };
+      setTaskEventCursor(taskEventCursorRef.current);
+      const progressEvents = items.filter((item: AnyObj) => item.type === "registration_progress" || item.detail?.progress_type === "account_registration");
+      applyRegistrationProgressEvents(taskId, progressEvents);
+      const entries: LogEntry[] = items.filter((item: AnyObj) => !progressEvents.includes(item)).map((item: AnyObj) => logFromEvent(item));
+      setGlobalLogs((old) => prependUniqueLogs(entries, old));
+      const scoped = entries.filter((item) => item.email && (!emails.length || emails.includes(item.email.toLowerCase())));
+      if (scoped.length) {
+        const activeEmail = scoped[scoped.length - 1].email || activeLogEmail;
+        setCurrentLogEmail(activeEmail);
+        setSelectedLogs((old) => prependUniqueLogs(scoped, old));
+        activeLogEmail = activeEmail;
+      }
+    };
+    const openStream = () => {
+      if (stream || streamDone) return;
+      const apiBase = String(API_BASE || "/api").replace(/\/$/, "");
+      const source = new EventSource(`${apiBase}/tasks/${encodeURIComponent(taskId)}/logs/stream?since=${last}`, { withCredentials: true });
+      stream = source;
+      source.onopen = () => { streamFailures = 0; };
+      source.onmessage = (message) => {
         try {
-          const [task, ev] = await Promise.all([apiFetch(`/tasks/${taskId}`), apiFetch(`/tasks/${taskId}/events?since=${last}`)]);
-          failures = 0;
-          const items = ev.items || [];
-          if (items.length) {
-            last = Math.max(...items.map((x: AnyObj) => x.id));
-            const progressEvents = items.filter((item: AnyObj) => item.type === "registration_progress" || item.detail?.progress_type === "account_registration");
-            applyRegistrationProgressEvents(taskId, progressEvents);
-            const entries: LogEntry[] = items.filter((item: AnyObj) => !progressEvents.includes(item)).map((item: AnyObj) => logFromEvent(item));
-            setGlobalLogs((old) => [...entries, ...old].slice(0, 200));
-            const scoped = entries.filter((x) => x.email && (!emails.length || emails.includes(x.email.toLowerCase())));
-            if (scoped.length) {
-              const activeEmail = scoped[0].email || activeLogEmail;
-              setCurrentLogEmail(activeEmail);
-              setSelectedLogs((old) => [...scoped, ...old].slice(0, 200));
-              activeLogEmail = activeEmail;
-            }
+          const payload = JSON.parse(message.data || "{}");
+          if (payload.done) {
+            streamDone = true;
+            source.close();
+            if (stream === source) stream = null;
+            return;
           }
+          applyEvents([payload]);
+        } catch {
+          // A malformed external log line must not stop the task stream.
+        }
+      };
+      source.onerror = () => {
+        source.close();
+        if (stream === source) stream = null;
+        streamFailures += 1;
+      };
+    };
+    try {
+      openStream();
+      for (let i = 0; ; i++) {
+        if (!workbenchMountedRef.current) return;
+        try {
+          const task = await apiFetch(`/tasks/${taskId}`);
+          if (!workbenchMountedRef.current) return;
+          failures = 0;
           if (task.terminal) {
+            const remaining = await apiFetch(`/tasks/${taskId}/events?since=${last}`).catch(() => ({ items: [] }));
+            applyEvents(remaining.items || []);
             reconcileRegistrationProgress(taskId, task);
             setBusy(false);
             setStopRequested(false);
@@ -624,6 +719,13 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
             notify(task.status === "succeeded" ? "ok" : "fail", task.status === "succeeded" ? t.taskDone : (task.error || t.taskFailed));
             void load();
             return;
+          }
+          if (!stream && !streamDone) {
+            if (streamFailures > 0) {
+              const fallbackEvents = await apiFetch(`/tasks/${taskId}/events?since=${last}`).catch(() => ({ items: [] }));
+              applyEvents(fallbackEvents.items || []);
+            }
+            openStream();
           }
         } catch (e: any) {
           failures += 1;
@@ -642,6 +744,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
         await new Promise((r) => setTimeout(r, 1000));
       }
     } finally {
+      (stream as EventSource | null)?.close();
       pollingTaskIdsRef.current.delete(taskId);
     }
   }
@@ -720,7 +823,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const clearWorkbenchSelection = () => { setSelected([]); setSelectedRowCache({}); };
   return <div className="space-y-5">
     <div className="grid gap-4 lg:grid-cols-2">
-      <LogCard t={t} title={t.globalLogs} progressTitle={t.registrationTaskProgress} view={globalCardView} onView={setGlobalCardView} logs={globalLogs} busy={busy} onClear={()=>setGlobalLogs([])} progressContent={<TaskRegistrationProgress t={t} progress={registrationProgress}/>}/>
+      <LogCard t={t} title={t.globalLogs} progressTitle={t.registrationTaskProgress} view={globalCardView} onView={setGlobalCardView} logs={globalLogs} busy={busy} onClear={()=>{ setGlobalLogs([]); if (!busy && !activeTaskId) { setRegistrationProgress(null); taskEventCursorRef.current = { taskId: "", last: 0 }; setTaskEventCursor(taskEventCursorRef.current); } }} progressContent={<TaskRegistrationProgress t={t} progress={registrationProgress}/>}/>
       <LogCard t={t} title={t.selectedLogs} progressTitle={t.accountRegistrationProgress} view={accountCardView} onView={setAccountCardView} logs={selectedLogs} busy={busy} onClear={()=>setSelectedLogs([])} progressContent={<AccountRegistrationProgressList t={t} progress={registrationProgress}/>}/>
     </div>
     <Card className="sr-toolbar rounded-[18px] p-5">

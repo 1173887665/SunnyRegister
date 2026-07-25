@@ -12,7 +12,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
-from .agent_identity import create_agent_identity_auth
+from .agent_identity import AgentIdentityUnavailableError, create_agent_identity_auth
 from .db import SunnyDB, SunnyTaskCancelled, now_sql
 from .mailbox import account_from_row, parse_account_line
 from .openai_auth import TaskCancelledError, login_or_register, refresh_openai_access_token
@@ -629,6 +629,22 @@ def _import_sub2api_agent_identity(
             should_cancel=db.cancel_requested,
             log=lambda message: db.event(message, detail={"email": email, "scope": "selected"}),
         )
+    except AgentIdentityUnavailableError as exc:
+        refresh_token = str(session.get("refresh_token") or session.get("openai_rt") or "").strip()
+        if refresh_token:
+            db.event(
+                f"[{email}] [反代] 当前账号未开放 Agent Identity，已使用现有 Refresh Token 回退到标准 sub2api OAuth 导入",
+                "warning",
+                detail={"email": email, "scope": "selected", "fallback": "oauth_refresh_token"},
+            )
+            data = _import_sub2api(db, email, account_id, session)
+            if isinstance(data, dict):
+                data = {**data, "_sunny_import_mode": "oauth_refresh_token"}
+            return data
+        raise AgentIdentityUnavailableError(
+            f"{exc}；当前账号没有 Refresh Token，无法回退到标准 OAuth 导入。"
+            "请改用“Codex 接码绑定”获取 Refresh Token 后，再执行“导入反代平台”"
+        ) from exc
     except Exception as exc:
         if _is_cancel_exception(exc):
             raise
@@ -1105,19 +1121,22 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
         elif stage == AGENT_IDENTITY_REVERSE_PROXY:
             try:
                 _emit_registration_progress(db, str(email), stage, "agent_identity_importing")
-                result["sub2api"] = _import_sub2api_agent_identity(
+                import_result = _import_sub2api_agent_identity(
                     db,
                     email,
                     account_id,
                     session,
                     proxies.get("register", ""),
                 )
+                import_mode = str(import_result.pop("_sunny_import_mode", "agent_identity")) if isinstance(import_result, dict) else "agent_identity"
+                result["sub2api"] = import_result
                 mailbox_status = _highest_mailbox_progress(mailbox_status, "已反代")
                 db.mark_mailbox(mailbox_id, mailbox_status, openai_rt=rt_value)
                 db.upsert_account(email, mailbox_id=mailbox_id, status="reverse_proxied", last_error="")
                 result["completed_status"] = mailbox_status
                 result["stage_complete"] = True
-                result["agent_identity"] = True
+                result["agent_identity"] = import_mode == "agent_identity"
+                result["agent_identity_fallback"] = import_mode != "agent_identity"
                 _emit_registration_progress(db, str(email), stage, "agent_identity_imported")
             except Exception as exc:
                 if _is_cancel_exception(exc):
@@ -1345,5 +1364,4 @@ def run_sunny_task(task_id: str) -> None:
         db.event(f"SunnyRegister Worker failed: {exc}", "error", detail={"traceback": traceback.format_exc()[-4000:]})
     finally:
         db.close()
-
 

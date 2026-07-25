@@ -270,6 +270,9 @@ func (s *Server) streamTaskEvents(w http.ResponseWriter, r *http.Request, taskID
 	w.Header().Set("X-Accel-Buffering", "no")
 	flusher, _ := w.(http.Flusher)
 	since := uint(intValue(r.URL.Query().Get("since"), 0))
+	if since == 0 {
+		since = uint(intValue(r.Header.Get("Last-Event-ID"), 0))
+	}
 	fmt.Fprintf(w, "retry: 5000\n: connected\n\n")
 	if flusher != nil {
 		flusher.Flush()
@@ -289,7 +292,7 @@ func (s *Server) streamTaskEvents(w http.ResponseWriter, r *http.Request, taskID
 			for _, ev := range evs {
 				since = ev.ID
 				b, _ := json.Marshal(serializeEvent(ev))
-				fmt.Fprintf(w, "data: %s\n\n", string(b))
+				fmt.Fprintf(w, "id: %d\ndata: %s\n\n", ev.ID, string(b))
 			}
 			var task Task
 			if s.db.First(&task, "id = ?", taskID).Error != nil {

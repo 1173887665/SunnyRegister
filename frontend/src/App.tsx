@@ -4,7 +4,7 @@ import { Languages, Link2, LogOut, Moon, Sun } from "lucide-react";
 import { API, cn } from "@/lib/utils";
 import { I18nProvider, useI18n } from "@/lib/i18n-context";
 import { useTopBarGsap } from "@/lib/useSunnyGsap";
-import SunnyRegister from "@/pages/SunnyRegister";
+import SunnyRegister, { clearSunnyRegisterTaskHistory } from "@/pages/SunnyRegister";
 import PublicLanding from "@/pages/PublicLanding";
 
 function words(language: string) {
@@ -87,12 +87,11 @@ function AppContent() {
     }
   }, []);
   if (authState === "loading") return <div className="flex h-screen items-center justify-center bg-[var(--bg-base)] text-sm text-[var(--text-muted)]">{c.loading}</div>;
-  if (authState === "locked") return <PublicLanding onLogin={() => { setLogoutNotice(false); setAuthState("authed"); }} logoutNotice={logoutNotice} onNoticeDone={() => setLogoutNotice(false)} />;
+  if (authState === "locked") return <PublicLanding onLogin={() => { clearSunnyRegisterTaskHistory(); setLogoutNotice(false); setAuthState("authed"); }} logoutNotice={logoutNotice} onNoticeDone={() => setLogoutNotice(false)} />;
   return <Shell theme={theme} setTheme={setTheme} onLogout={logout} />;
 }
 
 export default function App() { return <I18nProvider><AppContent /></I18nProvider>; }
-
 
 
 

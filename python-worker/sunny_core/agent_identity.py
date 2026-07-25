@@ -5,6 +5,7 @@ import json
 import re
 import time
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlparse
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (
@@ -22,6 +23,38 @@ AUTH_MODE = "agentIdentity"
 AGENT_VERSION = "standalone-script-1"
 AGENT_HARNESS_ID = "sunnyregister"
 RUNNING_LOCATION = "custom-python"
+
+
+class AgentIdentityUnavailableError(RuntimeError):
+    """The OpenAI account is not eligible for Agent Identity registration."""
+
+
+def _auth_error_payload(response) -> dict[str, Any]:
+    final_url = str(getattr(response, "url", "") or "")
+    if not final_url:
+        return {}
+    try:
+        encoded = parse_qs(urlparse(final_url).query).get("payload", [""])[0]
+        if not encoded:
+            return {}
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        value = json.loads(raw.decode("utf-8"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _account_capability_error(response, action: str) -> AgentIdentityUnavailableError | None:
+    payload = _auth_error_payload(response)
+    error_code = str(payload.get("errorCode") or payload.get("error_code") or "").strip()
+    if error_code != "agent_registry_not_enabled":
+        return None
+    request_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
+    request_suffix = f"，request_id={request_id}" if request_id else ""
+    return AgentIdentityUnavailableError(
+        f"{action}失败: 当前 OpenAI 账户未开放 Agent Registry/Agent Identity 能力"
+        f"（agent_registry_not_enabled{request_suffix}）。这是账户侧能力限制，与代理出口或 Cloudflare 无关"
+    )
 
 
 def decode_jwt_claims(token: str) -> dict[str, Any]:
@@ -68,6 +101,9 @@ def _session(proxy_url: str):
 
 
 def _response_error(response, action: str) -> RuntimeError:
+    capability_error = _account_capability_error(response, action)
+    if capability_error:
+        return capability_error
     body = str(getattr(response, "text", "") or "")[:500]
     lowered = body.lower()
     if "unsupported_country_region_territory" in lowered:
@@ -78,6 +114,9 @@ def _response_error(response, action: str) -> RuntimeError:
 
 
 def _response_diagnostic(response, action: str) -> str:
+    capability_error = _account_capability_error(response, action)
+    if capability_error:
+        return str(capability_error)
     status = int(getattr(response, "status_code", 0) or 0)
     headers = getattr(response, "headers", {}) or {}
     content_type = str(headers.get("Content-Type") or headers.get("content-type") or "unknown")
@@ -99,6 +138,9 @@ def _response_diagnostic(response, action: str) -> str:
 
 
 def _response_json_object(response, action: str) -> dict[str, Any]:
+    capability_error = _account_capability_error(response, action)
+    if capability_error:
+        raise capability_error
     try:
         value = response.json()
     except Exception:
