@@ -82,5 +82,41 @@ class RefreshSessionTests(unittest.TestCase):
         self.assertEqual(db.marked_status, "已反代")
 
 
+class AcquireRefreshTokenTests(unittest.TestCase):
+    def test_existing_refresh_token_returns_without_login(self):
+        db = FakeRefreshDB(refresh_token="rt_existing")
+        with patch.object(worker, "_run_one") as run_one:
+            ok, errors, items = worker._acquire_refresh_tokens(db, {"account_ids": [7]})
+
+        self.assertEqual(ok, 1)
+        self.assertEqual(errors, [])
+        self.assertEqual(items[0]["acquire_method"], "existing")
+        run_one.assert_not_called()
+
+    def test_missing_refresh_token_runs_background_codex_oauth(self):
+        db = FakeRefreshDB()
+        with patch.object(worker, "_run_one", return_value=(True, {"has_refresh_token": True})) as run_one:
+            ok, errors, items = worker._acquire_refresh_tokens(db, {"account_ids": [7]})
+
+        self.assertEqual(ok, 1)
+        self.assertEqual(errors, [])
+        self.assertEqual(items[0]["acquire_method"], "codex_oauth")
+        self.assertEqual(run_one.call_args.args[1], "sunny_acquire_rt")
+        payload = run_one.call_args.args[2]
+        self.assertEqual(payload["execution_mode"], "background")
+        self.assertEqual(payload["registration_stage"], worker.CODEX_PHONE_BIND)
+
+    def test_missing_refresh_token_reports_clear_failure(self):
+        db = FakeRefreshDB()
+        result = {"has_refresh_token": False, "stage_error": "OAuth phone verification required"}
+        with patch.object(worker, "_run_one", return_value=(True, result)):
+            ok, errors, items = worker._acquire_refresh_tokens(db, {"account_ids": [7]})
+
+        self.assertEqual(ok, 0)
+        self.assertEqual(items, [])
+        self.assertIn("无法获取该账户RT", errors[0])
+        self.assertIn("OAuth phone verification required", errors[0])
+
+
 if __name__ == "__main__":
     unittest.main()

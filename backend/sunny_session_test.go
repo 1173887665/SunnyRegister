@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -193,6 +194,94 @@ func TestSunnyRefreshTaskRejectsEmptySelection(t *testing.T) {
 	s.sunnyTasks(rec, req, []string{"refresh-session"})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("empty refresh selection status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSunnyAcquireRTTaskResolvesSessionSelection(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/acquire-rt", strings.NewReader(`{"session_ids":[`+strconv.Itoa(int(session.ID))+`]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.sunnyTasks(rec, req, []string{"acquire-rt"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("acquire RT status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var task Task
+	if err := s.db.Order("created_at desc").First(&task).Error; err != nil {
+		t.Fatalf("load task: %v", err)
+	}
+	payload := jsonMap(task.PayloadJSON)
+	if task.Type != "sunny_acquire_rt" || len(uintSlice(payload["account_ids"])) != 1 {
+		t.Fatalf("unexpected acquire task: type=%s payload=%#v", task.Type, payload)
+	}
+}
+
+func TestSunnyAcquireRTTaskRejectsEmptySelection(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/acquire-rt", strings.NewReader(`{"session_ids":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.sunnyTasks(rec, req, []string{"acquire-rt"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty acquire selection status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSunnyAccountExportsUseStableNamesAndFormats(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var rows []SunnySession
+	s.db.Order("id asc").Find(&rows)
+
+	for _, test := range []struct {
+		format      string
+		namePattern string
+		contentType string
+	}{
+		{format: "sk", namePattern: `SK-\d{14}-1\.txt`, contentType: "text/plain"},
+		{format: "at", namePattern: `AT-\d{14}-1\.txt`, contentType: "text/plain"},
+		{format: "sub", namePattern: `SUB-\d{14}-1\.json`, contentType: "application/json"},
+	} {
+		rec := httptest.NewRecorder()
+		s.sunnyExportSessions(rec, rows, test.format)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Type"), test.contentType) {
+			t.Fatalf("%s export response: status=%d type=%q", test.format, rec.Code, rec.Header().Get("Content-Type"))
+		}
+		if !regexp.MustCompile(test.namePattern).MatchString(rec.Header().Get("Content-Disposition")) {
+			t.Fatalf("%s export filename = %q", test.format, rec.Header().Get("Content-Disposition"))
+		}
+	}
+
+	sk := httptest.NewRecorder()
+	s.sunnyExportSessions(sk, rows, "sk")
+	if strings.TrimSpace(sk.Body.String()) != "session@example.com----mailbox-password----client-id----mailbox-refresh-token" {
+		t.Fatalf("unexpected SK export: %q", sk.Body.String())
+	}
+	at := httptest.NewRecorder()
+	s.sunnyExportSessions(at, rows, "at")
+	if strings.TrimSpace(at.Body.String()) != "session-access-token" {
+		t.Fatalf("unexpected AT export: %q", at.Body.String())
+	}
+	sub := httptest.NewRecorder()
+	s.sunnyExportSessions(sub, rows, "sub")
+	var payload map[string]any
+	if err := json.Unmarshal(sub.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode SUB export: %v", err)
+	}
+	accounts, _ := payload["accounts"].([]any)
+	if len(accounts) != 1 || payload["exported_at"] == "" {
+		t.Fatalf("unexpected SUB export: %#v", payload)
+	}
+	account, _ := accounts[0].(map[string]any)
+	credentials, _ := account["credentials"].(map[string]any)
+	if account["platform"] != "openai" || account["type"] != "oauth" || credentials["access_token"] != "session-access-token" {
+		t.Fatalf("unexpected SUB account: %#v", account)
+	}
+	if account["notes"] != "" || credentials["model_mapping"] == nil || credentials["subscription_expires_at"] == nil {
+		t.Fatalf("SUB compatibility fields are missing: %#v", account)
 	}
 }
 

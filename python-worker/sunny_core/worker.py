@@ -839,6 +839,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     db.ensure_not_cancelled()
     email = mailbox.get("email") or f"mailbox-{index}"
     stage = _stage(payload)
+    explicit_rt_acquire = task_type == "sunny_acquire_rt"
     _emit_registration_progress(db, str(email), stage, "initializing")
     proxies = _prepare_register_proxy(db, payload, str(email), index - 1)
     execution_mode = str(payload.get("execution_mode") or payload.get("mode") or "background").strip().lower()
@@ -904,7 +905,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                 original_mailbox_status,
             )
 
-    wants_rt = stage in {CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY}
+    wants_rt = stage in {CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY} or explicit_rt_acquire
     phone_provider = None
     require_refresh_token = False
     phone_skipped_reason = ""
@@ -922,6 +923,12 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
         if phone_provider:
             require_refresh_token = True
             db.event(f"[{email}] [接码] 已启用组合接码策略：外部供应商随机尝试，自建手机号池作为兜底", detail={"email": email, "scope": "selected", "sms_provider": "combined"})
+        elif explicit_rt_acquire:
+            require_refresh_token = True
+            db.event(
+                f"[{email}] [Session] 账户没有已保存 RT，将通过已有账户登录态发起 Codex OAuth 授权；若上游要求手机号验证，则联动当前接码配置",
+                detail={"email": email, "scope": "selected", "explicit_rt_acquire": True},
+            )
         elif not account.openai_rt:
             phone_skipped_reason = "无可用手机号：自建手机号池未开启/无可用号码，且 SMSBower/SMSPool 未启用或未配置 API Key。本账号只执行 ChatGPT 注册/登录，不进行接码，也不会获取 Refresh Token。"
             db.event(f"[{email}] [接码] {phone_skipped_reason}", "warning", detail={"email": email, "scope": "selected"})
@@ -1278,6 +1285,52 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
     return ok, errors, items
 
 
+def _acquire_refresh_tokens(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
+    accounts = db.fetch_accounts(_ids(payload.get("account_ids")) or None)
+    ok = 0
+    errors: list[str] = []
+    items: list[dict[str, Any]] = []
+    for idx, acc in enumerate(accounts, start=1):
+        db.ensure_not_cancelled()
+        email = str(acc.get("email") or "")
+        try:
+            existing_rt = str(acc.get("openai_rt") or "").strip()
+            if not existing_rt:
+                saved_session = db.fetch_session_by_email(email) or {}
+                existing_rt = str(saved_session.get("refresh_token") or "").strip()
+            if existing_rt:
+                ok += 1
+                items.append({"email": email, "has_refresh_token": True, "acquire_method": "existing"})
+                db.event(f"[{email}] [Session] 账户已有 Refresh Token，无需重复授权")
+                db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
+                continue
+
+            mailbox = db.fetch_mailbox_by_email(email)
+            if not mailbox:
+                raise RuntimeError("找不到该账户对应的邮箱凭证")
+            acquire_payload = dict(payload)
+            acquire_payload.update({
+                "execution_mode": "background",
+                "registration_stage": CODEX_PHONE_BIND,
+                "mailbox_ids": [int(mailbox.get("id") or 0)],
+            })
+            succeeded, result = _run_one(db, "sunny_acquire_rt", acquire_payload, mailbox, idx, len(accounts))
+            result_map = result if isinstance(result, dict) else {}
+            if not succeeded or not result_map.get("has_refresh_token"):
+                detail = str(result_map.get("stage_error") or result_map.get("phone_skipped_reason") or result)
+                raise RuntimeError(detail if detail and detail != "{}" else "无法获取该账户RT")
+            ok += 1
+            items.append({"email": email, "has_refresh_token": True, "acquire_method": "codex_oauth"})
+            db.event(f"[{email}] [Session] 已通过 Codex OAuth 授权获取 Refresh Token")
+        except Exception as exc:
+            message = str(exc).strip()
+            error = f"[{email}] 无法获取该账户RT" + (f"：{message}" if message else "")
+            errors.append(error)
+            db.event(error, "error")
+        db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
+    return ok, errors, items
+
+
 def run_sunny_task(task_id: str) -> None:
     db = SunnyDB(task_id)
     try:
@@ -1293,6 +1346,12 @@ def run_sunny_task(task_id: str) -> None:
         db.event("SunnyRegister Worker accepted register task", typ="state")
         if task_type == "sunny_refresh_session":
             ok, errors, items = _refresh_sessions(db, payload)
+            db.ensure_not_cancelled()
+            status = "succeeded" if ok else "failed"
+            db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps({"success": ok, "errors": errors, "items": items}, ensure_ascii=False), error="; ".join(errors[:3]) if not ok else "", finished_at=now_sql())
+            return
+        if task_type == "sunny_acquire_rt":
+            ok, errors, items = _acquire_refresh_tokens(db, payload)
             db.ensure_not_cancelled()
             status = "succeeded" if ok else "failed"
             db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps({"success": ok, "errors": errors, "items": items}, ensure_ascii=False), error="; ".join(errors[:3]) if not ok else "", finished_at=now_sql())
@@ -1389,4 +1448,3 @@ def run_sunny_task(task_id: str) -> None:
         db.event(f"SunnyRegister Worker failed: {exc}", "error", detail={"traceback": traceback.format_exc()[-4000:]})
     finally:
         db.close()
-

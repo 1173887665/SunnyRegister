@@ -2616,6 +2616,7 @@ func (s *Server) sunnySub2APIImport(w http.ResponseWriter, r *http.Request) {
 func buildSunnySub2AccountPayload(sess SunnySession, cfg map[string]any) map[string]any {
 	claims := decodeJWTPayload(sess.AccessToken)
 	auth, _ := claims["https://api.openai.com/auth"].(map[string]any)
+	sessionData := jsonMap(sess.SessionJSON)
 	groupIDs := []int64{}
 	for _, raw := range stringSlice(cfg["group_ids"]) {
 		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
@@ -2627,15 +2628,46 @@ func buildSunnySub2AccountPayload(sess SunnySession, cfg map[string]any) map[str
 			groupIDs = append(groupIDs, int64(raw))
 		}
 	}
-	extra := map[string]any{"import_source": "sunnyregister", "email": sess.Email}
+	extra := map[string]any{
+		"import_source": "sunnyregister", "email": sess.Email, "privacy_mode": "training_off",
+		"openai_long_context_billing_enabled": false, "openai_oauth_responses_websockets_v2_enabled": false,
+		"openai_oauth_responses_websockets_v2_mode": "off",
+	}
 	if boolValue(cfg["codex_image_bridge"], false) {
 		extra["codex_image_generation_bridge"] = true
 	}
-	return map[string]any{
-		"name": fallback(text(cfg["name_prefix"])+sess.Email, sess.Email), "platform": "openai", "type": "oauth",
-		"credentials": map[string]any{"access_token": sess.AccessToken, "refresh_token": fallback(sess.RefreshToken, text(auth["refresh_token"])), "id_token": sess.IDToken, "email": sess.Email, "client_id": text(auth["client_id"]), "chatgpt_account_id": firstText(auth["chatgpt_account_id"], auth["account_id"]), "chatgpt_user_id": firstText(auth["user_id"], claims["sub"]), "organization_id": firstText(auth["organization_id"], auth["poid"]), "plan_type": firstText(auth["plan_type"], auth["plan"]), "expires_at": intValue(claims["exp"], 0)},
-		"extra":       extra, "group_ids": groupIDs, "concurrency": intValue(cfg["concurrency"], 3), "priority": intValue(cfg["priority"], 50),
+	credentials := map[string]any{
+		"access_token": sess.AccessToken, "refresh_token": fallback(sess.RefreshToken, text(auth["refresh_token"])), "id_token": sess.IDToken,
+		"email": sess.Email, "client_id": fallback(text(auth["client_id"]), "app_EMoamEEZ73f0CkXaXp7hrann"),
+		"chatgpt_account_id": firstText(auth["chatgpt_account_id"], auth["account_id"]), "chatgpt_user_id": firstText(auth["user_id"], claims["sub"]),
+		"organization_id": firstText(auth["organization_id"], auth["poid"]), "plan_type": firstText(auth["chatgpt_plan_type"], auth["plan_type"], auth["plan"]),
+		"expires_at": intValue(claims["exp"], 0),
 	}
+	if modelMapping, ok := sessionData["model_mapping"].(map[string]any); ok && len(modelMapping) > 0 {
+		credentials["model_mapping"] = modelMapping
+	} else {
+		credentials["model_mapping"] = sunnyDefaultSub2ModelMapping()
+	}
+	if subscriptionExpiresAt := intValue(firstText(sessionData["subscription_expires_at"], auth["subscription_expires_at"]), 0); subscriptionExpiresAt > 0 {
+		credentials["subscription_expires_at"] = subscriptionExpiresAt
+	} else {
+		credentials["subscription_expires_at"] = 0
+	}
+	return map[string]any{
+		"name": fallback(text(cfg["name_prefix"])+sess.Email, sess.Email), "notes": "", "platform": "openai", "type": "oauth",
+		"credentials": credentials,
+		"extra":       extra, "group_ids": groupIDs, "concurrency": intValue(cfg["concurrency"], 3), "priority": intValue(cfg["priority"], 50),
+		"rate_multiplier": 1, "auto_pause_on_expired": true,
+	}
+}
+
+func sunnyDefaultSub2ModelMapping() map[string]any {
+	models := []string{"codex-auto-review", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-image-1.5", "gpt-image-2"}
+	mapping := make(map[string]any, len(models))
+	for _, model := range models {
+		mapping[model] = model
+	}
+	return mapping
 }
 
 func normalizeSunnyDisplayStatus(status string) string {
@@ -3004,7 +3036,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		} else if len(emails) > 0 {
 			q = q.Where("email IN ?", emails)
 		}
-		q.Find(&rows)
+		q.Order("id asc").Find(&rows)
 		s.sunnyExportSessions(w, rows, format)
 		return
 	}
@@ -3074,6 +3106,41 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 
 func (s *Server) sunnyExportSessions(w http.ResponseWriter, rows []SunnySession, format string) {
 	switch format {
+	case "at":
+		lines := []string{}
+		accounts, _ := s.sunnySessionSidecars(rows)
+		for _, row := range rows {
+			account := accounts[sunnyEmailKey(row.Email)]
+			if token := strings.TrimSpace(firstText(row.AccessToken, sunnyAccessTokenFromSessionJSON(row.SessionJSON), account.AccessToken)); token != "" {
+				lines = append(lines, token)
+			}
+		}
+		writeTextFile(w, sunnyAccountExportName("AT", len(lines), "txt"), "text/plain; charset=utf-8", []byte(strings.Join(lines, "\n")+"\n"))
+	case "sk":
+		lines := []string{}
+		_, mailboxes := s.sunnySessionSidecars(rows)
+		for _, row := range rows {
+			mailbox := mailboxes[sunnyEmailKey(row.Email)]
+			if mailbox.Email != "" && mailbox.Password != "" && mailbox.ClientID != "" && mailbox.RefreshToken != "" {
+				lines = append(lines, strings.Join([]string{mailbox.Email, mailbox.Password, mailbox.ClientID, mailbox.RefreshToken}, "----"))
+			}
+		}
+		writeTextFile(w, sunnyAccountExportName("SK", len(lines), "txt"), "text/plain; charset=utf-8", []byte(strings.Join(lines, "\n")+"\n"))
+	case "sub":
+		exportedAccounts := []any{}
+		cfg := s.sunnyGetConfig(sunnyCfgSub2API, defaultSub2APIConfig())
+		accounts, _ := s.sunnySessionSidecars(rows)
+		for _, row := range rows {
+			account := accounts[sunnyEmailKey(row.Email)]
+			row.AccessToken = firstText(row.AccessToken, sunnyAccessTokenFromSessionJSON(row.SessionJSON), account.AccessToken)
+			row.RefreshToken = firstText(row.RefreshToken, account.OpenAIRT)
+			if strings.TrimSpace(row.AccessToken) == "" {
+				continue
+			}
+			exportedAccounts = append(exportedAccounts, buildSunnySub2AccountPayload(row, cfg))
+		}
+		payload := map[string]any{"exported_at": time.Now().UTC().Format(time.RFC3339), "proxies": []any{}, "accounts": exportedAccounts}
+		writeTextFile(w, sunnyAccountExportName("SUB", len(exportedAccounts), "json"), "application/json", []byte(dumpJSONPretty(payload)+"\n"))
 	case "session_json", "json":
 		arr := []any{}
 		for _, r := range rows {
@@ -3122,13 +3189,18 @@ func (s *Server) sunnyExportSessions(w http.ResponseWriter, rows []SunnySession,
 	}
 }
 
+func sunnyAccountExportName(prefix string, count int, suffix string) string {
+	stamp := time.Now().In(applicationLocation()).Format("20060102150405")
+	return fmt.Sprintf("%s-%s-%d.%s", prefix, stamp, count, suffix)
+}
+
 func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []string) {
 	if len(parts) != 1 || r.Method != http.MethodPost {
 		writeError(w, 404, "not found")
 		return
 	}
 	body, _ := parseBody(r)
-	typemap := map[string]string{"register": "sunny_register", "login": "sunny_login", "refresh-session": "sunny_refresh_session"}
+	typemap := map[string]string{"register": "sunny_register", "login": "sunny_login", "refresh-session": "sunny_refresh_session", "acquire-rt": "sunny_acquire_rt"}
 	typ := typemap[parts[0]]
 	if typ == "" {
 		writeError(w, 404, "not found")
@@ -3140,7 +3212,7 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 			return
 		}
 	}
-	if typ == "sunny_refresh_session" {
+	if typ == "sunny_refresh_session" || typ == "sunny_acquire_rt" {
 		accountIDs := uintSlice(body["account_ids"])
 		if len(accountIDs) == 0 {
 			sessionIDs := uintSlice(body["session_ids"])
@@ -3166,7 +3238,11 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 			}
 		}
 		if len(accountIDs) == 0 {
-			writeError(w, http.StatusBadRequest, "请选择需要刷新 AT 的账户")
+			message := "请选择需要刷新 AT 的账户"
+			if typ == "sunny_acquire_rt" {
+				message = "请选择需要获取 RT 的账户"
+			}
+			writeError(w, http.StatusBadRequest, message)
 			return
 		}
 	}

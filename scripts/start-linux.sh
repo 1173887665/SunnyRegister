@@ -35,7 +35,7 @@ export SUNNY_HEALTHCHECK_CONCURRENCY="${SUNNY_HEALTHCHECK_CONCURRENCY:-2}"
 export PYTHONUTF8=1
 export ACCOUNT_MANAGER_DATABASE_URL="$DATA/account_manager.db"
 export PYTHON_WORKER_URL="http://127.0.0.1:8765"
-export PYTHON_TASK_TYPES="sunny_register,sunny_login,sunny_refresh_session"
+export PYTHON_TASK_TYPES="sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt"
 export PORT="${SUNNYREGISTER_PORT:-8000}"
 export DISPLAY="${WORKER_DISPLAY:-${DISPLAY:-:99}}"
 
