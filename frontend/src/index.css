@@ -1548,16 +1548,16 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 }
 
 /* Compact action rows: keep dense toolbars on one row without oversized controls. */
-:root { --sr-control-height: 42px; --sr-control-radius: 12px; }
+:root { --sr-control-height: 38px; --sr-control-radius: 10px; }
 .sunny-page .sr-toolbar {
-  padding: 16px !important;
+  padding: 12px !important;
 }
 .sunny-page .sr-toolbar :is(.sr-search, .sr-select, .sr-custom-select-trigger, .sr-btn, .sr-text-btn),
 .sunny-page .sr-toolbar button:not(.sr-custom-select-option):not(.sr-group-picker-option):not(.sr-link) {
   font-size: 14px;
 }
 .sunny-page .sr-toolbar .sr-select-like {
-  width: 150px;
+  width: 126px;
 }
 .sunny-page .sr-toolbar .sr-search {
   height: var(--sr-control-height);
@@ -1589,7 +1589,26 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   flex: 1 1 220px;
 }
 .sunny-page .sr-mailbox-toolbar .sr-select-like {
-  width: 128px;
+  width: 118px;
+}
+
+/* Use the available viewport while preserving a small visual gutter. */
+.app-shell {
+  width: calc(100% - clamp(24px, 3vw, 56px));
+  max-width: none;
+}
+.sunny-page { width: 100%; min-width: 0; }
+.sunny-page .sr-table-card { overflow-x: auto !important; }
+.sunny-page .sr-table-card > .sr-account-table,
+.sunny-page .sr-table-scroll > .sr-account-table { min-width: 980px; }
+.sr-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+.sr-session-table { min-width: 1320px !important; }
+@media (max-width: 720px) {
+  .app-shell { width: calc(100% - 20px); }
 }
 .sunny-page .sr-mailbox-toolbar .sr-mailbox-actions {
   justify-self: end;

@@ -1193,9 +1193,13 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
         if "Phone verification required" in err_text or "phone verification" in err_text.lower():
             db.mark_mailbox(mailbox_id, "需二验", err_text)
             db.event(f"[{email}] [接码] 账号需要手机号二次验证，但当前没有可用接码配置，本账号流程已停止", "warning", detail={"email": email, "scope": "selected"})
+        elif original_completed_status:
+            db.mark_mailbox(mailbox_id, original_completed_status, err_text)
+            db.upsert_account(email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(original_completed_status), last_error=err_text)
+            db.event(f"[{email}] [系统] 后续操作失败，账号保留在已完成状态：{original_completed_status}", "warning", detail={"email": email, "scope": "selected", "completed_status": original_completed_status})
         else:
             db.mark_mailbox(mailbox_id, "失败", err_text)
-        db.upsert_account(email, mailbox_id=mailbox_id, status="failed", last_error=err_text)
+            db.upsert_account(email, mailbox_id=mailbox_id, status="failed", last_error=err_text)
         error_detail = {"email": email, "scope": "selected", "traceback": traceback.format_exc()[-3000:]}
         if isinstance(traffic, dict):
             error_detail["protocol_traffic"] = traffic
@@ -1228,24 +1232,45 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
         db.ensure_not_cancelled()
         email = acc.get("email") or ""
         try:
+            mailbox = db.fetch_mailbox_by_email(email)
             rt = acc.get("openai_rt") or ""
             if not rt:
                 sess = db.fetch_session_by_email(email) or {}
                 rt = sess.get("refresh_token") or ""
-            token = refresh_openai_access_token(rt, _proxy_snapshot(payload, idx - 1)["register"])
-            db.ensure_not_cancelled()
-            account_id = int(acc.get("id") or db.upsert_account(email))
-            payload2 = {"access_token": token.get("access_token"), "refresh_token": token.get("refresh_token") or rt, "id_token": token.get("id_token", ""), "session_json": token}
-            db.upsert_session(email, account_id, payload2)
-            db.upsert_account(email, status="registered", access_token=payload2["access_token"], openai_rt=payload2["refresh_token"])
-            db.mark_mailbox_by_email(email, "已接码" if payload2["refresh_token"] else "已注册", openai_rt=payload2["refresh_token"])
-            items.append({
-                "email": email,
-                "has_access_token": bool(payload2["access_token"]),
-                "has_refresh_token": bool(payload2["refresh_token"]),
-            })
+            refresh_error = ""
+            if rt:
+                try:
+                    token = refresh_openai_access_token(rt, _proxy_snapshot(payload, idx - 1)["register"])
+                    db.ensure_not_cancelled()
+                    account_id = int(acc.get("id") or db.upsert_account(email))
+                    payload2 = {"access_token": token.get("access_token"), "refresh_token": token.get("refresh_token") or rt, "id_token": token.get("id_token", ""), "expires_at": token.get("expires_at"), "session_json": token}
+                    db.upsert_session(email, account_id, payload2)
+                    refreshed_status = "已接码" if payload2["refresh_token"] else "已注册"
+                    current_status = str((mailbox or {}).get("status") or acc.get("status") or "")
+                    completed_status = _highest_mailbox_progress(current_status, refreshed_status)
+                    db.upsert_account(email, status=_account_status_for_mailbox(completed_status), access_token=payload2["access_token"], openai_rt=payload2["refresh_token"])
+                    db.mark_mailbox_by_email(email, completed_status, openai_rt=payload2["refresh_token"])
+                    items.append({"email": email, "has_access_token": bool(payload2["access_token"]), "has_refresh_token": bool(payload2["refresh_token"]), "refresh_method": "refresh_token"})
+                    ok += 1
+                    db.event(f"[{email}] [Session] 已通过 Refresh Token 完成 AT 续期")
+                    db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
+                    continue
+                except Exception as exc:
+                    refresh_error = str(exc)
+                    db.event(f"[{email}] [Session] Refresh Token 续期不可用，改用后台无头登录更新 AT：{refresh_error}", "warning")
+            else:
+                db.event(f"[{email}] [Session] 账户没有可用 Refresh Token，改用后台无头登录更新 AT", "warning")
+
+            if not mailbox:
+                raise RuntimeError("找不到该账户对应的邮箱凭证，无法回退登录更新 AT")
+            fallback_payload = dict(payload)
+            fallback_payload.update({"execution_mode": "background", "registration_stage": "register_only", "mailbox_ids": [int(mailbox.get("id") or 0)]})
+            succeeded, result = _run_one(db, "sunny_login", fallback_payload, mailbox, idx, len(accounts))
+            if not succeeded:
+                raise RuntimeError(str(result))
+            items.append({"email": email, "has_access_token": bool(isinstance(result, dict) and result.get("has_access_token")), "has_refresh_token": bool(isinstance(result, dict) and result.get("has_refresh_token")), "refresh_method": "headless_login", "refresh_token_error": refresh_error})
             ok += 1
-            db.event(f"[{email}] [Session] Session/RT 刷新完成")
+            db.event(f"[{email}] [Session] 已通过后台无头登录完成 AT 续期")
         except Exception as exc:
             errors.append(f"[{email}] {exc}")
             db.event(errors[-1], "error")

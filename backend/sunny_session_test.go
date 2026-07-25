@@ -131,6 +131,71 @@ func TestSunnyHealthBanMarkers(t *testing.T) {
 	}
 }
 
+func TestSunnyScheduledHealthCandidatesIncludeRegisteredMailboxesAcrossGroups(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	groupA := SunnyMailboxGroup{Name: "分组 A"}
+	groupB := SunnyMailboxGroup{Name: "分组 B"}
+	s.db.Create(&groupA)
+	s.db.Create(&groupB)
+
+	rows := []SunnyMailbox{
+		{GroupID: groupA.ID, Email: "group-a@example.com", ClientID: "client-a", RefreshToken: "refresh-a", Status: "已注册", Enabled: true},
+		{GroupID: groupB.ID, Email: "group-b@example.com", ClientID: "client-b", RefreshToken: "refresh-b", Status: "已接码", Enabled: true},
+		{GroupID: groupB.ID, Email: "unused@example.com", ClientID: "client-u", RefreshToken: "refresh-u", Status: "未注册", Enabled: true},
+		{GroupID: groupB.ID, Email: "banned@example.com", ClientID: "client-x", RefreshToken: "refresh-x", Status: "已封禁", Enabled: true},
+	}
+	for index := range rows {
+		if err := s.db.Create(&rows[index]).Error; err != nil {
+			t.Fatalf("create mailbox: %v", err)
+		}
+	}
+
+	candidates, skipped, err := s.sunnyHealthCandidates(nil, true)
+	if err != nil {
+		t.Fatalf("scheduled candidates: %v", err)
+	}
+	found := map[string]bool{}
+	for _, candidate := range candidates {
+		found[candidate.Email] = true
+	}
+	if !found["group-a@example.com"] || !found["group-b@example.com"] {
+		t.Fatalf("registered mailboxes in non-default groups were omitted: %#v", candidates)
+	}
+	if found["unused@example.com"] || found["banned@example.com"] {
+		t.Fatalf("ineligible mailbox was scheduled: %#v", candidates)
+	}
+	if skipped < 1 {
+		t.Fatalf("banned account should be reported as skipped")
+	}
+}
+
+func TestSunnyHealthBatchSizeBounds(t *testing.T) {
+	s := &Server{}
+	t.Setenv("SUNNY_HEALTHCHECK_BATCH_SIZE", "100")
+	if got := s.sunnyHealthCheckBatchSize(); got != 100 {
+		t.Fatalf("batch size = %d, want 100", got)
+	}
+	t.Setenv("SUNNY_HEALTHCHECK_BATCH_SIZE", "1")
+	if got := s.sunnyHealthCheckBatchSize(); got != 10 {
+		t.Fatalf("minimum batch size = %d, want 10", got)
+	}
+	t.Setenv("SUNNY_HEALTHCHECK_BATCH_SIZE", "999")
+	if got := s.sunnyHealthCheckBatchSize(); got != 500 {
+		t.Fatalf("maximum batch size = %d, want 500", got)
+	}
+}
+
+func TestSunnyRefreshTaskRejectsEmptySelection(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/refresh-session", strings.NewReader(`{"session_ids":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.sunnyTasks(rec, req, []string{"refresh-session"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty refresh selection status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestExtractSunnyHeaderReadsSubjectOnly(t *testing.T) {
 	headerText := "Subject: Access Deactivated\r\nDate: Tue, 21 Jul 2026 06:00:00 +0800\r\n\r\n"
 	raw := "* 5 FETCH (BODY[HEADER.FIELDS (SUBJECT DATE)] {" + strconv.Itoa(len(headerText)) + "}\r\n" + headerText + ")\r\nF1 OK FETCH completed\r\n"

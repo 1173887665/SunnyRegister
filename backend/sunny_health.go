@@ -60,8 +60,35 @@ func (s *Server) sunnyHealthCheckConcurrency() int {
 	return value
 }
 
+func (s *Server) sunnyHealthCheckBatchSize() int {
+	value := intValue(strings.TrimSpace(os.Getenv("SUNNY_HEALTHCHECK_BATCH_SIZE")), 50)
+	if value < 10 {
+		value = 10
+	}
+	if value > 500 {
+		value = 500
+	}
+	return value
+}
+
 func sunnyHealthStatus(status string) string {
 	return normalizeSunnyDisplayStatus(strings.TrimSpace(status))
+}
+
+func sunnyHealthRegisteredStatus(status string) bool {
+	if strings.TrimSpace(status) == "" {
+		return false
+	}
+	switch sunnyHealthStatus(status) {
+	case "已注册", "已接码", "已反代", "PLUS试用中", "需二验", "registered", "phone_bound", "reverse_proxied":
+		return true
+	default:
+		return false
+	}
+}
+
+func sunnyHealthBannedStatus(status string) bool {
+	return sunnyHealthStatus(status) == "已封禁"
 }
 
 func (s *Server) sunnyHealthCandidates(ids []uint, all bool) ([]sunnyHealthCandidate, int, error) {
@@ -75,43 +102,71 @@ func (s *Server) sunnyHealthCandidates(ids []uint, all bool) ([]sunnyHealthCandi
 	if err := query.Order("id asc").Find(&sessions).Error; err != nil {
 		return nil, 0, err
 	}
-	if len(sessions) == 0 {
-		return []sunnyHealthCandidate{}, 0, nil
-	}
 	emails := make([]string, 0, len(sessions))
+	sessionByEmail := map[string]SunnySession{}
 	for _, session := range sessions {
+		key := sunnyEmailKey(session.Email)
+		sessionByEmail[key] = session
 		emails = append(emails, session.Email)
 	}
 	var mailboxes []SunnyMailbox
-	if err := s.db.Where("email IN ?", emails).Find(&mailboxes).Error; err != nil {
+	mailboxQuery := s.db.Model(&SunnyMailbox{})
+	if !all {
+		mailboxQuery = mailboxQuery.Where("email IN ?", emails)
+	}
+	if err := mailboxQuery.Order("id asc").Find(&mailboxes).Error; err != nil {
 		return nil, 0, err
 	}
 	mailboxByEmail := map[string]SunnyMailbox{}
 	for _, mailbox := range mailboxes {
-		mailboxByEmail[sunnyEmailKey(mailbox.Email)] = mailbox
+		key := sunnyEmailKey(mailbox.Email)
+		mailboxByEmail[key] = mailbox
+		if all {
+			emails = append(emails, mailbox.Email)
+		}
 	}
 	var accounts []SunnyAccount
-	if err := s.db.Select("email", "status").Where("email IN ?", emails).Find(&accounts).Error; err != nil {
+	accountQuery := s.db.Model(&SunnyAccount{}).Select("id", "email", "status")
+	if !all {
+		accountQuery = accountQuery.Where("email IN ?", emails)
+	}
+	if err := accountQuery.Order("id asc").Find(&accounts).Error; err != nil {
 		return nil, 0, err
 	}
 	accountStatus := map[string]string{}
 	for _, account := range accounts {
-		accountStatus[sunnyEmailKey(account.Email)] = account.Status
+		key := sunnyEmailKey(account.Email)
+		accountStatus[key] = account.Status
+		if all {
+			emails = append(emails, account.Email)
+		}
 	}
-	candidates := make([]sunnyHealthCandidate, 0, len(sessions))
+	if !all && len(sessions) == 0 {
+		return []sunnyHealthCandidate{}, 0, nil
+	}
+	candidates := make([]sunnyHealthCandidate, 0, len(emails))
 	skipped := 0
-	for _, session := range sessions {
-		key := sunnyEmailKey(session.Email)
+	seen := map[string]bool{}
+	for _, email := range emails {
+		key := sunnyEmailKey(email)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		session := sessionByEmail[key]
 		mailbox, ok := mailboxByEmail[key]
-		if sunnyHealthStatus(mailbox.Status) == "已封禁" || sunnyHealthStatus(accountStatus[key]) == "已封禁" {
+		if sunnyHealthBannedStatus(mailbox.Status) || sunnyHealthBannedStatus(accountStatus[key]) {
 			skipped++
 			continue
 		}
-		if !ok || strings.TrimSpace(mailbox.ClientID) == "" || strings.TrimSpace(mailbox.RefreshToken) == "" {
-			candidates = append(candidates, sunnyHealthCandidate{SessionID: session.ID, Email: session.Email, Error: "邮箱凭证不完整"})
+		if all && !sunnyHealthRegisteredStatus(mailbox.Status) && !sunnyHealthRegisteredStatus(accountStatus[key]) {
 			continue
 		}
-		candidates = append(candidates, sunnyHealthCandidate{SessionID: session.ID, Email: session.Email, ClientID: mailbox.ClientID, RefreshToken: mailbox.RefreshToken})
+		if !ok || strings.TrimSpace(mailbox.ClientID) == "" || strings.TrimSpace(mailbox.RefreshToken) == "" {
+			candidates = append(candidates, sunnyHealthCandidate{SessionID: session.ID, Email: email, Error: "邮箱凭证不完整"})
+			continue
+		}
+		candidates = append(candidates, sunnyHealthCandidate{SessionID: session.ID, Email: mailbox.Email, ClientID: mailbox.ClientID, RefreshToken: mailbox.RefreshToken})
 	}
 	return candidates, skipped, nil
 }
@@ -158,75 +213,83 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 	}
 	proxyURL := s.sunnyMailboxProxyURL()
 	concurrency := s.sunnyHealthCheckConcurrency()
-	jobs := make(chan sunnyHealthCandidate)
-	results := make(chan sunnyHealthResult, len(candidates))
-	var workers sync.WaitGroup
-	for i := 0; i < concurrency; i++ {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for candidate := range jobs {
-				if candidate.Error != "" {
-					results <- sunnyHealthResult{Email: candidate.Email, Error: candidate.Error}
-					continue
-				}
-				subjects, fetchErr := sunnyFetchOutlookMailSubjects(candidate.Email, candidate.ClientID, candidate.RefreshToken, 5, proxyURL)
-				if fetchErr != nil {
-					results <- sunnyHealthResult{Email: candidate.Email, Error: fetchErr.Error()}
-					continue
-				}
-				banned := false
-				for _, subject := range subjects {
-					if sunnyHealthBanMarker.MatchString(subject) {
-						banned = true
-						break
-					}
-				}
-				results <- sunnyHealthResult{Email: candidate.Email, Banned: banned, Checked: true}
-			}
-		}()
-	}
-	for _, candidate := range candidates {
-		jobs <- candidate
-	}
-	close(jobs)
-	workers.Wait()
-	close(results)
+	batchSize := s.sunnyHealthCheckBatchSize()
 	items := make([]any, 0, len(candidates))
-	for outcome := range results {
-		item := map[string]any{"email": outcome.Email, "status": "alive"}
-		if outcome.Error != "" {
-			result["failed"] = result["failed"].(int) + 1
-			item["status"] = "failed"
-			item["error"] = outcome.Error
-			s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 测活失败：%s", outcome.Email, outcome.Error), "log", "warning", nil)
-		} else {
-			result["checked"] = result["checked"].(int) + 1
-			now := time.Now()
-			if outcome.Banned {
-				result["banned"] = result["banned"].(int) + 1
-				item["status"] = "banned"
-				s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s：已封禁", outcome.Email), "log", "warning", nil)
-				s.db.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).UpdateColumns(map[string]any{
-					"last_health_checked_at": now, "status": "已封禁", "status_changed_at": now,
-					"last_error": "测活邮件标题命中账户封禁标记", "updated_at": now,
-				})
-				s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).UpdateColumns(map[string]any{
-					"last_health_checked_at": now, "status": "已封禁", "status_changed_at": now,
-					"last_error": "测活邮件标题命中账户封禁标记", "updated_at": now,
-				})
-			} else {
-				result["alive"] = result["alive"].(int) + 1
-				s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s：存活", outcome.Email), "log", "info", nil)
-				// A successful health check is not a mailbox edit or an account status change.
-				s.db.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).UpdateColumn("last_health_checked_at", now)
-				s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).UpdateColumn("last_health_checked_at", now)
-			}
+	for start := 0; start < len(candidates); start += batchSize {
+		end := start + batchSize
+		if end > len(candidates) {
+			end = len(candidates)
 		}
-		items = append(items, item)
-		current := task.ProgressCurrent + 1
-		task.ProgressCurrent = current
-		s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": current, "updated_at": time.Now()})
+		batch := candidates[start:end]
+		jobs := make(chan sunnyHealthCandidate)
+		results := make(chan sunnyHealthResult, len(batch))
+		var workers sync.WaitGroup
+		for i := 0; i < concurrency && i < len(batch); i++ {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				for candidate := range jobs {
+					if candidate.Error != "" {
+						results <- sunnyHealthResult{Email: candidate.Email, Error: candidate.Error}
+						continue
+					}
+					subjects, fetchErr := sunnyFetchOutlookMailSubjects(candidate.Email, candidate.ClientID, candidate.RefreshToken, 5, proxyURL)
+					if fetchErr != nil {
+						results <- sunnyHealthResult{Email: candidate.Email, Error: fetchErr.Error()}
+						continue
+					}
+					banned := false
+					for _, subject := range subjects {
+						if sunnyHealthBanMarker.MatchString(subject) {
+							banned = true
+							break
+						}
+					}
+					results <- sunnyHealthResult{Email: candidate.Email, Banned: banned, Checked: true}
+				}
+			}()
+		}
+		for _, candidate := range batch {
+			jobs <- candidate
+		}
+		close(jobs)
+		workers.Wait()
+		close(results)
+		for outcome := range results {
+			item := map[string]any{"email": outcome.Email, "status": "alive"}
+			if outcome.Error != "" {
+				result["failed"] = result["failed"].(int) + 1
+				item["status"] = "failed"
+				item["error"] = outcome.Error
+				s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 测活失败：%s", outcome.Email, outcome.Error), "log", "warning", nil)
+			} else {
+				result["checked"] = result["checked"].(int) + 1
+				now := time.Now()
+				if outcome.Banned {
+					result["banned"] = result["banned"].(int) + 1
+					item["status"] = "banned"
+					s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s：已封禁", outcome.Email), "log", "warning", nil)
+					s.db.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).UpdateColumns(map[string]any{
+						"last_health_checked_at": now, "status": "已封禁", "status_changed_at": now,
+						"last_error": "测活邮件标题命中账户封禁标记", "updated_at": now,
+					})
+					s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).UpdateColumns(map[string]any{
+						"last_health_checked_at": now, "status": "已封禁", "status_changed_at": now,
+						"last_error": "测活邮件标题命中账户封禁标记", "updated_at": now,
+					})
+				} else {
+					result["alive"] = result["alive"].(int) + 1
+					s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s：存活", outcome.Email), "log", "info", nil)
+					// A successful health check is not a mailbox edit or an account status change.
+					s.db.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).UpdateColumn("last_health_checked_at", now)
+					s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).UpdateColumn("last_health_checked_at", now)
+				}
+			}
+			items = append(items, item)
+			current := task.ProgressCurrent + 1
+			task.ProgressCurrent = current
+			s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": current, "updated_at": time.Now()})
+		}
 	}
 	result["items"] = items
 	s.completeSunnyHealthTask(task, result)

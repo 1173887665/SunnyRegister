@@ -26,7 +26,7 @@ function TopBar({ theme, setTheme, onLogout }: { theme: string; setTheme: (v: st
   const navClass = (active: boolean) => cn("inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition-all", active ? "bg-[var(--accent)] text-white shadow-[var(--shadow-glow)]" : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]");
   return (
     <header ref={headerRef} className="sticky top-0 z-[300] border-b border-[var(--border)] bg-[var(--bg-shell)]/80 backdrop-blur-2xl">
-      <div className="mx-auto grid max-w-7xl grid-cols-[1fr_auto] items-center gap-4 px-4 py-3 md:px-6 lg:grid-cols-[280px_minmax(0,1fr)_160px]">
+      <div className="app-shell mx-auto grid grid-cols-[1fr_auto] items-center gap-4 py-3 lg:grid-cols-[280px_minmax(0,1fr)_160px]">
         <div className="flex min-w-0 shrink-0 items-center gap-3 justify-self-start">
           <div className="brand-mark"><Link2 className="h-5 w-5" /></div>
           <div className="hidden sm:block"><div className="text-sm font-black tracking-tight text-[var(--text-primary)]">{c.app}</div><div className="text-xs text-[var(--text-muted)]">{c.sub}</div></div>
@@ -52,7 +52,7 @@ function Shell({ theme, setTheme, onLogout }: { theme: string; setTheme: (v: str
     <BrowserRouter>
       <div className="min-h-screen bg-[var(--bg-base)]">
         <TopBar theme={theme} setTheme={setTheme} onLogout={onLogout} />
-        <main className="mx-auto max-w-7xl px-4 py-6 md:px-6 md:py-8">
+        <main className="app-shell mx-auto py-6 md:py-8">
           <Routes>
             <Route path="/" element={<SunnyRegister />} />
             <Route path="/mailbox" element={<SunnyRegister />} />
@@ -94,6 +94,3 @@ function AppContent() {
 }
 
 export default function App() { return <I18nProvider><AppContent /></I18nProvider>; }
-
-
-

@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import time
+import base64
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -102,6 +103,7 @@ class SunnyDB:
                 "session_json": "text DEFAULT '{}'",
                 "storage_state_json": "text DEFAULT '{}'",
                 "raw_mailbox_line": "text DEFAULT ''",
+				"expires_at": "datetime",
                 "last_refresh_at": "datetime",
             },
         }
@@ -387,6 +389,14 @@ class SunnyDB:
             rows = self.conn.execute("select * from sunny_accounts order by id asc").fetchall()
         return [dict(r) for r in rows]
 
+    def fetch_mailbox_by_email(self, email: str) -> dict[str, Any] | None:
+        row = self.conn.execute("select * from sunny_mailboxes where lower(email)=lower(?) limit 1", (email,)).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        self._hydrate_mailbox_auth(item)
+        return item
+
     def fetch_session_by_email(self, email: str) -> dict[str, Any] | None:
         row = self.conn.execute("select * from sunny_sessions where email=?", (email,)).fetchone()
         return dict(row) if row else None
@@ -613,6 +623,17 @@ class SunnyDB:
         return account_id
 
     def upsert_session(self, email: str, account_id: int, session: dict[str, Any], raw_line: str = "") -> None:
+        expires_at = session.get("expires_at")
+        if not expires_at:
+            token = str(session.get("access_token") or "")
+            try:
+                payload = token.split(".")[1]
+                payload += "=" * (-len(payload) % 4)
+                expires_at = json.loads(base64.urlsafe_b64decode(payload.encode()).decode()).get("exp")
+            except Exception:
+                expires_at = None
+        if isinstance(expires_at, (int, float)) or (isinstance(expires_at, str) and expires_at.isdigit()):
+            expires_at = datetime.fromtimestamp(int(expires_at), app_timezone()).strftime("%Y-%m-%d %H:%M:%S")
         values = {
             "account_id": account_id,
             "email": email,
@@ -622,6 +643,7 @@ class SunnyDB:
             "session_json": json.dumps(session.get("session_json", session), ensure_ascii=False) if not isinstance(session.get("session_json"), str) else session.get("session_json"),
             "storage_state_json": json.dumps(session.get("storage_state_json", {}), ensure_ascii=False) if not isinstance(session.get("storage_state_json"), str) else session.get("storage_state_json"),
             "raw_mailbox_line": raw_line,
+			"expires_at": expires_at or None,
             "last_refresh_at": now_sql(),
             "updated_at": now_sql(),
         }

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -240,6 +241,7 @@ func serializeSunnyMailboxList(m SunnyMailbox, groups map[uint]string, plan, acc
 		return item
 	}
 	item["has_openai_rt"] = strings.TrimSpace(m.OpenAIRT) != ""
+	item["has_access_token"] = strings.TrimSpace(accessToken) != ""
 	for _, key := range []string{"password", "client_id", "refresh_token", "openai_rt", "access_token", "raw", "last_error", "latest_mail", "last_mail_at"} {
 		delete(item, key)
 	}
@@ -643,6 +645,27 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		}
 		if len(parts) == 2 && parts[1] == "latest-mail" && r.Method == http.MethodPost {
 			s.sunnyLatestMail(w, r, &m)
+			return
+		}
+		if len(parts) == 2 && parts[1] == "field" && r.Method == http.MethodGet {
+			field := strings.TrimSpace(r.URL.Query().Get("name"))
+			value := ""
+			switch field {
+			case "access_token":
+				value = s.sunnyMailboxAccessTokensByEmail([]string{m.Email})[sunnyEmailKey(m.Email)]
+			case "secret_key":
+				if m.Email != "" && m.Password != "" && m.ClientID != "" && m.RefreshToken != "" {
+					value = strings.Join([]string{m.Email, m.Password, m.ClientID, m.RefreshToken}, "----")
+				} else {
+					value = strings.TrimSpace(m.Raw)
+				}
+			default:
+				writeError(w, 400, "unsupported mailbox field")
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Pragma", "no-cache")
+			writeJSON(w, 200, map[string]any{"field": field, "value": value})
 			return
 		}
 	}
@@ -2683,13 +2706,15 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 }
 
 type sunnySessionListRow struct {
-	ID              uint      `gorm:"column:id"`
-	AccountID       uint      `gorm:"column:account_id"`
-	Email           string    `gorm:"column:email"`
-	HasAccessToken  int       `gorm:"column:has_access_token"`
-	HasRefreshToken int       `gorm:"column:has_refresh_token"`
-	HasSecretKey    int       `gorm:"column:has_secret_key"`
-	UpdatedAt       time.Time `gorm:"column:updated_at"`
+	ID              uint         `gorm:"column:id"`
+	AccountID       uint         `gorm:"column:account_id"`
+	Email           string       `gorm:"column:email"`
+	AccessToken     string       `gorm:"column:access_token"`
+	ExpiresAt       sql.NullTime `gorm:"column:expires_at"`
+	HasAccessToken  int          `gorm:"column:has_access_token"`
+	HasRefreshToken int          `gorm:"column:has_refresh_token"`
+	HasSecretKey    int          `gorm:"column:has_secret_key"`
+	UpdatedAt       time.Time    `gorm:"column:updated_at"`
 }
 
 type sunnySessionAccountSummary struct {
@@ -2713,7 +2738,7 @@ type sunnySessionMailboxSummary struct {
 	LastHealthCheckedAt *time.Time `gorm:"column:last_health_checked_at"`
 }
 
-const sunnySessionListColumns = `id, account_id, email, updated_at,
+const sunnySessionListColumns = `id, account_id, email, access_token, expires_at, updated_at,
 	CASE WHEN access_token IS NOT NULL AND access_token <> '' THEN 1 ELSE 0 END AS has_access_token,
 	CASE WHEN refresh_token IS NOT NULL AND refresh_token <> '' THEN 1 ELSE 0 END AS has_refresh_token,
 	CASE WHEN raw_mailbox_line IS NOT NULL AND raw_mailbox_line <> '' THEN 1 ELSE 0 END AS has_secret_key`
@@ -2744,13 +2769,23 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 	if lastHealthCheckedAt != nil {
 		lastHealthText = formatTime(*lastHealthCheckedAt)
 	}
+	expiresAt := row.ExpiresAt
+	if !expiresAt.Valid && strings.TrimSpace(row.AccessToken) != "" {
+		if exp := toInt(decodeJWTPayload(row.AccessToken)["exp"]); exp > 0 {
+			expiresAt = sql.NullTime{Time: time.Unix(int64(exp), 0), Valid: true}
+		}
+	}
+	accountID := row.AccountID
+	if accountID == 0 {
+		accountID = account.ID
+	}
 	return map[string]any{
-		"id": row.ID, "account_id": row.AccountID, "email": row.Email,
+		"id": row.ID, "account_id": accountID, "mailbox_id": mailbox.ID, "email": row.Email,
 		"status": status, "plan_type": plan, "group_id": mailbox.GroupID, "group_name": mailbox.GroupName,
 		"has_access_token":  row.HasAccessToken != 0 || account.HasAccessToken != 0,
 		"has_refresh_token": row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
 		"has_secret_key":    row.HasSecretKey != 0 || mailbox.HasSecretKey != 0,
-		"updated_at":        formatTime(row.UpdatedAt), "last_health_checked_at": lastHealthText,
+		"updated_at":        formatTime(row.UpdatedAt), "access_token_expires_at": nullableTime(expiresAt.Valid, expiresAt.Time), "last_health_checked_at": lastHealthText,
 	}
 }
 func (s *Server) sunnySessionSidecars(rows []SunnySession) (map[string]SunnyAccount, map[string]SunnyMailbox) {
@@ -2880,7 +2915,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			}
 			var total int64
 			query.Count(&total)
-			orderClause := sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "created_at": "created_at", "last_refresh_at": "last_refresh_at"}, "updated_at desc")
+			orderClause := sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "created_at": "created_at", "last_refresh_at": "last_refresh_at", "access_token_expires_at": "expires_at"}, "updated_at desc")
 			if sortBy == "last_health_checked_at" {
 				order := "DESC"
 				if strings.EqualFold(q.Get("sort_order"), "asc") {
@@ -3102,6 +3137,36 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 	if typ == "sunny_register" {
 		if err := s.sunnyValidateRegisterStageResources(body); err != nil {
 			writeError(w, 400, err.Error())
+			return
+		}
+	}
+	if typ == "sunny_refresh_session" {
+		accountIDs := uintSlice(body["account_ids"])
+		if len(accountIDs) == 0 {
+			sessionIDs := uintSlice(body["session_ids"])
+			if len(sessionIDs) > 0 {
+				var sessions []SunnySession
+				s.db.Select("id", "account_id", "email").Where("id IN ?", sessionIDs).Find(&sessions)
+				accountIDs = make([]uint, 0, len(sessions))
+				seen := map[uint]bool{}
+				for _, session := range sessions {
+					accountID := session.AccountID
+					if accountID == 0 {
+						var account SunnyAccount
+						if s.db.Select("id").Where("email = ?", session.Email).First(&account).Error == nil {
+							accountID = account.ID
+						}
+					}
+					if accountID != 0 && !seen[accountID] {
+						seen[accountID] = true
+						accountIDs = append(accountIDs, accountID)
+					}
+				}
+				body["account_ids"] = accountIDs
+			}
+		}
+		if len(accountIDs) == 0 {
+			writeError(w, http.StatusBadRequest, "请选择需要刷新 AT 的账户")
 			return
 		}
 	}
