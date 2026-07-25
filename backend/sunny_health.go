@@ -4,11 +4,15 @@ import (
 	"bufio"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"mime"
+	"net/http"
 	"net/mail"
 	"net/textproto"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -22,6 +26,8 @@ const sunnyHealthTaskType = "sunny_account_health_check"
 
 var sunnyHealthBanMarker = regexp.MustCompile(`(?i)access\s+deactivated|\[\s*C-[A-Za-z0-9]{6,32}\s*\]`)
 var sunnyFetchOutlookMailSubjects = fetchOutlookMailSubjects
+var sunnyFetchMailSubjectsViaGraph = fetchMailSubjectsViaGraph
+var sunnyFetchMailHeadersViaIMAP = fetchMailHeadersViaIMAP
 
 type sunnyHealthCandidate struct {
 	SessionID    uint
@@ -44,12 +50,12 @@ type sunnyHealthResult struct {
 }
 
 func (s *Server) sunnyHealthCheckConcurrency() int {
-	value := intValue(strings.TrimSpace(os.Getenv("SUNNY_HEALTHCHECK_CONCURRENCY")), 2)
+	value := intValue(strings.TrimSpace(os.Getenv("SUNNY_HEALTHCHECK_CONCURRENCY")), 6)
 	if value < 1 {
 		value = 1
 	}
-	if value > 8 {
-		value = 8
+	if value > 16 {
+		value = 16
 	}
 	return value
 }
@@ -247,19 +253,94 @@ func (s *Server) completeSunnyHealthTask(task *Task, result map[string]any) {
 
 func fetchOutlookMailSubjects(emailAddr, clientID, refreshToken string, limit int, proxyURL string) ([]string, error) {
 	errors := []string{}
+	for _, endpoint := range hotmailGraphTokenEndpoints {
+		token, err := refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken, endpoint, proxyURL)
+		if err != nil {
+			errors = append(errors, endpoint.Name+" token: "+err.Error())
+			continue
+		}
+		subjects, err := sunnyFetchMailSubjectsViaGraph(token, limit, proxyURL)
+		if err == nil {
+			return subjects, nil
+		}
+		errors = append(errors, endpoint.Name+" Graph: "+err.Error())
+	}
 	for _, endpoint := range hotmailTokenEndpoints {
 		token, err := refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken, endpoint, proxyURL)
 		if err != nil {
 			errors = append(errors, endpoint.Name+" token: "+err.Error())
 			continue
 		}
-		headers, err := fetchMailHeadersViaIMAP(emailAddr, token, limit, proxyURL)
+		headers, err := sunnyFetchMailHeadersViaIMAP(emailAddr, token, limit, proxyURL)
 		if err == nil {
 			return headers, nil
 		}
 		errors = append(errors, endpoint.Name+" IMAP: "+err.Error())
 	}
-	return nil, fmt.Errorf("Outlook IMAP subject query failed: %s", strings.Join(errors, " | "))
+	return nil, fmt.Errorf("Outlook Graph/IMAP subject query failed: %s", strings.Join(errors, " | "))
+}
+
+func fetchMailSubjectsViaGraph(accessToken string, limit int, proxyURL string) ([]string, error) {
+	if limit < 1 {
+		limit = 5
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	endpoint, err := url.Parse(outlookGraphMessagesURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Graph messages URL: %w", err)
+	}
+	query := endpoint.Query()
+	query.Set("$top", strconv.Itoa(limit))
+	query.Set("$orderby", "receivedDateTime desc")
+	query.Set("$select", "subject")
+	endpoint.RawQuery = query.Encode()
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	if strings.TrimSpace(proxyURL) != "" {
+		proxy, parseErr := url.Parse(proxyURL)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid Graph proxy URL: %w", parseErr)
+		}
+		client.Transport = &http.Transport{Proxy: http.ProxyURL(proxy)}
+	}
+	req, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("Graph request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("Graph response read failed: %w", err)
+	}
+	var payload struct {
+		Value []struct {
+			Subject string `json:"subject"`
+		} `json:"value"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("Graph returned invalid JSON (HTTP %d)", resp.StatusCode)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		detail := strings.TrimSpace(strings.Join([]string{payload.Error.Code, payload.Error.Message}, ": "))
+		return nil, fmt.Errorf("Graph HTTP %d: %s", resp.StatusCode, fallback(detail, string(raw[:min(len(raw), 300)])))
+	}
+	subjects := make([]string, 0, len(payload.Value))
+	for _, message := range payload.Value {
+		subjects = append(subjects, message.Subject)
+	}
+	return subjects, nil
 }
 
 func fetchMailHeadersViaIMAP(emailAddr, accessToken string, limit int, proxyURL string) ([]string, error) {
