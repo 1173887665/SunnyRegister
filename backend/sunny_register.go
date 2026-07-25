@@ -1744,26 +1744,70 @@ func (s *Server) sunnySMSProviderOptions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	cacheKind := strings.TrimSuffix(kind, "s")
-	if !refresh {
-		items := s.sunnyCachedSMSProviderOptions(provider, cacheKind, parent)
-		if len(items) > 0 {
-			writeJSON(w, 200, map[string]any{"items": items, "cached": true})
-			return
-		}
-	}
 	cfg := mergeConfig(s.sunnyGetConfig(sunnyCfgPhone, defaultPhoneConfig()), body)
-	items, err := s.sunnyFetchSMSProviderOptions(r.Context(), provider, cacheKind, parent, cfg)
+	items, cached, err := s.sunnyLoadSMSProviderOptions(r.Context(), provider, cacheKind, parent, cfg, refresh)
 	if err != nil {
-		cached := s.sunnyCachedSMSProviderOptions(provider, cacheKind, parent)
-		if len(cached) > 0 {
-			writeJSON(w, 200, map[string]any{"items": cached, "cached": true, "warning": err.Error()})
+		if len(items) > 0 {
+			writeJSON(w, 200, map[string]any{"items": items, "cached": cached, "warning": err.Error()})
 			return
 		}
 		writeError(w, 400, err.Error())
 		return
 	}
-	s.sunnySaveSMSProviderOptions(provider, cacheKind, parent, items)
-	writeJSON(w, 200, map[string]any{"items": items, "cached": false})
+	writeJSON(w, 200, map[string]any{"items": items, "cached": cached})
+}
+
+type sunnySMSOptionsFlight struct {
+	done   chan struct{}
+	items  []map[string]any
+	cached bool
+	err    error
+}
+
+func (s *Server) sunnyLoadSMSProviderOptions(ctx context.Context, provider, kind, parent string, cfg map[string]any, refresh bool) ([]map[string]any, bool, error) {
+	key := strings.Join([]string{provider, kind, parent}, "\x00")
+	s.smsOptionsMu.Lock()
+	if s.smsOptionsRun == nil {
+		s.smsOptionsRun = map[string]*sunnySMSOptionsFlight{}
+	}
+	if running := s.smsOptionsRun[key]; running != nil {
+		s.smsOptionsMu.Unlock()
+		select {
+		case <-running.done:
+			return running.items, running.cached, running.err
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		}
+	}
+	running := &sunnySMSOptionsFlight{done: make(chan struct{})}
+	s.smsOptionsRun[key] = running
+	s.smsOptionsMu.Unlock()
+
+	defer func() {
+		s.smsOptionsMu.Lock()
+		delete(s.smsOptionsRun, key)
+		close(running.done)
+		s.smsOptionsMu.Unlock()
+	}()
+	running.items, running.cached, running.err = s.sunnyLoadSMSProviderOptionsOnce(ctx, provider, kind, parent, cfg, refresh)
+	return running.items, running.cached, running.err
+}
+
+func (s *Server) sunnyLoadSMSProviderOptionsOnce(ctx context.Context, provider, kind, parent string, cfg map[string]any, refresh bool) ([]map[string]any, bool, error) {
+	if !refresh {
+		if items := s.sunnyCachedSMSProviderOptions(provider, kind, parent); len(items) > 0 {
+			return items, true, nil
+		}
+	}
+	items, err := s.sunnyFetchSMSProviderOptions(ctx, provider, kind, parent, cfg)
+	if err != nil {
+		if cached := s.sunnyCachedSMSProviderOptions(provider, kind, parent); len(cached) > 0 {
+			return cached, true, err
+		}
+		return nil, false, err
+	}
+	s.sunnySaveSMSProviderOptions(provider, kind, parent, items)
+	return items, false, nil
 }
 
 func (s *Server) sunnyCachedSMSProviderOptions(provider, kind, parent string) []map[string]any {
@@ -1826,16 +1870,10 @@ func (s *Server) sunnyWarmSMSProviderOptions() {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		if len(s.sunnyCachedSMSProviderOptions(p.name, "country", "")) == 0 {
-			if items, err := s.sunnyFetchSMSProviderOptions(ctx, p.name, "country", "", cfg); err == nil {
-				s.sunnySaveSMSProviderOptions(p.name, "country", "", items)
-			}
-		}
+		_, _, _ = s.sunnyLoadSMSProviderOptions(ctx, p.name, "country", "", cfg, false)
 		parent := strings.TrimSpace(text(cfg[p.countryKey]))
-		if parent != "" && len(s.sunnyCachedSMSProviderOptions(p.name, "service", parent)) == 0 {
-			if items, err := s.sunnyFetchSMSProviderOptions(ctx, p.name, "service", parent, cfg); err == nil {
-				s.sunnySaveSMSProviderOptions(p.name, "service", parent, items)
-			}
+		if parent != "" {
+			_, _, _ = s.sunnyLoadSMSProviderOptions(ctx, p.name, "service", parent, cfg, false)
 		}
 		cancel()
 	}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { CheckCircle2, ChevronLeft, ChevronRight, Download, Eye, FileArchive, FilterX, Loader2, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmBubble } from "@/components/ui/confirm-bubble";
@@ -7,6 +7,42 @@ import { useI18n } from "@/lib/i18n-context";
 
 type AuditFilters = Record<string, string>;
 type AuditRow = Record<string, any>;
+type AuditColumnKey = "time" | "kind" | "behavior" | "operator" | "target" | "result" | "summary" | "operation";
+
+const auditColumnStorageKey = "sunnyregister.audit.column-widths";
+const auditColumnDefaults: Record<AuditColumnKey, number> = {
+  time: 164,
+  kind: 126,
+  behavior: 130,
+  operator: 150,
+  target: 180,
+  result: 130,
+  summary: 320,
+  operation: 76,
+};
+const auditColumnMinimums: Record<AuditColumnKey, number> = {
+  time: 136,
+  kind: 96,
+  behavior: 104,
+  operator: 116,
+  target: 130,
+  result: 110,
+  summary: 180,
+  operation: 68,
+};
+
+function initialAuditColumnWidths() {
+  if (typeof window === "undefined") return auditColumnDefaults;
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(auditColumnStorageKey) || "{}") as Partial<Record<AuditColumnKey, number>>;
+    return Object.fromEntries(Object.entries(auditColumnDefaults).map(([key, fallback]) => {
+      const value = Number(stored[key as AuditColumnKey]);
+      return [key, Number.isFinite(value) ? Math.max(auditColumnMinimums[key as AuditColumnKey], Math.min(720, value)) : fallback];
+    })) as Record<AuditColumnKey, number>;
+  } catch {
+    return auditColumnDefaults;
+  }
+}
 
 const emptyFilters: AuditFilters = {
   search: "", log_type: "", category: "", action: "", actor: "", ip: "", level: "", status: "",
@@ -72,6 +108,8 @@ export default function AuditLogPage() {
   const [format, setFormat] = useState("csv");
   const [exporting, setExporting] = useState(false);
   const [notice, setNotice] = useState<{type:"ok"|"fail"; text:string}|null>(null);
+  const [columnWidths, setColumnWidths] = useState<Record<AuditColumnKey, number>>(initialAuditColumnWidths);
+  const resizeCleanup = useRef<null | (()=>void)>(null);
   const pages = Math.max(1, Math.ceil(total / pageSize));
 
   const activeFilters = useMemo(() => Object.fromEntries(Object.entries(filters).filter(([, value])=>value.trim() !== "")), [filters]);
@@ -105,6 +143,10 @@ export default function AuditLogPage() {
   useEffect(()=>{ queueMicrotask(() => { void loadLogs(); }); }, [loadLogs]);
   useEffect(()=>{ queueMicrotask(() => { void loadMeta(); }); }, [loadMeta]);
   useEffect(()=>{ if (!notice) return; const timer = window.setTimeout(()=>setNotice(null), 2600); return ()=>window.clearTimeout(timer); }, [notice]);
+  useEffect(()=>{
+    try { window.localStorage.setItem(auditColumnStorageKey, JSON.stringify(columnWidths)); } catch { /* Browser storage may be unavailable in private mode. */ }
+  }, [columnWidths]);
+  useEffect(()=>()=>resizeCleanup.current?.(), []);
 
   const updateFilter = (key: string, value: string) => { setFilters((current)=>({...current,[key]:value})); setPage(1); setSelected([]); };
   const allCurrentSelected = rows.length > 0 && rows.every((row)=>selected.includes(row.id));
@@ -145,6 +187,37 @@ export default function AuditLogPage() {
   const selectOptions = (key: string) => options[key] || [];
   const rangeFrom = total ? (page - 1) * pageSize + 1 : 0;
   const rangeTo = Math.min(page * pageSize, total);
+  const auditColumns: Array<{key: AuditColumnKey; label: string}> = [
+    {key:"time", label:c.time}, {key:"kind", label:c.kind}, {key:"behavior", label:c.behavior},
+    {key:"operator", label:c.operator}, {key:"target", label:c.target}, {key:"result", label:c.result},
+    {key:"summary", label:c.summary}, {key:"operation", label:c.operation},
+  ];
+  const auditTableWidth = 44 + auditColumns.reduce((sum, column)=>sum + columnWidths[column.key], 0);
+  const resizeTitle = language === "zh-CN" ? "拖动调整列宽，双击恢复默认宽度" : "Drag to resize; double-click to reset";
+
+  function setColumnWidth(key: AuditColumnKey, width: number) {
+    setColumnWidths((current)=>({...current, [key]:Math.max(auditColumnMinimums[key], Math.min(720, width))}));
+  }
+
+  function startColumnResize(event: ReactPointerEvent<HTMLSpanElement>, key: AuditColumnKey) {
+    event.preventDefault();
+    resizeCleanup.current?.();
+    const startX = event.clientX;
+    const startWidth = columnWidths[key];
+    const onMove = (moveEvent: PointerEvent) => setColumnWidth(key, startWidth + moveEvent.clientX - startX);
+    const onEnd = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+      document.body.classList.remove("audit-column-resizing");
+      resizeCleanup.current = null;
+    };
+    resizeCleanup.current = onEnd;
+    document.body.classList.add("audit-column-resizing");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd, {once:true});
+    window.addEventListener("pointercancel", onEnd, {once:true});
+  }
 
   return <section className="audit-page">
     {notice && <div className={cn("audit-toast", notice.type)}>{notice.type === "ok" ? <CheckCircle2/> : <X/>}<span>{notice.text}</span></div>}
@@ -179,7 +252,7 @@ export default function AuditLogPage() {
     </div>
     <div className="audit-table-wrap" aria-busy={loading}>
       {loading && <div className="audit-loading"><Loader2 className="animate-spin"/>{c.loading}</div>}
-      <table className="audit-table"><thead><tr><th><input type="checkbox" checked={allCurrentSelected} onChange={(e)=>setSelected(e.target.checked?Array.from(new Set([...selected,...rows.map((row)=>row.id)])):selected.filter((id)=>!rows.some((row)=>row.id===id)))}/></th><th>{c.time}</th><th>{c.kind}</th><th>{c.behavior}</th><th>{c.operator}</th><th>{c.target}</th><th>{c.result}</th><th>{c.summary}</th><th>{c.operation}</th></tr></thead>
+      <table className="audit-table" style={{width:auditTableWidth,minWidth:"100%"}}><colgroup><col style={{width:44}}/>{auditColumns.map((column)=><col key={column.key} style={{width:columnWidths[column.key]}}/>)}</colgroup><thead><tr><th><input type="checkbox" checked={allCurrentSelected} onChange={(e)=>setSelected(e.target.checked?Array.from(new Set([...selected,...rows.map((row)=>row.id)])):selected.filter((id)=>!rows.some((row)=>row.id===id)))}/></th>{auditColumns.map((column)=><th key={column.key}><span>{column.label}</span><span className="audit-column-resizer" role="separator" aria-orientation="vertical" tabIndex={0} title={resizeTitle} onPointerDown={(event)=>startColumnResize(event,column.key)} onDoubleClick={()=>setColumnWidth(column.key,auditColumnDefaults[column.key])} onKeyDown={(event)=>{if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();setColumnWidth(column.key,columnWidths[column.key]+(event.key==="ArrowRight"?12:-12));}else if(event.key==="Home"){event.preventDefault();setColumnWidth(column.key,auditColumnDefaults[column.key]);}}}/></th>)}</tr></thead>
       <tbody>{rows.length ? rows.map((row)=><tr key={row.id}><td><input type="checkbox" checked={selected.includes(row.id)} onChange={(e)=>setSelected(e.target.checked?[...selected,row.id]:selected.filter((id)=>id!==row.id))}/></td><td className="audit-time">{displayTime(row.occurred_at)}</td><td><b>{row.log_type}</b><small>{row.category}</small></td><td><b>{row.action}</b><small>{row.source}</small></td><td><b>{row.actor}</b><small>{row.ip||"-"}</small></td><td><b>{row.entity_name||row.entity_type||"-"}</b><small>{row.task_id||row.entity_id||"-"}</small></td><td><span className={cn("audit-result",row.status,row.level)}>{row.status}</span><small>HTTP {row.http_status||"-"} · {row.duration_ms||0}ms</small></td><td className="audit-summary" title={row.summary}>{row.summary}</td><td><button className="audit-view" onClick={()=>setDetail(row)} title={c.detail}><Eye/></button></td></tr>) : <tr><td colSpan={9}><div className="audit-empty"><FileArchive/><span>{c.noData}</span></div></td></tr>}</tbody></table>
       <div className="audit-pagination"><div>{interpolate(c.range,{from:rangeFrom,to:rangeTo,total})}<label>{c.perPage}<select value={pageSize} onChange={(e)=>{setPageSize(Number(e.target.value));setPage(1)}}>{[10,20,50,100].map((size)=><option key={size}>{size}</option>)}</select></label></div><div><button disabled={page<=1} onClick={()=>setPage((value)=>value-1)} title={c.prev}><ChevronLeft/></button><span>{interpolate(c.page,{page,pages})}</span><button disabled={page>=pages} onClick={()=>setPage((value)=>value+1)} title={c.next}><ChevronRight/></button></div></div>
     </div>

@@ -121,6 +121,7 @@ func TestAuditNewFeatureRouteClassification(t *testing.T) {
 		{"/api/sunny/tasks/refresh-session", "account", "refresh_access_token", "account_token", "task"},
 		{"/api/sunny/tasks/acquire-rt", "account", "acquire_refresh_token", "account_token", "task"},
 		{"/api/sunny/sessions/export", "account", "export", "account", "operation"},
+		{"/api/sunny/phones/provider-options", "sms", "refresh", "sms_provider_options", "operation"},
 	}
 	for _, test := range tests {
 		t.Run(test.action, func(t *testing.T) {

@@ -35,6 +35,8 @@ type Server struct {
 	stop          chan struct{}
 	running       map[string]bool
 	runtimeMu     sync.Mutex
+	smsOptionsMu  sync.Mutex
+	smsOptionsRun map[string]*sunnySMSOptionsFlight
 	sessionMu     sync.Mutex
 	sessions      map[string]time.Time
 	loginMu       sync.Mutex

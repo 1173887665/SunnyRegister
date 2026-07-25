@@ -234,6 +234,8 @@ func auditMetaForRequest(r *http.Request, body, response map[string]any, status 
 		meta.Status, meta.Level = "failed", "error"
 	}
 	switch {
+	case strings.Contains(path, "/sunny/phones/provider-options"):
+		meta.Category, meta.Action, meta.EntityType = "sms", "refresh", "sms_provider_options"
 	case strings.Contains(path, "/sunny/sessions/health-check"):
 		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "health_check", "account_health"
 	case strings.Contains(path, "/sunny/tasks/refresh-session"):
@@ -264,7 +266,7 @@ func auditMetaForRequest(r *http.Request, body, response map[string]any, status 
 		meta.Category, meta.EntityType = "configuration", "configuration"
 	}
 	meta.EntityID = fallback(auditPathID(r.URL.Path), firstText(response["entity_id"]))
-	meta.EntityName = truncateAuditText(firstText(body["email"], body["number"], body["name"], body["display_name"], body["provider_key"], response["email"], response["name"]), 512)
+	meta.EntityName = truncateAuditText(firstText(body["email"], body["number"], body["name"], body["display_name"], body["provider_key"], body["provider"], response["email"], response["name"]), 512)
 	meta.TaskID = firstText(body["task_id"], response["task_id"])
 	if meta.LogType == "task" && meta.TaskID == "" {
 		meta.TaskID = firstText(response["id"])

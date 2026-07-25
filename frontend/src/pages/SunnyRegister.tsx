@@ -1494,7 +1494,11 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   async function loadProviderOptions(provider: "smsbower"|"smspool", kind: "countries"|"services", refresh=false, country="") {
     const key = `${provider}_${kind}_${country || "all"}`;
     try {
-      const res = await apiFetch("/sunny/phones/provider-options", { method:"POST", body: JSON.stringify({ ...phoneCfg, provider, kind, country, refresh }) });
+      const params = new URLSearchParams({ provider, kind });
+      if (country) params.set("country", country);
+      const res = refresh
+        ? await apiFetch("/sunny/phones/provider-options", { method:"POST", body: JSON.stringify({ provider, kind, country, refresh:true }) })
+        : await apiFetch(`/sunny/phones/provider-options?${params.toString()}`);
       const items = Array.isArray(res.items) ? res.items : [];
       setSmsOptions((old: AnyObj)=>({ ...old, [key]: items }));
       if (kind === "services") {
