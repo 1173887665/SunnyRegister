@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
-import { Activity, ChevronDown, CircleHelp, Copy, Download, Inbox, Loader2, Pencil, Plus, RefreshCw, Save, Search, Settings2, Trash2, Upload, X } from "lucide-react";
+import { Activity, ChevronDown, CircleHelp, Download, Inbox, Loader2, Pencil, Plus, RefreshCw, Save, Search, Settings2, Trash2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -117,6 +117,107 @@ function useCachedState<T>(key: string, initial: T | (() => T)): [T, Dispatch<Se
     }
   }, [key, value]);
   return [value, setCachedValue];
+}
+
+type PersistentSessionTaskKind = "refresh-at" | "acquire-rt";
+type PersistentSessionTask = {
+  clientId: string;
+  taskId: string;
+  kind: PersistentSessionTaskKind;
+  sessionIds: number[];
+  email?: string;
+};
+type PersistentSessionTaskSnapshot = { tasks: PersistentSessionTask[] };
+
+const SESSION_TASK_STORAGE_KEY = "sunnyregister.active-session-tasks";
+const sessionTaskListeners = new Set<() => void>();
+const sessionTaskPromises = new Map<string, Promise<AnyObj>>();
+
+function readPersistentSessionTasks(): PersistentSessionTask[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const value = JSON.parse(window.localStorage.getItem(SESSION_TASK_STORAGE_KEY) || "[]");
+    return Array.isArray(value) ? value.filter((item) => item?.clientId && item?.taskId && Array.isArray(item?.sessionIds)) : [];
+  } catch {
+    return [];
+  }
+}
+
+let sessionTaskSnapshot: PersistentSessionTaskSnapshot = { tasks: readPersistentSessionTasks() };
+
+function publishSessionTasks(tasks: PersistentSessionTask[]) {
+  sessionTaskSnapshot = { tasks };
+  try {
+    window.localStorage.setItem(SESSION_TASK_STORAGE_KEY, JSON.stringify(tasks.filter((task) => task.taskId)));
+  } catch { /* in-memory state remains available */ }
+  sessionTaskListeners.forEach((listener) => listener());
+}
+
+function upsertSessionTask(task: PersistentSessionTask) {
+  const exists = sessionTaskSnapshot.tasks.some((item) => item.clientId === task.clientId);
+  publishSessionTasks(exists
+    ? sessionTaskSnapshot.tasks.map((item) => item.clientId === task.clientId ? task : item)
+    : [...sessionTaskSnapshot.tasks, task]);
+}
+
+function removeSessionTask(clientId: string) {
+  publishSessionTasks(sessionTaskSnapshot.tasks.filter((task) => task.clientId !== clientId));
+}
+
+function subscribeSessionTasks(listener: () => void) {
+  sessionTaskListeners.add(listener);
+  return () => sessionTaskListeners.delete(listener);
+}
+
+function ensureSessionTaskPolling(task: PersistentSessionTask, initial?: AnyObj): Promise<AnyObj> {
+  const existing = sessionTaskPromises.get(task.clientId);
+  if (existing) return existing;
+  const promise = (async () => {
+    let current = initial || await apiFetch(`/tasks/${task.taskId}`);
+    while (!current.terminal) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      current = await apiFetch(`/tasks/${task.taskId}`);
+    }
+    return current;
+  })().finally(() => {
+    sessionTaskPromises.delete(task.clientId);
+    removeSessionTask(task.clientId);
+  });
+  sessionTaskPromises.set(task.clientId, promise);
+  return promise;
+}
+
+async function runPersistentSessionTask(
+  kind: PersistentSessionTaskKind,
+  sessionIds: number[],
+  email: string | undefined,
+  createTask: () => Promise<AnyObj>,
+) {
+  const clientId = typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random()}`;
+  const pending: PersistentSessionTask = { clientId, taskId: "", kind, sessionIds, email };
+  upsertSessionTask(pending);
+  try {
+    const created = await createTask();
+    const active = { ...pending, taskId: String(created.id || "") };
+    if (!active.taskId) throw new Error("Task ID is missing");
+    upsertSessionTask(active);
+    return await ensureSessionTaskPolling(active, created);
+  } catch (error) {
+    removeSessionTask(clientId);
+    throw error;
+  }
+}
+
+function usePersistentSessionTasks() {
+  const snapshot = useSyncExternalStore(subscribeSessionTasks, () => sessionTaskSnapshot, () => sessionTaskSnapshot);
+  useEffect(() => {
+    snapshot.tasks.forEach((task) => {
+      if (task.taskId) void ensureSessionTaskPolling(task).catch(() => undefined);
+    });
+  }, [snapshot]);
+  return snapshot.tasks;
 }
 
 function prependUniqueLogs(entries: LogEntry[], existing: LogEntry[], limit = 200): LogEntry[] {
@@ -403,10 +504,11 @@ export default function SunnyRegister() {
   const location = useLocation();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const page = location.pathname.includes("mailbox") ? "mailbox" : location.pathname.includes("phone") ? "phone" : location.pathname.includes("sub2api") ? "sub2api" : location.pathname.includes("proxy") ? "proxy" : location.pathname.includes("session") ? "session" : "workbench";
-  useSunnyGsap(rootRef, page);
+  const renderedPage = useDeferredValue(page);
+  useSunnyGsap(rootRef, renderedPage);
   const [toast, setToast] = useState<ToastState>(null);
   const notify = (type: "ok" | "fail", text: string) => { setToast({ type, text }); };
-  return <div ref={rootRef} className="sunny-page space-y-6"><Toast toast={toast} clear={() => setToast(null)} />{page === "workbench" && <Hero t={t} />}{page === "workbench" && <Workbench t={t} notify={notify} />}{page === "mailbox" && <MailboxConfig t={t} notify={notify} />}{page === "phone" && <PhoneConfig t={t} notify={notify} />}{page === "sub2api" && <Sub2APIConfig t={t} notify={notify} />}{page === "proxy" && <ProxyConfigPage t={t} notify={notify} />}{page === "session" && <SessionManager t={t} notify={notify} />}</div>;
+  return <div ref={rootRef} className="sunny-page space-y-6" aria-busy={renderedPage !== page}><Toast toast={toast} clear={() => setToast(null)} />{renderedPage === "workbench" && <Hero t={t} />}{renderedPage === "workbench" && <Workbench t={t} notify={notify} />}{renderedPage === "mailbox" && <MailboxConfig t={t} notify={notify} />}{renderedPage === "phone" && <PhoneConfig t={t} notify={notify} />}{renderedPage === "sub2api" && <Sub2APIConfig t={t} notify={notify} />}{renderedPage === "proxy" && <ProxyConfigPage t={t} notify={notify} />}{renderedPage === "session" && <SessionManager t={t} notify={notify} />}</div>;
 }
 
 function Hero({ t }: { t: typeof zh }) { return <section className="hero-card rounded-[34px] border border-[var(--border)] p-6 md:p-8"><Badge className="rounded-full px-3 py-1">SunnyRegister</Badge><h1 className="mt-4 text-4xl font-black tracking-[-0.05em] md:text-5xl">{t.title}</h1><p className="mt-3 max-w-4xl leading-7 text-[var(--text-secondary)]">{t.desc}</p></section>; }
@@ -1206,7 +1308,7 @@ function MailboxMailModal({ t, mailbox, onClose, notify }: { t: typeof zh; mailb
   }
   useEffect(()=>{void load()},[]);
   const mail = items[selected] || {};
-  return <div className="sr-modal-mask"><div className="sr-modal sr-mail-modal">
+  return createPortal(<div className="sr-modal-mask"><div className="sr-modal sr-mail-modal">
     <div className="sr-mail-head">
       <div className="sr-current-mail">{t.currentMailbox}: <b>{mailbox.email}</b></div>
       <div className="sr-mail-actions">
@@ -1236,7 +1338,7 @@ function MailboxMailModal({ t, mailbox, onClose, notify }: { t: typeof zh; mailb
         </> : <div className="sr-empty"><Inbox className="h-10 w-10 text-slate-400"/><p>{t.emptyMail}</p></div>}
       </section>
     </div>
-  </div></div>;
+  </div></div>, document.body);
 }
 
 function MailboxImportModal({ t, groups, onGroupsChanged, onClose, onImported, notify }: { t: typeof zh; groups: AnyObj[]; onGroupsChanged:(groups:AnyObj[])=>void; onClose:()=>void; onImported:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
@@ -2125,11 +2227,12 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const [groups,setGroups]=useState<AnyObj[]>([]);
   const [selected,setSelected]=useCachedState<number[]>("session.selected",[]);
   const [editing,setEditing]=useCachedState<AnyObj|null>("session.editing",null);
-  const [fieldView,setFieldView]=useState<{ item: AnyObj; field: SessionFieldName } | null>(null);
+  const [fieldLoading,setFieldLoading]=useState<Record<string,boolean>>({});
   const [mailboxForMail,setMailboxForMail]=useState<AnyObj|null>(null);
   const [healthBusy,setHealthBusy]=useState(false);
-  const [refreshingSessionIds,setRefreshingSessionIds]=useState<number[]>([]);
-  const [acquiringRTSessionIds,setAcquiringRTSessionIds]=useState<number[]>([]);
+  const persistentTasks = usePersistentSessionTasks();
+  const refreshingSessionIds = Array.from(new Set(persistentTasks.filter((task)=>task.kind==="refresh-at").flatMap((task)=>task.sessionIds)));
+  const acquiringRTSessionIds = Array.from(new Set(persistentTasks.filter((task)=>task.kind==="acquire-rt").flatMap((task)=>task.sessionIds)));
   const [sortBy,setSortBy]=useCachedState("session.sortBy","last_health_checked_at");
   const [timeSort,setTimeSort]=useCachedState<SortOrder>("session.timeSort","desc");
   const [page,setPage]=useCachedState("session.page",1);
@@ -2198,15 +2301,26 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     try { setMailboxForMail(await apiFetch(`/sunny/mailboxes/${row.mailbox_id}`)); }
     catch(e:any) { notify("fail", e.message || String(e)); }
   }
+  async function copySessionField(row: AnyObj, field: SessionFieldName) {
+    const key = `${row.id}:${field}`;
+    if (fieldLoading[key]) return;
+    setFieldLoading((old)=>({...old,[key]:true}));
+    try {
+      const result = await apiFetch(`/sunny/sessions/${row.id}/field?name=${field}`);
+      const value = String(result.value || "").trim();
+      if (!value) throw new Error(template(t.sessionFieldEmpty,{field:SESSION_FIELD_LABELS[field]}));
+      await copyTextToClipboard(value);
+      notify("ok", t.copySuccess);
+    } catch(e:any) {
+      notify("fail", e.message || String(e));
+    } finally {
+      setFieldLoading((old)=>({...old,[key]:false}));
+    }
+  }
   async function refreshAccessTokens(ids: number[], row?: AnyObj) {
     if (!ids.length) { notify("fail", t.refreshATNoSelection); return; }
-    setRefreshingSessionIds((old)=>Array.from(new Set([...old,...ids])));
     try {
-      let task = await apiFetch("/sunny/tasks/refresh-session", { method:"POST", body:JSON.stringify({ session_ids:ids, execution_mode:"background", registration_stage:"register_only", concurrency:1 }) });
-      while (!task.terminal) {
-        await new Promise((resolve)=>setTimeout(resolve,1200));
-        task = await apiFetch(`/tasks/${task.id}`);
-      }
+      const task = await runPersistentSessionTask("refresh-at", ids, row?.email, () => apiFetch("/sunny/tasks/refresh-session", { method:"POST", body:JSON.stringify({ session_ids:ids, execution_mode:"background", registration_stage:"register_only", concurrency:1 }) }));
       const result = task.result || {};
       const success = Number(result.success || task.success_count || 0);
       const failed = Array.isArray(result.errors) ? result.errors.length : Number(task.error_count || 0);
@@ -2215,27 +2329,21 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       else notify(failed > 0 && success === 0 ? "fail" : "ok", template(t.refreshATSummary,{success,failed}));
       await load();
     } catch(e:any) { notify("fail", e.message || String(e)); }
-    finally { setRefreshingSessionIds((old)=>old.filter((id)=>!ids.includes(id))); }
   }
   async function acquireRefreshToken(row: AnyObj) {
     const id = Number(row.id || 0);
     if (!id || acquiringRTSessionIds.includes(id)) return;
-    setAcquiringRTSessionIds((old)=>Array.from(new Set([...old,id])));
     try {
-      let task = await apiFetch("/sunny/tasks/acquire-rt", { method:"POST", body:JSON.stringify({ session_ids:[id], execution_mode:"background", concurrency:1 }) });
-      while (!task.terminal) {
-        await new Promise((resolve)=>setTimeout(resolve,1200));
-        task = await apiFetch(`/tasks/${task.id}`);
-      }
+      const task = await runPersistentSessionTask("acquire-rt", [id], row.email, () => apiFetch("/sunny/tasks/acquire-rt", { method:"POST", body:JSON.stringify({ session_ids:[id], execution_mode:"background", concurrency:1 }) }));
       const result = task.result || {};
       if (Number(result.success || task.success_count || 0) > 0) {
+        setItems((old)=>old.map((item)=>Number(item.id)===id?{...item,has_refresh_token:true}:item));
         notify("ok", template(t.acquireRTDone,{email:row.email}));
         await load();
       } else {
         notify("fail", String(result.errors?.[0] || task.error || t.acquireRTFailed));
       }
     } catch(e:any) { notify("fail", e.message || t.acquireRTFailed); }
-    finally { setAcquiringRTSessionIds((old)=>old.filter((item)=>item!==id)); }
   }
   return <Card className="relative overflow-hidden rounded-[30px] p-5" aria-busy={listLoading}>
     <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
@@ -2258,46 +2366,11 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
         <button className="sr-text-btn" disabled={healthBusy} onClick={refreshSessionList}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
       </div>
     </div>
-    <div className="sr-table-scroll"><table className="sr-account-table sr-session-table"><thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/></th><th>{t.email}</th><th>{t.groupFilter}</th><th>{t.status}</th><th>{t.planType}</th><th>SK</th><th>AT</th><th>RT</th><th><SortTimeHeader label={t.atExpiresAt} order={sortBy==="access_token_expires_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("access_token_expires_at")}/></th><th><SortTimeHeader label={t.lastHealthCheckedAt} order={sortBy==="last_health_checked_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("last_health_checked_at")}/></th><th>{t.operation}</th></tr></thead><tbody>{items.length ? items.map((s)=>{const refreshing=refreshingSessionIds.includes(s.id);const acquiringRT=acquiringRTSessionIds.includes(s.id);return <tr key={s.id}><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td>{s.email}</td><td>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_secret_key ? <button className="sr-session-field-button" onClick={()=>setFieldView({item:s,field:"secret_key"})}>SK</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" onClick={()=>setFieldView({item:s,field:"access_token"})}>AT</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" onClick={()=>setFieldView({item:s,field:"refresh_token"})}>RT</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td>{formatDateTime(s.access_token_expires_at)}</td><td>{formatDateTime(s.last_health_checked_at)}</td><td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link" disabled={healthBusy} onClick={()=>runHealthCheck([s.id],s)}><Activity className="inline h-4 w-4"/>{t.healthCheck}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>}) : <tr><td colSpan={11}><div className="sr-empty !min-h-[260px]"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><p className="mt-3 text-sm text-slate-400">{t.noData}</p></div></td></tr>}</tbody></table></div>
+    <div className="sr-table-scroll"><table className="sr-account-table sr-session-table"><thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/></th><th>{t.email}</th><th>{t.groupFilter}</th><th>{t.status}</th><th>{t.planType}</th><th>SK</th><th>AT</th><th>RT</th><th><SortTimeHeader label={t.atExpiresAt} order={sortBy==="access_token_expires_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("access_token_expires_at")}/></th><th><SortTimeHeader label={t.lastHealthCheckedAt} order={sortBy==="last_health_checked_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("last_health_checked_at")}/></th><th>{t.operation}</th></tr></thead><tbody>{items.length ? items.map((s)=>{const refreshing=refreshingSessionIds.includes(s.id);const acquiringRT=acquiringRTSessionIds.includes(s.id);const skLoading=fieldLoading[`${s.id}:secret_key`];const atLoading=fieldLoading[`${s.id}:access_token`];const rtLoading=fieldLoading[`${s.id}:refresh_token`];return <tr key={s.id}><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td>{s.email}</td><td>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td>{formatDateTime(s.access_token_expires_at)}</td><td>{formatDateTime(s.last_health_checked_at)}</td><td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link" disabled={healthBusy} onClick={()=>runHealthCheck([s.id],s)}><Activity className="inline h-4 w-4"/>{t.healthCheck}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>}) : <tr><td colSpan={11}><div className="sr-empty !min-h-[260px]"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><p className="mt-3 text-sm text-slate-400">{t.noData}</p></div></td></tr>}</tbody></table></div>
     <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
     {editing && <SessionEditModal t={t} item={editing} onClose={()=>setEditing(null)} onSaved={()=>{setEditing(null); notify("ok", t.done); void load();}} notify={notify}/>}
-    {fieldView && <SessionFieldModal t={t} item={fieldView.item} field={fieldView.field} onClose={()=>setFieldView(null)} notify={notify}/>}
     {mailboxForMail && <MailboxMailModal t={t} mailbox={mailboxForMail} onClose={()=>setMailboxForMail(null)} notify={notify}/>}
   </Card>;
-}
-
-function SessionFieldModal({ t, item, field, onClose, notify }: { t: typeof zh; item: AnyObj; field: SessionFieldName; onClose:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
-  const [value,setValue]=useState("");
-  const [loading,setLoading]=useState(true);
-  const [error,setError]=useState("");
-  const label = SESSION_FIELD_LABELS[field];
-  useEffect(()=>{
-    let active = true;
-    setLoading(true);
-    setError("");
-    apiFetch(`/sunny/sessions/${item.id}/field?name=${field}`)
-      .then((res)=>{ if(active) setValue(String(res.value || "")); })
-      .catch((e:any)=>{ const message=e.message||String(e); if(active) setError(message); notify("fail",message); })
-      .finally(()=>{ if(active) setLoading(false); });
-    return ()=>{ active=false; };
-  },[item.id,field]);
-  async function copyValue() {
-    if (loading || error || !value) return;
-    try {
-      await copyTextToClipboard(value);
-      notify("ok", t.copySuccess);
-    } catch (e: any) {
-      notify("fail", e.message || String(e));
-    }
-  }
-  return createPortal(<div className="sr-modal-mask"><div className="sr-modal sr-session-field-modal">
-    <div className="sr-modal-head"><h3>{template(t.sessionFieldTitle,{field:label})}</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div>
-    <div className="sr-modal-body sr-session-field-body">
-      <ListLoadingOverlay loading={loading} label={template(t.sessionFieldLoading,{field:label})}/>
-      {!loading && <pre className={cn("sr-session-field-value",error&&"error")}>{error || value || template(t.sessionFieldEmpty,{field:label})}</pre>}
-    </div>
-    <div className="sr-modal-foot"><button className="sr-copy-button inline-flex items-center gap-2" disabled={loading || Boolean(error) || !value} onClick={copyValue}><Copy className="h-4 w-4"/>{t.copy}</button></div>
-  </div></div>, document.body);
 }
 
 function SessionEditModal({ t, item, onClose, onSaved, notify }: { t: typeof zh; item: AnyObj; onClose:()=>void; onSaved:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {

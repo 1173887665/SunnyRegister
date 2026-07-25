@@ -440,6 +440,9 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .sr-session-field-button {
   min-width: 42px;
   height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid rgba(13, 148, 136, .24);
   border-radius: 9px;
   background: rgba(20, 184, 166, .10);
@@ -448,7 +451,8 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   font-weight: 900;
   transition: background-color .16s ease, border-color .16s ease, transform .16s ease;
 }
-.sr-session-field-button:hover { border-color: rgba(13, 148, 136, .48); background: rgba(20, 184, 166, .18); transform: translateY(-1px); }
+.sr-session-field-button:disabled { transform:none; cursor:wait; }
+.sr-session-field-button:hover:not(:disabled) { border-color: rgba(13, 148, 136, .48); background: rgba(20, 184, 166, .18); transform: translateY(-1px); }
 .dark .sr-session-field-button { border-color: rgba(45, 212, 191, .28); background: rgba(45, 212, 191, .10); color: #5eead4; }
 .dark .sr-account-table th { background:rgba(255,255,255,.04); border-color:var(--border-soft); color:var(--text-muted); }
 .dark .sr-account-table td { border-color:var(--border-soft); color:var(--text-secondary); }

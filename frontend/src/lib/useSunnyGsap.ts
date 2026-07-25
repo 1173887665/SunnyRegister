@@ -70,36 +70,17 @@ export function useSunnyGsap(rootRef: RefObject<HTMLElement | null>, pageKey: st
         const revealTargets = gsap.utils.toArray<HTMLElement>(
           ".hero-card, .sr-toolbar, .sr-table-card, .sr-log-card, .sr-proxy-stat, .soft-table",
           root,
-        );
+        ).slice(0, 8);
         if (revealTargets.length) {
           gsap.fromTo(
             revealTargets,
-            { autoAlpha: 0, y: 18, scale: 0.985, filter: "blur(6px)" },
+            { autoAlpha: 0, y: 10 },
             {
               autoAlpha: 1,
               y: 0,
-              scale: 1,
-              filter: "blur(0px)",
-              duration: 0.46,
+              duration: 0.24,
               ease: "power3.out",
-              stagger: { each: 0.045, from: "start" },
-              clearProps: "transform,filter,opacity,visibility",
-            },
-          );
-        }
-
-        const rows = gsap.utils.toArray<HTMLElement>("tbody tr", root).slice(0, 18);
-        if (rows.length) {
-          gsap.fromTo(
-            rows,
-            { autoAlpha: 0, y: 8 },
-            {
-              autoAlpha: 1,
-              y: 0,
-              duration: 0.28,
-              delay: 0.08,
-              ease: "power2.out",
-              stagger: 0.018,
+              stagger: { each: 0.025, from: "start" },
               clearProps: "transform,opacity,visibility",
             },
           );

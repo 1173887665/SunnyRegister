@@ -54,12 +54,6 @@ function Shell({ theme, setTheme, onLogout }: { theme: string; setTheme: (v: str
         <TopBar theme={theme} setTheme={setTheme} onLogout={onLogout} />
         <main className="app-shell mx-auto py-6 md:py-8">
           <Routes>
-            <Route path="/" element={<SunnyRegister />} />
-            <Route path="/mailbox" element={<SunnyRegister />} />
-            <Route path="/phone" element={<SunnyRegister />} />
-            <Route path="/sub2api" element={<SunnyRegister />} />
-            <Route path="/proxy" element={<SunnyRegister />} />
-            <Route path="/session" element={<SunnyRegister />} />
             <Route path="/audit" element={<AuditLogPage />} />
             <Route path="*" element={<SunnyRegister />} />
           </Routes>
