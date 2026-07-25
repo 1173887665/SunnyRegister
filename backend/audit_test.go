@@ -82,6 +82,123 @@ func TestAuditMiddlewareRecordsMutationsAndRedactsSecrets(t *testing.T) {
 	}
 }
 
+func TestAuditMiddlewareClassifiesNewAccountTasksAndLinksTaskID(t *testing.T) {
+	s := newAuditTestServer(t)
+	handler := s.auditMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"id": "task_acquire_rt", "task_id": "task_acquire_rt", "type": "sunny_acquire_rt", "status": TaskPending,
+			"progress_detail": map[string]any{"current": 0, "total": 2},
+		})
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/acquire-rt", strings.NewReader(`{"account_ids":[11,12]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("task submission status = %d", rec.Code)
+	}
+	var item AuditLog
+	if err := s.db.First(&item).Error; err != nil {
+		t.Fatalf("audit log missing: %v", err)
+	}
+	if item.LogType != "task" || item.Category != "account" || item.Action != "acquire_refresh_token" {
+		t.Fatalf("unexpected account task classification: %#v", item)
+	}
+	if item.TaskID != "task_acquire_rt" || item.Count != 2 {
+		t.Fatalf("task response metadata missing: %#v", item)
+	}
+	if !strings.Contains(item.DetailsJSON, `"response_task_id":"task_acquire_rt"`) {
+		t.Fatalf("task id missing from details: %s", item.DetailsJSON)
+	}
+}
+
+func TestAuditNewFeatureRouteClassification(t *testing.T) {
+	tests := []struct {
+		path, category, action, entityType string
+		logType                            string
+	}{
+		{"/api/sunny/sessions/health-check", "account", "health_check", "account_health", "task"},
+		{"/api/sunny/tasks/refresh-session", "account", "refresh_access_token", "account_token", "task"},
+		{"/api/sunny/tasks/acquire-rt", "account", "acquire_refresh_token", "account_token", "task"},
+		{"/api/sunny/sessions/export", "account", "export", "account", "operation"},
+	}
+	for _, test := range tests {
+		t.Run(test.action, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, test.path, nil)
+			meta := auditMetaForRequest(req, map[string]any{"session_ids": []any{1, 2}}, map[string]any{"task_id": "task_new_feature"}, http.StatusAccepted)
+			if meta.LogType != test.logType || meta.Category != test.category || meta.Action != test.action || meta.EntityType != test.entityType {
+				t.Fatalf("unexpected classification for %s: %#v", test.path, meta)
+			}
+			if test.logType == "task" && meta.TaskID != "task_new_feature" {
+				t.Fatalf("task id not linked for %s: %#v", test.path, meta)
+			}
+		})
+	}
+}
+
+func TestAuditResponseCaptureDoesNotTruncateClientResponse(t *testing.T) {
+	s := newAuditTestServer(t)
+	largeValue := strings.Repeat("x", auditResponseCaptureLimit+1024)
+	handler := s.auditMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"value": largeValue})
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/sessions/export", strings.NewReader(`{"format":"all","session_ids":[1]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	var response map[string]any
+	if json.Unmarshal(rec.Body.Bytes(), &response) != nil || text(response["value"]) != largeValue {
+		t.Fatalf("client response was truncated: got %d bytes", rec.Body.Len())
+	}
+}
+
+func TestAuditMiddlewareRecordsReadOnlyPanicsWithoutAuditingNormalReads(t *testing.T) {
+	s := newAuditTestServer(t)
+	handler := s.auditMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("read failed") }))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sunny/sessions", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("panic response status = %d", rec.Code)
+	}
+	var item AuditLog
+	if err := s.db.First(&item).Error; err != nil {
+		t.Fatalf("panic audit log missing: %v", err)
+	}
+	if item.LogType != "system" || item.Action != "panic" || item.Status != "failed" || item.Method != http.MethodGet {
+		t.Fatalf("unexpected panic audit log: %#v", item)
+	}
+}
+
+func TestAuditCompletedScheduledHealthTaskRecordsFullLifecycle(t *testing.T) {
+	s := newAuditTestServer(t)
+	task := Task{
+		ID: "task_health_scheduled", Type: sunnyHealthTaskType, Platform: "sunny", Status: TaskSucceeded,
+		PayloadJSON:   dumpJSON(map[string]any{"scheduled": true}),
+		ResultJSON:    dumpJSON(map[string]any{"requested": 3, "checked": 2, "alive": 1, "banned": 1, "failed": 1, "skipped": 4, "items": []any{map[string]any{"email": "hidden@example.com"}}}),
+		ProgressTotal: 3, SuccessCount: 2, ErrorCount: 1,
+	}
+	if err := s.db.Create(&task).Error; err != nil {
+		t.Fatalf("create scheduled task: %v", err)
+	}
+	s.auditCompletedTasks()
+	var rows []AuditLog
+	if err := s.db.Where("task_id = ?", task.ID).Order("id asc").Find(&rows).Error; err != nil {
+		t.Fatalf("load task audit logs: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("scheduled terminal task should have start and completion logs, got %d", len(rows))
+	}
+	if rows[0].LogType != "scheduler" || rows[0].Category != "account" || rows[0].Action != "health_check_started" || rows[0].Status != "running" {
+		t.Fatalf("unexpected scheduled start log: %#v", rows[0])
+	}
+	if rows[1].Action != "health_check_completed" || rows[1].Status != "warning" || rows[1].Count != 3 {
+		t.Fatalf("unexpected scheduled completion log: %#v", rows[1])
+	}
+	if !strings.Contains(rows[1].DetailsJSON, `"banned":1`) || !strings.Contains(rows[1].DetailsJSON, `"skipped":4`) || strings.Contains(rows[1].DetailsJSON, "hidden@example.com") {
+		t.Fatalf("health result summary is incomplete or leaked item details: %s", rows[1].DetailsJSON)
+	}
+}
+
 func TestAuditRetentionCleanup(t *testing.T) {
 	s := newAuditTestServer(t)
 	now := time.Now()

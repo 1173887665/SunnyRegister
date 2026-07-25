@@ -19,11 +19,15 @@ import (
 	"gorm.io/gorm"
 )
 
-const auditExportZipThreshold = int64(2 * 1024 * 1024)
+const (
+	auditExportZipThreshold   = int64(2 * 1024 * 1024)
+	auditResponseCaptureLimit = 64 * 1024
+)
 
 type auditResponseWriter struct {
 	http.ResponseWriter
 	status int
+	body   bytes.Buffer
 }
 
 func (w *auditResponseWriter) WriteHeader(status int) {
@@ -38,6 +42,14 @@ func (w *auditResponseWriter) Write(data []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
 	}
+	if strings.Contains(strings.ToLower(w.Header().Get("Content-Type")), "application/json") && w.body.Len() < auditResponseCaptureLimit {
+		remaining := auditResponseCaptureLimit - w.body.Len()
+		capture := data
+		if len(capture) > remaining {
+			capture = capture[:remaining]
+		}
+		_, _ = w.body.Write(capture)
+	}
 	return w.ResponseWriter.Write(data)
 }
 
@@ -48,6 +60,17 @@ func (w *auditResponseWriter) Flush() {
 	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+func (w *auditResponseWriter) responseJSON() map[string]any {
+	if w.body.Len() == 0 {
+		return map[string]any{}
+	}
+	var result map[string]any
+	if json.Unmarshal(w.body.Bytes(), &result) != nil || result == nil {
+		return map[string]any{}
+	}
+	return result
 }
 
 func (s *Server) auditMiddleware(next http.Handler) http.Handler {
@@ -61,7 +84,16 @@ func (s *Server) auditMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		if !isMutation(r.Method) {
-			next.ServeHTTP(w, r)
+			started := time.Now()
+			requestID := fallback(strings.TrimSpace(r.Header.Get("X-Request-ID")), randomID("req"))
+			w.Header().Set("X-Request-ID", requestID)
+			wrapped := &auditResponseWriter{ResponseWriter: w}
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					s.recordAuditPanic(r, wrapped, started, requestID, recovered)
+				}
+			}()
+			next.ServeHTTP(wrapped, r)
 			return
 		}
 		started := time.Now()
@@ -81,25 +113,21 @@ func (s *Server) auditMiddleware(next http.Handler) http.Handler {
 		wrapped := &auditResponseWriter{ResponseWriter: w}
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				s.recordAudit(AuditLog{
-					OccurredAt: started, ActorType: actorType, Actor: actor, IP: s.loginClientKey(r),
-					LogType: "system", Category: "system", Action: "panic", Level: "error", Status: "failed",
-					Source: "go-backend", Method: r.Method, Path: r.URL.Path, RequestID: requestID,
-					Summary: "系统处理请求时发生异常", DetailsJSON: dumpJSON(map[string]any{"panic": sanitizePersistedString(fmt.Sprint(recovered))}),
-					HTTPStatus: http.StatusInternalServerError, DurationMS: time.Since(started).Milliseconds(),
-				})
-				if wrapped.status == 0 {
-					writeError(wrapped, http.StatusInternalServerError, "Internal server error")
-				}
+				s.recordAuditPanic(r, wrapped, started, requestID, recovered)
 				return
 			}
 			status := wrapped.status
 			if status == 0 {
 				status = http.StatusOK
 			}
-			meta := auditMetaForRequest(r, body, status)
+			response := wrapped.responseJSON()
+			meta := auditMetaForRequest(r, body, response, status)
 			if strings.HasSuffix(r.URL.Path, "/auth/login") && status < 400 {
 				actorType = "user"
+			}
+			details := auditSanitizeBody(body)
+			for key, value := range auditResponseMetadata(response) {
+				details[key] = value
 			}
 			s.recordAudit(AuditLog{
 				OccurredAt: started, ActorType: actorType, Actor: actor, IP: s.loginClientKey(r),
@@ -107,12 +135,47 @@ func (s *Server) auditMiddleware(next http.Handler) http.Handler {
 				Action: meta.Action, Level: meta.Level, Status: meta.Status, Source: "http-api", Method: r.Method,
 				Path: truncateAuditText(r.URL.Path, 512), RequestID: requestID, TaskID: meta.TaskID,
 				EntityType: meta.EntityType, EntityID: meta.EntityID, EntityName: meta.EntityName,
-				Summary: meta.Summary, DetailsJSON: dumpJSON(auditSanitizeBody(body)), HTTPStatus: status,
+				Summary: meta.Summary, DetailsJSON: dumpJSON(details), HTTPStatus: status,
 				DurationMS: time.Since(started).Milliseconds(), Count: meta.Count,
 			})
 		}()
 		next.ServeHTTP(wrapped, r)
 	})
+}
+
+func (s *Server) recordAuditPanic(r *http.Request, w *auditResponseWriter, started time.Time, requestID string, recovered any) {
+	actor, actorType := "Anonymous", "anonymous"
+	if s.hasValidSession(r) {
+		actor, actorType = s.adminUser, "user"
+	}
+	s.recordAudit(AuditLog{
+		OccurredAt: started, ActorType: actorType, Actor: actor, IP: s.loginClientKey(r),
+		LogType: "system", Category: "system", Action: "panic", Level: "error", Status: "failed",
+		Source: "go-backend", Method: r.Method, Path: r.URL.Path, RequestID: requestID,
+		Summary: "系统处理请求时发生异常", DetailsJSON: dumpJSON(map[string]any{"panic": sanitizePersistedString(fmt.Sprint(recovered))}),
+		HTTPStatus: http.StatusInternalServerError, DurationMS: time.Since(started).Milliseconds(),
+	})
+	if w.status == 0 {
+		writeError(w, http.StatusInternalServerError, "Internal server error")
+	}
+}
+
+func auditResponseMetadata(response map[string]any) map[string]any {
+	result := map[string]any{}
+	for _, key := range []string{"task_id", "type", "status", "error_count", "success"} {
+		if value, ok := response[key]; ok && text(value) != "" {
+			result["response_"+key] = sanitizePersistedValue(value, key)
+		}
+	}
+	if progress := mapFromAny(response["progress_detail"]); len(progress) > 0 {
+		result["response_progress"] = map[string]any{"current": intValue(progress["current"], 0), "total": intValue(progress["total"], 0)}
+	}
+	for _, key := range []string{"error", "detail"} {
+		if value := truncateAuditText(sanitizePersistedString(text(response[key])), 1000); value != "" {
+			result["response_"+key] = value
+		}
+	}
+	return result
 }
 
 func (s *Server) auditPageAccess(next http.Handler, w http.ResponseWriter, r *http.Request) {
@@ -164,13 +227,21 @@ type auditRequestMeta struct {
 	Count                                            int
 }
 
-func auditMetaForRequest(r *http.Request, body map[string]any, status int) auditRequestMeta {
+func auditMetaForRequest(r *http.Request, body, response map[string]any, status int) auditRequestMeta {
 	path := strings.ToLower(r.URL.Path)
 	meta := auditRequestMeta{LogType: "operation", Category: "system", Action: auditAction(path, r.Method), Level: "info", Status: "success"}
 	if status >= 400 {
 		meta.Status, meta.Level = "failed", "error"
 	}
 	switch {
+	case strings.Contains(path, "/sunny/sessions/health-check"):
+		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "health_check", "account_health"
+	case strings.Contains(path, "/sunny/tasks/refresh-session"):
+		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "refresh_access_token", "account_token"
+	case strings.Contains(path, "/sunny/tasks/acquire-rt"):
+		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "acquire_refresh_token", "account_token"
+	case strings.Contains(path, "/sunny/sessions/export"):
+		meta.LogType, meta.Category, meta.Action, meta.EntityType = "operation", "account", "export", "account"
 	case strings.Contains(path, "/auth/"):
 		meta.LogType, meta.Category, meta.EntityType = "security", "authentication", "session"
 	case strings.Contains(path, "mailbox-groups"):
@@ -192,10 +263,19 @@ func auditMetaForRequest(r *http.Request, body map[string]any, status int) audit
 	case strings.Contains(path, "/config") || strings.Contains(path, "/provider-settings"):
 		meta.Category, meta.EntityType = "configuration", "configuration"
 	}
-	meta.EntityID = auditPathID(r.URL.Path)
-	meta.EntityName = truncateAuditText(firstText(body["email"], body["number"], body["name"], body["display_name"], body["provider_key"]), 512)
-	meta.TaskID = firstText(body["task_id"], body["id"])
+	meta.EntityID = fallback(auditPathID(r.URL.Path), firstText(response["entity_id"]))
+	meta.EntityName = truncateAuditText(firstText(body["email"], body["number"], body["name"], body["display_name"], body["provider_key"], response["email"], response["name"]), 512)
+	meta.TaskID = firstText(body["task_id"], response["task_id"])
+	if meta.LogType == "task" && meta.TaskID == "" {
+		meta.TaskID = firstText(response["id"])
+	}
+	if meta.EntityType == "task" && meta.EntityID == "" {
+		meta.EntityID = meta.TaskID
+	}
 	meta.Count = auditBodyCount(body)
+	if meta.Count == 0 {
+		meta.Count = intValue(mapFromAny(response["progress_detail"])["total"], intValue(response["total"], 0))
+	}
 	meta.Summary = auditSummary(meta.Category, meta.Action, meta.Status, meta.Count, meta.EntityName)
 	return meta
 }
@@ -224,7 +304,7 @@ func auditAction(path, method string) string {
 
 func auditSummary(category, action, status string, count int, entity string) string {
 	categoryLabels := map[string]string{"authentication": "系统认证", "mailbox": "邮箱配置", "sms": "接码配置", "reverse_proxy": "反代配置", "proxy": "代理配置", "account": "账户管理", "registration_task": "注册任务", "audit": "日志管理", "configuration": "系统配置", "system": "系统"}
-	actionLabels := map[string]string{"login": "登录", "logout": "退出登录", "create": "新增", "update": "修改", "delete": "删除", "import": "导入", "export": "导出", "health_check": "测活", "check": "检测", "refresh": "刷新", "cancel": "取消", "batch_update": "批量修改", "toggle": "启用状态切换", "test": "测试", "restart": "重启"}
+	actionLabels := map[string]string{"login": "登录", "logout": "退出登录", "create": "新增", "update": "修改", "delete": "删除", "import": "导入", "export": "导出", "health_check": "账户测活", "refresh_access_token": "AT 续期", "acquire_refresh_token": "获取 RT", "check": "检测", "refresh": "刷新", "cancel": "取消", "batch_update": "批量修改", "toggle": "启用状态切换", "test": "测试", "restart": "重启"}
 	result := "成功"
 	if status != "success" {
 		result = "失败"
@@ -719,21 +799,20 @@ func (s *Server) auditCompletedTasks() {
 	s.db.Where("updated_at >= ?", time.Now().Add(-24*time.Hour)).Order("updated_at ASC").Limit(500).Find(&tasks)
 	for _, task := range tasks {
 		payload := jsonMap(task.PayloadJSON)
-		actor, actorType, logType, category := "System", "system", "task", "registration_task"
 		scheduled := boolValue(payload["scheduled"], false)
+		logType, category, action, entityType, displayName := auditTaskClassification(task.Type, scheduled)
 		if scheduled {
-			logType, category = "scheduler", "scheduled_task"
-		}
-		if scheduled && !terminalTaskStatuses[task.Status] {
 			s.recordAudit(AuditLog{
-				OccurredAt: task.CreatedAt, Actor: actor, ActorType: actorType, LogType: logType, Category: category,
-				Action: "task_started", Level: "info", Status: "running", Source: "task-runtime", TaskID: task.ID,
-				EntityType: "task", EntityID: task.ID, EntityName: task.Type,
-				Summary:     fmt.Sprintf("定时任务 %s 已启动，计划处理 %d 条记录", task.Type, task.ProgressTotal),
+				OccurredAt: task.CreatedAt, Actor: "System", ActorType: "system", LogType: logType, Category: category,
+				Action: action + "_started", Level: "info", Status: "running", Source: "task-runtime", TaskID: task.ID,
+				EntityType: entityType, EntityID: task.ID, EntityName: task.Type,
+				Summary:     fmt.Sprintf("定时%s任务已启动，计划处理 %d 条记录", displayName, task.ProgressTotal),
 				DetailsJSON: dumpJSON(map[string]any{"task_type": task.Type, "platform": task.Platform, "task_status": task.Status, "total": task.ProgressTotal}),
 				Count:       task.ProgressTotal, DedupeKey: "task:" + task.ID + ":started",
 			})
-			continue
+			if !terminalTaskStatuses[task.Status] {
+				continue
+			}
 		}
 		if !terminalTaskStatuses[task.Status] {
 			continue
@@ -741,16 +820,59 @@ func (s *Server) auditCompletedTasks() {
 		status, level := "success", "info"
 		if task.Status != TaskSucceeded {
 			status, level = "failed", "error"
+		} else if task.ErrorCount > 0 {
+			status, level = "warning", "warning"
+		}
+		details := map[string]any{"task_type": task.Type, "platform": task.Platform, "task_status": task.Status, "success": task.SuccessCount, "failed": task.ErrorCount, "total": task.ProgressTotal, "error": sanitizePersistedString(task.Error)}
+		if resultSummary := auditTaskResultSummary(task.ResultJSON); len(resultSummary) > 0 {
+			details["result_summary"] = resultSummary
 		}
 		s.recordAudit(AuditLog{
-			OccurredAt: task.UpdatedAt, Actor: actor, ActorType: actorType, LogType: logType, Category: category,
-			Action: "task_completed", Level: level, Status: status, Source: "task-runtime", TaskID: task.ID,
-			EntityType: "task", EntityID: task.ID, EntityName: task.Type,
-			Summary:     fmt.Sprintf("任务 %s 执行完成：成功 %d，失败 %d，总数 %d", task.Type, task.SuccessCount, task.ErrorCount, task.ProgressTotal),
-			DetailsJSON: dumpJSON(map[string]any{"task_type": task.Type, "platform": task.Platform, "task_status": task.Status, "success": task.SuccessCount, "failed": task.ErrorCount, "total": task.ProgressTotal, "error": sanitizePersistedString(task.Error)}),
+			OccurredAt: task.UpdatedAt, Actor: "System", ActorType: "system", LogType: logType, Category: category,
+			Action: action + "_completed", Level: level, Status: status, Source: "task-runtime", TaskID: task.ID,
+			EntityType: entityType, EntityID: task.ID, EntityName: task.Type,
+			Summary:     fmt.Sprintf("%s任务执行完成：成功 %d，失败 %d，总数 %d", displayName, task.SuccessCount, task.ErrorCount, task.ProgressTotal),
+			DetailsJSON: dumpJSON(details),
 			Count:       task.ProgressTotal, DedupeKey: "task:" + task.ID + ":" + task.Status,
 		})
 	}
+}
+
+func auditTaskResultSummary(raw string) map[string]any {
+	result := jsonMap(raw)
+	summary := map[string]any{}
+	for _, key := range []string{"requested", "checked", "alive", "banned", "failed", "skipped", "success", "imported", "refreshed"} {
+		if value, ok := result[key]; ok {
+			summary[key] = intValue(value, 0)
+		}
+	}
+	if items, ok := result["items"].([]any); ok {
+		summary["items_count"] = len(items)
+	}
+	if errors, ok := result["errors"].([]any); ok {
+		summary["errors_count"] = len(errors)
+	}
+	return summary
+}
+
+func auditTaskClassification(taskType string, scheduled bool) (logType, category, action, entityType, displayName string) {
+	logType, category, action, entityType, displayName = "task", "registration_task", "registration", "task", "注册/登录"
+	switch strings.ToLower(strings.TrimSpace(taskType)) {
+	case sunnyHealthTaskType:
+		category, action, entityType, displayName = "account", "health_check", "account_health", "账户测活"
+	case "sunny_refresh_session":
+		category, action, entityType, displayName = "account", "refresh_access_token", "account_token", "AT 续期"
+	case "sunny_acquire_rt":
+		category, action, entityType, displayName = "account", "acquire_refresh_token", "account_token", "获取 RT"
+	case "sunny_register", "sunny_login", "register":
+		// Keep registration tasks under the registration category.
+	default:
+		category, action, entityType, displayName = "task", "task", "task", "系统"
+	}
+	if scheduled {
+		logType = "scheduler"
+	}
+	return
 }
 
 func (s *Server) auditRetentionCleanup() {
