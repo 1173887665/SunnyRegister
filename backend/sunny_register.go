@@ -39,7 +39,7 @@ const (
 	defaultGroupName = "默认分组"
 )
 
-var sunnyMailboxStatuses = []string{"未注册", "已注册", "已接码", "已反代", "已封禁", "需二验"}
+var sunnyMailboxStatuses = []string{"未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "失败"}
 
 func (s *Server) handleSunny(w http.ResponseWriter, r *http.Request, rest string) {
 	rest = strings.Trim(rest, "/")
@@ -480,7 +480,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			query = query.Where("group_id = ?", gid)
 		}
 		if status := q.Get("status"); status != "" {
-			query = query.Where("status = ?", status)
+			query = query.Where("status IN ?", sunnyMailboxStatusFilterValues(status))
 		}
 		if enabled := strings.TrimSpace(q.Get("enabled")); enabled != "" {
 			query = query.Where("enabled = ?", boolValue(enabled, true))
@@ -522,7 +522,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			if end > len(filtered) {
 				end = len(filtered)
 			}
-			writeJSON(w, 200, map[string]any{"items": filtered[start:end], "total": total, "page": page, "page_size": size, "statuses": sunnyMailboxStatuses})
+			writeJSON(w, 200, s.sunnyMailboxListResponse(filtered[start:end], total, page, size, summary))
 			return
 		}
 		var total int64
@@ -548,7 +548,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			}
 			items = append(items, item)
 		}
-		writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": size, "statuses": sunnyMailboxStatuses})
+		writeJSON(w, 200, s.sunnyMailboxListResponse(items, total, page, size, summary))
 		return
 	}
 	if len(parts) == 0 && r.Method == http.MethodPost {
@@ -706,6 +706,82 @@ func normalizeSunnyMailboxStatus(status string) string {
 		return "已接码"
 	}
 	return status
+}
+
+type sunnyMailboxStatusCountRow struct {
+	Status string `gorm:"column:status"`
+	Count  int64  `gorm:"column:count"`
+}
+
+func normalizeSunnyMailboxCountStatus(status string) string {
+	raw := normalizeSunnyMailboxStatus(status)
+	switch strings.ToLower(raw) {
+	case "", "pending", "unregistered":
+		return "未注册"
+	case "registered", "success", "succeeded":
+		return "已注册"
+	case "phone_bound", "phone-bound", "bound":
+		return "已接码"
+	case "reverse_proxied", "reverse-proxied", "proxied", "imported":
+		return "已反代"
+	case "banned", "disabled":
+		return "已封禁"
+	case "needs_2fa", "needs-2fa", "2fa":
+		return "需二验"
+	case "failed", "error":
+		return "失败"
+	default:
+		return raw
+	}
+}
+
+func sunnyMailboxStatusFilterValues(status string) []string {
+	switch normalizeSunnyMailboxCountStatus(status) {
+	case "未注册":
+		return []string{"未注册", "pending", "unregistered"}
+	case "已注册":
+		return []string{"已注册", "registered", "success", "succeeded"}
+	case "已接码":
+		return []string{"已接码", "phone_bound", "phone-bound", "bound", "PLUS试用中"}
+	case "已反代":
+		return []string{"已反代", "reverse_proxied", "reverse-proxied", "proxied", "imported"}
+	case "已封禁":
+		return []string{"已封禁", "banned", "disabled"}
+	case "需二验":
+		return []string{"需二验", "needs_2fa", "needs-2fa", "2fa"}
+	case "失败":
+		return []string{"失败", "failed", "error"}
+	default:
+		return []string{strings.TrimSpace(status)}
+	}
+}
+
+func (s *Server) sunnyMailboxStatusCounts() (map[string]int64, int64) {
+	counts := make(map[string]int64, len(sunnyMailboxStatuses))
+	for _, status := range sunnyMailboxStatuses {
+		counts[status] = 0
+	}
+	var rows []sunnyMailboxStatusCountRow
+	s.db.Model(&SunnyMailbox{}).Select("status, COUNT(*) AS count").Group("status").Scan(&rows)
+	var total int64
+	for _, row := range rows {
+		total += row.Count
+		status := normalizeSunnyMailboxCountStatus(row.Status)
+		if _, ok := counts[status]; ok {
+			counts[status] += row.Count
+		}
+	}
+	return counts, total
+}
+
+func (s *Server) sunnyMailboxListResponse(items []map[string]any, total int64, page, pageSize int, summary bool) map[string]any {
+	response := map[string]any{"items": items, "total": total, "page": page, "page_size": pageSize, "statuses": sunnyMailboxStatuses}
+	if summary {
+		counts, mailboxTotal := s.sunnyMailboxStatusCounts()
+		response["status_counts"] = counts
+		response["mailbox_total"] = mailboxTotal
+	}
+	return response
 }
 
 func parseSunnyMailboxLine(raw string) (map[string]string, error) {

@@ -1801,6 +1801,47 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .sr-mailbox-expanded {
   animation: rise-in .22s ease both;
 }
+.sr-mailbox-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 10px;
+}
+.sr-mailbox-stat-card {
+  --stat-color: #0f766e;
+  position: relative;
+  min-width: 0;
+  min-height: 86px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--stat-color) 22%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--stat-color) 7%, rgba(255,255,255,.96));
+  padding: 13px 14px;
+  color: var(--stat-color);
+  text-align: left;
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+.sr-mailbox-stat-card[data-tone="pending"] { --stat-color: #64748b; }
+.sr-mailbox-stat-card[data-tone="registered"] { --stat-color: #2563eb; }
+.sr-mailbox-stat-card[data-tone="phone"] { --stat-color: #059669; }
+.sr-mailbox-stat-card[data-tone="reversed"] { --stat-color: #0891b2; }
+.sr-mailbox-stat-card[data-tone="banned"] { --stat-color: #dc2626; }
+.sr-mailbox-stat-card[data-tone="verify"] { --stat-color: #d97706; }
+.sr-mailbox-stat-card[data-tone="failed"] { --stat-color: #e11d48; }
+.sr-mailbox-stat-card:hover { transform: translateY(-2px); box-shadow: 0 9px 22px color-mix(in srgb, var(--stat-color) 13%, transparent); }
+.sr-mailbox-stat-card.active {
+  border-color: color-mix(in srgb, var(--stat-color) 68%, transparent);
+  background: color-mix(in srgb, var(--stat-color) 12%, rgba(255,255,255,.96));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--stat-color) 14%, transparent), 0 10px 24px color-mix(in srgb, var(--stat-color) 12%, transparent);
+}
+.sr-mailbox-stat-label { display:flex; min-width:0; align-items:center; gap:7px; color:#64748b; font-size:12px; font-weight:800; white-space:nowrap; }
+.sr-mailbox-stat-label i { width:7px; height:7px; flex:0 0 7px; border-radius:50%; background:var(--stat-color); box-shadow:0 0 0 4px color-mix(in srgb, var(--stat-color) 12%, transparent); }
+.sr-mailbox-stat-card strong { display:block; margin-top:8px; color:var(--stat-color); font-size:25px; line-height:1; }
+.dark .sr-mailbox-stat-card { background:color-mix(in srgb, var(--stat-color) 10%, rgba(15,23,42,.88)); }
+.dark .sr-mailbox-stat-card.active { background:color-mix(in srgb, var(--stat-color) 17%, rgba(15,23,42,.9)); }
+.dark .sr-mailbox-stat-label { color:#cbd5e1; }
+@media (max-width: 1320px) { .sr-mailbox-stats-grid { grid-template-columns:repeat(4,minmax(0,1fr)); } }
+@media (max-width: 680px) { .sr-mailbox-stats-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (prefers-reduced-motion: reduce) { .sr-mailbox-stat-card { transition:none; } .sr-mailbox-stat-card:hover { transform:none; } }
 .sr-mailbox-inner-toolbar {
   background: rgba(255,255,255,.86) !important;
   box-shadow: 0 10px 28px rgba(15,23,42,.05) !important;

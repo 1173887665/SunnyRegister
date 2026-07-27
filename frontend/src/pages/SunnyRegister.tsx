@@ -267,7 +267,7 @@ const zh: AnyObj = new Proxy({
   title: "SunnyRegister 注册机控制台", desc: "使用自建 Outlook/Hotmail 邮箱池注册/登录 GPT 账户，并统一管理账户状态、Session、RT 和日志。",
   register: "注册或登录", refresh: "刷新", import: "导入", save: "保存", export: "导出", copy: "复制", copySuccess: "复制成功", secretKeyUnavailable: "该邮箱凭证信息不完整，无法复制 SK", newGroup: "新建分组", move: "迁移到分组",
   mailboxTip: "格式：email----password----client_id----refresh_token。Outlook 与 Hotmail 均自动兼容 Graph API、IMAP/POP3 与 Graph/IMAP 双令牌凭证。",
-  mailboxPoolName: "自建邮箱池", mailboxPoolGlobalSwitch: "使用自建邮箱池", mailboxPoolSwitchTip: "关闭后，注册机不会从自建 Outlook/Hotmail 邮箱池分配邮箱。",
+  mailboxPoolName: "自建邮箱池", mailboxPoolGlobalSwitch: "使用自建邮箱池", mailboxPoolSwitchTip: "关闭后，注册机不会从自建 Outlook/Hotmail 邮箱池分配邮箱。", mailboxOverviewTotal: "邮箱总数", mailboxOverviewPending: "待注册", mailboxOverviewRegistered: "已注册", mailboxOverviewPhoneBound: "已接码", mailboxOverviewReversed: "已反代", mailboxOverviewBanned: "已封禁", mailboxOverviewNeeds2FA: "待二验", mailboxOverviewFailed: "失败",
   phoneTip: "格式：+手机号----接码链接。成功后冷却 5 小时，最多 3 次。", phonePool: "自建手机号池", phonePoolGlobalSwitch: "使用自建手机号池", importPhones: "导入手机号", phonePoolSwitchTip: "关闭后，注册机不会从自建手机号池分配号码；后续可切换为外部接码平台。", phonePoolOn: "可用于接码", phonePoolOff: "不用于接码", phoneImportHelp: "每行一个长效接码：第一个字符必须是 +，手机号与接码链接之间必须使用四个中横线 ---- 连接。", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "手机号导入格式错误", phoneSearch: "搜索手机号...", phoneNumber: "手机号", smsLink: "接码链接", usedCount: "已用次数", countFilter: "次数筛选", allCount: "全部次数", lastUsedAt: "最近使用时间", phoneEdit: "编辑手机号", phoneStatusEnabled: "启用", phoneStatusDisabled: "停用", phoneConfirmDelete: "确认删除该手机号？此操作不可撤销。", phoneConfirmBatchDelete: "确认删除选中的手机号？此操作不可撤销。",
   smsbowerProvider: "SMSBower 接码供应商", smsbowerDesc: "当自建手机号池不可用或无可用号码时，注册机会使用 SMSBower API 自动获取一次性手机号。", smsbowerSwitch: "启用 SMSBower", smsbowerReady: "SMSBower 已配置", smsbowerApiKey: "API Key", smsbowerCountry: "默认国家", smsbowerService: "默认服务", smsbowerMaxPrice: "最大价格", smsbowerBaseURL: "接口地址", smsbowerCheck: "检测余额", smsbowerBalance: "余额：{balance}", smsbowerSaved: "SMSBower 配置已保存",
   smspoolProvider: "SMSPool 接码供应商", smspoolDesc: "SMSPool 临时号码平台，可在自建手机号池和 SMSBower 不可用时自动购买一次性接码号码。", smspoolSwitch: "启用 SMSPool", smspoolReady: "SMSPool 已配置", smspoolApiKey: "API Key", smspoolCountry: "默认国家", smspoolService: "默认服务", refreshProviderOptions: "获取列表", smspoolMaxPrice: "最大价格", smspoolBaseURL: "接口地址", smspoolCheck: "检测余额", smspoolBalance: "余额：{balance}", smspoolSaved: "SMSPool 配置已保存",
@@ -290,7 +290,7 @@ const en = {
   workbench: "Workbench", mailbox: "Mailbox", phone: "SMS", sub2api: "Reverse Proxy", proxy: "Proxy", session: "Account Management",
   title: "SunnyRegister Console", desc: "Register/login GPT accounts with a self-managed Outlook/Hotmail mailbox pool, then manage account status, sessions, RTs and logs.",
   register: "Register / Login", refresh: "Refresh", import: "Import", save: "Save", export: "Export", copy: "Copy", copySuccess: "Copied", secretKeyUnavailable: "This mailbox credential is incomplete and its SK cannot be copied", newGroup: "New Group", move: "Move Group",
-  mailboxTip: "Format: email----password----client_id----refresh_token. Outlook and Hotmail both support Graph API, IMAP/POP3, and dual Graph/IMAP credentials automatically.", mailboxPoolName: "Self-managed Mailbox Pool", mailboxPoolGlobalSwitch: "Use Self-managed Mailbox Pool", mailboxPoolSwitchTip: "When disabled, SunnyRegister will not allocate mailboxes from the self-managed Outlook/Hotmail pool.",
+  mailboxTip: "Format: email----password----client_id----refresh_token. Outlook and Hotmail both support Graph API, IMAP/POP3, and dual Graph/IMAP credentials automatically.", mailboxPoolName: "Self-managed Mailbox Pool", mailboxPoolGlobalSwitch: "Use Self-managed Mailbox Pool", mailboxPoolSwitchTip: "When disabled, SunnyRegister will not allocate mailboxes from the self-managed Outlook/Hotmail pool.", mailboxOverviewTotal: "Total Mailboxes", mailboxOverviewPending: "Pending", mailboxOverviewRegistered: "Registered", mailboxOverviewPhoneBound: "Phone Bound", mailboxOverviewReversed: "Reverse Proxied", mailboxOverviewBanned: "Banned", mailboxOverviewNeeds2FA: "Needs 2FA", mailboxOverviewFailed: "Failed",
   phoneTip: "Format: +phone----SMS URL. Cooldown 5 hours after success, max 3 successes.",
   phonePool: "Self-managed Phone Pool", phonePoolGlobalSwitch: "Use Self-managed Phone Pool", importPhones: "Import Phones", phonePoolSwitchTip: "When disabled, SunnyRegister will not allocate numbers from this phone pool. You can switch to external SMS providers later.", phonePoolOn: "Usable for SMS", phonePoolOff: "Not used for SMS", phoneImportHelp: "One long-lived SMS record per line. The first character must be +, and the phone number and SMS URL must be separated with exactly four hyphens: ----.", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "Invalid phone import format", phoneSearch: "Search phone number...", phoneNumber: "Phone Number", smsLink: "SMS Link", usedCount: "Used Count", countFilter: "Count", allCount: "All Counts", lastUsedAt: "Last Used", phoneEdit: "Edit Phone", phoneStatusEnabled: "Enabled", phoneStatusDisabled: "Disabled", phoneConfirmDelete: "Delete this phone number? This cannot be undone.", phoneConfirmBatchDelete: "Delete selected phone numbers? This cannot be undone.", smsbowerProvider: "SMSBower Provider", smsbowerDesc: "When the self-managed phone pool is unavailable or empty, SunnyRegister can use SMSBower API to rent a one-time number automatically.", smsbowerSwitch: "Enable SMSBower", smsbowerReady: "SMSBower configured", smsbowerApiKey: "API Key", smsbowerCountry: "Default Country", smsbowerService: "Default Service", smsbowerMaxPrice: "Max Price", smsbowerBaseURL: "API URL", smsbowerCheck: "Check Balance", smsbowerBalance: "Balance: {balance}", smsbowerSaved: "SMSBower config saved", smspoolProvider: "SMSPool Provider", smspoolDesc: "SMSPool is a temporary-number provider used when the self-managed phone pool and SMSBower are unavailable.", smspoolSwitch: "Enable SMSPool", smspoolReady: "SMSPool configured", smspoolApiKey: "API Key", smspoolCountry: "Default Country", smspoolService: "Default Service", refreshProviderOptions: "Fetch options", smspoolMaxPrice: "Max Price", smspoolBaseURL: "API URL", smspoolCheck: "Check Balance", smspoolBalance: "Balance: {balance}", smspoolSaved: "SMSPool config saved",
   proxyTip: "Manage the outbound proxy pool for register/login requests. Batch check only tests proxy server connectivity and does not access chatgpt.com.",
@@ -1062,6 +1062,8 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   const [page,setPage]=useCachedState("mailbox.page", 1);
   const [pageSize,setPageSize]=useCachedState("mailbox.pageSize", 10);
   const [total,setTotal]=useCachedState("mailbox.total", 0);
+  const [mailboxTotal,setMailboxTotal]=useState(0);
+  const [statusCounts,setStatusCounts]=useState<Record<string,number>>({});
   const [query,setQuery]=useCachedState("mailbox.query", "");
   const debouncedQuery = useDebouncedValue(query);
   const [groupFilter,setGroupFilter]=useCachedState("mailbox.groupFilter", 0);
@@ -1088,6 +1090,8 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
     const m=await apiFetch(`/sunny/mailboxes?${params.toString()}`);
     setItems(m.items||[]);
     setTotal(m.total||0);
+    setMailboxTotal(Number(m.mailbox_total || 0));
+    setStatusCounts(m.status_counts || {});
   });
   useEffect(()=>{void load()},[page, debouncedQuery, groupFilter, statusFilter, planFilter, timeSort, pageSize]);
   const loadGroups=()=>apiFetch("/sunny/mailbox-groups").then((g)=>{setGroups(g.items||[]);return g.items||[]});
@@ -1144,6 +1148,16 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   }
   const allChecked = items.length > 0 && items.every((m)=>selected.includes(m.id));
   const mailboxPoolEnabled = mailboxCfg.pool_enabled !== false;
+  const overviewCards = [
+    { status:"", label:t.mailboxOverviewTotal, count:mailboxTotal, tone:"total" },
+    { status:"未注册", label:t.mailboxOverviewPending, count:Number(statusCounts["未注册"] || 0), tone:"pending" },
+    { status:"已注册", label:t.mailboxOverviewRegistered, count:Number(statusCounts["已注册"] || 0), tone:"registered" },
+    { status:"已接码", label:t.mailboxOverviewPhoneBound, count:Number(statusCounts["已接码"] || 0), tone:"phone" },
+    { status:"已反代", label:t.mailboxOverviewReversed, count:Number(statusCounts["已反代"] || 0), tone:"reversed" },
+    { status:"已封禁", label:t.mailboxOverviewBanned, count:Number(statusCounts["已封禁"] || 0), tone:"banned" },
+    { status:"需二验", label:t.mailboxOverviewNeeds2FA, count:Number(statusCounts["需二验"] || 0), tone:"verify" },
+    { status:"失败", label:t.mailboxOverviewFailed, count:Number(statusCounts["失败"] || 0), tone:"failed" },
+  ];
   return <div className="space-y-4">
     <Card className="sr-sms-provider-card sr-mailbox-provider-card rounded-[24px] p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1155,6 +1169,12 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
         </button>
       </div>
       {mailboxPoolEnabled && <div className="sr-mailbox-expanded mt-5 space-y-4">
+        <div className="sr-mailbox-stats-grid" aria-label={t.mailboxPoolName}>
+          {overviewCards.map((card)=><button type="button" key={card.status || "all"} data-tone={card.tone} className={cn("sr-mailbox-stat-card", statusFilter===card.status && "active")} aria-pressed={statusFilter===card.status} onClick={()=>{setStatusFilter(card.status);setPage(1)}}>
+            <span className="sr-mailbox-stat-label"><i />{card.label}</span>
+            <strong>{card.count}</strong>
+          </button>)}
+        </div>
         <div className="sr-toolbar sr-toolbar-compact sr-mailbox-toolbar sr-mailbox-inner-toolbar rounded-[18px] p-4">
           <div className="sr-mailbox-toolbar-row gap-2">
             <div className="sr-mailbox-filters flex min-w-0 flex-nowrap gap-2">
