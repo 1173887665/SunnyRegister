@@ -80,7 +80,7 @@ function ResizableDataTable({ tableKey, columns, headers, className="", children
   };
   const resizeTitle=typeof document!=="undefined"&&document.documentElement.lang.startsWith("en")?"Drag to resize; double-click to reset":"拖动调整列宽，双击恢复默认宽度";
   const tableWidth=widths.reduce((sum,width)=>sum+width,0);
-  return <table className={cn("sr-account-table sr-resizable-table",className)} style={{width:tableWidth,minWidth:tableWidth}}>
+  return <table className={cn("sr-account-table sr-resizable-table",className)} style={{width:"100%",minWidth:tableWidth}}>
     <colgroup>{widths.map((width,index)=><col key={index} style={{width}}/>)}</colgroup>
     <thead><tr>{headers.map((header,index)=><th key={index}><span className="sr-table-header-content">{header}</span><span className="sr-column-resizer" role="separator" aria-orientation="vertical" tabIndex={0} title={resizeTitle} onPointerDown={(event)=>startResize(event,index)} onDoubleClick={()=>setColumnWidth(index,columns[index].width)} onKeyDown={(event)=>{if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();setColumnWidth(index,widths[index]+(event.key==="ArrowRight"?12:-12));}else if(event.key==="Home"){event.preventDefault();setColumnWidth(index,columns[index].width);}}}/></th>)}</tr></thead>
     {children}
