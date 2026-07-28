@@ -2388,8 +2388,8 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 			if v := normalizeSunnyProxyAddress(text(body["address"])); v != "" {
 				p.Address = v
 			}
-			if _, ok := body["country"]; ok {
-				p.Country = strings.TrimSpace(text(body["country"]))
+			if country := strings.TrimSpace(text(body["country"])); country != "" {
+				p.Country = country
 			}
 			if _, ok := body["enabled"]; ok {
 				p.Enabled = asBool(body["enabled"])
@@ -2407,7 +2407,7 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 					p.LastCheckOK = false
 				}
 			}
-			if !p.Enabled {
+			if !p.Enabled && p.Status != "invalid" {
 				p.Status = "disabled"
 			} else if p.Status == "disabled" {
 				p.Status = "enabled"
