@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from sunny_core.browser_backend import camoufox_runtime_error
-from sunny_core.mailbox import HotmailReader, MailAccount, parse_account_line
+from sunny_core.mailbox import HotmailReader, MailAccount, MailboxAccessError, _request_outlook_access_token, parse_account_line
 
 
 def account(email: str = "user@example.com") -> MailAccount:
@@ -63,6 +63,22 @@ class OutlookImapRouteTests(unittest.TestCase):
 
 
 class OutlookGraphCredentialTests(unittest.TestCase):
+    def test_expired_refresh_token_is_classified_and_stops_routing(self) -> None:
+        response = Mock()
+        response.ok = False
+        response.status_code = 400
+        response.text = '{"error":"invalid_grant"}'
+        response.json.return_value = {
+            "error": "invalid_grant",
+            "error_description": "The user could not be authenticated as the grant is expired. The user must sign in again.",
+        }
+        with patch("sunny_core.mailbox.requests.post", return_value=response):
+            with self.assertRaises(MailboxAccessError) as raised:
+                _request_outlook_access_token(account(), {"name": "TEST", "url": "https://example.test/token", "scope": ""}, None)
+
+        self.assertEqual(raised.exception.code, "mailbox_credential_expired")
+        self.assertTrue(raised.exception.terminal)
+
     def test_graph_credential_is_detected_and_reads_messages(self) -> None:
         response = Mock()
         response.ok = True

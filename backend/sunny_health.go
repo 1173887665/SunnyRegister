@@ -319,6 +319,9 @@ func fetchOutlookMailSubjects(emailAddr, clientID, refreshToken string, limit in
 	for _, endpoint := range hotmailGraphTokenEndpoints {
 		token, err := refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken, endpoint, proxyURL)
 		if err != nil {
+			if isTerminalOutlookMailError(err) {
+				return nil, err
+			}
 			errors = append(errors, endpoint.Name+" token: "+err.Error())
 			continue
 		}
@@ -331,6 +334,9 @@ func fetchOutlookMailSubjects(emailAddr, clientID, refreshToken string, limit in
 	for _, endpoint := range hotmailTokenEndpoints {
 		token, err := refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken, endpoint, proxyURL)
 		if err != nil {
+			if isTerminalOutlookMailError(err) {
+				return nil, err
+			}
 			errors = append(errors, endpoint.Name+" token: "+err.Error())
 			continue
 		}
@@ -340,7 +346,7 @@ func fetchOutlookMailSubjects(emailAddr, clientID, refreshToken string, limit in
 		}
 		errors = append(errors, endpoint.Name+" IMAP: "+err.Error())
 	}
-	return nil, fmt.Errorf("Outlook Graph/IMAP subject query failed: %s", strings.Join(errors, " | "))
+	return nil, newOutlookMailAggregateError(errors)
 }
 
 func fetchMailSubjectsViaGraph(accessToken string, limit int, proxyURL string) ([]string, error) {

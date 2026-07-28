@@ -883,7 +883,13 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 	payload, err := fetchOutlookLatestMail(m.Email, m.ClientID, m.RefreshToken, limit, proxyURL)
 	if err != nil {
 		s.db.Model(m).UpdateColumn("last_error", err.Error())
-		writeError(w, 502, err.Error())
+		mailErr := classifyOutlookMailError(err)
+		writeJSON(w, mailErr.HTTPStatus, map[string]any{
+			"code":     mailErr.Code,
+			"category": mailErr.Category,
+			"detail":   mailErr.UserMessage,
+			"error":    mailErr.UserMessage,
+		})
 		return
 	}
 	s.db.Model(m).UpdateColumns(map[string]any{
@@ -914,6 +920,13 @@ func (s *Server) sunnyMailboxProxyURL() string {
 }
 
 func fetchOutlookLatestMail(email, clientID, refreshToken string, limit int, proxyURL string) (map[string]any, error) {
+	if strings.TrimSpace(email) == "" || !strings.Contains(email, "@") || strings.TrimSpace(clientID) == "" || strings.TrimSpace(refreshToken) == "" {
+		return nil, &outlookMailError{
+			Code: "mailbox_format_error", Category: "format", HTTPStatus: http.StatusUnprocessableEntity,
+			UserMessage: "邮箱凭证格式错误，应为 邮箱----密码----client_id----Refresh Token",
+			Terminal:    true,
+		}
+	}
 	// The imported four-field credential can be issued for Graph, legacy
 	// IMAP/POP3, or an application that grants both. Detect the usable audience
 	// instead of assuming every successful refresh token is an IMAP token.
@@ -925,6 +938,9 @@ func fetchOutlookLatestMail(email, clientID, refreshToken string, limit int, pro
 	for _, endpoint := range hotmailGraphTokenEndpoints {
 		token, err := refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken, endpoint, proxyURL)
 		if err != nil {
+			if isTerminalOutlookMailError(err) {
+				return nil, err
+			}
 			errors = append(errors, endpoint.Name+" token: "+err.Error())
 			continue
 		}
@@ -937,6 +953,9 @@ func fetchOutlookLatestMail(email, clientID, refreshToken string, limit int, pro
 	for _, endpoint := range hotmailTokenEndpoints {
 		token, err := refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken, endpoint, proxyURL)
 		if err != nil {
+			if isTerminalOutlookMailError(err) {
+				return nil, err
+			}
 			errors = append(errors, endpoint.Name+" token: "+err.Error())
 			continue
 		}
@@ -946,7 +965,7 @@ func fetchOutlookLatestMail(email, clientID, refreshToken string, limit int, pro
 		}
 		errors = append(errors, endpoint.Name+" IMAP: "+err.Error())
 	}
-	return nil, fmt.Errorf("Outlook Graph/IMAP authentication failed for all compatible endpoints: %s", strings.Join(errors, " | "))
+	return nil, newOutlookMailAggregateError(errors)
 }
 
 type hotmailTokenEndpoint struct {
@@ -1029,7 +1048,11 @@ func refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken string, ep hot
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", &outlookMailError{
+			Code: "mailbox_network_error", Category: "network", HTTPStatus: http.StatusServiceUnavailable,
+			UserMessage: "邮箱服务网络连接失败，请检查服务器出网、代理与 Microsoft 服务连通性",
+			Detail:      err.Error(),
+		}
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
@@ -1038,47 +1061,23 @@ func refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken string, ep hot
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 && text(payload["access_token"]) != "" {
 		return text(payload["access_token"]), nil
 	}
-	return "", fmt.Errorf("%s", firstText(payload["error_description"], payload["error"], fmt.Sprintf("HTTP %d", resp.StatusCode)))
+	return "", newOutlookTokenError(resp.StatusCode, payload)
 }
 
 func refreshHotmailAccessToken(email, clientID, refreshToken, proxyURL string) (string, string, error) {
-	client := &http.Client{Timeout: 20 * time.Second}
-	if proxyURL != "" {
-		if u, err := url.Parse(proxyURL); err == nil {
-			client.Transport = &http.Transport{Proxy: http.ProxyURL(u)}
-		}
-	}
+	_ = email
 	errors := []string{}
 	for _, ep := range hotmailTokenEndpoints {
-		form := url.Values{}
-		form.Set("client_id", clientID)
-		form.Set("grant_type", "refresh_token")
-		form.Set("refresh_token", refreshToken)
-		if ep.Scope != "" {
-			form.Set("scope", ep.Scope)
+		token, err := refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken, ep, proxyURL)
+		if err == nil {
+			return token, ep.Name, nil
 		}
-		if ep.Resource != "" {
-			form.Set("resource", ep.Resource)
+		if isTerminalOutlookMailError(err) {
+			return "", "", err
 		}
-		req, _ := http.NewRequest(http.MethodPost, ep.URL, strings.NewReader(form.Encode()))
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		resp, err := client.Do(req)
-		if err != nil {
-			errors = append(errors, ep.Name+": "+err.Error())
-			continue
-		}
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-		_ = resp.Body.Close()
-		var payload map[string]any
-		_ = json.Unmarshal(raw, &payload)
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 && text(payload["access_token"]) != "" {
-			return text(payload["access_token"]), ep.Name, nil
-		}
-		msg := firstText(payload["error_description"], payload["error"], fmt.Sprintf("HTTP %d %s", resp.StatusCode, string(raw[:min(len(raw), 260)])))
-		errors = append(errors, ep.Name+": "+msg)
+		errors = append(errors, ep.Name+": "+err.Error())
 	}
-	return "", "", fmt.Errorf("Outlook token 刷新失败，所有 sunny 兼容端点均失败：%s", strings.Join(errors, " | "))
+	return "", "", newOutlookMailAggregateError(errors)
 }
 
 func fetchLatestMailsViaGraph(emailAddr, accessToken string, limit int, proxyURL string) ([]map[string]any, error) {

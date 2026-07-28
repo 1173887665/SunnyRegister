@@ -1,12 +1,53 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 )
+
+func TestFetchOutlookLatestMailStopsOnExpiredCredential(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":"invalid_grant","error_description":"The user could not be authenticated as the grant is expired. The user must sign in again."}`)
+	}))
+	defer server.Close()
+
+	originalGraphEndpoints := hotmailGraphTokenEndpoints
+	originalIMAPEndpoints := hotmailTokenEndpoints
+	hotmailGraphTokenEndpoints = []hotmailTokenEndpoint{
+		{Name: "GRAPH-EXPIRED", URL: server.URL},
+		{Name: "GRAPH-SHOULD-NOT-RUN", URL: server.URL},
+	}
+	hotmailTokenEndpoints = []hotmailTokenEndpoint{{Name: "IMAP-SHOULD-NOT-RUN", URL: server.URL}}
+	t.Cleanup(func() {
+		hotmailGraphTokenEndpoints = originalGraphEndpoints
+		hotmailTokenEndpoints = originalIMAPEndpoints
+	})
+
+	_, err := fetchOutlookLatestMail("user@outlook.com", "client-id", "expired-token", 3, "")
+	mailErr := classifyOutlookMailError(err)
+	if mailErr.Code != "mailbox_credential_expired" || mailErr.HTTPStatus != http.StatusUnprocessableEntity {
+		t.Fatalf("unexpected classified error: %#v", mailErr)
+	}
+	if calls != 1 {
+		t.Fatalf("expired credential should stop after one token attempt, got %d", calls)
+	}
+}
+
+func TestFetchOutlookLatestMailRejectsMalformedCredential(t *testing.T) {
+	_, err := fetchOutlookLatestMail("not-an-email", "", "", 3, "")
+	mailErr := classifyOutlookMailError(err)
+	if mailErr.Code != "mailbox_format_error" || mailErr.Category != "format" {
+		t.Fatalf("unexpected format error: %#v", mailErr)
+	}
+}
 
 func TestFetchLatestMailsViaGraph(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

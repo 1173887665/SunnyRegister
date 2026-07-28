@@ -28,6 +28,75 @@ GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 GRAPH_MESSAGES_URL = "https://graph.microsoft.com/v1.0/me/messages"
 
 
+class MailboxAccessError(RuntimeError):
+    def __init__(self, code: str, user_message: str, detail: str = "", terminal: bool = False):
+        self.code = code
+        self.user_message = user_message
+        self.detail = detail
+        self.terminal = terminal
+        super().__init__(f"{user_message}: {detail}" if detail else user_message)
+
+
+def _outlook_token_error(status_code: int, payload: dict[str, Any]) -> MailboxAccessError:
+    error_code = str(payload.get("error") or "").strip().lower()
+    detail = str(payload.get("error_description") or payload.get("error") or f"HTTP {status_code}").strip()
+    lower = detail.lower()
+    if any(marker in lower for marker in ("grant is expired", "refresh token has expired", "token was revoked", "sign in again")):
+        return MailboxAccessError(
+            "mailbox_credential_expired",
+            "邮箱 OAuth 凭证已过期或被撤销，请重新授权或更换 Refresh Token",
+            detail,
+            terminal=True,
+        )
+    if error_code == "invalid_client" or "client secret is invalid" in lower:
+        return MailboxAccessError(
+            "mailbox_client_invalid",
+            "邮箱 OAuth 客户端配置无效，请检查 client_id 与凭证来源",
+            detail,
+            terminal=True,
+        )
+    if error_code == "invalid_grant" and ("malformed" in lower or "invalid refresh token" in lower):
+        return MailboxAccessError(
+            "mailbox_credential_invalid",
+            "邮箱 OAuth 凭证无效，请检查 client_id 与 Refresh Token",
+            detail,
+            terminal=True,
+        )
+    if error_code == "invalid_scope" or ("scope" in lower and ("unauthorized" in lower or "consent" in lower)):
+        return MailboxAccessError(
+            "mailbox_scope_mismatch",
+            "邮箱凭证权限类型不匹配，正在尝试 Graph 与 IMAP 兼容授权",
+            detail,
+        )
+    return MailboxAccessError(
+        "mailbox_auth_failed",
+        "邮箱 OAuth 凭证验证失败，请检查凭证类型、授权范围与有效期",
+        detail,
+    )
+
+
+def _aggregate_mailbox_error(errors: list[str]) -> MailboxAccessError:
+    detail = " | ".join(errors)
+    lower = detail.lower()
+    if any(marker in lower for marker in ("timeout", "connection refused", "connection reset", "network is unreachable", "name resolution", "tls")):
+        return MailboxAccessError(
+            "mailbox_network_error",
+            "邮箱服务网络连接失败，请检查服务器出网、代理与 Microsoft 服务连通性",
+            detail,
+        )
+    if any(marker in lower for marker in ("scope", "permission", "audience")):
+        return MailboxAccessError(
+            "mailbox_scope_mismatch",
+            "邮箱凭证权限类型不匹配，Graph 与 IMAP 均未获得可用授权",
+            detail,
+        )
+    return MailboxAccessError(
+        "mailbox_auth_failed",
+        "邮箱凭证无法通过 Graph 或 IMAP 验证，请检查凭证类型、授权范围与有效期",
+        detail,
+    )
+
+
 @dataclasses.dataclass
 class MailAccount:
     email: str
@@ -114,14 +183,27 @@ def _request_outlook_access_token(account: MailAccount, endpoint: dict[str, str]
         data["resource"] = endpoint["resource"]
     if log:
         log(f"[{account.email}] Try Outlook token endpoint {endpoint['name']}")
-    resp = requests.post(endpoint["url"], data=data, headers={"Accept": "application/json"}, timeout=20, proxies=proxies)
-    payload = resp.json() if resp.text else {}
+    try:
+        resp = requests.post(endpoint["url"], data=data, headers={"Accept": "application/json"}, timeout=20, proxies=proxies)
+    except requests.RequestException as exc:
+        raise MailboxAccessError(
+            "mailbox_network_error",
+            "邮箱服务网络连接失败，请检查服务器出网、代理与 Microsoft 服务连通性",
+            str(exc),
+        ) from exc
+    try:
+        payload = resp.json() if resp.text else {}
+    except ValueError as exc:
+        raise MailboxAccessError(
+            "mailbox_service_response_invalid",
+            "Microsoft 邮箱服务返回了无法解析的响应，请稍后重试",
+            f"HTTP {resp.status_code}",
+        ) from exc
     if resp.ok and payload.get("access_token"):
         if log:
             log(f"[{account.email}] Outlook token endpoint {endpoint['name']} succeeded")
         return str(payload["access_token"])
-    msg = payload.get("error_description") or payload.get("error") or f"HTTP {resp.status_code}"
-    raise RuntimeError(str(msg))
+    raise _outlook_token_error(resp.status_code, payload)
 
 
 def refresh_hotmail_access_token(account: MailAccount, proxy_url: str = "", log: Callable[[str], None] | None = None) -> tuple[str, str]:
@@ -134,7 +216,9 @@ def refresh_hotmail_access_token(account: MailAccount, proxy_url: str = "", log:
             errors.append(f"{endpoint['name']}: {exc}")
             if log:
                 log(f"[{account.email}] Outlook token endpoint {endpoint['name']} failed: {exc}")
-    raise RuntimeError("All Outlook token endpoints failed -> " + " | ".join(errors))
+            if isinstance(exc, MailboxAccessError) and exc.terminal:
+                raise
+    raise _aggregate_mailbox_error(errors)
 
 
 def decode_header_text(value: str | None) -> str:
@@ -216,8 +300,10 @@ class HotmailReader:
                     errors.append(f"{endpoint['name']}/{route_name}: {exc}")
                     self.log(f"[{self.account.email}] Outlook IMAP connect via {endpoint['name']}/{route_name} failed: {exc}")
                     self.close()
+                    if isinstance(exc, MailboxAccessError) and exc.terminal:
+                        raise
                     time.sleep(0.5)
-        raise RuntimeError("All Outlook Graph/IMAP auth attempts failed -> " + " | ".join(errors))
+        raise _aggregate_mailbox_error(errors)
 
     def _connect_graph_routes(self, request_routes, errors: list[str]) -> bool:
         for endpoint in GRAPH_TOKEN_ENDPOINTS:
@@ -233,6 +319,8 @@ class HotmailReader:
                 except Exception as exc:
                     errors.append(f"{endpoint['name']}/{route_name}: {exc}")
                     self.log(f"[{self.account.email}] Outlook Graph connect via {endpoint['name']}/{route_name} failed: {exc}")
+                    if isinstance(exc, MailboxAccessError) and exc.terminal:
+                        raise
         return False
 
     def _graph_request(self, access_token: str, proxies, limit: int) -> list[dict[str, Any]]:
@@ -316,7 +404,7 @@ class HotmailReader:
                 errors.append(f"{route_name}: {exc}")
                 self.log(f"[{self.account.email}] Outlook IMAP {route_name} failed: {exc}")
                 self.close()
-        raise RuntimeError("Outlook IMAP network routes failed -> " + " | ".join(errors))
+        raise _aggregate_mailbox_error(errors)
 
     def _connect_with_access_token(self, access_token: str, token_endpoint: str, proxy_url: str = "") -> None:
         auth = f"user={self.account.email}\x01auth=Bearer {access_token}\x01\x01"
