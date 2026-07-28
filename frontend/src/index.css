@@ -430,13 +430,81 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 }
 .dark .sr-search, .dark .sr-select { background:var(--bg-input); border-color:var(--border); color:var(--text-primary); }
 .sr-text-btn { display:inline-flex; align-items:center; color:#94a3b8; font-weight:600; gap:.35rem; padding:0 10px; }
-.sr-account-table { width:100%; border-collapse:collapse; font-size:14px; }
+.sr-account-table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:14px; }
 .sr-account-table th {
   height:42px; background:#f8fafc; color:#94a3b8; font-size:13px; font-weight:700; text-align:center; padding:0 14px;
   border-bottom:1px solid rgba(15,23,42,.06);
 }
 .sr-account-table td { height:54px; padding:0 14px; border-bottom:1px solid rgba(15,23,42,.06); color:#334155; text-align:center; vertical-align:middle; }
 .sr-account-table td > * { margin-left:auto; margin-right:auto; }
+.sr-resizable-table th { position:relative; user-select:none; }
+.sr-table-header-content {
+  display:flex;
+  min-width:0;
+  height:100%;
+  align-items:center;
+  justify-content:center;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.sr-column-resizer {
+  position:absolute;
+  top:7px;
+  right:-5px;
+  bottom:7px;
+  z-index:6;
+  width:10px;
+  cursor:col-resize;
+  touch-action:none;
+}
+.sr-column-resizer::after {
+  position:absolute;
+  top:4px;
+  right:4px;
+  bottom:4px;
+  width:2px;
+  border-radius:2px;
+  background:transparent;
+  content:"";
+  transition:background-color .15s ease, box-shadow .15s ease;
+}
+.sr-column-resizer:hover::after,
+.sr-column-resizer:focus-visible::after {
+  background:var(--accent);
+  box-shadow:0 0 0 3px rgba(20,184,166,.10);
+}
+.sr-column-resizing,
+.sr-column-resizing * { cursor:col-resize !important; user-select:none !important; }
+.sr-resizable-table td {
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.sr-resizable-table td[colspan],
+.sr-resizable-table .sr-renewal-progress-row td { overflow:visible; white-space:normal; }
+.sr-resizable-table td > :not(.sr-empty):not(.sr-renewal-progress) { max-width:100%; }
+.sr-resizable-table td > .font-semibold,
+.sr-resizable-table td > div:not([class*="flex"]):not(.sr-empty):not(.sr-renewal-progress) {
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.sr-resizable-table thead th:last-child,
+.sr-resizable-table tbody tr:not(.sr-renewal-progress-row) > td:last-child:not([colspan]) {
+  position:sticky;
+  right:0;
+  z-index:4;
+  border-left:1px solid rgba(15,23,42,.06);
+  background:#fff;
+  box-shadow:-8px 0 14px -14px rgba(15,23,42,.38);
+}
+.sr-resizable-table thead th:last-child { z-index:7; background:#f8fafc; }
+.dark .sr-resizable-table thead th:last-child,
+.dark .sr-resizable-table tbody tr:not(.sr-renewal-progress-row) > td:last-child:not([colspan]) {
+  border-left-color:var(--border-soft);
+  background:var(--bg-card);
+}
 .sr-session-field-button {
   min-width: 42px;
   height: 30px;
@@ -2353,4 +2421,43 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   .audit-actions-right { width:100%; }
   .audit-actions-right > * { width:100%!important; }
   .audit-pagination > div { justify-content:space-between; }
+}
+
+/* Search fields stay compact even when adjacent actions are conditionally hidden. */
+.sunny-page .sr-search-control {
+  width:min(360px,100%);
+  min-width:220px;
+  max-width:360px;
+  flex:0 1 360px;
+}
+.sunny-page .sr-mailbox-toolbar .sr-mailbox-search {
+  width:min(360px,100%) !important;
+  min-width:220px !important;
+  max-width:360px !important;
+  flex:0 1 360px !important;
+}
+.audit-search { width:100%; max-width:360px; }
+
+/* Keep the audit operation column visible while its fixed-width table scrolls. */
+.audit-table th:last-child,
+.audit-table td:last-child {
+  position:sticky;
+  right:0;
+  z-index:3;
+  border-left:1px solid var(--border-soft);
+  background:var(--bg-card);
+  box-shadow:-8px 0 14px -14px rgba(15,23,42,.38);
+}
+.audit-table th:last-child { z-index:5; background:rgba(248,250,252,.96); }
+.dark .audit-table th:last-child { background:rgba(15,23,42,.96); }
+
+@media (max-width:640px) {
+  .sunny-page .sr-search-control,
+  .sunny-page .sr-mailbox-toolbar .sr-mailbox-search,
+  .audit-search {
+    width:100% !important;
+    min-width:0 !important;
+    max-width:none !important;
+    flex:1 1 100% !important;
+  }
 }

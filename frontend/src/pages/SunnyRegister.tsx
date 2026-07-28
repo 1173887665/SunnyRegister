@@ -1,5 +1,5 @@
 import { Fragment, useDeferredValue, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { Dispatch, SetStateAction } from "react";
+import type { Dispatch, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
 import { Activity, ChevronDown, CircleHelp, Download, Inbox, Loader2, Pencil, Plus, RefreshCw, Save, Search, Settings2, Trash2, Upload, X } from "lucide-react";
@@ -13,6 +13,79 @@ import { useSunnyGsap } from "@/lib/useSunnyGsap";
 
 type AnyObj = Record<string, any>;
 type ToastState = { type: "ok" | "fail"; text: string } | null;
+type DataTableColumn = { width: number; minWidth: number; maxWidth?: number };
+
+const DATA_TABLE_COLUMNS: Record<string, DataTableColumn[]> = {
+  workbench: [
+    { width: 44, minWidth: 44, maxWidth: 72 }, { width: 300, minWidth: 180 }, { width: 160, minWidth: 110 },
+    { width: 120, minWidth: 90 }, { width: 120, minWidth: 90 }, { width: 190, minWidth: 150 }, { width: 140, minWidth: 110 },
+  ],
+  mailboxes: [
+    { width: 44, minWidth: 44, maxWidth: 72 }, { width: 300, minWidth: 180 }, { width: 160, minWidth: 110 },
+    { width: 110, minWidth: 88 }, { width: 110, minWidth: 88 }, { width: 80, minWidth: 64 }, { width: 80, minWidth: 64 },
+    { width: 100, minWidth: 82 }, { width: 190, minWidth: 150 }, { width: 230, minWidth: 190 },
+  ],
+  phones: [
+    { width: 44, minWidth: 44, maxWidth: 72 }, { width: 190, minWidth: 140 }, { width: 120, minWidth: 92 },
+    { width: 120, minWidth: 96 }, { width: 420, minWidth: 240 }, { width: 190, minWidth: 150 }, { width: 150, minWidth: 120 },
+  ],
+  proxies: [
+    { width: 44, minWidth: 44, maxWidth: 72 }, { width: 520, minWidth: 280 }, { width: 140, minWidth: 100 },
+    { width: 140, minWidth: 110 }, { width: 190, minWidth: 150 }, { width: 190, minWidth: 150 },
+  ],
+  sessions: [
+    { width: 44, minWidth: 44, maxWidth: 72 }, { width: 280, minWidth: 180 }, { width: 150, minWidth: 100 },
+    { width: 110, minWidth: 88 }, { width: 110, minWidth: 88 }, { width: 72, minWidth: 60 }, { width: 72, minWidth: 60 },
+    { width: 96, minWidth: 72 }, { width: 190, minWidth: 150 }, { width: 190, minWidth: 150 }, { width: 390, minWidth: 320 },
+  ],
+};
+
+function initialDataTableWidths(tableKey: string, columns: DataTableColumn[]) {
+  const defaults = columns.map((column)=>column.width);
+  if (typeof window === "undefined") return defaults;
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(`sunnyregister.table-widths.${tableKey}`) || "[]");
+    if (!Array.isArray(stored) || stored.length !== columns.length) return defaults;
+    return stored.map((value,index)=>Math.max(columns[index].minWidth,Math.min(columns[index].maxWidth||800,Number(value)||defaults[index])));
+  } catch { return defaults; }
+}
+
+function ResizableDataTable({ tableKey, columns, headers, className="", children }: { tableKey:string; columns:DataTableColumn[]; headers:ReactNode[]; className?:string; children:ReactNode }) {
+  const [widths,setWidths]=useState<number[]>(()=>initialDataTableWidths(tableKey,columns));
+  const resizeCleanup=useRef<null|(()=>void)>(null);
+  useEffect(()=>{
+    try { window.localStorage.setItem(`sunnyregister.table-widths.${tableKey}`,JSON.stringify(widths)); } catch { /* private browsing may disable storage */ }
+  },[tableKey,widths]);
+  useEffect(()=>()=>resizeCleanup.current?.(),[]);
+  const setColumnWidth=(index:number,width:number)=>setWidths((current)=>current.map((value,columnIndex)=>columnIndex===index?Math.max(columns[index].minWidth,Math.min(columns[index].maxWidth||800,width)):value));
+  const startResize=(event:ReactPointerEvent<HTMLSpanElement>,index:number)=>{
+    event.preventDefault();
+    event.stopPropagation();
+    resizeCleanup.current?.();
+    const startX=event.clientX;
+    const startWidth=widths[index];
+    const onMove=(moveEvent:PointerEvent)=>setColumnWidth(index,startWidth+moveEvent.clientX-startX);
+    const cleanup=()=>{
+      window.removeEventListener("pointermove",onMove);
+      window.removeEventListener("pointerup",cleanup);
+      window.removeEventListener("pointercancel",cleanup);
+      document.body.classList.remove("sr-column-resizing");
+      resizeCleanup.current=null;
+    };
+    resizeCleanup.current=cleanup;
+    document.body.classList.add("sr-column-resizing");
+    window.addEventListener("pointermove",onMove);
+    window.addEventListener("pointerup",cleanup);
+    window.addEventListener("pointercancel",cleanup);
+  };
+  const resizeTitle=typeof document!=="undefined"&&document.documentElement.lang.startsWith("en")?"Drag to resize; double-click to reset":"拖动调整列宽，双击恢复默认宽度";
+  const tableWidth=widths.reduce((sum,width)=>sum+width,0);
+  return <table className={cn("sr-account-table sr-resizable-table",className)} style={{width:tableWidth,minWidth:tableWidth}}>
+    <colgroup>{widths.map((width,index)=><col key={index} style={{width}}/>)}</colgroup>
+    <thead><tr>{headers.map((header,index)=><th key={index}><span className="sr-table-header-content">{header}</span><span className="sr-column-resizer" role="separator" aria-orientation="vertical" tabIndex={0} title={resizeTitle} onPointerDown={(event)=>startResize(event,index)} onDoubleClick={()=>setColumnWidth(index,columns[index].width)} onKeyDown={(event)=>{if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();setColumnWidth(index,widths[index]+(event.key==="ArrowRight"?12:-12));}else if(event.key==="Home"){event.preventDefault();setColumnWidth(index,columns[index].width);}}}/></th>)}</tr></thead>
+    {children}
+  </table>;
+}
 type LogEntry = { id: number | string; time: string; level: string; module: string; message: string; email?: string; rawMessage?: string; detail?: AnyObj };
 type RegisterStage = "register_only" | "codex_phone_bind" | "import_reverse_proxy" | "agent_identity_reverse_proxy";
 type ProtocolChallengeStrategy = "native_headless" | "sentinel_protocol";
@@ -1070,7 +1143,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       <div className="mt-5 border-t border-slate-100 pt-4 dark:border-white/10">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-1 flex-wrap gap-3">
-            <div className="relative min-w-[280px] max-w-lg flex-1"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/><input className="sr-search" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={t.searchAccount} /></div>
+            <div className="sr-search-control relative"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/><input className="sr-search" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={t.searchAccount} /></div>
             <SelectBox className="sr-select-like" value={groupFilter} onChange={(v)=>setGroupFilter(Number(v))} options={[{value:0,label:t.allGroups}, ...groups.map((g)=>({value:g.id,label:g.name || t.defaultGroup}))]} />
             <SelectBox className="sr-select-like" value={status} onChange={(v)=>setStatus(String(v))} options={[{value:"",label:t.allStatus}, ...MAILBOX_STATUSES.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))]} />
             <SelectBox className="sr-select-like" value={planFilter} onChange={(v)=>setPlanFilter(String(v))} options={[{value:"",label:t.allPlanTypes}, ...PLAN_TYPE_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))]} />
@@ -1081,7 +1154,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     </Card>
     <Card className="sr-table-card overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
       <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
-      <table className="sr-account-table"><thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>selectCurrentPage(e.target.checked)}/></th><th>{t.email}</th><th>{t.mailboxGroup}</th><th>{t.status}</th><th>{t.planType}</th><th><SortTimeHeader label={t.statusChangedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.operation}</th></tr></thead><tbody>{rows.length ? pagedRows.map((r) => <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} onChange={(e)=>selectRow(r,e.target.checked)}/></td><td>{r.email}</td><td>{r.group_name || t.defaultGroup}</td><td><StatusBadge t={t} status={r.status || "未注册"} /></td><td><PlanTypeBadge value={r.account?.plan_type || r.plan_type} /></td><td>{formatDateTime(r.status_changed_at)}</td><td><button className="sr-link inline-flex items-center gap-1" title={t.refreshStatus} disabled={busy} onClick={()=>refreshAccountStatus(r)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button></td></tr>) : <tr><td colSpan={7}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.noDataDesc}</p></div></td></tr>}</tbody></table>
+      <ResizableDataTable tableKey="workbench" columns={DATA_TABLE_COLUMNS.workbench} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>selectCurrentPage(e.target.checked)}/>,t.email,t.mailboxGroup,t.status,t.planType,<SortTimeHeader label={t.statusChangedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.operation]}><tbody>{rows.length ? pagedRows.map((r) => <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} onChange={(e)=>selectRow(r,e.target.checked)}/></td><td title={r.email}>{r.email}</td><td title={r.group_name || t.defaultGroup}>{r.group_name || t.defaultGroup}</td><td><StatusBadge t={t} status={r.status || "未注册"} /></td><td><PlanTypeBadge value={r.account?.plan_type || r.plan_type} /></td><td>{formatDateTime(r.status_changed_at)}</td><td><button className="sr-link inline-flex items-center gap-1" title={t.refreshStatus} disabled={busy} onClick={()=>refreshAccountStatus(r)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button></td></tr>) : <tr><td colSpan={7}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.noDataDesc}</p></div></td></tr>}</tbody></ResizableDataTable>
       <PaginationBar t={t} total={total} page={safePageNo} pageSize={pageSize} setPage={setPageNo} setPageSize={setPageSize} />
     </Card>
     {autoOpen && <AutoRegisterModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} selectedNeedPhone={selectedRows.some((m)=>m.has_openai_rt !== true)} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} identity={identity} setIdentity={setIdentity} mode={mode} setMode={setMode} protocolChallengeStrategy={protocolChallengeStrategy} setProtocolChallengeStrategy={setProtocolChallengeStrategy} stage={stage} setStage={setStage} onClose={()=>setAutoOpen(false)} onStart={()=>createRegisterTask()} notify={notify} />}
@@ -1305,7 +1378,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
         <div className="sr-toolbar sr-toolbar-compact sr-mailbox-toolbar sr-mailbox-inner-toolbar rounded-[18px] p-4">
           <div className="sr-mailbox-toolbar-row gap-2">
             <div className="sr-mailbox-filters flex min-w-0 flex-nowrap gap-2">
-              <div className="sr-mailbox-search relative"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/><input className="sr-search" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={t.queryMailbox}/></div>
+              <div className="sr-search-control sr-mailbox-search relative"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/><input className="sr-search" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={t.queryMailbox}/></div>
               <SelectBox className="sr-select-like" value={groupFilter} onChange={(v)=>setGroupFilter(Number(v))} options={[{value:0,label:t.allGroups}, ...groups.map((g)=>({value:g.id,label:g.name || t.defaultGroup}))]} />
               <SelectBox className="sr-select-like" value={statusFilter} onChange={(v)=>setStatusFilter(String(v))} options={[{value:"",label:t.allStatus}, ...MAILBOX_STATUSES.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))]} />
               <SelectBox className="sr-select-like" value={planFilter} onChange={(v)=>setPlanFilter(String(v))} options={[{value:"",label:t.allPlanTypes}, ...PLAN_TYPE_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))]} />
@@ -1315,12 +1388,11 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
         </div>
         <div className="sr-table-card sr-mailbox-table-panel overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
           <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
-          <table className="sr-account-table">
-            <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/></th><th>{t.mailbox}</th><th>{t.mailboxGroup}</th><th>{t.status}</th><th>{t.planType}</th><th>AT</th><th>SK</th><th>{t.enabled}</th><th><SortTimeHeader label={t.updatedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.actions}</th></tr></thead>
+          <ResizableDataTable tableKey="mailboxes" columns={DATA_TABLE_COLUMNS.mailboxes} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/>,t.mailbox,t.mailboxGroup,t.status,t.planType,"AT","SK",t.enabled,<SortTimeHeader label={t.updatedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.actions]}>
             <tbody>{items.length ? items.map((m)=><tr key={m.id}>
               <td><input type="checkbox" checked={selected.includes(m.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,m.id])) : selected.filter((id)=>id!==m.id))}/></td>
-              <td><div className="font-semibold">{m.email}</div></td>
-              <td>{m.group_name || t.defaultGroup}</td>
+              <td title={m.email}><div className="font-semibold">{m.email}</div></td>
+              <td title={m.group_name || t.defaultGroup}>{m.group_name || t.defaultGroup}</td>
               <td><StatusBadge t={t} status={m.status || "未注册"} /></td>
               <td><PlanTypeBadge value={m.plan_type} /></td>
               <td>{m.has_access_token ? <button className="sr-session-field-button" title={t.copy} disabled={fieldLoading[`${m.id}:access_token`]} onClick={()=>void copyMailboxField(m,"access_token")}>{fieldLoading[`${m.id}:access_token`] ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td>
@@ -1329,7 +1401,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
               <td>{formatDateTime(m.updated_at)}</td>
               <td><div className="flex flex-wrap gap-2"><button className="sr-link" onClick={()=>void openMailboxMail(m)}>{t.queryMail}</button><button className="sr-link" onClick={()=>void openMailboxEditor(m)}>{t.edit}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={m.email || ""} onConfirm={()=>deleteMailbox(m)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td>
             </tr>) : <tr><td colSpan={10}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noMailbox}</div><p className="mt-2 text-sm text-slate-400">{t.noMailboxDesc}</p></div></td></tr>}</tbody>
-          </table>
+          </ResizableDataTable>
           <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
         </div>
       </div>}
@@ -1855,7 +1927,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
         <div className="sr-toolbar sr-toolbar-compact sr-phone-inner-toolbar rounded-[18px] p-4">
           <div className="flex flex-nowrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-1 flex-nowrap gap-3">
-            <div className="relative min-w-[220px] max-w-md flex-1"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/><input className="sr-search" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={t.phoneSearch}/></div>
+            <div className="sr-search-control relative"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/><input className="sr-search" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={t.phoneSearch}/></div>
             <SelectBox className="sr-select-like" value={statusFilter} onChange={(v)=>setStatusFilter(String(v))} options={[{value:"",label:t.allStatus}, ...PHONE_STATUS_OPTIONS.map((s)=>({value:s,label:phoneStatusText(t,s)}))]} />
             <SelectBox className="sr-select-like" value={countFilter} onChange={(v)=>setCountFilter(String(v))} options={countOptions} />
           </div>
@@ -1869,8 +1941,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
         </div>
         <div className="sr-table-card overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
       <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
-      <table className="sr-account-table">
-        <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((p)=>p.id)])) : selected.filter((id)=>!items.some((p)=>p.id===id)))}/></th><th>{t.phoneNumber}</th><th>{t.status}</th><th>{t.usedCount}</th><th>{t.smsLink}</th><th><SortTimeHeader label={t.lastUsedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.actions}</th></tr></thead>
+      <ResizableDataTable tableKey="phones" columns={DATA_TABLE_COLUMNS.phones} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((p)=>p.id)])) : selected.filter((id)=>!items.some((p)=>p.id===id)))}/>,t.phoneNumber,t.status,t.usedCount,t.smsLink,<SortTimeHeader label={t.lastUsedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.actions]}>
         <tbody>{items.length ? items.map((p)=><tr key={p.id}>
           <td><input type="checkbox" checked={selected.includes(p.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,p.id])) : selected.filter((id)=>id!==p.id))}/></td>
           <td><button type="button" className="sr-copyable-value font-semibold" title={`${t.copy} ${t.phoneNumber}`} onClick={()=>void copyPhoneValue(p.number)}>{p.number}</button>{p.last_error ? <div className="mt-1 max-w-md truncate text-xs text-red-400">{p.last_error}</div> : null}</td>
@@ -1880,7 +1951,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
           <td>{formatDateTime(p.last_used_at)}</td>
           <td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" onClick={()=>setEditing(p)}>{t.edit}</button><ConfirmBubble message={t.phoneConfirmDelete} detail={p.number || ""} onConfirm={()=>deletePhone(p)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td>
         </tr>) : <tr><td colSpan={7}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.phoneImportHelp}</p></div></td></tr>}</tbody>
-      </table>
+      </ResizableDataTable>
       <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
         </div>
       </div> : null}
@@ -2289,7 +2360,7 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
     <Card className="sr-toolbar sr-proxy-toolbar rounded-[18px] p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 flex-1 flex-wrap gap-3">
-          <div className="relative min-w-[260px] max-w-lg flex-1"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/><input className="sr-search" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={t.proxySearch}/></div>
+          <div className="sr-search-control relative"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/><input className="sr-search" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={t.proxySearch}/></div>
           <SelectBox className="sr-select-like" value={status} onChange={(v)=>setStatus(String(v))} options={[{value:"",label:t.allStatus}, ...statusOptions]} />
           <SelectBox className="sr-select-like" value={country} onChange={(v)=>setCountry(String(v))} options={countryOptions} />
         </div>
@@ -2304,17 +2375,16 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
     </Card>
     <Card className="sr-table-card overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
       <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
-      <table className="sr-account-table sr-proxy-table">
-        <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((p)=>Number(p.id))])) : selected.filter((id)=>!items.some((p)=>Number(p.id)===id)))}/></th><th>{t.proxyAddress}</th><th>{t.proxyCountry}</th><th>{t.status}</th><th><SortTimeHeader label={t.proxyLastChecked} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/></th><th>{t.operation}</th></tr></thead>
+      <ResizableDataTable tableKey="proxies" columns={DATA_TABLE_COLUMNS.proxies} className="sr-proxy-table" headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((p)=>Number(p.id))])) : selected.filter((id)=>!items.some((p)=>Number(p.id)===id)))}/>,t.proxyAddress,t.proxyCountry,t.status,<SortTimeHeader label={t.proxyLastChecked} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.operation]}>
         <tbody>{items.length ? items.map((p)=><tr key={p.id}>
           <td><input type="checkbox" checked={selected.includes(Number(p.id))} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,Number(p.id)])) : selected.filter((id)=>id!==Number(p.id)))}/></td>
-          <td><div className="font-semibold">{p.address}</div>{p.last_error ? <div className="mt-1 max-w-xl truncate text-xs text-red-400">{p.last_error}</div> : null}</td>
+          <td title={p.address}><div className="font-semibold">{p.address}</div>{p.last_error ? <div className="mt-1 max-w-xl truncate text-xs text-red-400">{p.last_error}</div> : null}</td>
           <td>{p.country || "-"}</td>
           <td><ProxyStatusBadge t={t} status={p.status || "启用"} />{p.latency_ms ? <div className="mt-1 text-xs text-[var(--text-muted)]">{t.proxyLatency}: {p.latency_ms}ms</div> : null}</td>
           <td>{formatDateTime(p.last_checked_at)}</td>
           <td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" disabled={loading} onClick={()=>checkOne(p)}>{t.refresh}</button><button className="sr-link" onClick={()=>setEditing(p)}>{t.edit}</button><ConfirmBubble message={t.proxyConfirmDelete} detail={p.address || ""} onConfirm={()=>deleteProxy(p)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td>
         </tr>) : <tr><td colSpan={6}><div className="sr-empty"><div className="sr-empty-icon"><Settings2 className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.proxyNoData}</div><p className="mt-2 text-sm text-slate-400">{t.proxyNoDataDesc}</p></div></td></tr>}</tbody>
-      </table>
+      </ResizableDataTable>
       <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
     </Card>
     {editing && <ProxyEditModal key={editing.id || "new"} t={t} proxy={editing} onClose={()=>setEditing(null)} onSaved={()=>{setEditing(null); notify("ok", t.done); void load();}} notify={notify}/>}
@@ -2532,7 +2602,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       </div>
     </div>
     <div className="sr-toolbar sr-toolbar-compact mb-4 flex flex-wrap items-center gap-2 rounded-[18px] p-3">
-      <div className="relative min-w-[260px] max-w-lg flex-1"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/><input className="sr-search" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={t.searchAccount} /></div>
+      <div className="sr-search-control relative"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/><input className="sr-search" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={t.searchAccount} /></div>
       <SelectBox className="sr-select-like" value={group} onChange={(v)=>setGroup(String(v))} options={[{value:"",label:t.allGroups}, ...groups.map((item)=>({value:String(item.id),label:item.name}))]} />
       <SelectBox className="sr-select-like" value={status} onChange={(v)=>setStatus(String(v))} options={[{value:"",label:t.allStatus}, ...SESSION_STATUS_OPTIONS.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))]} />
       <SelectBox className="sr-select-like" value={plan} onChange={(v)=>setPlan(String(v))} options={[{value:"",label:t.planType}, ...SESSION_PLAN_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))]} />
@@ -2544,8 +2614,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       </div>
     </div>
     <div className="sr-table-scroll">
-      <table className="sr-account-table sr-session-table">
-        <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/></th><th>{t.email}</th><th>{t.groupFilter}</th><th>{t.status}</th><th>{t.planType}</th><th>SK</th><th>AT</th><th>RT</th><th><SortTimeHeader label={t.atExpiresAt} order={sortBy==="access_token_expires_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("access_token_expires_at")}/></th><th><SortTimeHeader label={t.lastHealthCheckedAt} order={sortBy==="last_health_checked_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("last_health_checked_at")}/></th><th>{t.operation}</th></tr></thead>
+      <ResizableDataTable tableKey="sessions" columns={DATA_TABLE_COLUMNS.sessions} className="sr-session-table" headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/>,t.email,t.groupFilter,t.status,t.planType,"SK","AT","RT",<SortTimeHeader label={t.atExpiresAt} order={sortBy==="access_token_expires_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("access_token_expires_at")}/>,<SortTimeHeader label={t.lastHealthCheckedAt} order={sortBy==="last_health_checked_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("last_health_checked_at")}/>,t.operation]}>
         <tbody>{items.length ? items.map((s)=>{
           const refreshing=refreshingSessionIds.includes(s.id);
           const acquiringRT=acquiringRTSessionIds.includes(s.id);
@@ -2555,11 +2624,11 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
           const renewalView=renewalViewForSession(persistentTasks,s);
           const renewalPercent=renewalView ? Math.min(100, Math.max(0, (renewalView.progress.current / renewalView.progress.total) * 100)) : 0;
           return <Fragment key={s.id}>
-            <tr><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td>{s.email}</td><td>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td>{formatDateTime(s.access_token_expires_at)}</td><td>{formatDateTime(s.last_health_checked_at)}</td><td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link" disabled={healthBusy} onClick={()=>runHealthCheck([s.id],s)}><Activity className="inline h-4 w-4"/>{t.healthCheck}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>
+            <tr><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td title={s.email}>{s.email}</td><td title={s.group_name || "-"}>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td>{formatDateTime(s.access_token_expires_at)}</td><td>{formatDateTime(s.last_health_checked_at)}</td><td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link" disabled={healthBusy} onClick={()=>runHealthCheck([s.id],s)}><Activity className="inline h-4 w-4"/>{t.healthCheck}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>
             {renewalView && <tr className="sr-renewal-progress-row"><td/><td colSpan={10}><div className={cn("sr-renewal-progress",`is-${renewalView.progress.state}`)}><strong className="sr-renewal-progress-count">{renewalView.progress.current}/{renewalView.progress.total}</strong><div className="sr-renewal-progress-main"><div className="sr-renewal-progress-label">{renewalStepLabel(t,renewalView.progress.checkpoint)}</div><div className="sr-renewal-progress-track"><span style={{width:`${renewalPercent}%`}}/></div>{renewalView.progress.error && <div className="sr-renewal-progress-error">{renewalView.progress.error}</div>}</div><button className="sr-renewal-progress-close" title={t.closeRenewalProgress} onClick={()=>dismissSessionRenewal(renewalView.task.clientId,s.email)}><X className="h-4 w-4"/></button></div></td></tr>}
           </Fragment>;
         }) : <tr><td colSpan={11}><div className="sr-empty !min-h-[260px]"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><p className="mt-3 text-sm text-slate-400">{t.noData}</p></div></td></tr>}</tbody>
-      </table>
+      </ResizableDataTable>
     </div>
     <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
     {editing && <SessionEditModal t={t} item={editing} onClose={()=>setEditing(null)} onSaved={()=>{setEditing(null); notify("ok", t.done); void load();}} notify={notify}/>}
