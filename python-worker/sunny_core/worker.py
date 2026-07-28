@@ -157,6 +157,35 @@ def _emit_registration_progress(
     )
 
 
+def _emit_renewal_progress(
+    db: SunnyDB,
+    email: str,
+    current: int,
+    total: int,
+    checkpoint: str,
+    *,
+    state: str = "running",
+    error: str = "",
+) -> None:
+    safe_total = max(1, int(total or 1))
+    safe_current = min(safe_total, max(0, int(current or 0)))
+    db.event(
+        f"[{email}] access token renewal progress {safe_current}/{safe_total}: {checkpoint}",
+        level="error" if state == "failed" else "info",
+        typ="renewal_progress",
+        detail={
+            "scope": "selected",
+            "progress_type": "access_token_renewal",
+            "email": email,
+            "checkpoint": checkpoint,
+            "current": safe_current,
+            "total": safe_total,
+            "state": state,
+            "error": str(error or "")[:500],
+        },
+    )
+
+
 def _is_cancel_exception(exc: BaseException) -> bool:
     return isinstance(exc, (SunnyTaskCancelled, TaskCancelledError)) or "Task cancelled by user" in str(exc)
 
@@ -1238,49 +1267,79 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
     for idx, acc in enumerate(accounts, start=1):
         db.ensure_not_cancelled()
         email = acc.get("email") or ""
+        renewal_current = 1
+        renewal_total = 7
+        _emit_renewal_progress(db, email, renewal_current, renewal_total, "preparing")
         try:
             mailbox = db.fetch_mailbox_by_email(email)
             rt = acc.get("openai_rt") or ""
             if not rt:
                 sess = db.fetch_session_by_email(email) or {}
                 rt = sess.get("refresh_token") or ""
+            renewal_current = 2
+            _emit_renewal_progress(db, email, renewal_current, renewal_total, "credentials_loaded")
             refresh_error = ""
             if rt:
                 try:
+                    renewal_current = 3
+                    _emit_renewal_progress(db, email, renewal_current, renewal_total, "refresh_token_ready")
                     token = refresh_openai_access_token(rt, _proxy_snapshot(payload, idx - 1)["register"])
                     db.ensure_not_cancelled()
+                    renewal_current = 4
+                    _emit_renewal_progress(db, email, renewal_current, renewal_total, "token_received")
                     account_id = int(acc.get("id") or db.upsert_account(email))
                     payload2 = {"access_token": token.get("access_token"), "refresh_token": token.get("refresh_token") or rt, "id_token": token.get("id_token", ""), "expires_at": token.get("expires_at"), "session_json": token}
+                    renewal_current = 5
+                    _emit_renewal_progress(db, email, renewal_current, renewal_total, "saving_session")
                     db.upsert_session(email, account_id, payload2)
                     refreshed_status = "已接码" if payload2["refresh_token"] else "已注册"
                     current_status = str((mailbox or {}).get("status") or acc.get("status") or "")
                     completed_status = _highest_mailbox_progress(current_status, refreshed_status)
                     db.upsert_account(email, status=_account_status_for_mailbox(completed_status), access_token=payload2["access_token"], openai_rt=payload2["refresh_token"])
                     db.mark_mailbox_by_email(email, completed_status, openai_rt=payload2["refresh_token"])
+                    renewal_current = 6
+                    _emit_renewal_progress(db, email, renewal_current, renewal_total, "session_saved")
                     items.append({"email": email, "has_access_token": bool(payload2["access_token"]), "has_refresh_token": bool(payload2["refresh_token"]), "refresh_method": "refresh_token"})
                     ok += 1
                     db.event(f"[{email}] [Session] 已通过 Refresh Token 完成 AT 续期")
+                    renewal_current = 7
+                    _emit_renewal_progress(db, email, renewal_current, renewal_total, "completed", state="succeeded")
                     db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
                     continue
                 except Exception as exc:
                     refresh_error = str(exc)
+                    renewal_total = 9
+                    renewal_current = 3
+                    _emit_renewal_progress(db, email, renewal_current, renewal_total, "refresh_token_unavailable")
                     db.event(f"[{email}] [Session] Refresh Token 续期不可用，改用后台无头登录更新 AT：{refresh_error}", "warning")
             else:
+                renewal_total = 9
+                renewal_current = 3
+                _emit_renewal_progress(db, email, renewal_current, renewal_total, "refresh_token_missing")
                 db.event(f"[{email}] [Session] 账户没有可用 Refresh Token，改用后台无头登录更新 AT", "warning")
 
             if not mailbox:
                 raise RuntimeError("找不到该账户对应的邮箱凭证，无法回退登录更新 AT")
+            renewal_current = 4
+            _emit_renewal_progress(db, email, renewal_current, renewal_total, "mailbox_ready")
             fallback_payload = dict(payload)
             fallback_payload.update({"execution_mode": "background", "registration_stage": "register_only", "mailbox_ids": [int(mailbox.get("id") or 0)]})
+            renewal_current = 5
+            _emit_renewal_progress(db, email, renewal_current, renewal_total, "headless_login_started")
             succeeded, result = _run_one(db, "sunny_login", fallback_payload, mailbox, idx, len(accounts))
             if not succeeded:
                 raise RuntimeError(str(result))
+            renewal_current = 8
+            _emit_renewal_progress(db, email, renewal_current, renewal_total, "session_refreshed")
             items.append({"email": email, "has_access_token": bool(isinstance(result, dict) and result.get("has_access_token")), "has_refresh_token": bool(isinstance(result, dict) and result.get("has_refresh_token")), "refresh_method": "headless_login", "refresh_token_error": refresh_error})
             ok += 1
             db.event(f"[{email}] [Session] 已通过后台无头登录完成 AT 续期")
+            renewal_current = 9
+            _emit_renewal_progress(db, email, renewal_current, renewal_total, "completed", state="succeeded")
         except Exception as exc:
             errors.append(f"[{email}] {exc}")
             db.event(errors[-1], "error")
+            _emit_renewal_progress(db, email, renewal_current, renewal_total, "failed", state="failed", error=str(exc))
         db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
     return ok, errors, items
 

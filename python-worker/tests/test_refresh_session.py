@@ -11,6 +11,7 @@ class FakeRefreshDB:
         self.refresh_token = refresh_token
         self.mailbox_status = mailbox_status
         self.events: list[str] = []
+        self.event_details: list[dict] = []
         self.sessions: list[dict] = []
         self.marked_status = ""
 
@@ -28,6 +29,9 @@ class FakeRefreshDB:
 
     def event(self, message, *_args, **_kwargs):
         self.events.append(message)
+        detail = _kwargs.get("detail")
+        if isinstance(detail, dict):
+            self.event_details.append(detail)
 
     def update_task(self, **_kwargs):
         return None
@@ -55,6 +59,9 @@ class RefreshSessionTests(unittest.TestCase):
         payload = run_one.call_args.args[2]
         self.assertEqual(payload["execution_mode"], "background")
         self.assertEqual(payload["registration_stage"], "register_only")
+        renewal = [item for item in db.event_details if item.get("progress_type") == "access_token_renewal"]
+        self.assertEqual((renewal[0]["current"], renewal[0]["total"]), (1, 7))
+        self.assertEqual((renewal[-1]["current"], renewal[-1]["total"], renewal[-1]["state"]), (9, 9, "succeeded"))
 
     def test_refresh_token_is_used_before_browser_fallback(self):
         db = FakeRefreshDB(refresh_token="rt_test")
@@ -70,6 +77,9 @@ class RefreshSessionTests(unittest.TestCase):
         self.assertEqual(items[0]["refresh_method"], "refresh_token")
         self.assertEqual(db.sessions[0]["expires_at"], 1893456000)
         run_one.assert_not_called()
+        renewal = [item for item in db.event_details if item.get("progress_type") == "access_token_renewal"]
+        self.assertEqual([item["current"] for item in renewal], list(range(1, 8)))
+        self.assertEqual(renewal[-1]["state"], "succeeded")
 
     def test_refresh_token_does_not_downgrade_reverse_proxy_status(self):
         db = FakeRefreshDB(refresh_token="rt_test", mailbox_status="已反代")

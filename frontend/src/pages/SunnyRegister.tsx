@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useDeferredValue, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
@@ -120,12 +120,26 @@ function useCachedState<T>(key: string, initial: T | (() => T)): [T, Dispatch<Se
 }
 
 type PersistentSessionTaskKind = "refresh-at" | "acquire-rt";
+type SessionTaskState = "running" | "succeeded" | "failed";
+type SessionRenewalProgress = {
+  email: string;
+  current: number;
+  total: number;
+  checkpoint: string;
+  state: SessionTaskState;
+  error?: string;
+  updatedAt: number;
+};
 type PersistentSessionTask = {
   clientId: string;
   taskId: string;
   kind: PersistentSessionTaskKind;
   sessionIds: number[];
   email?: string;
+  state: SessionTaskState;
+  progress: Record<string, SessionRenewalProgress>;
+  dismissedEmails: string[];
+  error?: string;
 };
 type PersistentSessionTaskSnapshot = { tasks: PersistentSessionTask[] };
 
@@ -137,7 +151,9 @@ function readPersistentSessionTasks(): PersistentSessionTask[] {
   if (typeof window === "undefined") return [];
   try {
     const value = JSON.parse(window.localStorage.getItem(SESSION_TASK_STORAGE_KEY) || "[]");
-    return Array.isArray(value) ? value.filter((item) => item?.clientId && item?.taskId && Array.isArray(item?.sessionIds)) : [];
+    return Array.isArray(value) ? value
+      .filter((item) => item?.clientId && item?.taskId && Array.isArray(item?.sessionIds))
+      .map((item) => ({ ...item, state: "running" as SessionTaskState, progress: item.progress || {}, dismissedEmails: [] })) : [];
   } catch {
     return [];
   }
@@ -148,7 +164,9 @@ let sessionTaskSnapshot: PersistentSessionTaskSnapshot = { tasks: readPersistent
 function publishSessionTasks(tasks: PersistentSessionTask[]) {
   sessionTaskSnapshot = { tasks };
   try {
-    window.localStorage.setItem(SESSION_TASK_STORAGE_KEY, JSON.stringify(tasks.filter((task) => task.taskId)));
+    window.localStorage.setItem(SESSION_TASK_STORAGE_KEY, JSON.stringify(tasks
+      .filter((task) => task.taskId && task.state === "running")
+      .map((task) => ({ ...task, dismissedEmails: [] }))));
   } catch { /* in-memory state remains available */ }
   sessionTaskListeners.forEach((listener) => listener());
 }
@@ -160,8 +178,18 @@ function upsertSessionTask(task: PersistentSessionTask) {
     : [...sessionTaskSnapshot.tasks, task]);
 }
 
-function removeSessionTask(clientId: string) {
-  publishSessionTasks(sessionTaskSnapshot.tasks.filter((task) => task.clientId !== clientId));
+function updateSessionTask(clientId: string, updater: (task: PersistentSessionTask) => PersistentSessionTask) {
+  publishSessionTasks(sessionTaskSnapshot.tasks.map((task) => task.clientId === clientId ? updater(task) : task));
+}
+
+function dismissSessionRenewal(clientId: string, email: string) {
+  const key = email.toLowerCase();
+  updateSessionTask(clientId, (task) => ({ ...task, dismissedEmails: Array.from(new Set([...task.dismissedEmails, key])) }));
+}
+
+function clearPreviousSessionTaskResults(kind: PersistentSessionTaskKind, sessionIds: number[]) {
+  const ids = new Set(sessionIds.map(Number));
+  publishSessionTasks(sessionTaskSnapshot.tasks.filter((task) => task.state === "running" || task.kind !== kind || !task.sessionIds.some((id) => ids.has(Number(id)))));
 }
 
 function subscribeSessionTasks(listener: () => void) {
@@ -169,19 +197,115 @@ function subscribeSessionTasks(listener: () => void) {
   return () => sessionTaskListeners.delete(listener);
 }
 
+const renewalCheckpointFromRegistration: Record<string, { current: number; checkpoint: string }> = {
+  initializing: { current: 5, checkpoint: "headless_login_started" },
+  proxy_ready: { current: 6, checkpoint: "proxy_ready" },
+  browser_started: { current: 7, checkpoint: "authentication_running" },
+  protocol_started: { current: 7, checkpoint: "authentication_running" },
+  email_submitted: { current: 7, checkpoint: "authentication_running" },
+  email_verified: { current: 8, checkpoint: "session_reading" },
+  auth_completed: { current: 8, checkpoint: "session_reading" },
+  registered: { current: 8, checkpoint: "session_refreshed" },
+};
+
+function applySessionTaskEvents(clientId: string, events: AnyObj[]) {
+  if (!events.length) return;
+  updateSessionTask(clientId, (task) => {
+    if (task.kind !== "refresh-at") return task;
+    const progress = { ...task.progress };
+    events.forEach((event) => {
+      const detail = event.detail || {};
+      const email = String(detail.email || "").trim();
+      if (!email) return;
+      const key = email.toLowerCase();
+      if (event.type === "renewal_progress" || detail.progress_type === "access_token_renewal") {
+        progress[key] = {
+          email,
+          current: Math.max(0, Number(detail.current || 0)),
+          total: Math.max(1, Number(detail.total || 1)),
+          checkpoint: String(detail.checkpoint || "preparing"),
+          state: detail.state === "succeeded" ? "succeeded" : detail.state === "failed" ? "failed" : "running",
+          error: String(detail.error || ""),
+          updatedAt: Date.now(),
+        };
+        return;
+      }
+      if (event.type === "registration_progress" || detail.progress_type === "account_registration") {
+        const mapped = renewalCheckpointFromRegistration[String(detail.checkpoint || "")];
+        if (!mapped) return;
+        const existing = progress[key];
+        progress[key] = {
+          email,
+          current: Math.max(existing?.current || 0, mapped.current),
+          total: 9,
+          checkpoint: mapped.checkpoint,
+          state: detail.state === "abnormal" ? "failed" : "running",
+          error: String(detail.error || existing?.error || ""),
+          updatedAt: Date.now(),
+        };
+      }
+    });
+    return { ...task, progress };
+  });
+}
+
+function markSessionTaskTerminal(clientId: string, current: AnyObj) {
+  updateSessionTask(clientId, (task) => {
+    const result = current.result || {};
+    const errors: string[] = Array.isArray(result.errors) ? result.errors.map((message: unknown) => String(message)) : [];
+    const items = Array.isArray(result.items) ? result.items : [];
+    const progress = { ...task.progress };
+    const knownEmails = Array.from(new Set([
+      ...Object.values(progress).map((entry) => entry.email),
+      ...items.map((entry: AnyObj) => String(entry.email || "")),
+      ...(task.email ? [task.email] : []),
+    ].map((email) => email.trim()).filter(Boolean)));
+    knownEmails.forEach((email) => {
+      if (!email) return;
+      const key = email.toLowerCase();
+      const error = errors.find((message) => message.toLowerCase().includes(`[${key}]`)) || "";
+      const existing = progress[key];
+      const succeeded = items.some((entry: AnyObj) => String(entry.email || "").toLowerCase() === key) && !error;
+      progress[key] = {
+        email,
+        current: succeeded ? Math.max(existing?.total || 1, existing?.current || 0) : existing?.current || 0,
+        total: existing?.total || (succeeded ? 1 : 9),
+        checkpoint: succeeded ? "completed" : "failed",
+        state: succeeded ? "succeeded" : "failed",
+        error: error || (!succeeded ? String(current.error || "") : ""),
+        updatedAt: Date.now(),
+      };
+    });
+    const failed = errors.length > 0 || current.status === "failed";
+    return { ...task, progress, state: failed && Number(result.success || current.success_count || 0) === 0 ? "failed" : "succeeded", error: errors[0] || String(current.error || "") };
+  });
+}
+
 function ensureSessionTaskPolling(task: PersistentSessionTask, initial?: AnyObj): Promise<AnyObj> {
   const existing = sessionTaskPromises.get(task.clientId);
   if (existing) return existing;
   const promise = (async () => {
+    let since = 0;
     let current = initial || await apiFetch(`/tasks/${task.taskId}`);
     while (!current.terminal) {
+      const eventResult = await apiFetch(`/tasks/${task.taskId}/events?since=${since}`).catch(() => ({ items: [] }));
+      const events = Array.isArray(eventResult.items) ? eventResult.items : [];
+      if (events.length) {
+        since = Math.max(since, ...events.map((event: AnyObj) => Number(event.id || 0)));
+        applySessionTaskEvents(task.clientId, events);
+      }
       await new Promise((resolve) => window.setTimeout(resolve, 1200));
       current = await apiFetch(`/tasks/${task.taskId}`);
     }
+    const finalEvents = await apiFetch(`/tasks/${task.taskId}/events?since=${since}`).catch(() => ({ items: [] }));
+    applySessionTaskEvents(task.clientId, Array.isArray(finalEvents.items) ? finalEvents.items : []);
+    markSessionTaskTerminal(task.clientId, current);
     return current;
-  })().finally(() => {
+  })().catch((error) => {
+    updateSessionTask(task.clientId, (item) => ({ ...item, state: "failed", error: error instanceof Error ? error.message : String(error) }));
+    throw error;
+  }).finally(() => {
     sessionTaskPromises.delete(task.clientId);
-    removeSessionTask(task.clientId);
   });
   sessionTaskPromises.set(task.clientId, promise);
   return promise;
@@ -196,7 +320,8 @@ async function runPersistentSessionTask(
   const clientId = typeof crypto !== "undefined" && crypto.randomUUID
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random()}`;
-  const pending: PersistentSessionTask = { clientId, taskId: "", kind, sessionIds, email };
+  clearPreviousSessionTaskResults(kind, sessionIds);
+  const pending: PersistentSessionTask = { clientId, taskId: "", kind, sessionIds, email, state: "running", progress: {}, dismissedEmails: [] };
   upsertSessionTask(pending);
   try {
     const created = await createTask();
@@ -205,7 +330,7 @@ async function runPersistentSessionTask(
     upsertSessionTask(active);
     return await ensureSessionTaskPolling(active, created);
   } catch (error) {
-    removeSessionTask(clientId);
+    updateSessionTask(clientId, (task) => ({ ...task, state: "failed", error: error instanceof Error ? error.message : String(error) }));
     throw error;
   }
 }
@@ -214,7 +339,7 @@ function usePersistentSessionTasks() {
   const snapshot = useSyncExternalStore(subscribeSessionTasks, () => sessionTaskSnapshot, () => sessionTaskSnapshot);
   useEffect(() => {
     snapshot.tasks.forEach((task) => {
-      if (task.taskId) void ensureSessionTaskPolling(task).catch(() => undefined);
+      if (task.taskId && task.state === "running") void ensureSessionTaskPolling(task).catch(() => undefined);
     });
   }, [snapshot]);
   return snapshot.tasks;
@@ -277,7 +402,8 @@ const zh: AnyObj = new Proxy({
   logProxy: "代理", logMailbox: "邮箱", logPhone: "手机", logSession: "Session", logAuth: "认证", logSystem: "系统",
   defaultGroup: "默认分组", allGroups: "全部分组", mailboxGroup: "所属分组", importMailboxes: "导入邮箱", manualImport: "手动导入", fileImport: "文件导入", dragFile: "拖拽邮箱文件到这里，或点击选择文件", importToGroup: "导入到分组", addGroup: "新建分组", editGroup: "编辑分组名", deleteGroup: "删除分组", enterGroup: "输入分组名后回车", groupCreated: "邮箱分组新建成功", groupRenamed: "邮箱分组名称修改成功", groupDeleted: "邮箱分组删除成功", groupNotEmpty: "该邮箱分组下存在邮箱账户，请移除后再删除分组", defaultGroupCannotDelete: "默认分组不能删除", groupNameConflict: "邮箱分组名称已存在", confirmDeleteGroup: "确认删除该邮箱分组？", mailboxCount: "邮箱数量", validationOk: "校验通过", validationFailed: "校验失败", mailboxList: "邮箱列表", enabled: "启用", updatedAt: "更新时间", actions: "操作", queryMailbox: "搜索邮箱...", allStatus: "全部状态", allPlanTypes: "全部套餐", edit: "编辑", delete: "删除", batchDelete: "批量删除", batchEdit: "批量编辑", confirmDeleteMailbox: "确认删除该邮箱记录？此操作不可撤销。", confirmBatchDeleteMailbox: "确认删除选中的邮箱记录？此操作不可撤销。", queryMail: "邮件查询", currentMailbox: "当前邮箱", getMail: "获取邮件", mailFetchCount: "查询数量", mailFetchCountSuffix: "封", mailList: "邮件列表", sender: "发件人", receiver: "收件人", time: "时间", subject: "主题", content: "邮件内容", emptyMail: "暂无邮件", mailboxName: "邮箱名", password: "密码", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "批量编辑邮箱", applyToSelected: "应用到选中的邮箱",
   autoRegister: "自动注册", interruptTask: "停止", interruptingTask: "停止中...", interruptTaskTip: "停止整批注册任务，包括提交、排队、Worker 启动和邮箱执行阶段。", interruptTaskRequested: "已请求停止整批注册任务，正在关闭任务进程、浏览器与邮箱读取资源", interruptTaskFailed: "停止任务失败", registerTaskRunning: "当前注册任务正在执行，请等待任务结束或先停止任务", manualNew: "手动新增", searchAccount: "搜索账号邮箱...", refreshQuota: "刷新额度", refreshList: "刷新列表", refreshDone: "列表已刷新", loadingData: "正在更新数据...", refreshStatus: "刷新账号状态", statusChangedAt: "状态变更时间", planType: "套餐类型", email: "邮箱", trialLink: "试用链接", registeredAt: "注册时间", operation: "操作", noData: "暂无数据", noDataDesc: "当前平台没有找到任何账号记录。请先到邮箱配置中导入邮箱，然后选择邮箱进行自动注册。", chooseMailbox: "请选择邮箱", createTaskLog: "创建 ChatGPT 注册任务，数量", taskSubmitted: "注册任务已提交，正在开始执行", taskCreated: "自动注册任务已创建", taskDone: "任务完成", taskFailed: "任务失败", taskPollRecovered: "检测到上次注册任务仍在进行，已恢复日志轮询", taskPollLost: "任务状态轮询暂时失败，将继续等待任务状态：{error}", taskPollTimeout: "任务状态轮询时间较长，仍将继续等待；可使用停止按钮中断任务", importDone: "导入完成", exportDone: "导出完成", manualNewTip: "请到邮箱配置中手动新增邮箱", autoRegisterTitle: "自动注册 ChatGPT", step1Title: "选择注册身份", step1Desc: "当前优先使用自建 Outlook/Hotmail 邮箱池进行邮箱验证。", systemMailbox: "系统邮箱", systemMailboxPoolDisabled: "系统邮箱池功能未启用，请先启用邮箱池功能", smsConfigDisabled: "请前往接码配置页面启用接码配置", registerStageUnavailable: "请先启用至少一种邮箱注册方式", googleMailboxDisabled: "Google 邮箱功能未启用，请先启用对应的邮箱功能", microsoftMailboxDisabled: "Microsoft 邮箱功能未启用，请先启用对应的邮箱功能", systemMailboxDesc: "使用邮箱池自动收取验证码并完成注册", googleDesc: "预留身份，后续接入 Google 账号", microsoftDesc: "预留身份，后续接入 Microsoft 账号", step2Title: "选择执行方式", step2Desc: "支持后台浏览器自动与可视浏览器自动；后台模式不显示窗口，更适合批量执行。", protocolMode: "协议模式", protocolDesc: "占位能力，暂未开放选择", protocolChallengeStrategy: "浏览器挑战策略", protocolNativeChallenge: "原生无头接管", protocolNativeChallengeDesc: "遇到挑战时由完整后台浏览器接管注册流程", protocolSentinelChallenge: "Sentinel 协议运行时", protocolSentinelChallengeDesc: "注册请求保持协议模式，仅用窄范围 Camoufox 生成浏览器证明", backgroundMode: "后台浏览器自动", backgroundDesc: "无窗口 Headless 执行，仍使用隔离无痕浏览器上下文自动注册", visibleMode: "可视浏览器自动", visibleDesc: "会打开浏览器窗口，适合排查人机验证或页面异常", registerCount: "注册数量", concurrency: "并发数", identityLabel: "注册身份", modeLabel: "执行方式", registerAccounts: "注册账号", verifyStrategy: "验证策略：自动识别 Outlook/Hotmail Graph API 或 IMAP/XOAUTH2 并读取验证码", step3Title: "选择注册阶段", step3Desc: "控制本次任务执行到哪个阶段，默认仅完成 ChatGPT 注册/登录与 Session 存储。", registerOnly: "仅注册 ChatGPT", registerOnlyDesc: "注册或登录成功后，只读取并保存 ChatGPT Session 信息", codexPhoneBind: "Codex接码绑定", codexPhoneBindDesc: "注册/登录后继续使用接码配置完成手机验证并获取 Refresh Token", importReverseProxy: "导入反代平台", importReverseProxyDesc: "完成账号 Session/RT 后导入已配置的 sub2api 反代平台", agentIdentityReverseProxy: "绕过接码导入反代平台", agentIdentityReverseProxyDesc: "注册/登录后使用 Access Token 创建 Agent Identity，跳过手机号绑定并直接导入 sub2api", stageLabel: "注册阶段", startAutoRegister: "开始自动注册", cancel: "取消", noMailbox: "暂无邮箱", noMailboxDesc: "请点击右上角“导入邮箱”添加自建 Outlook/Hotmail 邮箱池。", inbox: "收件箱", fillOrChooseMailboxFile: "请先填写或选择邮箱文件",
-  sub2apiDesc: "用于“导入反代平台”阶段。填写 sub2api 地址与管理员 Key 后，注册任务可将已获取 Session/RT 的 GPT 账号导入平台。", baseURL: "Base URL", adminToken: "Admin Token", accountNamePrefix: "账号名前缀", targetGroup: "目标分组", targetGroupPlaceholder: "请选择目标分组", noGroupsFetch: "暂无分组，请点击右侧“获取”", fetch: "获取", priority: "优先级", check: "检测", configUnchanged: "配置未更改", fillURLToken: "请先填写 Base URL 和 Admin Token", fetchedGroups: "已获取 {count} 个目标分组", fillURLTokenShort: "请先填写 URL 和 Token", checking: "检测中...", checkPassedGroups: "检测通过，发现 {count} 个分组", checkFailed: "检测失败：{error}", lineFormatPhone: "+手机号----https://接码链接", sessionJSON: "Auth Session", accessToken: "Access Token", mailboxAccountExport: "邮箱账户", exportFormat: "导出内容", selectExportRows: "请选择需要导出的账号", tokenPreview: "Token预览", sessionRefreshToken: "Refresh Token", secretKey: "Secret Key", allInfo: "全部信息", exportSK: "导出SK", exportAT: "导出AT", exportSUB: "导出SUB", acquireRT: "获取", acquiringRT: "正在获取RT", acquireRTDone: "账户 {email} 的 RT 已获取", acquireRTFailed: "无法获取该账户RT", sessionFieldTitle: "查看 {field}", sessionFieldLoading: "正在获取 {field}，请耐心等待...", sessionFieldEmpty: "该账户暂无 {field}", updated: "更新时间", groupFilter: "所属分组", atExpiresAt: "AT过期时间", lastHealthCheckedAt: "最近测活时间", refreshAT: "刷新AT", refreshingAT: "AT续期中...", updateAT: "更新", refreshATDone: "账户 {email} 的 AT 已更新（AT续期）", refreshATSummary: "AT续期完成：成功 {success} 个，失败 {failed} 个", refreshATNoSelection: "请选择需要刷新 AT 的账户", healthCheck: "测活", healthChecking: "测活中...", healthCheckSummary: "测活完成：测试 {total} 个，存活 {alive} 个，封禁 {banned} 个，失败 {failed} 个", healthAlive: "账户 {email}：存活", healthBanned: "账户 {email}：已封禁", alreadyBanned: "该账户已被封禁，无需测活", healthNoSelection: "请选择需要测活的账户",
+  sub2apiDesc: "用于“导入反代平台”阶段。填写 sub2api 地址与管理员 Key 后，注册任务可将已获取 Session/RT 的 GPT 账号导入平台。", baseURL: "Base URL", adminToken: "Admin Token", accountNamePrefix: "账号名前缀", targetGroup: "目标分组", targetGroupPlaceholder: "请选择目标分组", noGroupsFetch: "暂无分组，请点击右侧“获取”", fetch: "获取", priority: "优先级", check: "检测", configUnchanged: "配置未更改", fillURLToken: "请先填写 Base URL 和 Admin Token", fetchedGroups: "已获取 {count} 个目标分组", fillURLTokenShort: "请先填写 URL 和 Token", checking: "检测中...", checkPassedGroups: "检测通过，发现 {count} 个分组", checkFailed: "检测失败：{error}", lineFormatPhone: "+手机号----https://接码链接", sessionJSON: "Auth Session", accessToken: "Access Token", mailboxAccountExport: "邮箱账户", exportFormat: "导出内容", selectExportRows: "请选择需要导出的账号", tokenPreview: "Token预览", sessionRefreshToken: "Refresh Token", secretKey: "Secret Key", allInfo: "全部信息", exportSK: "导出SK", exportAT: "导出AT", exportSUB: "导出SUB", acquireRT: "获取", acquiringRT: "正在获取RT", acquireRTDone: "账户 {email} 的 RT 已获取", acquireRTFailed: "无法获取该账户RT", sessionFieldTitle: "查看 {field}", sessionFieldLoading: "正在获取 {field}，请耐心等待...", sessionFieldEmpty: "该账户暂无 {field}", updated: "更新时间", groupFilter: "所属分组", atExpiresAt: "AT过期时间", lastHealthCheckedAt: "最近测活时间", refreshAT: "续期", refreshingAT: "续期中...", updateAT: "续期", refreshATDone: "账户 {email} 的 AT 已更新（AT续期）", refreshATSummary: "AT续期完成：成功 {success} 个，失败 {failed} 个", refreshATNoSelection: "请选择需要续期 AT 的账户", closeRenewalProgress: "关闭续期进度", healthCheck: "测活", healthChecking: "测活中...", healthCheckSummary: "测活完成：测试 {total} 个，存活 {alive} 个，封禁 {banned} 个，失败 {failed} 个", healthAlive: "账户 {email}：存活", healthBanned: "账户 {email}：已封禁", alreadyBanned: "该账户已被封禁，无需测活", healthNoSelection: "请选择需要测活的账户",
+  renewalSteps: { queued: "等待续期任务调度", preparing: "准备续期任务", credentials_loaded: "读取账户凭证", refresh_token_ready: "Refresh Token 已就绪", token_received: "已获取新 Access Token", saving_session: "正在保存 Session", session_saved: "Session 已更新", refresh_token_unavailable: "Refresh Token 续期不可用，切换后台登录", refresh_token_missing: "未发现 Refresh Token，切换后台登录", mailbox_ready: "邮箱凭证已就绪", headless_login_started: "正在启动后台无头登录", proxy_ready: "代理与网络出口准备完成", authentication_running: "正在完成账户登录验证", session_reading: "正在读取并更新 Session", session_refreshed: "Session 已刷新", completed: "续期成功", failed: "续期失败" },
   linkedMailboxConfig: "联动邮箱配置", linkedPhoneConfig: "联动接码配置", linkedReverseConfig: "联动反代配置", resourceReady: "可用", resourceMissing: "不可用", usablePhones: "可用手机号 {count} 个", existingRTReady: "所选账号已有 RT，无需接码", sub2apiReady: "sub2api 已配置", sub2apiMissing: "sub2api 未完整配置", stageDisabledTip: "该阶段依赖的配置暂不可用，请先完成对应菜单配置。",
   statusLabels: { "未注册": "未注册", "已注册": "已注册", "registered": "已注册", "已接码": "已接码", "phone_bound": "已接码", "已反代": "已反代", "reverse_proxied": "已反代", "已封禁": "已封禁", "需二验": "需二验", "注册中": "注册中", "登录刷新": "登录刷新", "失败": "失败", "failed": "失败", "禁用": "禁用" },
 }, {
@@ -301,7 +427,8 @@ const en = {
   defaultGroup: "Default Group", allGroups: "All Groups", mailboxGroup: "Group", importMailboxes: "Import Mailboxes", manualImport: "Manual", fileImport: "File", dragFile: "Drag mailbox file here, or click to choose a file", importToGroup: "Import to group", addGroup: "New Group", editGroup: "Rename Group", deleteGroup: "Delete Group", enterGroup: "Type group name and press Enter", groupCreated: "Mailbox group created", groupRenamed: "Mailbox group renamed", groupDeleted: "Mailbox group deleted", groupNotEmpty: "This mailbox group contains accounts. Move them before deleting the group.", defaultGroupCannotDelete: "The default group cannot be deleted", groupNameConflict: "A mailbox group with this name already exists", confirmDeleteGroup: "Delete this mailbox group?", mailboxCount: "Mailboxes", validationOk: "Validation passed", validationFailed: "Validation failed", mailboxList: "Mailbox List", enabled: "Enabled", updatedAt: "Updated", actions: "Actions", queryMailbox: "Search mailbox...",
   allStatus: "All Status", allPlanTypes: "All Plans", edit: "Edit", delete: "Delete", batchDelete: "Batch Delete", batchEdit: "Batch Edit", confirmDeleteMailbox: "Delete this mailbox record? This cannot be undone.", confirmBatchDeleteMailbox: "Delete the selected mailbox records? This cannot be undone.", queryMail: "Mail Query", currentMailbox: "Current Mailbox", getMail: "Get Mail", mailFetchCount: "Count", mailFetchCountSuffix: "mails", mailList: "Mail List", sender: "Sender", receiver: "Receiver", time: "Time", subject: "Subject", content: "Content", emptyMail: "No mails", mailboxName: "Mailbox", password: "Password", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "Batch Edit Mailboxes", applyToSelected: "Apply to selected mailboxes",
   autoRegister: "Auto Register", interruptTask: "Stop", interruptingTask: "Stopping...", interruptTaskTip: "Stop the entire registration batch during submission, queueing, Worker startup or mailbox execution.", interruptTaskRequested: "Stop requested for the entire batch; closing task processes, browsers and mailbox readers", interruptTaskFailed: "Failed to stop task", registerTaskRunning: "A registration task is running. Wait for it to finish or stop it first.", manualNew: "Manual Add", searchAccount: "Search account email...", refreshQuota: "Refresh Quota", refreshList: "Refresh List", refreshDone: "List refreshed", loadingData: "Updating data...", refreshStatus: "Refresh Account Status", statusChangedAt: "Status Changed At", planType: "Plan Type", email: "Email", trialLink: "Trial Link", registeredAt: "Registered At", operation: "Action", noData: "No Data", noDataDesc: "No mailbox records were found. Import mailboxes in Mailbox settings, then select mailboxes to start auto registration.", chooseMailbox: "Please select mailboxes", createTaskLog: "Created ChatGPT register task, count", taskSubmitted: "Registration task submitted and starting", taskCreated: "Auto register task created", taskDone: "Task completed", taskFailed: "Task failed", taskPollRecovered: "Detected an unfinished registration task and resumed log polling", taskPollLost: "Task status polling temporarily failed; the app will keep waiting: {error}", taskPollTimeout: "Task polling is taking longer than expected. The app will keep waiting; use Stop to interrupt it.", importDone: "Import completed", exportDone: "Export completed", manualNewTip: "Please add mailboxes manually in Mailbox settings", autoRegisterTitle: "Auto Register ChatGPT", step1Title: "Choose Identity", step1Desc: "The self-managed Outlook/Hotmail mailbox pool is used first for email verification.", systemMailbox: "System Mailbox", systemMailboxPoolDisabled: "System mailbox pool is not enabled. Please enable the mailbox pool first.", smsConfigDisabled: "Please enable SMS settings on the SMS configuration page first.", registerStageUnavailable: "Please enable at least one mailbox registration method first.", googleMailboxDisabled: "Google mailbox is not enabled. Please enable the corresponding mailbox feature first.", microsoftMailboxDisabled: "Microsoft mailbox is not enabled. Please enable the corresponding mailbox feature first.", systemMailboxDesc: "Use mailbox pool to receive verification codes and complete registration", googleDesc: "Reserved identity; Google account integration will be added later", microsoftDesc: "Reserved identity; Microsoft account integration will be added later", step2Title: "Choose Execution Mode", step2Desc: "Background browser and visible browser automation are supported. Background mode runs without a window and is better for batches.", protocolMode: "Protocol Mode", protocolDesc: "Reserved; not selectable yet", protocolChallengeStrategy: "Browser challenge strategy", protocolNativeChallenge: "Native headless takeover", protocolNativeChallengeDesc: "Let the full background browser take over when a challenge is encountered", protocolSentinelChallenge: "Sentinel protocol runtime", protocolSentinelChallengeDesc: "Keep registration requests in protocol mode and use narrow Camoufox only for browser proofs", backgroundMode: "Background Browser", backgroundDesc: "Run headless without a visible window while still using an isolated incognito browser context", visibleMode: "Visible Browser", visibleDesc: "Open a browser window for easier challenge or page issue troubleshooting", registerCount: "Register Count", concurrency: "Concurrency", identityLabel: "Identity", modeLabel: "Execution Mode", registerAccounts: "Accounts", verifyStrategy: "Verification: automatically detect Outlook/Hotmail Graph API or IMAP/XOAUTH2 and read the code", step3Title: "Choose Registration Stage", step3Desc: "Control how far this task should run. Default only completes ChatGPT registration/login and Session storage.", registerOnly: "Register ChatGPT Only", registerOnlyDesc: "After register/login, only read and save ChatGPT Session info", codexPhoneBind: "Codex Phone Binding", codexPhoneBindDesc: "Continue phone verification with SMS settings and acquire Refresh Token", importReverseProxy: "Import Reverse Proxy", importReverseProxyDesc: "Import the account into configured sub2api after Session/RT is ready", agentIdentityReverseProxy: "Bypass SMS and Import Reverse Proxy", agentIdentityReverseProxyDesc: "Create Agent Identity from the Access Token after register/login, skip phone binding, and import directly into sub2api", stageLabel: "Stage", startAutoRegister: "Start Auto Register", cancel: "Cancel", noMailbox: "No Mailboxes", noMailboxDesc: "Click 'Import Mailboxes' in the upper-right corner to add your Outlook/Hotmail mailbox pool.", inbox: "Inbox", fillOrChooseMailboxFile: "Please fill in or choose a mailbox file",
-  sub2apiDesc: "Used by the 'Import Reverse Proxy' stage. After Base URL and Admin Key are configured, registration tasks can import GPT accounts with Session/RT into the platform.", baseURL: "Base URL", adminToken: "Admin Token", accountNamePrefix: "Account Name Prefix", targetGroup: "Target Group", targetGroupPlaceholder: "Select target groups", noGroupsFetch: "No groups yet. Click 'Fetch' on the right.", fetch: "Fetch", priority: "Priority", check: "Check", configUnchanged: "Configuration unchanged", fillURLToken: "Please fill in Base URL and Admin Token first", fetchedGroups: "Fetched {count} target groups", fillURLTokenShort: "Please fill in URL and Token first", checking: "Checking...", checkPassedGroups: "Check passed, found {count} groups", checkFailed: "Check failed: {error}", lineFormatPhone: "+phone----https://sms-url", sessionJSON: "Auth Session", accessToken: "Access Token", mailboxAccountExport: "Mailbox Account", exportFormat: "Export Content", selectExportRows: "Please select accounts to export", tokenPreview: "Token Preview", sessionRefreshToken: "Refresh Token", secretKey: "Secret Key", allInfo: "All Info", exportSK: "Export SK", exportAT: "Export AT", exportSUB: "Export SUB", acquireRT: "Get", acquiringRT: "Getting RT", acquireRTDone: "RT acquired for {email}", acquireRTFailed: "Unable to acquire this account RT", sessionFieldTitle: "View {field}", sessionFieldLoading: "Fetching {field}. Please wait...", sessionFieldEmpty: "This account has no {field}", updated: "Updated", groupFilter: "Group", atExpiresAt: "AT Expires", lastHealthCheckedAt: "Last Health Check", refreshAT: "Refresh AT", refreshingAT: "Refreshing AT...", updateAT: "Update", refreshATDone: "AT renewed for {email}", refreshATSummary: "AT refresh complete: {success} succeeded, {failed} failed", refreshATNoSelection: "Select accounts to refresh AT", healthCheck: "Health Check", healthChecking: "Checking...", healthCheckSummary: "Health check complete: tested {total}, alive {alive}, banned {banned}, failed {failed}", healthAlive: "Account {email}: alive", healthBanned: "Account {email}: banned", alreadyBanned: "This account is already banned; no check was performed", healthNoSelection: "Select accounts to check",
+  sub2apiDesc: "Used by the 'Import Reverse Proxy' stage. After Base URL and Admin Key are configured, registration tasks can import GPT accounts with Session/RT into the platform.", baseURL: "Base URL", adminToken: "Admin Token", accountNamePrefix: "Account Name Prefix", targetGroup: "Target Group", targetGroupPlaceholder: "Select target groups", noGroupsFetch: "No groups yet. Click 'Fetch' on the right.", fetch: "Fetch", priority: "Priority", check: "Check", configUnchanged: "Configuration unchanged", fillURLToken: "Please fill in Base URL and Admin Token first", fetchedGroups: "Fetched {count} target groups", fillURLTokenShort: "Please fill in URL and Token first", checking: "Checking...", checkPassedGroups: "Check passed, found {count} groups", checkFailed: "Check failed: {error}", lineFormatPhone: "+phone----https://sms-url", sessionJSON: "Auth Session", accessToken: "Access Token", mailboxAccountExport: "Mailbox Account", exportFormat: "Export Content", selectExportRows: "Please select accounts to export", tokenPreview: "Token Preview", sessionRefreshToken: "Refresh Token", secretKey: "Secret Key", allInfo: "All Info", exportSK: "Export SK", exportAT: "Export AT", exportSUB: "Export SUB", acquireRT: "Get", acquiringRT: "Getting RT", acquireRTDone: "RT acquired for {email}", acquireRTFailed: "Unable to acquire this account RT", sessionFieldTitle: "View {field}", sessionFieldLoading: "Fetching {field}. Please wait...", sessionFieldEmpty: "This account has no {field}", updated: "Updated", groupFilter: "Group", atExpiresAt: "AT Expires", lastHealthCheckedAt: "Last Health Check", refreshAT: "Renew", refreshingAT: "Renewing...", updateAT: "Renew", refreshATDone: "AT renewed for {email}", refreshATSummary: "AT renewal complete: {success} succeeded, {failed} failed", refreshATNoSelection: "Select accounts to renew AT", closeRenewalProgress: "Close renewal progress", healthCheck: "Health Check", healthChecking: "Checking...", healthCheckSummary: "Health check complete: tested {total}, alive {alive}, banned {banned}, failed {failed}", healthAlive: "Account {email}: alive", healthBanned: "Account {email}: banned", alreadyBanned: "This account is already banned; no check was performed", healthNoSelection: "Select accounts to check",
+  renewalSteps: { queued: "Waiting for renewal scheduling", preparing: "Preparing renewal", credentials_loaded: "Loading account credentials", refresh_token_ready: "Refresh Token ready", token_received: "New Access Token received", saving_session: "Saving Session", session_saved: "Session updated", refresh_token_unavailable: "Refresh Token unavailable; switching to background login", refresh_token_missing: "No Refresh Token; switching to background login", mailbox_ready: "Mailbox credentials ready", headless_login_started: "Starting background headless login", proxy_ready: "Proxy and network outlet ready", authentication_running: "Completing account authentication", session_reading: "Reading and updating Session", session_refreshed: "Session refreshed", completed: "Renewal succeeded", failed: "Renewal failed" },
   linkedMailboxConfig: "Uses Mailbox config", linkedPhoneConfig: "Uses SMS config", linkedReverseConfig: "Uses Reverse Proxy config", resourceReady: "Ready", resourceMissing: "Unavailable", usablePhones: "{count} usable phones", existingRTReady: "Selected accounts already have RT; SMS is not required", sub2apiReady: "sub2api configured", sub2apiMissing: "sub2api incomplete", stageDisabledTip: "The configuration required by this stage is unavailable. Complete the linked menu first.",
   statusLabels: { "未注册": "Unregistered", "已注册": "Registered", "registered": "Registered", "已接码": "Phone Bound", "phone_bound": "Phone Bound", "已反代": "Reverse Proxied", "reverse_proxied": "Reverse Proxied", "已封禁": "Banned", "需二验": "Needs 2FA", "注册中": "Registering", "登录刷新": "Refreshing Login", "失败": "Failed", "failed": "Failed", "禁用": "Disabled" },
 };
@@ -2240,6 +2367,29 @@ const SESSION_PLAN_OPTIONS = PLAN_TYPE_OPTIONS;
 const SESSION_STATUS_OPTIONS = MAILBOX_STATUSES;
 type SessionFieldName = "access_token" | "refresh_token" | "secret_key";
 const SESSION_FIELD_LABELS: Record<SessionFieldName, string> = { access_token: "AT", refresh_token: "RT", secret_key: "SK" };
+
+function renewalViewForSession(tasks: PersistentSessionTask[], row: AnyObj) {
+  const task = [...tasks].reverse().find((item) => item.kind === "refresh-at"
+    && item.sessionIds.some((id) => Number(id) === Number(row.id))
+    && !item.dismissedEmails.includes(String(row.email || "").toLowerCase()));
+  if (!task) return null;
+  const key = String(row.email || "").toLowerCase();
+  const progress = task.progress[key] || {
+    email: String(row.email || ""),
+    current: task.state === "succeeded" ? 1 : 0,
+    total: task.state === "succeeded" ? 1 : 7,
+    checkpoint: task.state === "succeeded" ? "completed" : task.state === "failed" ? "failed" : "queued",
+    state: task.state,
+    error: task.error,
+    updatedAt: Date.now(),
+  };
+  return { task, progress };
+}
+
+function renewalStepLabel(t: AnyObj, checkpoint: string) {
+  return t.renewalSteps?.[checkpoint] || checkpoint;
+}
+
 function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", text: string) => void }) {
   const [items,setItems]=useCachedState<AnyObj[]>("session.items",[]);
   const [fmt,setFmt]=useCachedState("session.fmt","sk");
@@ -2255,8 +2405,8 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const [mailboxForMail,setMailboxForMail]=useState<AnyObj|null>(null);
   const [healthBusy,setHealthBusy]=useState(false);
   const persistentTasks = usePersistentSessionTasks();
-  const refreshingSessionIds = Array.from(new Set(persistentTasks.filter((task)=>task.kind==="refresh-at").flatMap((task)=>task.sessionIds)));
-  const acquiringRTSessionIds = Array.from(new Set(persistentTasks.filter((task)=>task.kind==="acquire-rt").flatMap((task)=>task.sessionIds)));
+  const refreshingSessionIds = Array.from(new Set(persistentTasks.filter((task)=>task.kind==="refresh-at" && task.state==="running").flatMap((task)=>task.sessionIds)));
+  const acquiringRTSessionIds = Array.from(new Set(persistentTasks.filter((task)=>task.kind==="acquire-rt" && task.state==="running").flatMap((task)=>task.sessionIds)));
   const [sortBy,setSortBy]=useCachedState("session.sortBy","last_health_checked_at");
   const [timeSort,setTimeSort]=useCachedState<SortOrder>("session.timeSort","desc");
   const [page,setPage]=useCachedState("session.page",1);
@@ -2390,7 +2540,24 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
         <button className="sr-text-btn" disabled={healthBusy} onClick={refreshSessionList}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
       </div>
     </div>
-    <div className="sr-table-scroll"><table className="sr-account-table sr-session-table"><thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/></th><th>{t.email}</th><th>{t.groupFilter}</th><th>{t.status}</th><th>{t.planType}</th><th>SK</th><th>AT</th><th>RT</th><th><SortTimeHeader label={t.atExpiresAt} order={sortBy==="access_token_expires_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("access_token_expires_at")}/></th><th><SortTimeHeader label={t.lastHealthCheckedAt} order={sortBy==="last_health_checked_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("last_health_checked_at")}/></th><th>{t.operation}</th></tr></thead><tbody>{items.length ? items.map((s)=>{const refreshing=refreshingSessionIds.includes(s.id);const acquiringRT=acquiringRTSessionIds.includes(s.id);const skLoading=fieldLoading[`${s.id}:secret_key`];const atLoading=fieldLoading[`${s.id}:access_token`];const rtLoading=fieldLoading[`${s.id}:refresh_token`];return <tr key={s.id}><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td>{s.email}</td><td>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td>{formatDateTime(s.access_token_expires_at)}</td><td>{formatDateTime(s.last_health_checked_at)}</td><td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link" disabled={healthBusy} onClick={()=>runHealthCheck([s.id],s)}><Activity className="inline h-4 w-4"/>{t.healthCheck}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>}) : <tr><td colSpan={11}><div className="sr-empty !min-h-[260px]"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><p className="mt-3 text-sm text-slate-400">{t.noData}</p></div></td></tr>}</tbody></table></div>
+    <div className="sr-table-scroll">
+      <table className="sr-account-table sr-session-table">
+        <thead><tr><th><input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/></th><th>{t.email}</th><th>{t.groupFilter}</th><th>{t.status}</th><th>{t.planType}</th><th>SK</th><th>AT</th><th>RT</th><th><SortTimeHeader label={t.atExpiresAt} order={sortBy==="access_token_expires_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("access_token_expires_at")}/></th><th><SortTimeHeader label={t.lastHealthCheckedAt} order={sortBy==="last_health_checked_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("last_health_checked_at")}/></th><th>{t.operation}</th></tr></thead>
+        <tbody>{items.length ? items.map((s)=>{
+          const refreshing=refreshingSessionIds.includes(s.id);
+          const acquiringRT=acquiringRTSessionIds.includes(s.id);
+          const skLoading=fieldLoading[`${s.id}:secret_key`];
+          const atLoading=fieldLoading[`${s.id}:access_token`];
+          const rtLoading=fieldLoading[`${s.id}:refresh_token`];
+          const renewalView=renewalViewForSession(persistentTasks,s);
+          const renewalPercent=renewalView ? Math.min(100, Math.max(0, (renewalView.progress.current / renewalView.progress.total) * 100)) : 0;
+          return <Fragment key={s.id}>
+            <tr><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td>{s.email}</td><td>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td>{formatDateTime(s.access_token_expires_at)}</td><td>{formatDateTime(s.last_health_checked_at)}</td><td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link" disabled={healthBusy} onClick={()=>runHealthCheck([s.id],s)}><Activity className="inline h-4 w-4"/>{t.healthCheck}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>
+            {renewalView && <tr className="sr-renewal-progress-row"><td/><td colSpan={10}><div className={cn("sr-renewal-progress",`is-${renewalView.progress.state}`)}><strong className="sr-renewal-progress-count">{renewalView.progress.current}/{renewalView.progress.total}</strong><div className="sr-renewal-progress-main"><div className="sr-renewal-progress-label">{renewalStepLabel(t,renewalView.progress.checkpoint)}</div><div className="sr-renewal-progress-track"><span style={{width:`${renewalPercent}%`}}/></div>{renewalView.progress.error && <div className="sr-renewal-progress-error">{renewalView.progress.error}</div>}</div><button className="sr-renewal-progress-close" title={t.closeRenewalProgress} onClick={()=>dismissSessionRenewal(renewalView.task.clientId,s.email)}><X className="h-4 w-4"/></button></div></td></tr>}
+          </Fragment>;
+        }) : <tr><td colSpan={11}><div className="sr-empty !min-h-[260px]"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><p className="mt-3 text-sm text-slate-400">{t.noData}</p></div></td></tr>}</tbody>
+      </table>
+    </div>
     <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
     {editing && <SessionEditModal t={t} item={editing} onClose={()=>setEditing(null)} onSaved={()=>{setEditing(null); notify("ok", t.done); void load();}} notify={notify}/>}
     {mailboxForMail && <MailboxMailModal t={t} mailbox={mailboxForMail} onClose={()=>setMailboxForMail(null)} notify={notify}/>}

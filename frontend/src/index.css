@@ -454,6 +454,29 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .sr-session-field-button:disabled { transform:none; cursor:wait; }
 .sr-session-field-button:hover:not(:disabled) { border-color: rgba(13, 148, 136, .48); background: rgba(20, 184, 166, .18); transform: translateY(-1px); }
 .dark .sr-session-field-button { border-color: rgba(45, 212, 191, .28); background: rgba(45, 212, 191, .10); color: #5eead4; }
+.sr-renewal-progress-row td { height:auto; padding:0 14px 10px; background:rgba(248,250,252,.72); }
+.sr-renewal-progress-row td > * { margin:0; }
+.sr-renewal-progress {
+  display:grid; grid-template-columns:52px minmax(0,1fr) 28px; align-items:center; gap:12px;
+  min-height:46px; padding:8px 10px; border:1px solid rgba(15,23,42,.08); border-radius:10px;
+  background:#fff; color:#0f172a; text-align:left;
+}
+.sr-renewal-progress-count { font-size:13px; font-variant-numeric:tabular-nums; text-align:center; color:inherit; }
+.sr-renewal-progress-main { min-width:0; }
+.sr-renewal-progress-label { overflow:hidden; color:inherit; font-size:13px; font-weight:650; text-overflow:ellipsis; white-space:nowrap; }
+.sr-renewal-progress-track { height:4px; margin-top:6px; overflow:hidden; border-radius:999px; background:rgba(148,163,184,.22); }
+.sr-renewal-progress-track span { display:block; height:100%; border-radius:inherit; background:#334155; transition:width .25s ease; }
+.sr-renewal-progress-error { margin-top:5px; overflow:hidden; font-size:12px; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
+.sr-renewal-progress-close { display:inline-flex; width:28px; height:28px; align-items:center; justify-content:center; border-radius:8px; color:currentColor; opacity:.58; }
+.sr-renewal-progress-close:hover { background:rgba(148,163,184,.14); opacity:1; }
+.sr-renewal-progress.is-succeeded { border-color:rgba(34,197,94,.24); background:rgba(240,253,244,.88); color:#15803d; }
+.sr-renewal-progress.is-succeeded .sr-renewal-progress-track span { background:#22c55e; }
+.sr-renewal-progress.is-failed { border-color:rgba(239,68,68,.24); background:rgba(254,242,242,.9); color:#dc2626; }
+.sr-renewal-progress.is-failed .sr-renewal-progress-track span { background:#ef4444; }
+.dark .sr-renewal-progress-row td { background:rgba(2,6,23,.28); }
+.dark .sr-renewal-progress { border-color:rgba(148,163,184,.18); background:rgba(15,23,42,.76); color:#e2e8f0; }
+.dark .sr-renewal-progress.is-succeeded { border-color:rgba(74,222,128,.25); background:rgba(20,83,45,.22); color:#86efac; }
+.dark .sr-renewal-progress.is-failed { border-color:rgba(248,113,113,.25); background:rgba(127,29,29,.22); color:#fca5a5; }
 .dark .sr-account-table th { background:rgba(255,255,255,.04); border-color:var(--border-soft); color:var(--text-muted); }
 .dark .sr-account-table td { border-color:var(--border-soft); color:var(--text-secondary); }
 .sr-status { display:inline-flex; align-items:center; justify-content:center; min-width:54px; border-radius:999px; background:#f1f5f9; color:#64748b; padding:4px 10px; font-size:12px; font-weight:800; }
