@@ -53,7 +53,10 @@ func newSunnySessionTestServer(t *testing.T) *Server {
 	}).Error; err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	return &Server{db: db}
+	server := &Server{db: db}
+	// Unit tests must not depend on the developer machine's default local proxy.
+	server.sunnySaveConfig(sunnyCfgProxy, mergeConfig(defaultProxyConfig(), map[string]any{"proxy_enabled": false}))
+	return server
 }
 
 func TestSunnySessionListDoesNotReturnSecrets(t *testing.T) {
