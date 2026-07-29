@@ -1,6 +1,8 @@
 package main
 
 import (
+	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -83,6 +85,58 @@ func TestSunnySessionListDoesNotReturnSecrets(t *testing.T) {
 	}
 	if item["plan_type"] != "plus" || item["email"] != "session@example.com" {
 		t.Fatalf("summary fields are incorrect: %#v", item)
+	}
+}
+
+func TestSunnySessionListUsesJWTExpiryInShanghai(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	previousLocation := sunnyApplicationLocation
+	sunnyApplicationLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+	t.Cleanup(func() { sunnyApplicationLocation = previousLocation })
+
+	exp := int64(1893456000)
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"exp":1893456000}`))
+	accessToken := "header." + payload + ".signature"
+	storedWrong := time.Unix(exp, 0).Add(8 * time.Hour)
+	if err := s.db.Model(&SunnySession{}).Where("email = ?", "session@example.com").Updates(map[string]any{
+		"access_token": accessToken,
+		"expires_at":   sql.NullTime{Time: storedWrong, Valid: true},
+	}).Error; err != nil {
+		t.Fatalf("update session expiry: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sunny/sessions?page=1&page_size=10", nil)
+	rec := httptest.NewRecorder()
+	s.sunnySessions(rec, req, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode session list: %v", err)
+	}
+	want := time.Unix(exp, 0).In(sunnyApplicationLocation).Format(time.RFC3339)
+	if got := response.Items[0]["access_token_expires_at"]; got != want {
+		t.Fatalf("access token expiry = %v, want %s", got, want)
+	}
+}
+
+func TestEnsureShanghaiTimestampStorageNormalizesLegacyValues(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	if err := s.db.Exec("UPDATE sunny_sessions SET expires_at = ? WHERE email = ?", "2026-07-29 12:34:56", "session@example.com").Error; err != nil {
+		t.Fatalf("write legacy timestamp: %v", err)
+	}
+
+	ensureShanghaiTimestampStorage(s.db)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load normalized session: %v", err)
+	}
+	_, offset := session.ExpiresAt.Time.Zone()
+	if !session.ExpiresAt.Valid || offset != 8*60*60 || session.ExpiresAt.Time.Hour() != 12 {
+		t.Fatalf("normalized expiry = %v, valid=%v, offset=%d", session.ExpiresAt.Time, session.ExpiresAt.Valid, offset)
 	}
 }
 

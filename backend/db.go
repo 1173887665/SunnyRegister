@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -61,6 +62,7 @@ func openDB() *gorm.DB {
 		log.Fatalf("migrate sqlite failed: %v", err)
 	}
 	ensureSunnySchema(db)
+	ensureShanghaiTimestampStorage(db)
 	ensureSunnyStatusTriggers(db)
 	ensureSunnyIndexes(db)
 	sanitizeHistoricalTaskData(db)
@@ -70,22 +72,84 @@ func openDB() *gorm.DB {
 func ensureSunnyStatusTriggers(db *gorm.DB) {
 	for _, table := range []string{"sunny_mailboxes", "sunny_accounts"} {
 		updateTrigger := "trg_" + table + "_status_changed"
+		db.Exec("DROP TRIGGER IF EXISTS " + updateTrigger)
 		updateStatement := "CREATE TRIGGER IF NOT EXISTS " + updateTrigger +
 			" AFTER UPDATE OF status ON " + table +
 			" WHEN OLD.status IS NOT NEW.status BEGIN UPDATE " + table +
-			" SET status_changed_at = CASE WHEN NEW.updated_at IS NOT OLD.updated_at THEN NEW.updated_at ELSE datetime('now','localtime') END" +
+			" SET status_changed_at = CASE WHEN NEW.updated_at IS NOT OLD.updated_at THEN NEW.updated_at ELSE strftime('%Y-%m-%d %H:%M:%S','now','+8 hours') || '+08:00' END" +
 			" WHERE id = NEW.id; END"
 		if err := db.Exec(updateStatement).Error; err != nil {
 			log.Printf("create status timestamp trigger failed: %v", err)
 		}
 		insertTrigger := "trg_" + table + "_status_created"
+		db.Exec("DROP TRIGGER IF EXISTS " + insertTrigger)
 		insertStatement := "CREATE TRIGGER IF NOT EXISTS " + insertTrigger +
 			" AFTER INSERT ON " + table +
 			" WHEN NEW.status_changed_at IS NULL BEGIN UPDATE " + table +
-			" SET status_changed_at = COALESCE(NEW.created_at, NEW.updated_at, datetime('now','localtime')) WHERE id = NEW.id; END"
+			" SET status_changed_at = COALESCE(NEW.created_at, NEW.updated_at, strftime('%Y-%m-%d %H:%M:%S','now','+8 hours') || '+08:00') WHERE id = NEW.id; END"
 		if err := db.Exec(insertStatement).Error; err != nil {
 			log.Printf("create initial status timestamp trigger failed: %v", err)
 		}
+	}
+}
+
+type sqliteTableName struct {
+	Name string `gorm:"column:name"`
+}
+
+type sqliteColumnInfo struct {
+	Name string `gorm:"column:name"`
+	Type string `gorm:"column:type"`
+}
+
+func quoteSQLiteIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+// Older worker builds wrote Shanghai wall-clock values without an offset. The
+// SQLite driver parses those values as UTC, so make the intended timezone
+// explicit before values are read by GORM.
+func ensureShanghaiTimestampStorage(db *gorm.DB) {
+	const migrationKey = "timezone_storage_asia_shanghai_v1"
+	var migrated int64
+	if db.Model(&SunnyKVConfig{}).Where("key = ?", migrationKey).Count(&migrated).Error == nil && migrated > 0 {
+		return
+	}
+	var tables []sqliteTableName
+	if err := db.Raw("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&tables).Error; err != nil {
+		log.Printf("list timestamp tables failed: %v", err)
+		return
+	}
+	for _, table := range tables {
+		var columns []sqliteColumnInfo
+		if err := db.Raw("PRAGMA table_info(" + quoteSQLiteIdentifier(table.Name) + ")").Scan(&columns).Error; err != nil {
+			log.Printf("list timestamp columns for %s failed: %v", table.Name, err)
+			continue
+		}
+		for _, column := range columns {
+			columnType := strings.ToLower(strings.TrimSpace(column.Type))
+			if !strings.Contains(columnType, "date") && !strings.Contains(columnType, "time") {
+				continue
+			}
+			tableName := quoteSQLiteIdentifier(table.Name)
+			columnName := quoteSQLiteIdentifier(column.Name)
+			statement := fmt.Sprintf(`UPDATE %s SET %s = trim(%s) || '+08:00'
+				WHERE typeof(%s) = 'text' AND length(trim(%s)) >= 16
+				AND (substr(trim(%s), 11, 1) = ' ' OR substr(trim(%s), 11, 1) = 'T')
+				AND upper(substr(trim(%s), -1, 1)) <> 'Z'
+				AND instr(substr(trim(%s), 11), '+') = 0
+				AND instr(substr(trim(%s), 11), '-') = 0`,
+				tableName, columnName, columnName, columnName, columnName,
+				columnName, columnName, columnName, columnName, columnName)
+			if err := db.Exec(statement).Error; err != nil {
+				log.Printf("normalize Shanghai timestamps for %s.%s failed: %v", table.Name, column.Name, err)
+			}
+		}
+	}
+	now := time.Now().In(applicationLocation())
+	marker := SunnyKVConfig{Key: migrationKey, ValueJSON: `{"timezone":"Asia/Shanghai"}`, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&marker).Error; err != nil && !strings.Contains(strings.ToLower(err.Error()), "unique") {
+		log.Printf("save Shanghai timestamp migration marker failed: %v", err)
 	}
 }
 

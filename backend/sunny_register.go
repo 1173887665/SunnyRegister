@@ -118,7 +118,7 @@ func (s *Server) sunnyMailboxGroups(w http.ResponseWriter, r *http.Request, part
 		for _, row := range rows {
 			items = append(items, map[string]any{
 				"id": row.ID, "name": row.Name, "description": row.Description,
-				"mailbox_count": counts[row.ID], "created_at": row.CreatedAt, "updated_at": row.UpdatedAt,
+				"mailbox_count": counts[row.ID], "created_at": formatTime(row.CreatedAt), "updated_at": formatTime(row.UpdatedAt),
 			})
 		}
 		writeJSON(w, 200, map[string]any{"items": items})
@@ -134,7 +134,7 @@ func (s *Server) sunnyMailboxGroups(w http.ResponseWriter, r *http.Request, part
 		}
 		writeJSON(w, 200, map[string]any{
 			"id": g.ID, "name": g.Name, "description": g.Description,
-			"mailbox_count": 0, "created_at": g.CreatedAt, "updated_at": g.UpdatedAt,
+			"mailbox_count": 0, "created_at": formatTime(g.CreatedAt), "updated_at": formatTime(g.UpdatedAt),
 		})
 		return
 	}
@@ -165,7 +165,7 @@ func (s *Server) sunnyMailboxGroups(w http.ResponseWriter, r *http.Request, part
 			s.db.Model(&SunnyMailbox{}).Where("group_id = ?", id).Count(&mailboxCount)
 			writeJSON(w, 200, map[string]any{
 				"id": g.ID, "name": g.Name, "description": g.Description,
-				"mailbox_count": mailboxCount, "created_at": g.CreatedAt, "updated_at": g.UpdatedAt,
+				"mailbox_count": mailboxCount, "created_at": formatTime(g.CreatedAt), "updated_at": formatTime(g.UpdatedAt),
 			})
 			return
 		}
@@ -1628,7 +1628,7 @@ func (s *Server) sunnyPhones(w http.ResponseWriter, r *http.Request, parts []str
 		for _, row := range rows {
 			items = append(items, serializeSunnyPhone(row))
 		}
-		writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": pageSize, "now": time.Now().Format(time.RFC3339)})
+		writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": pageSize, "now": formatTime(time.Now())})
 		return
 	}
 	if len(parts) == 0 && r.Method == http.MethodPost {
@@ -2155,8 +2155,8 @@ func serializeSunnyPhone(p SunnyPhone) map[string]any {
 		"cooldown_until": nullableTime(p.CooldownUntil.Valid, p.CooldownUntil.Time),
 		"last_used_at":   nullableTime(p.LastUsedAt.Valid, p.LastUsedAt.Time),
 		"last_error":     p.LastError,
-		"created_at":     p.CreatedAt,
-		"updated_at":     p.UpdatedAt,
+		"created_at":     formatTime(p.CreatedAt),
+		"updated_at":     formatTime(p.UpdatedAt),
 	}
 }
 
@@ -2530,7 +2530,7 @@ func sunnyProxyJSON(p SunnyProxy) map[string]any {
 	return map[string]any{
 		"id": p.ID, "address": p.Address, "country": p.Country, "status": sunnyProxyDisplayStatus(p), "status_key": normalizeSunnyProxyStatus(p.Status),
 		"enabled": p.Enabled, "last_check_ok": p.LastCheckOK, "latency_ms": p.LatencyMS, "last_error": p.LastError,
-		"last_checked_at": p.LastCheckedAt, "created_at": p.CreatedAt, "updated_at": p.UpdatedAt,
+		"last_checked_at": nullableTime(p.LastCheckedAt != nil, pointerTime(p.LastCheckedAt)), "created_at": formatTime(p.CreatedAt), "updated_at": formatTime(p.UpdatedAt),
 	}
 }
 
@@ -2837,17 +2837,26 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 	if refreshToken == "" {
 		refreshToken = acc.OpenAIRT
 	}
+	accessToken := fallback(sess.AccessToken, fallback(sunnyAccessTokenFromSessionJSON(sess.SessionJSON), acc.AccessToken))
+	expiresAt := sunnyAccessTokenExpiry(accessToken, sess.ExpiresAt)
 	return map[string]any{
 		"id": sess.ID, "account_id": sess.AccountID, "email": sess.Email,
 		"status": status, "plan_type": plan,
-		"access_token": fallback(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON)), "refresh_token": refreshToken, "id_token": sess.IDToken,
+		"access_token": accessToken, "refresh_token": refreshToken, "id_token": sess.IDToken,
 		"session_json": sess.SessionJSON, "storage_state_json": sess.StorageStateJSON,
 		"raw_mailbox_line": raw,
 		"mailbox_password": mb.Password, "mailbox_client_id": mb.ClientID, "mailbox_refresh_token": mb.RefreshToken,
-		"expires_at":      nullableTime(sess.ExpiresAt.Valid, sess.ExpiresAt.Time),
+		"expires_at":      nullableTime(expiresAt.Valid, expiresAt.Time),
 		"last_refresh_at": nullableTime(sess.LastRefreshAt.Valid, sess.LastRefreshAt.Time),
 		"created_at":      formatTime(sess.CreatedAt), "updated_at": formatTime(sess.UpdatedAt),
 	}
+}
+
+func sunnyAccessTokenExpiry(accessToken string, stored sql.NullTime) sql.NullTime {
+	if exp := toInt(decodeJWTPayload(strings.TrimSpace(accessToken))["exp"]); exp > 0 {
+		return sql.NullTime{Time: time.Unix(int64(exp), 0), Valid: true}
+	}
+	return stored
 }
 
 type sunnySessionListRow struct {
@@ -2867,6 +2876,7 @@ type sunnySessionAccountSummary struct {
 	Email               string     `gorm:"column:email"`
 	Status              string     `gorm:"column:status"`
 	AccountType         string     `gorm:"column:account_type"`
+	AccessToken         string     `gorm:"column:access_token"`
 	HasAccessToken      int        `gorm:"column:has_access_token"`
 	HasRefreshToken     int        `gorm:"column:has_refresh_token"`
 	LastHealthCheckedAt *time.Time `gorm:"column:last_health_checked_at"`
@@ -2914,12 +2924,7 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 	if lastHealthCheckedAt != nil {
 		lastHealthText = formatTime(*lastHealthCheckedAt)
 	}
-	expiresAt := row.ExpiresAt
-	if !expiresAt.Valid && strings.TrimSpace(row.AccessToken) != "" {
-		if exp := toInt(decodeJWTPayload(row.AccessToken)["exp"]); exp > 0 {
-			expiresAt = sql.NullTime{Time: time.Unix(int64(exp), 0), Valid: true}
-		}
-	}
+	expiresAt := sunnyAccessTokenExpiry(fallback(row.AccessToken, account.AccessToken), row.ExpiresAt)
 	accountID := row.AccountID
 	if accountID == 0 {
 		accountID = account.ID
@@ -2967,7 +2972,7 @@ func (s *Server) sunnySessionListSidecars(rows []sunnySessionListRow) (map[strin
 		return accounts, mailboxes
 	}
 	var accRows []sunnySessionAccountSummary
-	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, last_health_checked_at,
+	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, access_token, last_health_checked_at,
 		CASE WHEN access_token IS NOT NULL AND access_token <> '' THEN 1 ELSE 0 END AS has_access_token,
 		CASE WHEN openai_rt IS NOT NULL AND openai_rt <> '' THEN 1 ELSE 0 END AS has_refresh_token`).Where("email IN ?", emails).Find(&accRows)
 	for _, account := range accRows {
@@ -3252,7 +3257,7 @@ func (s *Server) sunnyExportSessions(w http.ResponseWriter, rows []SunnySession,
 			}
 			exportedAccounts = append(exportedAccounts, buildSunnySub2AccountPayload(row, cfg))
 		}
-		payload := map[string]any{"exported_at": time.Now().UTC().Format(time.RFC3339), "proxies": []any{}, "accounts": exportedAccounts}
+		payload := map[string]any{"exported_at": formatTime(time.Now()), "proxies": []any{}, "accounts": exportedAccounts}
 		writeTextFile(w, sunnyAccountExportName("SUB", len(exportedAccounts), "json"), "application/json", []byte(dumpJSONPretty(payload)+"\n"))
 	case "session_json", "json":
 		arr := []any{}

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sqlite3
-import time
-import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -20,20 +19,34 @@ def db_path() -> str:
     return raw
 
 
-def now_sql() -> str:
-    tz_name = os.getenv("SUNNY_TIMEZONE") or os.getenv("TZ") or "Asia/Shanghai"
-    try:
-        return datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        return time.strftime("%Y-%m-%d %H:%M:%S")
-
-
 def app_timezone() -> ZoneInfo:
     tz_name = os.getenv("SUNNY_TIMEZONE") or os.getenv("TZ") or "Asia/Shanghai"
     try:
         return ZoneInfo(tz_name)
     except Exception:
         return ZoneInfo("Asia/Shanghai")
+
+
+def sql_datetime(value: datetime | int | float | str | None = None) -> str:
+    if value is None:
+        parsed = datetime.now(app_timezone())
+    elif isinstance(value, (int, float)) or (isinstance(value, str) and value.isdigit()):
+        parsed = datetime.fromtimestamp(int(value), timezone.utc)
+    elif isinstance(value, str):
+        raw = value.strip()
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return raw
+    else:
+        parsed = value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=app_timezone())
+    return parsed.astimezone(app_timezone()).isoformat(sep=" ", timespec="seconds")
+
+
+def now_sql() -> str:
+    return sql_datetime()
 
 
 class SunnyTaskCancelled(RuntimeError):
@@ -122,11 +135,13 @@ class SunnyDB:
             if table in {"sunny_accounts", "sunny_mailboxes"} and "open_airt" in refreshed and "openai_rt" in refreshed:
                 self.conn.execute(f"update {table} set openai_rt=open_airt where coalesce(openai_rt,'')='' and coalesce(open_airt,'')<>''")
 
+        self._normalize_datetime_storage()
         for table in ("sunny_accounts", "sunny_mailboxes"):
             columns = {str(row["name"]) for row in self.conn.execute(f"pragma table_info({table})").fetchall()}
             if "status_changed_at" not in columns:
                 continue
             self.conn.execute(f"update {table} set status_changed_at=updated_at where status_changed_at is null")
+            self.conn.execute(f"drop trigger if exists trg_{table}_status_changed")
             self.conn.execute(
                 f"""create trigger if not exists trg_{table}_status_changed
                 after update of status on {table}
@@ -135,18 +150,19 @@ class SunnyDB:
                     update {table}
                     set status_changed_at=case
                         when new.updated_at is not old.updated_at then new.updated_at
-                        else datetime('now','localtime')
+                        else strftime('%Y-%m-%d %H:%M:%S','now','+8 hours') || '+08:00'
                     end
                     where id=new.id;
                 end"""
             )
+            self.conn.execute(f"drop trigger if exists trg_{table}_status_created")
             self.conn.execute(
                 f"""create trigger if not exists trg_{table}_status_created
                 after insert on {table}
                 when new.status_changed_at is null
                 begin
                     update {table}
-                    set status_changed_at=coalesce(new.created_at,new.updated_at,datetime('now','localtime'))
+                    set status_changed_at=coalesce(new.created_at,new.updated_at,strftime('%Y-%m-%d %H:%M:%S','now','+8 hours') || '+08:00')
                     where id=new.id;
                 end"""
             )
@@ -178,6 +194,42 @@ class SunnyDB:
             "create unique index if not exists idx_sunny_sms_provider_number on sunny_sms_provider_numbers(provider, phone_number, country, service)"
         )
         self.conn.commit()
+
+    def _normalize_datetime_storage(self) -> None:
+        migration_key = "timezone_storage_asia_shanghai_v1"
+        try:
+            if self.conn.execute("select 1 from sunny_configs where key=?", (migration_key,)).fetchone():
+                return
+        except sqlite3.Error:
+            pass
+        tables = self.conn.execute(
+            "select name from sqlite_master where type='table' and name not like 'sqlite_%'"
+        ).fetchall()
+        for table_row in tables:
+            table = str(table_row["name"])
+            quoted_table = '"' + table.replace('"', '""') + '"'
+            for column in self.conn.execute(f"pragma table_info({quoted_table})").fetchall():
+                column_type = str(column["type"] or "").lower()
+                if "date" not in column_type and "time" not in column_type:
+                    continue
+                name = str(column["name"])
+                quoted_column = '"' + name.replace('"', '""') + '"'
+                self.conn.execute(
+                    f"""update {quoted_table} set {quoted_column}=trim({quoted_column}) || '+08:00'
+                    where typeof({quoted_column})='text' and length(trim({quoted_column}))>=16
+                      and substr(trim({quoted_column}),11,1) in (' ','T')
+                      and upper(substr(trim({quoted_column}),-1,1))<>'Z'
+                      and instr(substr(trim({quoted_column}),11),'+')=0
+                      and instr(substr(trim({quoted_column}),11),'-')=0"""
+                )
+        try:
+            timestamp = now_sql()
+            self.conn.execute(
+                "insert or ignore into sunny_configs(key,value_json,created_at,updated_at) values(?,?,?,?)",
+                (migration_key, '{"timezone":"Asia/Shanghai"}', timestamp, timestamp),
+            )
+        except sqlite3.Error:
+            pass
 
     def task(self) -> dict[str, Any]:
         row = self.conn.execute("select * from tasks where id=?", (self.task_id,)).fetchone()
@@ -412,7 +464,7 @@ class SunnyDB:
                 select * from sunny_phones
                 where enabled=1 and coalesce(status,'available') not in ('disabled','full','in_use')
                   and coalesce(success_count,0) < coalesce(max_success,3)
-                  and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now','localtime'))
+                  and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now'))
                 order by success_count asc, id asc limit 1
                 """
             ).fetchone()
@@ -431,7 +483,7 @@ class SunnyDB:
             raise
 
     def mark_phone_success(self, phone_id: int, code: str = "") -> None:
-        until = (datetime.now(app_timezone()) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+        until = sql_datetime(datetime.now(app_timezone()) + timedelta(hours=5))
         self.conn.execute(
             "update sunny_phones set success_count=coalesce(success_count,0)+1, status=case when coalesce(success_count,0)+1>=coalesce(max_success,3) then 'full' else 'cooldown' end, cooldown_until=?, last_code=?, last_used_at=?, updated_at=? where id=?",
             (until, code, now_sql(), now_sql(), phone_id),
@@ -451,7 +503,7 @@ class SunnyDB:
             select count(*) as n from sunny_phones
             where enabled=1 and coalesce(status,'available') not in ('disabled','full','in_use')
               and coalesce(success_count,0) < coalesce(max_success,3)
-              and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now','localtime'))
+              and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now'))
             """
         ).fetchone()
         return int(row["n"] if row else 0)
@@ -510,7 +562,7 @@ class SunnyDB:
                   and (?='' or service=?)
                   and coalesce(status,'available') not in ('disabled','in_use','full')
                   and coalesce(success_count,0) < coalesce(max_success,3)
-                  and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now','localtime'))
+                  and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now'))
                 order by success_count asc, last_used_at asc, id asc
                 limit 1
                 """,
@@ -565,7 +617,7 @@ class SunnyDB:
     def mark_sms_provider_number_success(self, provider: str, phone_number: str, code: str = "") -> None:
         if not phone_number:
             return
-        until = (datetime.now(app_timezone()) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+        until = sql_datetime(datetime.now(app_timezone()) + timedelta(hours=5))
         self.conn.execute(
             """
             update sunny_sms_provider_numbers
@@ -633,7 +685,9 @@ class SunnyDB:
             except Exception:
                 expires_at = None
         if isinstance(expires_at, (int, float)) or (isinstance(expires_at, str) and expires_at.isdigit()):
-            expires_at = datetime.fromtimestamp(int(expires_at), app_timezone()).strftime("%Y-%m-%d %H:%M:%S")
+            expires_at = sql_datetime(expires_at)
+        elif isinstance(expires_at, (datetime, str)):
+            expires_at = sql_datetime(expires_at)
         values = {
             "account_id": account_id,
             "email": email,
@@ -643,7 +697,7 @@ class SunnyDB:
             "session_json": json.dumps(session.get("session_json", session), ensure_ascii=False) if not isinstance(session.get("session_json"), str) else session.get("session_json"),
             "storage_state_json": json.dumps(session.get("storage_state_json", {}), ensure_ascii=False) if not isinstance(session.get("storage_state_json"), str) else session.get("storage_state_json"),
             "raw_mailbox_line": raw_line,
-			"expires_at": expires_at or None,
+            "expires_at": expires_at or None,
             "last_refresh_at": now_sql(),
             "updated_at": now_sql(),
         }
