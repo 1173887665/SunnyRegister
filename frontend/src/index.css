@@ -2461,3 +2461,241 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
     flex:1 1 100% !important;
   }
 }
+
+/* Ant Design compatibility layer: preserve SunnyRegister's visual language. */
+.sunny-antd-app { min-height: 100vh; color: var(--text-primary); }
+.sunny-ant-card.ant-card {
+  color: var(--text-primary);
+  background: var(--bg-card);
+  box-shadow: var(--surface-glow);
+}
+.sunny-ant-card.ant-card .ant-card-body { height: 100%; }
+.sunny-ant-button.ant-btn {
+  box-shadow: none;
+  letter-spacing: 0;
+}
+.sunny-ant-button.ant-btn-primary:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.sunny-ant-button.ant-btn-primary:not(:disabled):hover {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+.sunny-ant-button-icon.ant-btn { width: 40px; padding-inline: 0; }
+.sunny-ant-popconfirm .ant-popover-inner {
+  border: 1px solid rgba(20,184,166,.22);
+  border-radius: 8px;
+  box-shadow: 0 16px 38px rgba(15,23,42,.16);
+}
+
+.sunny-ant-select.ant-select { width: 100%; min-width: 0; }
+.sunny-ant-select .ant-select-selector {
+  min-height: 40px !important;
+  border-color: var(--border) !important;
+  border-radius: 8px !important;
+  background: var(--bg-input) !important;
+  box-shadow: none !important;
+}
+.sunny-ant-select .ant-select-selection-wrap { min-width: 0; }
+.sunny-ant-select .ant-select-selection-item {
+  align-self: center;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sunny-ant-select.ant-select-focused .ant-select-selector,
+.sunny-ant-select.ant-select-open .ant-select-selector {
+  border-color: #14b8a6 !important;
+  box-shadow: 0 0 0 3px rgba(20,184,166,.12) !important;
+}
+.sunny-ant-select-popup.ant-select-dropdown {
+  z-index: 220;
+  max-height: 320px;
+  padding: 6px;
+  border: 1px solid rgba(20,184,166,.18);
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: 0 14px 34px rgba(15,23,42,.16);
+}
+.sunny-ant-select-popup .ant-select-item {
+  min-height: 38px;
+  align-items: center;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-weight: 650;
+}
+.sunny-ant-select-popup .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+  color: #0f766e;
+  background: rgba(20,184,166,.12);
+}
+
+/* Page-size Select is intentionally compact; regular toolbar Selects remain unchanged. */
+.sr-pagination .sr-page-size-select.ant-select {
+  width: 62px !important;
+  min-width: 62px !important;
+  max-width: 62px !important;
+  flex: 0 0 62px !important;
+}
+.sr-pagination .sr-page-size-select .ant-select-selector {
+  min-height: 34px !important;
+  height: 34px !important;
+  padding-inline: 8px 22px !important;
+}
+.sr-page-size-select-menu.ant-select-dropdown {
+  width: 62px !important;
+  min-width: 62px !important;
+}
+.sr-page-size-select-menu .ant-select-item { justify-content: center; padding-inline: 4px; }
+
+.sr-pagination .sr-pagination-actions.ant-pagination {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.sr-pagination .ant-pagination-item,
+.sr-pagination .ant-pagination-prev,
+.sr-pagination .ant-pagination-next {
+  min-width: 40px;
+  height: 38px;
+  margin-inline-end: 0;
+  border: 1px solid rgba(148,163,184,.25);
+  border-right-width: 0;
+  border-radius: 0;
+  background: var(--bg-card);
+}
+.sr-pagination .ant-pagination-prev { border-radius: 8px 0 0 8px; }
+.sr-pagination .ant-pagination-next { border-right-width: 1px; border-radius: 0 8px 8px 0; }
+.sr-pagination .ant-pagination-item-active {
+  border-color: #14b8a6;
+  background: rgba(20,184,166,.12);
+}
+.sr-pagination .ant-pagination-item-active + .ant-pagination-item,
+.sr-pagination .ant-pagination-item-active + .ant-pagination-next { border-left-color: #14b8a6; }
+
+/* Every data grid scrolls horizontally while its operation column stays visible. */
+.sunny-page .sr-table-card,
+.sr-table-scroll,
+.audit-table-wrap {
+  position: relative;
+  overflow-x: auto !important;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(20,184,166,.46) rgba(148,163,184,.10);
+  -webkit-overflow-scrolling: touch;
+}
+.sunny-page .sr-table-card::-webkit-scrollbar,
+.sr-table-scroll::-webkit-scrollbar,
+.audit-table-wrap::-webkit-scrollbar { width: 8px; height: 8px; }
+.sunny-page .sr-table-card::-webkit-scrollbar-thumb,
+.sr-table-scroll::-webkit-scrollbar-thumb,
+.audit-table-wrap::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(20,184,166,.42);
+}
+.sunny-page .sr-table-card::-webkit-scrollbar-track,
+.sr-table-scroll::-webkit-scrollbar-track,
+.audit-table-wrap::-webkit-scrollbar-track { background: rgba(148,163,184,.08); }
+
+.sr-resizable-table thead th:last-child,
+.sr-resizable-table tbody tr:not(.sr-renewal-progress-row) > td:last-child:not([colspan]),
+.audit-table th:last-child,
+.audit-table td:last-child {
+  isolation: isolate;
+  border-left-color: rgba(20,184,166,.18);
+  box-shadow: -14px 0 24px -18px rgba(15,23,42,.72);
+}
+.sr-resizable-table thead th:last-child::before,
+.sr-resizable-table tbody tr:not(.sr-renewal-progress-row) > td:last-child:not([colspan])::before,
+.audit-table th:last-child::before,
+.audit-table td:last-child::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -16px;
+  z-index: -1;
+  width: 16px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(15,23,42,.11));
+  content: "";
+}
+.dark .sr-resizable-table thead th:last-child::before,
+.dark .sr-resizable-table tbody tr:not(.sr-renewal-progress-row) > td:last-child:not([colspan])::before,
+.dark .audit-table th:last-child::before,
+.dark .audit-table td:last-child::before {
+  background: linear-gradient(90deg, transparent, rgba(0,0,0,.32));
+}
+
+/* Native Ant Design Table on the audit page. */
+.audit-filter-select.ant-select,
+.audit-retention .ant-select { min-width: 100px; height: 44px; }
+.audit-export-select.ant-select { width: 86px; height: 40px; }
+.audit-search .ant-input-affix-wrapper {
+  height: 44px;
+  border-color: var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+.audit-search .ant-input-prefix { color: var(--text-muted); }
+.audit-search .ant-input-prefix svg {
+  position: static;
+  width: 17px;
+  height: 17px;
+  transform: none;
+}
+.audit-search .ant-input { height: auto; padding-left: 4px; background: transparent; }
+.audit-ant-table .ant-table {
+  color: var(--text-secondary);
+  background: var(--bg-card);
+}
+.audit-ant-table .ant-table-container { border-radius: 8px 8px 0 0; }
+.audit-ant-table .ant-table-thead > tr > th {
+  height: 50px;
+  padding: 0 10px;
+  color: var(--text-muted);
+  background: rgba(248,250,252,.84);
+  font-size: 12px;
+  font-weight: 850;
+  text-align: center;
+}
+.dark .audit-ant-table .ant-table-thead > tr > th { background: rgba(15,23,42,.64); }
+.audit-ant-table .ant-table-tbody > tr > td {
+  height: 68px;
+  padding: 9px 10px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: center;
+}
+.audit-ant-table .ant-table-cell b,
+.audit-ant-table .ant-table-cell small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audit-ant-table .ant-table-cell b { color: var(--text-primary); font-weight: 800; }
+.audit-ant-table .ant-table-cell small { margin-top: 4px; color: var(--text-muted); font-size: 11px; }
+.audit-ant-column-title { position: relative; display: flex; height: 50px; align-items: center; justify-content: center; }
+.audit-ant-table .ant-table-cell-fix-right {
+  border-left: 1px solid rgba(20,184,166,.18);
+  background: var(--bg-card);
+}
+.audit-ant-table .ant-table-thead .ant-table-cell-fix-right { background: rgba(248,250,252,.98); }
+.dark .audit-ant-table .ant-table-thead .ant-table-cell-fix-right { background: rgba(15,23,42,.98); }
+.audit-ant-table .ant-table-cell-fix-right-first::after {
+  width: 18px;
+  transform: translateX(-18px);
+  box-shadow: inset -12px 0 14px -14px rgba(15,23,42,.75);
+}
+.audit-ant-table .ant-table-body,
+.audit-ant-table .ant-table-content {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(20,184,166,.46) rgba(148,163,184,.10);
+}
+.audit-page-size.ant-select { width: 64px; }
+.audit-page-size-popup.ant-select-dropdown { min-width: 64px !important; width: 64px !important; }
+.audit-pagination .ant-pagination { margin: 0; }

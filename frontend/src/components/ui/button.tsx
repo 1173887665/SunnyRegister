@@ -1,42 +1,34 @@
 import * as React from 'react'
-import { Slot } from '@radix-ui/react-slot'
-import { cva, type VariantProps } from 'class-variance-authority'
+import { Button as AntButton } from 'antd'
+import type { ButtonProps as AntButtonProps } from 'antd'
 import { cn } from '@/lib/utils'
 
-const buttonVariants = cva(
-  'inline-flex items-center justify-center rounded-xl text-sm font-semibold transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
-  {
-    variants: {
-      variant: {
-        default: 'bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]',
-        destructive: 'bg-red-600 text-white hover:bg-red-700',
-        outline: 'border border-[var(--border)] bg-transparent text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]',
-        ghost: 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]',
-        link: 'underline-offset-4 hover:underline text-[var(--text-accent)]',
-      },
-      size: {
-        default: 'h-11 px-4 py-2 text-sm',
-        sm: 'h-8 px-3 text-xs',
-        lg: 'h-12 px-5',
-        icon: 'h-11 w-11',
-      },
-    },
-    defaultVariants: { variant: 'default', size: 'default' },
-  }
-)
+type SunnyButtonVariant = 'default' | 'destructive' | 'outline' | 'ghost' | 'link'
+type SunnyButtonSize = 'default' | 'sm' | 'lg' | 'icon'
 
-export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {
-  asChild?: boolean
+export interface ButtonProps extends Omit<AntButtonProps, 'type' | 'size' | 'variant'> {
+  variant?: SunnyButtonVariant
+  size?: SunnyButtonSize
 }
 
-const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, asChild = false, ...props }, ref) => {
-    const Comp = asChild ? Slot : 'button'
-    return <Comp className={cn(buttonVariants({ variant, size, className }))} ref={ref} {...props} />
-  }
+const Button = React.forwardRef<React.ComponentRef<typeof AntButton>, ButtonProps>(
+  ({ className, variant = 'default', size = 'default', danger, children, ...props }, ref) => {
+    const type = variant === 'outline' ? 'default' : variant === 'ghost' ? 'text' : variant === 'link' ? 'link' : 'primary'
+    const antSize = size === 'sm' ? 'small' : size === 'lg' ? 'large' : 'middle'
+    return (
+      <AntButton
+        ref={ref}
+        type={type}
+        size={antSize}
+        danger={danger || variant === 'destructive'}
+        className={cn('sunny-ant-button', size === 'icon' && 'sunny-ant-button-icon', className)}
+        {...props}
+      >
+        {children}
+      </AntButton>
+    )
+  },
 )
 Button.displayName = 'Button'
 
-export { Button, buttonVariants }
+export { Button }
