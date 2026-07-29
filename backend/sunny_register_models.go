@@ -96,19 +96,24 @@ type SunnyAccount struct {
 func (SunnyAccount) TableName() string { return "sunny_accounts" }
 
 type SunnySession struct {
-	ID               uint         `gorm:"primaryKey" json:"id"`
-	AccountID        uint         `gorm:"index" json:"account_id"`
-	Email            string       `gorm:"uniqueIndex;index" json:"email"`
-	AccessToken      string       `gorm:"type:text" json:"access_token"`
-	RefreshToken     string       `gorm:"type:text" json:"refresh_token"`
-	IDToken          string       `gorm:"type:text" json:"id_token"`
-	SessionJSON      string       `gorm:"type:text" json:"session_json"`
-	StorageStateJSON string       `gorm:"type:text" json:"storage_state_json"`
-	RawMailboxLine   string       `gorm:"type:text" json:"raw_mailbox_line"`
-	ExpiresAt        sql.NullTime `json:"expires_at"`
-	LastRefreshAt    sql.NullTime `json:"last_refresh_at"`
-	CreatedAt        time.Time    `json:"created_at"`
-	UpdatedAt        time.Time    `json:"updated_at"`
+	ID                   uint         `gorm:"primaryKey" json:"id"`
+	AccountID            uint         `gorm:"index" json:"account_id"`
+	Email                string       `gorm:"uniqueIndex;index" json:"email"`
+	AccessToken          string       `gorm:"type:text" json:"access_token"`
+	RefreshToken         string       `gorm:"type:text" json:"refresh_token"`
+	IDToken              string       `gorm:"type:text" json:"id_token"`
+	SessionJSON          string       `gorm:"type:text" json:"session_json"`
+	StorageStateJSON     string       `gorm:"type:text" json:"storage_state_json"`
+	RawMailboxLine       string       `gorm:"type:text" json:"raw_mailbox_line"`
+	AccessTokenStatus    string       `gorm:"index;default:unknown" json:"access_token_status"`
+	AccessTokenError     string       `gorm:"type:text" json:"access_token_error"`
+	AccessTokenCheckedAt *time.Time   `gorm:"index" json:"access_token_checked_at"`
+	HealthCheckStatus    string       `gorm:"index;default:unknown" json:"health_check_status"`
+	HealthCheckError     string       `gorm:"type:text" json:"health_check_error"`
+	ExpiresAt            sql.NullTime `json:"expires_at"`
+	LastRefreshAt        sql.NullTime `json:"last_refresh_at"`
+	CreatedAt            time.Time    `json:"created_at"`
+	UpdatedAt            time.Time    `json:"updated_at"`
 }
 
 func (SunnySession) TableName() string { return "sunny_sessions" }

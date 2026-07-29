@@ -116,7 +116,12 @@ class SunnyDB:
                 "session_json": "text DEFAULT '{}'",
                 "storage_state_json": "text DEFAULT '{}'",
                 "raw_mailbox_line": "text DEFAULT ''",
-				"expires_at": "datetime",
+                "access_token_status": "text DEFAULT 'unknown'",
+                "access_token_error": "text DEFAULT ''",
+                "access_token_checked_at": "datetime",
+                "health_check_status": "text DEFAULT 'unknown'",
+                "health_check_error": "text DEFAULT ''",
+                "expires_at": "datetime",
                 "last_refresh_at": "datetime",
             },
         }
@@ -697,6 +702,9 @@ class SunnyDB:
             "session_json": json.dumps(session.get("session_json", session), ensure_ascii=False) if not isinstance(session.get("session_json"), str) else session.get("session_json"),
             "storage_state_json": json.dumps(session.get("storage_state_json", {}), ensure_ascii=False) if not isinstance(session.get("storage_state_json"), str) else session.get("storage_state_json"),
             "raw_mailbox_line": raw_line,
+            "access_token_status": "valid" if session.get("access_token") else "invalid",
+            "access_token_error": "",
+            "access_token_checked_at": now_sql(),
             "expires_at": expires_at or None,
             "last_refresh_at": now_sql(),
             "updated_at": now_sql(),
@@ -709,6 +717,13 @@ class SunnyDB:
             values["created_at"] = now_sql()
             cols = ",".join(values)
             self.conn.execute(f"insert into sunny_sessions({cols}) values({','.join('?' for _ in values)})", list(values.values()))
+        self.conn.commit()
+
+    def mark_access_token_renewal_failed(self, email: str, error: str = "") -> None:
+        self.conn.execute(
+            "update sunny_sessions set access_token_status='renewal_failed', access_token_checked_at=?, access_token_error=?, updated_at=? where email=?",
+            (now_sql(), str(error or "")[:1000], now_sql(), email),
+        )
         self.conn.commit()
 
     def mark_mailbox(self, mailbox_id: int, status: str, error: str = "", openai_rt: str = "") -> None:

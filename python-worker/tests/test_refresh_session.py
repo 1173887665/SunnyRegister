@@ -14,6 +14,7 @@ class FakeRefreshDB:
         self.event_details: list[dict] = []
         self.sessions: list[dict] = []
         self.marked_status = ""
+        self.renewal_failure = ""
 
     def fetch_accounts(self, _ids=None):
         return [{"id": 7, "email": "registered@example.com", "openai_rt": self.refresh_token}]
@@ -45,6 +46,9 @@ class FakeRefreshDB:
     def mark_mailbox_by_email(self, *_args, **_kwargs):
         self.marked_status = str(_args[1])
         return None
+
+    def mark_access_token_renewal_failed(self, _email, error=""):
+        self.renewal_failure = str(error)
 
 
 class RefreshSessionTests(unittest.TestCase):
@@ -90,6 +94,15 @@ class RefreshSessionTests(unittest.TestCase):
         self.assertEqual(ok, 1)
         self.assertEqual(errors, [])
         self.assertEqual(db.marked_status, "已反代")
+
+    def test_failed_renewal_is_persisted_for_account_status_display(self):
+        db = FakeRefreshDB()
+        with patch.object(worker, "_run_one", return_value=(False, "login failed")):
+            ok, errors, _items = worker._refresh_sessions(db, {"account_ids": [7]})
+
+        self.assertEqual(ok, 0)
+        self.assertIn("login failed", errors[0])
+        self.assertIn("login failed", db.renewal_failure)
 
 
 class AcquireRefreshTokenTests(unittest.TestCase):

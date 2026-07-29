@@ -240,6 +240,110 @@ func TestSunnyHealthBatchSizeBounds(t *testing.T) {
 	}
 }
 
+func TestSunnyAccessTokenProbeClassifiesAuthenticationResponses(t *testing.T) {
+	originalEndpoint := sunnyProbeAccessTokenEndpoint
+	defer func() { sunnyProbeAccessTokenEndpoint = originalEndpoint }()
+
+	tests := []struct {
+		name        string
+		statusCode  int
+		contentType string
+		body        string
+		wantStatus  string
+		wantError   bool
+	}{
+		{name: "valid", statusCode: http.StatusOK, contentType: "application/json", body: `{}`, wantStatus: "valid"},
+		{name: "expired", statusCode: http.StatusUnauthorized, contentType: "application/json", body: `{"error":"token_expired"}`, wantStatus: "invalid"},
+		{name: "auth forbidden", statusCode: http.StatusForbidden, contentType: "application/json", body: `{"error":"invalid access token"}`, wantStatus: "invalid"},
+		{name: "cloudflare forbidden", statusCode: http.StatusForbidden, contentType: "text/html", body: `<html>blocked</html>`, wantStatus: "probe_failed", wantError: true},
+		{name: "rate limited", statusCode: http.StatusTooManyRequests, contentType: "application/json", body: `{}`, wantStatus: "valid"},
+		{name: "upstream failure", statusCode: http.StatusBadGateway, contentType: "text/html", body: `<html>bad gateway</html>`, wantStatus: "probe_failed", wantError: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer at-test" {
+					t.Errorf("authorization header was not sent")
+				}
+				w.Header().Set("Content-Type", test.contentType)
+				w.WriteHeader(test.statusCode)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			sunnyProbeAccessTokenEndpoint = server.URL
+			status, err := sunnyProbeAccessToken("at-test", "")
+			if status != test.wantStatus || (err != nil) != test.wantError {
+				t.Fatalf("probe status=%q err=%v, want status=%q error=%v", status, err, test.wantStatus, test.wantError)
+			}
+		})
+	}
+}
+
+func TestSunnySessionListReturnsPersistedHealthStates(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	if err := s.db.Model(&SunnySession{}).Where("email = ?", "session@example.com").Updates(map[string]any{
+		"access_token_status": "renewal_failed", "health_check_status": "failed",
+	}).Error; err != nil {
+		t.Fatalf("update session state: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/sunny/sessions?page=1&page_size=10", nil)
+	rec := httptest.NewRecorder()
+	s.sunnySessions(rec, req, nil)
+	var payload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil || len(payload.Items) != 1 {
+		t.Fatalf("decode session list: err=%v body=%s", err, rec.Body.String())
+	}
+	if payload.Items[0]["access_token_status"] != "renewal_failed" || payload.Items[0]["health_check_status"] != "failed" {
+		t.Fatalf("health states were not returned: %#v", payload.Items[0])
+	}
+}
+
+func TestSunnyHealthTaskQueuesRenewalForRejectedAccessToken(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	originalEndpoint := sunnyProbeAccessTokenEndpoint
+	originalFetch := sunnyFetchOutlookMailSubjects
+	defer func() {
+		sunnyProbeAccessTokenEndpoint = originalEndpoint
+		sunnyFetchOutlookMailSubjects = originalFetch
+	}()
+	sunnyFetchOutlookMailSubjects = func(_, _, _ string, _ int, _ string) ([]string, error) {
+		return []string{"Welcome to ChatGPT"}, nil
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"token_expired"}`))
+	}))
+	defer server.Close()
+	sunnyProbeAccessTokenEndpoint = server.URL
+
+	healthTask := s.createTask(sunnyHealthTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
+	s.executeSunnyAccountHealthCheckTask(&healthTask, map[string]any{"session_ids": []any{float64(session.ID)}})
+
+	var refreshed SunnySession
+	if err := s.db.Where("id = ?", session.ID).First(&refreshed).Error; err != nil {
+		t.Fatalf("reload session: %v", err)
+	}
+	if refreshed.AccessTokenStatus != "invalid" || refreshed.HealthCheckStatus != "alive" {
+		t.Fatalf("unexpected session health state: AT=%q health=%q", refreshed.AccessTokenStatus, refreshed.HealthCheckStatus)
+	}
+	var renewal Task
+	if err := s.db.Where("type = ?", "sunny_refresh_session").First(&renewal).Error; err != nil {
+		t.Fatalf("renewal task was not queued: %v", err)
+	}
+	payload := jsonMap(renewal.PayloadJSON)
+	if ids := uintSlice(payload["account_ids"]); len(ids) != 1 || ids[0] != session.AccountID {
+		t.Fatalf("unexpected renewal payload: %#v", payload)
+	}
+}
+
 func TestSunnyRefreshTaskRejectsEmptySelection(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/refresh-session", strings.NewReader(`{"session_ids":[]}`))
@@ -398,10 +502,20 @@ func TestSunnyHealthTaskMarksAccountBanned(t *testing.T) {
 func TestSunnyHealthTaskAliveDoesNotChangeEditOrStatusTime(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	previousFetch := sunnyFetchOutlookMailSubjects
+	previousEndpoint := sunnyProbeAccessTokenEndpoint
 	sunnyFetchOutlookMailSubjects = func(email, clientID, refreshToken string, limit int, proxyURL string) ([]string, error) {
 		return []string{"Your weekly account update"}, nil
 	}
-	defer func() { sunnyFetchOutlookMailSubjects = previousFetch }()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	sunnyProbeAccessTokenEndpoint = server.URL
+	defer func() {
+		sunnyFetchOutlookMailSubjects = previousFetch
+		sunnyProbeAccessTokenEndpoint = previousEndpoint
+	}()
 
 	var session SunnySession
 	var beforeMailbox SunnyMailbox

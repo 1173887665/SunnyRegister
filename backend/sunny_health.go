@@ -31,9 +31,11 @@ var sunnyFetchMailHeadersViaIMAP = fetchMailHeadersViaIMAP
 
 type sunnyHealthCandidate struct {
 	SessionID    uint
+	AccountID    uint
 	Email        string
 	ClientID     string
 	RefreshToken string
+	AccessToken  string
 	Error        string
 }
 
@@ -43,10 +45,77 @@ type sunnyHealthMailHeader struct {
 }
 
 type sunnyHealthResult struct {
-	Email   string
-	Banned  bool
-	Checked bool
-	Error   string
+	SessionID         uint
+	AccountID         uint
+	Email             string
+	Banned            bool
+	Checked           bool
+	AccessTokenStatus string
+	Error             string
+}
+
+const sunnyAccessTokenProbeEndpoint = "https://chatgpt.com/backend-api/me"
+
+var sunnyProbeAccessTokenEndpoint = sunnyAccessTokenProbeEndpoint
+
+func sunnyProbeAccessToken(accessToken, proxyURL string) (string, error) {
+	if strings.TrimSpace(accessToken) == "" {
+		return "invalid", nil
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if strings.TrimSpace(proxyURL) != "" {
+		proxy, err := url.Parse(proxyURL)
+		if err != nil {
+			return "probe_failed", fmt.Errorf("invalid AT probe proxy: %w", err)
+		}
+		transport.Proxy = http.ProxyURL(proxy)
+	}
+	client := &http.Client{
+		Timeout:   12 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequest(http.MethodGet, sunnyProbeAccessTokenEndpoint, nil)
+	if err != nil {
+		return "probe_failed", err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
+	req.Header.Set("Origin", "https://chatgpt.com")
+	req.Header.Set("Referer", "https://chatgpt.com/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/134.0.0.0 Safari/537.36")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "probe_failed", fmt.Errorf("AT probe request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	bodyText := strings.ToLower(strings.TrimSpace(string(body)))
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return "valid", nil
+	case resp.StatusCode == http.StatusUnauthorized:
+		return "invalid", nil
+	case resp.StatusCode == http.StatusForbidden:
+		if strings.Contains(contentType, "json") && (strings.Contains(bodyText, "token") || strings.Contains(bodyText, "auth") || strings.Contains(bodyText, "expired") || strings.Contains(bodyText, "unauthorized")) {
+			return "invalid", nil
+		}
+		return "probe_failed", fmt.Errorf("AT probe was blocked (HTTP 403)")
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return "valid", nil
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		location := strings.ToLower(resp.Header.Get("Location"))
+		if strings.Contains(location, "login") || strings.Contains(location, "auth") {
+			return "invalid", nil
+		}
+		return "probe_failed", fmt.Errorf("AT probe redirected (HTTP %d)", resp.StatusCode)
+	default:
+		return "probe_failed", fmt.Errorf("AT probe returned HTTP %d", resp.StatusCode)
+	}
 }
 
 func (s *Server) sunnyHealthCheckConcurrency() int {
@@ -93,7 +162,7 @@ func sunnyHealthBannedStatus(status string) bool {
 
 func (s *Server) sunnyHealthCandidates(ids []uint, all bool) ([]sunnyHealthCandidate, int, error) {
 	var sessions []SunnySession
-	query := s.db.Model(&SunnySession{}).Select("id", "email")
+	query := s.db.Model(&SunnySession{}).Select("id", "account_id", "email", "access_token", "session_json")
 	if len(ids) > 0 {
 		query = query.Where("id IN ?", ids)
 	} else if !all {
@@ -126,7 +195,7 @@ func (s *Server) sunnyHealthCandidates(ids []uint, all bool) ([]sunnyHealthCandi
 		}
 	}
 	var accounts []SunnyAccount
-	accountQuery := s.db.Model(&SunnyAccount{}).Select("id", "email", "status")
+	accountQuery := s.db.Model(&SunnyAccount{}).Select("id", "email", "status", "access_token")
 	if !all {
 		accountQuery = accountQuery.Where("email IN ?", emails)
 	}
@@ -134,9 +203,11 @@ func (s *Server) sunnyHealthCandidates(ids []uint, all bool) ([]sunnyHealthCandi
 		return nil, 0, err
 	}
 	accountStatus := map[string]string{}
+	accountByEmail := map[string]SunnyAccount{}
 	for _, account := range accounts {
 		key := sunnyEmailKey(account.Email)
 		accountStatus[key] = account.Status
+		accountByEmail[key] = account
 		if all {
 			emails = append(emails, account.Email)
 		}
@@ -154,6 +225,12 @@ func (s *Server) sunnyHealthCandidates(ids []uint, all bool) ([]sunnyHealthCandi
 		}
 		seen[key] = true
 		session := sessionByEmail[key]
+		account := accountByEmail[key]
+		accountID := session.AccountID
+		if accountID == 0 {
+			accountID = account.ID
+		}
+		accessToken := fallback(session.AccessToken, fallback(sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken))
 		mailbox, ok := mailboxByEmail[key]
 		if sunnyHealthBannedStatus(mailbox.Status) || sunnyHealthBannedStatus(accountStatus[key]) {
 			skipped++
@@ -163,10 +240,10 @@ func (s *Server) sunnyHealthCandidates(ids []uint, all bool) ([]sunnyHealthCandi
 			continue
 		}
 		if !ok || strings.TrimSpace(mailbox.ClientID) == "" || strings.TrimSpace(mailbox.RefreshToken) == "" {
-			candidates = append(candidates, sunnyHealthCandidate{SessionID: session.ID, Email: email, Error: "邮箱凭证不完整"})
+			candidates = append(candidates, sunnyHealthCandidate{SessionID: session.ID, AccountID: accountID, Email: email, AccessToken: accessToken, Error: "邮箱凭证不完整"})
 			continue
 		}
-		candidates = append(candidates, sunnyHealthCandidate{SessionID: session.ID, Email: mailbox.Email, ClientID: mailbox.ClientID, RefreshToken: mailbox.RefreshToken})
+		candidates = append(candidates, sunnyHealthCandidate{SessionID: session.ID, AccountID: accountID, Email: mailbox.Email, ClientID: mailbox.ClientID, RefreshToken: mailbox.RefreshToken, AccessToken: accessToken})
 	}
 	return candidates, skipped, nil
 }
@@ -206,7 +283,7 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 		s.failSunnyHealthTask(task, err.Error())
 		return
 	}
-	result := map[string]any{"requested": len(candidates), "checked": 0, "alive": 0, "banned": 0, "failed": 0, "skipped": skipped, "items": []any{}}
+	result := map[string]any{"requested": len(candidates), "checked": 0, "alive": 0, "banned": 0, "failed": 0, "invalid_at": 0, "renewal_queued": 0, "skipped": skipped, "items": []any{}}
 	if len(candidates) == 0 {
 		s.completeSunnyHealthTask(task, result)
 		return
@@ -215,6 +292,8 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 	concurrency := s.sunnyHealthCheckConcurrency()
 	batchSize := s.sunnyHealthCheckBatchSize()
 	items := make([]any, 0, len(candidates))
+	invalidAccountIDs := make([]uint, 0)
+	invalidSeen := map[uint]bool{}
 	for start := 0; start < len(candidates); start += batchSize {
 		end := start + batchSize
 		if end > len(candidates) {
@@ -229,14 +308,14 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 			go func() {
 				defer workers.Done()
 				for candidate := range jobs {
-					if candidate.Error != "" {
-						results <- sunnyHealthResult{Email: candidate.Email, Error: candidate.Error}
-						continue
-					}
-					subjects, fetchErr := sunnyFetchOutlookMailSubjects(candidate.Email, candidate.ClientID, candidate.RefreshToken, 5, proxyURL)
-					if fetchErr != nil {
-						results <- sunnyHealthResult{Email: candidate.Email, Error: fetchErr.Error()}
-						continue
+					mailError := candidate.Error
+					subjects := []string{}
+					if mailError == "" {
+						var fetchErr error
+						subjects, fetchErr = sunnyFetchOutlookMailSubjects(candidate.Email, candidate.ClientID, candidate.RefreshToken, 5, proxyURL)
+						if fetchErr != nil {
+							mailError = fetchErr.Error()
+						}
 					}
 					banned := false
 					for _, subject := range subjects {
@@ -245,7 +324,21 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 							break
 						}
 					}
-					results <- sunnyHealthResult{Email: candidate.Email, Banned: banned, Checked: true}
+					if banned {
+						results <- sunnyHealthResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, Banned: true, Checked: true}
+						continue
+					}
+					atStatus, probeErr := sunnyProbeAccessToken(candidate.AccessToken, proxyURL)
+					outcome := sunnyHealthResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, Checked: true, AccessTokenStatus: atStatus}
+					errors := make([]string, 0, 2)
+					if mailError != "" {
+						errors = append(errors, mailError)
+					}
+					if probeErr != nil {
+						errors = append(errors, probeErr.Error())
+					}
+					outcome.Error = strings.Join(errors, "; ")
+					results <- outcome
 				}
 			}()
 		}
@@ -262,6 +355,17 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 				item["status"] = "failed"
 				item["error"] = outcome.Error
 				s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 测活失败：%s", outcome.Email, outcome.Error), "log", "warning", nil)
+				s.db.Model(&SunnySession{}).Where("email = ?", outcome.Email).Updates(map[string]any{
+					"health_check_status": "failed", "health_check_error": outcome.Error,
+					"access_token_status": fallback(outcome.AccessTokenStatus, "unknown"), "access_token_error": outcome.Error, "access_token_checked_at": time.Now(),
+				})
+				if outcome.AccessTokenStatus == "invalid" {
+					result["invalid_at"] = result["invalid_at"].(int) + 1
+					if outcome.AccountID != 0 && !invalidSeen[outcome.AccountID] {
+						invalidSeen[outcome.AccountID] = true
+						invalidAccountIDs = append(invalidAccountIDs, outcome.AccountID)
+					}
+				}
 			} else {
 				result["checked"] = result["checked"].(int) + 1
 				now := time.Now()
@@ -277,12 +381,26 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 						"last_health_checked_at": now, "status": "已封禁", "status_changed_at": now,
 						"last_error": "测活邮件标题命中账户封禁标记", "updated_at": now,
 					})
+					s.db.Model(&SunnySession{}).Where("email = ?", outcome.Email).Updates(map[string]any{
+						"health_check_status": "banned", "health_check_error": "", "access_token_checked_at": now,
+					})
 				} else {
 					result["alive"] = result["alive"].(int) + 1
+					item["access_token_status"] = outcome.AccessTokenStatus
 					s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s：存活", outcome.Email), "log", "info", nil)
 					// A successful health check is not a mailbox edit or an account status change.
 					s.db.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).UpdateColumn("last_health_checked_at", now)
 					s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).UpdateColumn("last_health_checked_at", now)
+					s.db.Model(&SunnySession{}).Where("email = ?", outcome.Email).Updates(map[string]any{
+						"health_check_status": "alive", "health_check_error": "", "access_token_status": outcome.AccessTokenStatus, "access_token_error": "", "access_token_checked_at": now,
+					})
+					if outcome.AccessTokenStatus == "invalid" {
+						result["invalid_at"] = result["invalid_at"].(int) + 1
+						if outcome.AccountID != 0 && !invalidSeen[outcome.AccountID] {
+							invalidSeen[outcome.AccountID] = true
+							invalidAccountIDs = append(invalidAccountIDs, outcome.AccountID)
+						}
+					}
 				}
 			}
 			items = append(items, item)
@@ -290,6 +408,15 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 			task.ProgressCurrent = current
 			s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": current, "updated_at": time.Now()})
 		}
+	}
+	if len(invalidAccountIDs) > 0 {
+		refreshPayload := s.sunnyTaskProxySnapshot(map[string]any{
+			"account_ids": invalidAccountIDs, "automatic": true, "source": "scheduled_health_check", "source_task_id": task.ID,
+		})
+		renewalTask := s.createTask("sunny_refresh_session", "sunny", refreshPayload, len(invalidAccountIDs))
+		result["renewal_queued"] = len(invalidAccountIDs)
+		result["renewal_task_id"] = renewalTask.ID
+		s.appendTaskEvent(task.ID, fmt.Sprintf("检测到 %d 个 Access Token 无效，已创建 AT 续期任务", len(invalidAccountIDs)), "log", "warning", map[string]any{"renewal_task_id": renewalTask.ID})
 	}
 	result["items"] = items
 	s.completeSunnyHealthTask(task, result)

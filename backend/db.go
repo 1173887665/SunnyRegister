@@ -231,12 +231,17 @@ func ensureSunnySchema(db *gorm.DB) {
 			"status_changed_at":      "datetime",
 		},
 		"sunny_sessions": {
-			"refresh_token":      "text DEFAULT ''",
-			"id_token":           "text DEFAULT ''",
-			"session_json":       "text DEFAULT '{}'",
-			"storage_state_json": "text DEFAULT '{}'",
-			"raw_mailbox_line":   "text DEFAULT ''",
-			"last_refresh_at":    "datetime",
+			"refresh_token":           "text DEFAULT ''",
+			"id_token":                "text DEFAULT ''",
+			"session_json":            "text DEFAULT '{}'",
+			"storage_state_json":      "text DEFAULT '{}'",
+			"raw_mailbox_line":        "text DEFAULT ''",
+			"access_token_status":     "text DEFAULT 'unknown'",
+			"access_token_error":      "text DEFAULT ''",
+			"access_token_checked_at": "datetime",
+			"health_check_status":     "text DEFAULT 'unknown'",
+			"health_check_error":      "text DEFAULT ''",
+			"last_refresh_at":         "datetime",
 		},
 	}
 	for table, cols := range required {
