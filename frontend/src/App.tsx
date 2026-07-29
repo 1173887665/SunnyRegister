@@ -1,8 +1,5 @@
 ﻿import { BrowserRouter, Route, Routes, NavLink, useLocation } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { App as AntApp, ConfigProvider, theme as antdTheme } from "antd";
-import enUS from "antd/locale/en_US";
-import zhCN from "antd/locale/zh_CN";
 import { Languages, Link2, LogOut, Moon, Sun } from "lucide-react";
 import { API, cn } from "@/lib/utils";
 import { I18nProvider, useI18n } from "@/lib/i18n-context";
@@ -85,29 +82,9 @@ function AppContent() {
       setLogoutNotice(completed);
     }
   }, []);
-  let content;
-  if (authState === "loading") content = <div className="flex h-screen items-center justify-center bg-[var(--bg-base)] text-sm text-[var(--text-muted)]">{c.loading}</div>;
-  else if (authState === "locked") content = <PublicLanding onLogin={() => { clearSunnyRegisterTaskHistory(); setLogoutNotice(false); setAuthState("authed"); }} logoutNotice={logoutNotice} onNoticeDone={() => setLogoutNotice(false)} />;
-  else content = <Shell theme={theme} setTheme={setTheme} onLogout={logout} />;
-  return <ConfigProvider
-    locale={language === "en-US" ? enUS : zhCN}
-    theme={{
-      algorithm: theme === "dark" ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
-      token: {
-        colorPrimary: "#10b981", colorInfo: "#0ea5e9", colorSuccess: "#10b981",
-        colorWarning: "#f59e0b", colorError: "#ef4444", borderRadius: 8,
-        controlHeight: 40, fontFamily: "Inter, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif",
-        zIndexPopupBase: 220,
-      },
-      components: {
-        Button: { borderRadius: 8, fontWeight: 700, controlHeight: 40 },
-        Card: { borderRadiusLG: 18 },
-        Input: { borderRadius: 8, activeBorderColor: "#14b8a6", hoverBorderColor: "#2dd4bf" },
-        Select: { borderRadius: 8, optionSelectedBg: "rgba(20,184,166,.12)" },
-        Table: { headerBg: theme === "dark" ? "#10242d" : "#f8fafc", headerColor: theme === "dark" ? "#94a3b8" : "#64748b", borderColor: theme === "dark" ? "rgba(148,163,184,.16)" : "rgba(15,23,42,.08)", rowHoverBg: theme === "dark" ? "rgba(20,184,166,.08)" : "rgba(20,184,166,.045)" },
-      },
-    }}
-  ><AntApp className="sunny-antd-app">{content}</AntApp></ConfigProvider>;
+  if (authState === "loading") return <div className="flex h-screen items-center justify-center bg-[var(--bg-base)] text-sm text-[var(--text-muted)]">{c.loading}</div>;
+  if (authState === "locked") return <PublicLanding onLogin={() => { clearSunnyRegisterTaskHistory(); setLogoutNotice(false); setAuthState("authed"); }} logoutNotice={logoutNotice} onNoticeDone={() => setLogoutNotice(false)} />;
+  return <Shell theme={theme} setTheme={setTheme} onLogout={logout} />;
 }
 
 export default function App() { return <I18nProvider><AppContent /></I18nProvider>; }

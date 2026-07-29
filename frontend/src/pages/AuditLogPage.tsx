@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { CheckCircle2, Download, Eye, FilterX, Loader2, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
-import { Input as AntInput, Pagination, Select, Table } from "antd";
-import type { ColumnsType } from "antd/es/table";
+import { CheckCircle2, ChevronLeft, ChevronRight, Download, Eye, FileArchive, FilterX, Loader2, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmBubble } from "@/components/ui/confirm-bubble";
 import { apiDownload, apiFetch, cn, triggerBrowserDownload } from "@/lib/utils";
@@ -89,7 +87,7 @@ function displayTime(value: string) {
 }
 
 function AuditSelect({ label, value, values, all, onChange }: { label: string; value: string; values: string[]; all: string; onChange: (value: string) => void }) {
-  return <label className="audit-filter-field"><span>{label}</span><Select className="audit-filter-select" value={value} onChange={onChange} options={[{value:"",label:all},...values.map((item)=>({value:item,label:item}))]} popupClassName="sunny-ant-select-popup" /></label>;
+  return <label className="audit-filter-field"><span>{label}</span><select value={value} onChange={(event)=>onChange(event.target.value)}><option value="">{all}</option>{values.map((item)=><option key={item} value={item}>{item}</option>)}</select></label>;
 }
 
 export default function AuditLogPage() {
@@ -112,6 +110,7 @@ export default function AuditLogPage() {
   const [notice, setNotice] = useState<{type:"ok"|"fail"; text:string}|null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<AuditColumnKey, number>>(initialAuditColumnWidths);
   const resizeCleanup = useRef<null | (()=>void)>(null);
+  const pages = Math.max(1, Math.ceil(total / pageSize));
 
   const activeFilters = useMemo(() => Object.fromEntries(Object.entries(filters).filter(([, value])=>value.trim() !== "")), [filters]);
   const query = useMemo(() => {
@@ -150,6 +149,7 @@ export default function AuditLogPage() {
   useEffect(()=>()=>resizeCleanup.current?.(), []);
 
   const updateFilter = (key: string, value: string) => { setFilters((current)=>({...current,[key]:value})); setPage(1); setSelected([]); };
+  const allCurrentSelected = rows.length > 0 && rows.every((row)=>selected.includes(row.id));
 
   async function saveRetention() {
     try {
@@ -219,25 +219,13 @@ export default function AuditLogPage() {
     window.addEventListener("pointercancel", onEnd, {once:true});
   }
 
-  const columnTitle = (key: AuditColumnKey, label: string) => <span className="audit-ant-column-title"><span>{label}</span><span className="audit-column-resizer" role="separator" aria-orientation="vertical" tabIndex={0} title={resizeTitle} onPointerDown={(event)=>startColumnResize(event,key)} onDoubleClick={()=>setColumnWidth(key,auditColumnDefaults[key])} onKeyDown={(event)=>{if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();setColumnWidth(key,columnWidths[key]+(event.key==="ArrowRight"?12:-12));}else if(event.key==="Home"){event.preventDefault();setColumnWidth(key,auditColumnDefaults[key]);}}}/></span>;
-  const tableColumns: ColumnsType<AuditRow> = [
-    { key:"time", title:columnTitle("time",c.time), width:columnWidths.time, render:(_,row)=><span className="audit-time">{displayTime(row.occurred_at)}</span> },
-    { key:"kind", title:columnTitle("kind",c.kind), width:columnWidths.kind, render:(_,row)=><><b>{row.log_type}</b><small>{row.category}</small></> },
-    { key:"behavior", title:columnTitle("behavior",c.behavior), width:columnWidths.behavior, render:(_,row)=><><b>{row.action}</b><small>{row.source}</small></> },
-    { key:"operator", title:columnTitle("operator",c.operator), width:columnWidths.operator, render:(_,row)=><><b>{row.actor}</b><small>{row.ip||"-"}</small></> },
-    { key:"target", title:columnTitle("target",c.target), width:columnWidths.target, render:(_,row)=><><b>{row.entity_name||row.entity_type||"-"}</b><small>{row.task_id||row.entity_id||"-"}</small></> },
-    { key:"result", title:columnTitle("result",c.result), width:columnWidths.result, render:(_,row)=><><span className={cn("audit-result",row.status,row.level)}>{row.status}</span><small>HTTP {row.http_status||"-"} · {row.duration_ms||0}ms</small></> },
-    { key:"summary", title:columnTitle("summary",c.summary), width:columnWidths.summary, ellipsis:true, render:(_,row)=><span className="audit-summary" title={row.summary}>{row.summary}</span> },
-    { key:"operation", title:columnTitle("operation",c.operation), width:columnWidths.operation, fixed:"right", align:"center", render:(_,row)=><button className="audit-view" onClick={()=>setDetail(row)} title={c.detail}><Eye/></button> },
-  ];
-
   return <section className="audit-page">
     {notice && <div className={cn("audit-toast", notice.type)}>{notice.type === "ok" ? <CheckCircle2/> : <X/>}<span>{notice.text}</span></div>}
     {exporting && <div className="audit-export-progress"><Loader2 className="animate-spin"/><b>{c.exportRunning}</b></div>}
-    <div className="audit-heading"><div><h1>{c.title}</h1><p>{c.desc}</p></div><div className="audit-retention"><label><span>{c.retention}</span><Select value={retention} onChange={(value)=>setRetention(Number(value))} options={[1,3,7,14,30].map((day)=>({value:day,label:String(day)}))} popupClassName="sunny-ant-select-popup" /></label><Button disabled={retention===savedRetention} onClick={saveRetention}><Save/>{c.save}</Button></div></div>
+    <div className="audit-heading"><div><h1>{c.title}</h1><p>{c.desc}</p></div><div className="audit-retention"><label><span>{c.retention}</span><select value={retention} onChange={(e)=>setRetention(Number(e.target.value))}>{[1,3,7,14,30].map((day)=><option key={day} value={day}>{day}</option>)}</select></label><Button disabled={retention===savedRetention} onClick={saveRetention}><Save/>{c.save}</Button></div></div>
     <div className="audit-stats">{[[c.total,stats.total],[c.today,stats.today],[c.failed,stats.failed],[c.system,stats.system]].map(([label,value])=><div key={String(label)}><span>{label}</span><strong>{Number(value||0).toLocaleString()}</strong></div>)}</div>
     <div className="audit-toolbar">
-      <div className="audit-search"><AntInput prefix={<Search/>} value={filters.search} onChange={(e)=>updateFilter("search",e.target.value)} placeholder={c.search}/></div>
+      <div className="audit-search"><Search/><input value={filters.search} onChange={(e)=>updateFilter("search",e.target.value)} placeholder={c.search}/></div>
       <AuditSelect label={c.type} value={filters.log_type} values={selectOptions("log_type")} all={c.all} onChange={(v)=>updateFilter("log_type",v)}/>
       <AuditSelect label={c.category} value={filters.category} values={selectOptions("category")} all={c.all} onChange={(v)=>updateFilter("category",v)}/>
       <AuditSelect label={c.action} value={filters.action} values={selectOptions("action")} all={c.all} onChange={(v)=>updateFilter("action",v)}/>
@@ -257,15 +245,16 @@ export default function AuditLogPage() {
       <div>{selected.length>0 && <span className="audit-selection">{interpolate(c.selected,{count:selected.length})}<button onClick={()=>setSelected([])}>{c.clear}</button></span>}</div>
       <div className="audit-actions-right">
         <button className="audit-icon-action" onClick={()=>void Promise.all([loadLogs(true),loadMeta()])}><RefreshCw/>{c.refresh}</button>
-        <Select className="audit-export-select" value={format} onChange={setFormat} aria-label={c.exportFormat} options={[{value:"csv",label:"CSV"},{value:"txt",label:"TXT"}]} popupClassName="sunny-ant-select-popup" />
+        <select value={format} onChange={(e)=>setFormat(e.target.value)} aria-label={c.exportFormat}><option value="csv">CSV</option><option value="txt">TXT</option></select>
         <Button variant="outline" disabled={exporting} onClick={exportLogs}><Download/>{c.export}</Button>
         {(selected.length>0 || Object.keys(activeFilters).length>0) && <ConfirmBubble message={selected.length?c.deleteSelected:c.deleteFiltered} detail={c.deleteHint} onConfirm={deleteLogs} confirmLabel={c.delete} cancelLabel={c.close}><Button variant="outline" className="audit-delete"><Trash2/>{c.delete}</Button></ConfirmBubble>}
       </div>
     </div>
     <div className="audit-table-wrap" aria-busy={loading}>
       {loading && <div className="audit-loading"><Loader2 className="animate-spin"/>{c.loading}</div>}
-      <Table<AuditRow> className="audit-ant-table" rowKey="id" columns={tableColumns} dataSource={rows} loading={false} pagination={false} scroll={{x:auditTableWidth}} locale={{emptyText:c.noData}} rowSelection={{selectedRowKeys:selected,onChange:(keys)=>setSelected(keys.map(Number)),preserveSelectedRowKeys:true,columnWidth:44}} />
-      <div className="audit-pagination"><div>{interpolate(c.range,{from:rangeFrom,to:rangeTo,total})}<label>{c.perPage}<Select className="audit-page-size" value={pageSize} onChange={(value)=>{setPageSize(Number(value));setPage(1)}} options={[10,20,50,100].map((size)=>({value:size,label:String(size)}))} popupClassName="sunny-ant-select-popup audit-page-size-popup" /></label></div><Pagination current={page} pageSize={pageSize} total={total} showSizeChanger={false} showLessItems onChange={setPage} /></div>
+      <table className="audit-table" style={{width:"100%",minWidth:auditTableWidth}}><colgroup><col style={{width:44}}/>{auditColumns.map((column)=><col key={column.key} style={{width:columnWidths[column.key]}}/>)}</colgroup><thead><tr><th><input type="checkbox" checked={allCurrentSelected} onChange={(e)=>setSelected(e.target.checked?Array.from(new Set([...selected,...rows.map((row)=>row.id)])):selected.filter((id)=>!rows.some((row)=>row.id===id)))}/></th>{auditColumns.map((column)=><th key={column.key}><span>{column.label}</span><span className="audit-column-resizer" role="separator" aria-orientation="vertical" tabIndex={0} title={resizeTitle} onPointerDown={(event)=>startColumnResize(event,column.key)} onDoubleClick={()=>setColumnWidth(column.key,auditColumnDefaults[column.key])} onKeyDown={(event)=>{if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();setColumnWidth(column.key,columnWidths[column.key]+(event.key==="ArrowRight"?12:-12));}else if(event.key==="Home"){event.preventDefault();setColumnWidth(column.key,auditColumnDefaults[column.key]);}}}/></th>)}</tr></thead>
+      <tbody>{rows.length ? rows.map((row)=><tr key={row.id}><td><input type="checkbox" checked={selected.includes(row.id)} onChange={(e)=>setSelected(e.target.checked?[...selected,row.id]:selected.filter((id)=>id!==row.id))}/></td><td className="audit-time">{displayTime(row.occurred_at)}</td><td><b>{row.log_type}</b><small>{row.category}</small></td><td><b>{row.action}</b><small>{row.source}</small></td><td><b>{row.actor}</b><small>{row.ip||"-"}</small></td><td><b>{row.entity_name||row.entity_type||"-"}</b><small>{row.task_id||row.entity_id||"-"}</small></td><td><span className={cn("audit-result",row.status,row.level)}>{row.status}</span><small>HTTP {row.http_status||"-"} · {row.duration_ms||0}ms</small></td><td className="audit-summary" title={row.summary}>{row.summary}</td><td><button className="audit-view" onClick={()=>setDetail(row)} title={c.detail}><Eye/></button></td></tr>) : <tr><td colSpan={9}><div className="audit-empty"><FileArchive/><span>{c.noData}</span></div></td></tr>}</tbody></table>
+      <div className="audit-pagination"><div>{interpolate(c.range,{from:rangeFrom,to:rangeTo,total})}<label>{c.perPage}<select value={pageSize} onChange={(e)=>{setPageSize(Number(e.target.value));setPage(1)}}>{[10,20,50,100].map((size)=><option key={size}>{size}</option>)}</select></label></div><div><button disabled={page<=1} onClick={()=>setPage((value)=>value-1)} title={c.prev}><ChevronLeft/></button><span>{interpolate(c.page,{page,pages})}</span><button disabled={page>=pages} onClick={()=>setPage((value)=>value+1)} title={c.next}><ChevronRight/></button></div></div>
     </div>
     {detail && <div className="audit-modal-mask" onMouseDown={(e)=>{if(e.target===e.currentTarget)setDetail(null)}}><div className="audit-modal"><header><h2>{c.detail}</h2><button onClick={()=>setDetail(null)}><X/></button></header><div className="audit-detail-grid"><span>ID</span><b>{detail.id}</b><span>{c.time}</span><b>{displayTime(detail.occurred_at)}</b><span>{c.operator}</span><b>{detail.actor} · {detail.ip||"-"}</b><span>{c.behavior}</span><b>{detail.category} / {detail.action}</b><span>{c.target}</span><b>{detail.entity_type||"-"} · {detail.entity_name||detail.entity_id||"-"}</b><span>{c.task}</span><b>{detail.task_id||"-"}</b><span>{c.request}</span><b>{detail.request_id||"-"}</b></div><pre>{JSON.stringify({summary:detail.summary, path:detail.path, method:detail.method, status:detail.status, details:detail.details},null,2)}</pre><footer><Button variant="outline" onClick={()=>setDetail(null)}>{c.close}</Button></footer></div></div>}
   </section>;

@@ -2,7 +2,6 @@ import { Fragment, useDeferredValue, useEffect, useRef, useState, useSyncExterna
 import type { Dispatch, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
-import { Input as AntInput, Pagination, Select, Tooltip } from "antd";
 import { Activity, ChevronDown, CircleHelp, Download, Inbox, Loader2, Pencil, Plus, RefreshCw, Save, Search, Settings2, Trash2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -545,13 +544,53 @@ async function copyTextToClipboard(text: string): Promise<void> {
   if (!copied) throw new Error("Clipboard copy failed");
 }
 
-function Tip({ text }: { text: string }) { return <Tooltip title={text}><span className="inline-flex"><CircleHelp className="tip-icon h-4 w-4" /></span></Tooltip>; }
+function Tip({ text }: { text: string }) { return <span title={text} className="inline-flex"><CircleHelp className="tip-icon h-4 w-4" /></span>; }
 function Label({ children, tip }: { children: React.ReactNode; tip?: string }) { return <div className="form-label mb-2"><span className="inline-flex items-center gap-1.5">{children}{tip && <Tip text={tip} />}</span></div>; }
-function Input(props: React.InputHTMLAttributes<HTMLInputElement>) { return <AntInput {...props as any} className={cn("control-surface h-11", props.className)} />; }
-function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) { return <AntInput.TextArea {...props as any} className={cn("control-surface min-h-28", props.className)} />; }
+function Input(props: React.InputHTMLAttributes<HTMLInputElement>) { return <input {...props} className={cn("control-surface h-11", props.className)} />; }
+function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) { return <textarea {...props} className={cn("control-surface min-h-28", props.className)} />; }
 function SelectBox({ value, onChange, options, className }: { value: string | number; onChange: (v: string | number) => void; options: { value: string | number; label: React.ReactNode }[]; className?: string }) {
-  const popupClassName = cn("sunny-ant-select-popup", className?.includes("sr-page-size-select") && "sr-page-size-select-menu", className?.includes("sr-mailbox-group-select") && "sr-mailbox-group-select-menu");
-  return <Select value={value} options={options} onChange={onChange} className={cn("sr-custom-select sunny-ant-select", className)} popupClassName={popupClassName} popupMatchSelectWidth getPopupContainer={(trigger) => (trigger.closest(".sr-modal") as HTMLElement | null) || document.body} />;
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [menuRect, setMenuRect] = useState<{ left: number; top: number; width: number; maxHeight: number; zIndex: number } | null>(null);
+  const active = options.find((x) => String(x.value) === String(value)) || options[0];
+  const updateRect = () => {
+    const rect = wrapRef.current?.getBoundingClientRect();
+    if (rect) {
+      const desiredHeight = Math.min(320, options.length * 44 + 12);
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
+      const spaceBelow = viewportHeight - rect.bottom - 14;
+      const spaceAbove = rect.top - 14;
+      const openUp = spaceBelow < desiredHeight && spaceAbove > spaceBelow;
+      const maxHeight = Math.max(120, openUp ? spaceAbove - 8 : spaceBelow - 8);
+      setMenuRect({
+        left: rect.left,
+        top: openUp ? Math.max(12, rect.top - Math.min(desiredHeight, maxHeight) - 8) : rect.bottom + 8,
+        width: rect.width,
+        maxHeight,
+        zIndex: wrapRef.current?.closest(".sr-modal-mask") ? 600 : 220,
+      });
+    }
+  };
+  useEffect(() => {
+    if (!open) return;
+    updateRect();
+    const onMove = () => updateRect();
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
+  }, [open]);
+  const menu = open && menuRect ? createPortal(<div className={cn("sr-custom-select-menu sr-custom-select-menu-portal", className?.includes("sr-page-size-select") && "sr-page-size-select-menu", className?.includes("sr-mailbox-group-select") && "sr-mailbox-group-select-menu")} style={{ position: "fixed", left: menuRect.left, top: menuRect.top, width: menuRect.width, maxHeight: menuRect.maxHeight, overflowY: "auto", right: "auto", zIndex: menuRect.zIndex }}>
+      {options.map((opt) => <button type="button" key={String(opt.value)} className={cn("sr-custom-select-option", String(opt.value) === String(value) && "active")} onMouseDown={(e)=>e.preventDefault()} onClick={() => { onChange(opt.value); setOpen(false); }}>{opt.label}</button>)}
+    </div>, document.body) : null;
+  return <div ref={wrapRef} className={cn("sr-custom-select", className)} tabIndex={0} onBlur={() => window.setTimeout(() => setOpen(false), 120)}>
+    <button type="button" className={cn("sr-custom-select-trigger", open && "open")} onClick={() => { updateRect(); setOpen((v) => !v); }}>
+      <span>{active?.label}</span><ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")} />
+    </button>
+    {menu}
+  </div>;
 }
 function Toast({ toast, clear }: { toast: ToastState; clear: () => void }) {
   const [hovering, setHovering] = useState(false);
@@ -590,18 +629,37 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 function pageCount(total: number, pageSize: number) {
   return Math.max(1, Math.ceil(Math.max(0, Number(total || 0)) / Math.max(1, Number(pageSize || 10))));
 }
+function paginationTokens(page: number, pages: number): Array<number | "..."> {
+  if (pages <= 7) return Array.from({ length: pages }, (_, i) => i + 1);
+  const out: Array<number | "..."> = [1];
+  const start = Math.max(2, page - 1);
+  const end = Math.min(pages - 1, page + 1);
+  if (start > 2) out.push("...");
+  for (let n = start; n <= end; n++) out.push(n);
+  if (end < pages - 1) out.push("...");
+  out.push(pages);
+  return out;
+}
 function PaginationBar({ t, total, page, pageSize, setPage, setPageSize }: { t: typeof zh; total: number; page: number; pageSize: number; setPage: (v: number) => void; setPageSize: (v: number) => void }) {
   const pages = pageCount(total, pageSize);
   const safePage = Math.min(Math.max(1, page), pages);
   const from = total <= 0 ? 0 : (safePage - 1) * pageSize + 1;
   const to = Math.min(total, safePage * pageSize);
+  const tokens = paginationTokens(safePage, pages);
   return <div className="sr-pagination">
     <div className="sr-pagination-left">
       <span className="sr-pagination-range">{template(t.pageRange, { from, to, total })}</span>
       <span className="sr-page-size-label">{t.pageSize}:</span>
       <SelectBox className="sr-page-size-select" value={pageSize} onChange={(v)=>{ setPageSize(Number(v)); setPage(1); }} options={PAGE_SIZE_OPTIONS.map((n)=>({value:n,label:String(n)}))} />
     </div>
-    <Pagination className="sr-pagination-actions" current={safePage} pageSize={pageSize} total={total} showSizeChanger={false} showLessItems onChange={(next)=>setPage(next)} />
+    <div className="sr-pagination-actions" aria-label="pagination">
+      <button type="button" className="sr-page-nav" disabled={safePage<=1 || total <= 0} onClick={()=>setPage(safePage-1)} title={t.prev}>‹</button>
+      {tokens.map((token, idx) => token === "..."
+        ? <span key={`ellipsis-${idx}`} className="sr-page-ellipsis">...</span>
+        : <button key={token} type="button" className={cn("sr-page-number", token === safePage && "active")} onClick={()=>setPage(token)}>{token}</button>
+      )}
+      <button type="button" className="sr-page-nav" disabled={safePage>=pages || total <= 0} onClick={()=>setPage(safePage+1)} title={t.next}>›</button>
+    </div>
   </div>;
 }
 function logModule(message: string) {
