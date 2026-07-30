@@ -19,6 +19,7 @@ import (
 
 func newSunnySessionTestServer(t *testing.T) *Server {
 	t.Helper()
+	t.Setenv("PYTHON_WORKER_URL", "http://127.0.0.1:1")
 	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
@@ -58,6 +59,76 @@ func newSunnySessionTestServer(t *testing.T) *Server {
 	// Unit tests must not depend on the developer machine's default local proxy.
 	server.sunnySaveConfig(sunnyCfgProxy, mergeConfig(defaultProxyConfig(), map[string]any{"proxy_enabled": false}))
 	return server
+}
+
+func TestSunnyAccessTokenProbeUsesPythonWorker(t *testing.T) {
+	t.Setenv("PYTHON_WORKER_TOKEN", "worker-secret")
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/probe-access-token" || r.Method != http.MethodPost {
+			t.Errorf("unexpected worker request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer worker-secret" {
+			t.Errorf("worker authorization header missing")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode worker request: %v", err)
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if payload["access_token"] != "expired-token" || payload["proxy_url"] != "http://proxy.example:8080" {
+			t.Errorf("unexpected worker payload: %#v", payload)
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "invalid",
+			"error":  "AT 已失效: HTTP 401, code=token_invalidated",
+		})
+	}))
+	defer worker.Close()
+	t.Setenv("PYTHON_WORKER_URL", worker.URL)
+
+	s := &Server{}
+	status, err := s.sunnyProbeAccessToken("expired-token", "http://proxy.example:8080")
+	if status != "invalid" || err == nil || !strings.Contains(err.Error(), "token_invalidated") {
+		t.Fatalf("worker probe status=%q err=%v", status, err)
+	}
+}
+
+func TestSunnyAccessTokenTasksAllowDisjointSessions(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var first SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&first).Error; err != nil {
+		t.Fatalf("load first session: %v", err)
+	}
+	now := time.Now()
+	mailbox := SunnyMailbox{Email: "second@example.com", Password: "secret", ClientID: "client", RefreshToken: "refresh", Status: "已注册", Enabled: true, CreatedAt: now, UpdatedAt: now}
+	if err := s.db.Create(&mailbox).Error; err != nil {
+		t.Fatalf("create second mailbox: %v", err)
+	}
+	account := SunnyAccount{Email: mailbox.Email, Status: "已注册", AccessToken: "second-at", CreatedAt: now, UpdatedAt: now}
+	if err := s.db.Create(&account).Error; err != nil {
+		t.Fatalf("create second account: %v", err)
+	}
+	second := SunnySession{AccountID: account.ID, Email: mailbox.Email, AccessToken: account.AccessToken, CreatedAt: now, UpdatedAt: now}
+	if err := s.db.Create(&second).Error; err != nil {
+		t.Fatalf("create second session: %v", err)
+	}
+
+	if _, err := s.createSunnyAccessTokenCheckTask(map[string]any{"session_ids": []uint{first.ID}}); err != nil {
+		t.Fatalf("create first AT task: %v", err)
+	}
+	if _, err := s.createSunnyAccessTokenCheckTask(map[string]any{"session_ids": []uint{second.ID}}); err != nil {
+		t.Fatalf("disjoint AT task was blocked: %v", err)
+	}
+	if _, err := s.createSunnyAccessTokenCheckTask(map[string]any{"session_ids": []uint{first.ID}}); err == nil || !strings.Contains(err.Error(), "已有 AT 检测任务") {
+		t.Fatalf("overlapping AT task was not rejected: %v", err)
+	}
 }
 
 func TestSunnySessionListDoesNotReturnSecrets(t *testing.T) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -179,6 +180,63 @@ func sunnyProbeAccessToken(accessToken, proxyURL string) (string, error) {
 	return "valid", nil
 }
 
+func (s *Server) sunnyProbeAccessToken(accessToken, proxyURL string) (string, error) {
+	if status, err, handled := s.sunnyProbeAccessTokenViaWorker(accessToken, proxyURL); handled {
+		return status, err
+	}
+
+	status, err := sunnyProbeAccessToken(accessToken, "")
+	if status != "probe_failed" || strings.TrimSpace(proxyURL) == "" {
+		return status, err
+	}
+	proxyStatus, proxyErr := sunnyProbeAccessToken(accessToken, proxyURL)
+	if proxyStatus != "probe_failed" {
+		return proxyStatus, proxyErr
+	}
+	return "probe_failed", fmt.Errorf("AT 检测直连与代理链路均未得到有效 API 响应: 直连=%v; 代理=%v", err, proxyErr)
+}
+
+func (s *Server) sunnyProbeAccessTokenViaWorker(accessToken, proxyURL string) (string, error, bool) {
+	workerURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PYTHON_WORKER_URL")), "/")
+	if workerURL == "" {
+		workerURL = "http://127.0.0.1:8765"
+	}
+	body, _ := json.Marshal(map[string]any{"access_token": accessToken, "proxy_url": proxyURL})
+	req, err := http.NewRequest(http.MethodPost, workerURL+"/probe-access-token", bytes.NewReader(body))
+	if err != nil {
+		return "", nil, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token := secretValue("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := (&http.Client{Timeout: 45 * time.Second}).Do(req)
+	if err != nil {
+		return "", nil, false
+	}
+	defer resp.Body.Close()
+	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if readErr != nil || resp.StatusCode == http.StatusNotFound {
+		return "", nil, false
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", nil, false
+	}
+	var payload map[string]any
+	if json.Unmarshal(responseBody, &payload) != nil {
+		return "", nil, false
+	}
+	status := strings.TrimSpace(text(payload["status"]))
+	if status != "valid" && status != "invalid" && status != "probe_failed" {
+		return "", nil, false
+	}
+	message := strings.TrimSpace(text(payload["error"]))
+	if message != "" {
+		return status, fmt.Errorf("%s", message), true
+	}
+	return status, nil, true
+}
+
 func atProbeAuthenticationError(payload map[string]any) bool {
 	if message, ok := payload["error"].(string); ok {
 		combined := strings.ToLower(message)
@@ -279,15 +337,43 @@ func (s *Server) sunnyAccessTokenCandidates(ids []uint, scheduled bool) ([]sunny
 }
 
 func (s *Server) createSunnyAccessTokenCheckTask(body map[string]any) (Task, error) {
+	s.atCheckMu.Lock()
+	defer s.atCheckMu.Unlock()
+
 	ids := uintSlice(body["session_ids"])
 	scheduled := boolValue(body["scheduled"], false)
 	if len(ids) == 0 && !scheduled {
 		return Task{}, fmt.Errorf("请选择需要检测 AT 的账户")
 	}
-	var active int64
-	s.db.Model(&Task{}).Where("type = ? AND status NOT IN ?", sunnyAccessTokenCheckTaskType, []string{TaskSucceeded, TaskFailed, TaskInterrupted, TaskCancelled}).Count(&active)
-	if active > 0 {
+	var activeTasks []Task
+	s.db.Where("type = ? AND status NOT IN ?", sunnyAccessTokenCheckTaskType, []string{TaskSucceeded, TaskFailed, TaskInterrupted, TaskCancelled}).Find(&activeTasks)
+	if scheduled && len(activeTasks) > 0 {
 		return Task{}, fmt.Errorf("已有 AT 检测任务正在执行，请稍候")
+	}
+	activeLimit := intValue(strings.TrimSpace(os.Getenv("SUNNY_ATCHECK_ACTIVE_TASKS")), 4)
+	if activeLimit < 1 {
+		activeLimit = 1
+	}
+	if activeLimit > 12 {
+		activeLimit = 12
+	}
+	requested := map[uint]bool{}
+	for _, id := range ids {
+		requested[id] = true
+	}
+	for _, activeTask := range activeTasks {
+		activePayload := jsonMap(activeTask.PayloadJSON)
+		if boolValue(activePayload["scheduled"], false) {
+			return Task{}, fmt.Errorf("定时 AT 检测任务正在执行，请稍候")
+		}
+		for _, activeID := range uintSlice(activePayload["session_ids"]) {
+			if requested[activeID] {
+				return Task{}, fmt.Errorf("选中的账户已有 AT 检测任务正在执行")
+			}
+		}
+	}
+	if len(activeTasks) >= activeLimit {
+		return Task{}, fmt.Errorf("AT 检测并发任务已达到上限 %d，请稍候", activeLimit)
 	}
 	candidates, skipped, err := s.sunnyAccessTokenCandidates(ids, scheduled)
 	if err != nil {
@@ -320,7 +406,7 @@ func (s *Server) executeSunnyAccessTokenCheckTask(task *Task, payload map[string
 		go func() {
 			defer workers.Done()
 			for candidate := range jobs {
-				status, probeErr := sunnyProbeAccessToken(candidate.AccessToken, proxyURL)
+				status, probeErr := s.sunnyProbeAccessToken(candidate.AccessToken, proxyURL)
 				message := ""
 				if probeErr != nil {
 					message = probeErr.Error()

@@ -77,6 +77,11 @@ class CancelRequest(BaseModel):
     task_id: str
 
 
+class ProbeAccessTokenRequest(BaseModel):
+    access_token: str
+    proxy_url: str = ""
+
+
 @app.get("/health")
 def health() -> dict:
     with _state_lock:
@@ -150,6 +155,14 @@ def cancel(req: CancelRequest, authorization: str | None = Header(default=None))
         if _processes.get(task_id) is process:
             _processes.pop(task_id, None)
     return {"ok": True, "task_id": task_id, "cancelled": True, "forced": forced, **summary}
+
+
+@app.post("/probe-access-token")
+def probe_access_token(req: ProbeAccessTokenRequest, authorization: str | None = Header(default=None)) -> dict:
+    _check_token(authorization)
+    from sunny_core.access_token_probe import probe_access_token as run_probe
+
+    return run_probe(req.access_token, req.proxy_url)
 
 
 @app.on_event("shutdown")
@@ -322,5 +335,4 @@ def _finish_sunny_task_failed(task_id: str, exc: Exception, tb: str) -> None:
             db.close()
     except Exception as inner:
         print(f"[worker] failed to write SunnyRegister failure to DB: {inner}", flush=True)
-
 

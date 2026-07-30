@@ -35,6 +35,7 @@ type Server struct {
 	stop          chan struct{}
 	running       map[string]bool
 	runtimeMu     sync.Mutex
+	atCheckMu     sync.Mutex
 	maintenanceMu sync.RWMutex
 	maintenance   map[string]any
 	smsOptionsMu  sync.Mutex
