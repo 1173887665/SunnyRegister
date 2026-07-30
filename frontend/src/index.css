@@ -531,6 +531,34 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .sr-session-field-button:disabled { transform:none; cursor:wait; }
 .sr-session-field-button:hover:not(:disabled) { border-color: rgba(13, 148, 136, .48); background: rgba(20, 184, 166, .18); transform: translateY(-1px); }
 .dark .sr-session-field-button { border-color: rgba(45, 212, 191, .28); background: rgba(45, 212, 191, .10); color: #5eead4; }
+.sr-icon-command,
+.sr-failure-detail-button {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:32px;
+  height:32px;
+  border:1px solid rgba(15,118,110,.18);
+  border-radius:9px;
+  color:#0f766e;
+  background:rgba(20,184,166,.06);
+}
+.sr-failure-detail-button { width:24px; height:24px; border:0; background:transparent; color:#ef4444; }
+.sr-failure-detail-content {
+  max-height:360px;
+  overflow:auto;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  border:1px solid var(--border-soft);
+  border-radius:12px;
+  padding:14px;
+  background:rgba(248,250,252,.82);
+  color:var(--text-secondary);
+  font:13px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;
+}
+.sr-maintenance-section { border:1px solid var(--border-soft); border-radius:14px; padding:16px; background:rgba(248,250,252,.62); }
+.dark .sr-failure-detail-content,
+.dark .sr-maintenance-section { background:rgba(15,23,42,.52); }
 .sr-renewal-progress-row td { height:auto; padding:0 14px 10px; background:rgba(248,250,252,.72); }
 .sr-renewal-progress-row td > * { margin:0; }
 .sr-renewal-progress {

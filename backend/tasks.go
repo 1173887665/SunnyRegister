@@ -210,11 +210,11 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request, rest string
 			}
 			s.db.Save(&task)
 			message := "Task cancel requested"
-			if strings.HasPrefix(task.Type, "sunny_") && task.Type != sunnyHealthTaskType {
+			if strings.HasPrefix(task.Type, "sunny_") && !sunnyGoTaskType(task.Type) {
 				message = "用户已请求停止 SunnyRegister 注册任务，正在关闭任务进程、浏览器与邮箱读取资源"
 			}
 			s.appendTaskEvent(task.ID, message, "log", "warning", map[string]any{"cancelled": true})
-			if strings.HasPrefix(task.Type, "sunny_") && task.Type != sunnyHealthTaskType {
+			if strings.HasPrefix(task.Type, "sunny_") && !sunnyGoTaskType(task.Type) {
 				if task.Status == TaskCancelled {
 					s.markSunnyUnfinishedMailboxes(&task, "任务已由用户停止，当前邮箱未完成本次注册流程")
 				} else if err := s.requestPythonWorkerCancel(task.ID); err != nil {
@@ -321,7 +321,7 @@ func (s *Server) streamTaskEvents(w http.ResponseWriter, r *http.Request, taskID
 }
 
 func (s *Server) reconcilePythonTaskStatus(task *Task) {
-	if task == nil || terminalTaskStatuses[task.Status] || !strings.HasPrefix(task.Type, "sunny_") || task.Type == sunnyHealthTaskType {
+	if task == nil || terminalTaskStatuses[task.Status] || !strings.HasPrefix(task.Type, "sunny_") || sunnyGoTaskType(task.Type) {
 		return
 	}
 	if task.Status != TaskClaimed && task.Status != TaskRunning && task.Status != TaskCancelRequested {
@@ -530,6 +530,10 @@ func (s *Server) executeTask(taskID string) {
 	}
 	if task.Type == sunnyHealthTaskType {
 		s.executeSunnyAccountHealthCheckTask(&task, jsonMap(task.PayloadJSON))
+		return
+	}
+	if task.Type == sunnyAccessTokenCheckTaskType {
+		s.executeSunnyAccessTokenCheckTask(&task, jsonMap(task.PayloadJSON))
 		return
 	}
 	if s.tryDispatchPythonWorker(&task) {

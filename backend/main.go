@@ -35,6 +35,8 @@ type Server struct {
 	stop          chan struct{}
 	running       map[string]bool
 	runtimeMu     sync.Mutex
+	maintenanceMu sync.RWMutex
+	maintenance   map[string]any
 	smsOptionsMu  sync.Mutex
 	smsOptionsRun map[string]*sunnySMSOptionsFlight
 	sessionMu     sync.Mutex
@@ -86,6 +88,7 @@ func main() {
 		sessions: map[string]time.Time{}, loginFailures: map[string]*loginFailure{},
 		sessionTTL: 12 * time.Hour, secureCookies: secureCookies, production: production,
 	}
+	s.maintenance = s.loadSunnyMaintenanceConfig()
 	s.recordAudit(AuditLog{LogType: "system", Category: "system", Action: "startup", Status: "success", Summary: "SunnyRegister 后端服务启动", DetailsJSON: dumpJSON(map[string]any{"environment": fallback(os.Getenv("SUNNY_ENV"), "development"), "timezone": time.Local.String()})})
 	go s.sunnyWarmSMSProviderOptions()
 	go s.sunnyAccountHealthScheduleLoop()

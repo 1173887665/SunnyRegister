@@ -75,6 +75,9 @@ func (s *Server) handleSunny(w http.ResponseWriter, r *http.Request, rest string
 	case "sessions":
 		s.sunnySessions(w, r, parts[1:])
 		return
+	case "maintenance-config":
+		s.sunnyMaintenanceConfigHandler(w, r)
+		return
 	case "tasks":
 		s.sunnyTasks(w, r, parts[1:])
 		return
@@ -2860,17 +2863,20 @@ func sunnyAccessTokenExpiry(accessToken string, stored sql.NullTime) sql.NullTim
 }
 
 type sunnySessionListRow struct {
-	ID                uint         `gorm:"column:id"`
-	AccountID         uint         `gorm:"column:account_id"`
-	Email             string       `gorm:"column:email"`
-	AccessToken       string       `gorm:"column:access_token"`
-	AccessTokenStatus string       `gorm:"column:access_token_status"`
-	HealthCheckStatus string       `gorm:"column:health_check_status"`
-	ExpiresAt         sql.NullTime `gorm:"column:expires_at"`
-	HasAccessToken    int          `gorm:"column:has_access_token"`
-	HasRefreshToken   int          `gorm:"column:has_refresh_token"`
-	HasSecretKey      int          `gorm:"column:has_secret_key"`
-	UpdatedAt         time.Time    `gorm:"column:updated_at"`
+	ID                   uint         `gorm:"column:id"`
+	AccountID            uint         `gorm:"column:account_id"`
+	Email                string       `gorm:"column:email"`
+	AccessToken          string       `gorm:"column:access_token"`
+	AccessTokenStatus    string       `gorm:"column:access_token_status"`
+	AccessTokenError     string       `gorm:"column:access_token_error"`
+	AccessTokenCheckedAt *time.Time   `gorm:"column:access_token_checked_at"`
+	HealthCheckStatus    string       `gorm:"column:health_check_status"`
+	HealthCheckError     string       `gorm:"column:health_check_error"`
+	ExpiresAt            sql.NullTime `gorm:"column:expires_at"`
+	HasAccessToken       int          `gorm:"column:has_access_token"`
+	HasRefreshToken      int          `gorm:"column:has_refresh_token"`
+	HasSecretKey         int          `gorm:"column:has_secret_key"`
+	UpdatedAt            time.Time    `gorm:"column:updated_at"`
 }
 
 type sunnySessionAccountSummary struct {
@@ -2895,7 +2901,7 @@ type sunnySessionMailboxSummary struct {
 	LastHealthCheckedAt *time.Time `gorm:"column:last_health_checked_at"`
 }
 
-const sunnySessionListColumns = `id, account_id, email, access_token, access_token_status, health_check_status, expires_at, updated_at,
+const sunnySessionListColumns = `id, account_id, email, access_token, access_token_status, access_token_error, access_token_checked_at, health_check_status, health_check_error, expires_at, updated_at,
 	CASE WHEN access_token IS NOT NULL AND access_token <> '' THEN 1 ELSE 0 END AS has_access_token,
 	CASE WHEN refresh_token IS NOT NULL AND refresh_token <> '' THEN 1 ELSE 0 END AS has_refresh_token,
 	CASE WHEN raw_mailbox_line IS NOT NULL AND raw_mailbox_line <> '' THEN 1 ELSE 0 END AS has_secret_key`
@@ -2938,8 +2944,17 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 		"has_refresh_token": row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
 		"has_secret_key":    row.HasSecretKey != 0 || mailbox.HasSecretKey != 0,
 		"updated_at":        formatTime(row.UpdatedAt), "access_token_expires_at": nullableTime(expiresAt.Valid, expiresAt.Time), "last_health_checked_at": lastHealthText,
-		"access_token_status": fallback(row.AccessTokenStatus, "unknown"), "health_check_status": fallback(row.HealthCheckStatus, "unknown"),
+		"access_token_status": fallback(row.AccessTokenStatus, "unknown"), "access_token_error": row.AccessTokenError,
+		"access_token_checked_at": nullableTime(row.AccessTokenCheckedAt != nil, sunnyTimePointerValue(row.AccessTokenCheckedAt)),
+		"health_check_status":     fallback(row.HealthCheckStatus, "unknown"), "health_check_error": row.HealthCheckError,
 	}
+}
+
+func sunnyTimePointerValue(value *time.Time) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return *value
 }
 func (s *Server) sunnySessionSidecars(rows []SunnySession) (map[string]SunnyAccount, map[string]SunnyMailbox) {
 	emails := []string{}
@@ -3133,8 +3148,26 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		return
 	}
 	if len(parts) == 1 && parts[0] == "health-check" && r.Method == http.MethodPost {
-		body, _ := parseBody(r)
+		body, err := parseBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		task, err := s.createSunnyHealthTask(body)
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, serializeTask(task))
+		return
+	}
+	if len(parts) == 1 && parts[0] == "access-token-check" && r.Method == http.MethodPost {
+		body, err := parseBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		task, err := s.createSunnyAccessTokenCheckTask(body)
 		if err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return

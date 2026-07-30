@@ -1,0 +1,446 @@
+package main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	sunnyAccessTokenCheckTaskType = "sunny_access_token_check"
+	sunnyCfgMaintenance           = "account_maintenance"
+)
+
+const sunnyAccessTokenProbeEndpoint = "https://chatgpt.com/backend-api/models"
+
+var sunnyProbeAccessTokenEndpoint = sunnyAccessTokenProbeEndpoint
+
+func sunnyGoTaskType(taskType string) bool {
+	return taskType == sunnyHealthTaskType || taskType == sunnyAccessTokenCheckTaskType
+}
+
+type sunnyAccessTokenCandidate struct {
+	SessionID   uint
+	AccountID   uint
+	Email       string
+	AccessToken string
+}
+
+type sunnyAccessTokenResult struct {
+	SessionID uint
+	AccountID uint
+	Email     string
+	Status    string
+	Error     string
+}
+
+func defaultSunnyMaintenanceConfig() map[string]any {
+	return map[string]any{
+		"health_enabled":         true,
+		"health_time":            "06:00",
+		"health_frequency_hours": 24,
+		"at_enabled":             true,
+		"at_time":                "06:30",
+		"at_frequency_hours":     24,
+	}
+}
+
+func normalizeSunnyMaintenanceConfig(value map[string]any) (map[string]any, error) {
+	config := mergeConfig(defaultSunnyMaintenanceConfig(), value)
+	for _, key := range []string{"health_time", "at_time"} {
+		textValue := strings.TrimSpace(text(config[key]))
+		if _, err := time.Parse("15:04", textValue); err != nil {
+			return nil, fmt.Errorf("%s 必须使用 HH:mm 格式", key)
+		}
+		config[key] = textValue
+	}
+	for _, key := range []string{"health_frequency_hours", "at_frequency_hours"} {
+		value := intValue(config[key], 24)
+		if value < 1 || value > 24*30 {
+			return nil, fmt.Errorf("%s 必须在 1 到 720 小时之间", key)
+		}
+		config[key] = value
+	}
+	config["health_enabled"] = boolValue(config["health_enabled"], true)
+	config["at_enabled"] = boolValue(config["at_enabled"], true)
+	return config, nil
+}
+
+func (s *Server) loadSunnyMaintenanceConfig() map[string]any {
+	config, err := normalizeSunnyMaintenanceConfig(s.sunnyGetConfig(sunnyCfgMaintenance, defaultSunnyMaintenanceConfig()))
+	if err != nil {
+		log.Printf("invalid account maintenance config, using defaults: %v", err)
+		return defaultSunnyMaintenanceConfig()
+	}
+	return config
+}
+
+func (s *Server) sunnyMaintenanceSnapshot() map[string]any {
+	s.maintenanceMu.RLock()
+	defer s.maintenanceMu.RUnlock()
+	return mergeConfig(defaultSunnyMaintenanceConfig(), s.maintenance)
+}
+
+func (s *Server) sunnyMaintenanceConfigHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		config, err := normalizeSunnyMaintenanceConfig(s.sunnyGetConfig(sunnyCfgMaintenance, defaultSunnyMaintenanceConfig()))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, config)
+	case http.MethodPut:
+		body, err := parseBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		config, err := normalizeSunnyMaintenanceConfig(body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.sunnySaveConfig(sunnyCfgMaintenance, config)
+		writeJSON(w, http.StatusOK, map[string]any{"config": config, "restart_required": true})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func sunnyProbeAccessToken(accessToken, proxyURL string) (string, error) {
+	if strings.TrimSpace(accessToken) == "" {
+		return "invalid", fmt.Errorf("账户没有可用的 Access Token")
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if strings.TrimSpace(proxyURL) != "" {
+		proxy, err := url.Parse(proxyURL)
+		if err != nil {
+			return "probe_failed", fmt.Errorf("AT 检测代理配置无效: %w", err)
+		}
+		transport.Proxy = http.ProxyURL(proxy)
+	}
+	client := &http.Client{
+		Timeout:       12 * time.Second,
+		Transport:     transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	req, err := http.NewRequest(http.MethodGet, sunnyProbeAccessTokenEndpoint, nil)
+	if err != nil {
+		return "probe_failed", err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
+	req.Header.Set("Origin", "https://chatgpt.com")
+	req.Header.Set("Referer", "https://chatgpt.com/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/134.0.0.0 Safari/537.36")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "probe_failed", fmt.Errorf("AT 官方接口检测失败: %w", err)
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if readErr != nil {
+		return "probe_failed", fmt.Errorf("AT 检测响应读取失败: %w", readErr)
+	}
+	var payload map[string]any
+	jsonErr := json.Unmarshal(body, &payload)
+	detail := compactATProbeDetail(resp.StatusCode, payload, body)
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "invalid", fmt.Errorf("AT 已失效: %s", detail)
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		if jsonErr == nil && atProbeAuthenticationError(payload) {
+			return "invalid", fmt.Errorf("AT 已失效: %s", detail)
+		}
+		return "probe_failed", fmt.Errorf("AT 检测被上游拒绝但未确认令牌失效: %s", detail)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return "valid", nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "probe_failed", fmt.Errorf("AT 检测上游响应异常: %s", detail)
+	}
+	if jsonErr != nil {
+		return "probe_failed", fmt.Errorf("AT 检测接口返回非 JSON 内容 (HTTP %d)", resp.StatusCode)
+	}
+	if _, ok := payload["models"]; !ok {
+		return "probe_failed", fmt.Errorf("AT 检测响应缺少 models 字段")
+	}
+	return "valid", nil
+}
+
+func atProbeAuthenticationError(payload map[string]any) bool {
+	if message, ok := payload["error"].(string); ok {
+		combined := strings.ToLower(message)
+		return strings.Contains(combined, "token") || strings.Contains(combined, "auth") || strings.Contains(combined, "expired") || strings.Contains(combined, "invalid")
+	}
+	errorValue, _ := payload["error"].(map[string]any)
+	combined := strings.ToLower(strings.Join([]string{text(errorValue["code"]), text(errorValue["type"]), text(errorValue["message"])}, " "))
+	return strings.Contains(combined, "token") || strings.Contains(combined, "auth") || strings.Contains(combined, "expired") || strings.Contains(combined, "invalidated")
+}
+
+func compactATProbeDetail(status int, payload map[string]any, body []byte) string {
+	if errorValue, ok := payload["error"].(map[string]any); ok {
+		parts := []string{}
+		for _, key := range []string{"code", "type", "message"} {
+			if value := strings.TrimSpace(text(errorValue[key])); value != "" {
+				parts = append(parts, key+"="+value)
+			}
+		}
+		if len(parts) > 0 {
+			return fmt.Sprintf("HTTP %d, %s", status, strings.Join(parts, ", "))
+		}
+	}
+	preview := strings.TrimSpace(string(body))
+	if len(preview) > 300 {
+		preview = preview[:300] + "..."
+	}
+	if preview == "" {
+		preview = "empty response"
+	}
+	return fmt.Sprintf("HTTP %d, %s", status, preview)
+}
+
+func (s *Server) sunnyAccessTokenCheckConcurrency() int {
+	value := intValue(strings.TrimSpace(os.Getenv("SUNNY_ATCHECK_CONCURRENCY")), 4)
+	if value < 1 {
+		value = 1
+	}
+	if value > 12 {
+		value = 12
+	}
+	return value
+}
+
+func (s *Server) sunnyAccessTokenCandidates(ids []uint, scheduled bool) ([]sunnyAccessTokenCandidate, int, error) {
+	var sessions []SunnySession
+	query := s.db.Model(&SunnySession{}).Select("id", "account_id", "email", "access_token", "session_json", "health_check_status")
+	if len(ids) > 0 {
+		query = query.Where("id IN ?", ids)
+	} else if !scheduled {
+		return nil, 0, fmt.Errorf("请选择需要检测 AT 的账户")
+	}
+	if scheduled {
+		query = query.Where("health_check_status = ?", "alive")
+	}
+	if err := query.Order("id asc").Find(&sessions).Error; err != nil {
+		return nil, 0, err
+	}
+	emails := make([]string, 0, len(sessions))
+	for _, session := range sessions {
+		emails = append(emails, session.Email)
+	}
+	accounts := map[string]SunnyAccount{}
+	mailboxes := map[string]SunnyMailbox{}
+	if len(emails) > 0 {
+		var accountRows []SunnyAccount
+		var mailboxRows []SunnyMailbox
+		s.db.Select("id", "email", "status", "access_token").Where("email IN ?", emails).Find(&accountRows)
+		s.db.Select("email", "status").Where("email IN ?", emails).Find(&mailboxRows)
+		for _, row := range accountRows {
+			accounts[sunnyEmailKey(row.Email)] = row
+		}
+		for _, row := range mailboxRows {
+			mailboxes[sunnyEmailKey(row.Email)] = row
+		}
+	}
+	candidates := make([]sunnyAccessTokenCandidate, 0, len(sessions))
+	skipped := 0
+	for _, session := range sessions {
+		key := sunnyEmailKey(session.Email)
+		account := accounts[key]
+		mailbox := mailboxes[key]
+		if !sunnyHealthRegisteredStatus(account.Status) && !sunnyHealthRegisteredStatus(mailbox.Status) {
+			skipped++
+			continue
+		}
+		if sunnyHealthBannedStatus(account.Status) || sunnyHealthBannedStatus(mailbox.Status) {
+			skipped++
+			continue
+		}
+		accountID := session.AccountID
+		if accountID == 0 {
+			accountID = account.ID
+		}
+		accessToken := fallback(session.AccessToken, fallback(sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken))
+		candidates = append(candidates, sunnyAccessTokenCandidate{SessionID: session.ID, AccountID: accountID, Email: session.Email, AccessToken: accessToken})
+	}
+	return candidates, skipped, nil
+}
+
+func (s *Server) createSunnyAccessTokenCheckTask(body map[string]any) (Task, error) {
+	ids := uintSlice(body["session_ids"])
+	scheduled := boolValue(body["scheduled"], false)
+	if len(ids) == 0 && !scheduled {
+		return Task{}, fmt.Errorf("请选择需要检测 AT 的账户")
+	}
+	var active int64
+	s.db.Model(&Task{}).Where("type = ? AND status NOT IN ?", sunnyAccessTokenCheckTaskType, []string{TaskSucceeded, TaskFailed, TaskInterrupted, TaskCancelled}).Count(&active)
+	if active > 0 {
+		return Task{}, fmt.Errorf("已有 AT 检测任务正在执行，请稍候")
+	}
+	candidates, skipped, err := s.sunnyAccessTokenCandidates(ids, scheduled)
+	if err != nil {
+		return Task{}, err
+	}
+	payload := map[string]any{"session_ids": ids, "scheduled": scheduled, "skipped": skipped}
+	return s.createTask(sunnyAccessTokenCheckTaskType, "sunny", payload, len(candidates)), nil
+}
+
+func (s *Server) executeSunnyAccessTokenCheckTask(task *Task, payload map[string]any) {
+	task.Status = TaskRunning
+	task.StartedAt = sql.NullTime{Time: time.Now(), Valid: true}
+	s.db.Save(task)
+	candidates, skipped, err := s.sunnyAccessTokenCandidates(uintSlice(payload["session_ids"]), boolValue(payload["scheduled"], false))
+	if err != nil {
+		s.failSunnyAccessTokenCheckTask(task, err.Error())
+		return
+	}
+	result := map[string]any{"requested": len(candidates), "valid": 0, "invalid": 0, "failed": 0, "skipped": skipped, "items": []any{}}
+	if len(candidates) == 0 {
+		s.completeSunnyAccessTokenCheckTask(task, result)
+		return
+	}
+	proxyURL := s.sunnyMailboxProxyURL()
+	jobs := make(chan sunnyAccessTokenCandidate)
+	results := make(chan sunnyAccessTokenResult, len(candidates))
+	var workers sync.WaitGroup
+	for i := 0; i < s.sunnyAccessTokenCheckConcurrency() && i < len(candidates); i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for candidate := range jobs {
+				status, probeErr := sunnyProbeAccessToken(candidate.AccessToken, proxyURL)
+				message := ""
+				if probeErr != nil {
+					message = probeErr.Error()
+				}
+				results <- sunnyAccessTokenResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, Status: status, Error: message}
+			}
+		}()
+	}
+	for _, candidate := range candidates {
+		jobs <- candidate
+	}
+	close(jobs)
+	workers.Wait()
+	close(results)
+	invalidAccounts := []uint{}
+	invalidSessions := []uint{}
+	seenAccounts := map[uint]bool{}
+	items := []any{}
+	for outcome := range results {
+		now := time.Now()
+		item := map[string]any{"session_id": outcome.SessionID, "email": outcome.Email, "status": outcome.Status}
+		if outcome.Error != "" {
+			item["error"] = outcome.Error
+		}
+		switch outcome.Status {
+		case "valid":
+			result["valid"] = result["valid"].(int) + 1
+			s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "valid", "access_token_error": "", "access_token_checked_at": now})
+			s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s：Access Token 有效", outcome.Email), "log", "info", item)
+		case "invalid":
+			result["invalid"] = result["invalid"].(int) + 1
+			s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "invalid", "access_token_error": outcome.Error, "access_token_checked_at": now})
+			invalidSessions = append(invalidSessions, outcome.SessionID)
+			if outcome.AccountID != 0 && !seenAccounts[outcome.AccountID] {
+				seenAccounts[outcome.AccountID] = true
+				invalidAccounts = append(invalidAccounts, outcome.AccountID)
+			}
+			s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s：Access Token 无效，%s", outcome.Email, outcome.Error), "log", "warning", item)
+		default:
+			result["failed"] = result["failed"].(int) + 1
+			s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "probe_failed", "access_token_error": outcome.Error, "access_token_checked_at": now})
+			s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s：AT 检测失败，%s", outcome.Email, outcome.Error), "log", "warning", item)
+		}
+		items = append(items, item)
+		task.ProgressCurrent++
+		s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": task.ProgressCurrent, "updated_at": now})
+	}
+	if len(invalidAccounts) > 0 {
+		refreshPayload := s.sunnyTaskProxySnapshot(map[string]any{
+			"account_ids": invalidAccounts, "automatic": true, "source": "access_token_check", "source_task_id": task.ID,
+			"execution_mode": "background", "registration_stage": "register_only", "concurrency": 1,
+		})
+		renewalTask := s.createTask("sunny_refresh_session", "sunny", refreshPayload, len(invalidAccounts))
+		result["renewal_task_id"] = renewalTask.ID
+		result["renewal_queued"] = len(invalidAccounts)
+		result["invalid_session_ids"] = invalidSessions
+		s.appendTaskEvent(task.ID, fmt.Sprintf("检测到 %d 个无效 AT，已创建续期任务", len(invalidAccounts)), "log", "warning", map[string]any{"renewal_task_id": renewalTask.ID})
+	}
+	result["items"] = items
+	s.completeSunnyAccessTokenCheckTask(task, result)
+}
+
+func (s *Server) failSunnyAccessTokenCheckTask(task *Task, message string) {
+	task.Status = TaskFailed
+	task.Error = message
+	task.FinishedAt = sql.NullTime{Time: time.Now(), Valid: true}
+	task.ResultJSON = dumpJSON(map[string]any{"requested": task.ProgressTotal, "valid": 0, "invalid": 0, "failed": task.ProgressTotal})
+	s.db.Save(task)
+	s.appendTaskEvent(task.ID, message, "log", "error", nil)
+}
+
+func (s *Server) completeSunnyAccessTokenCheckTask(task *Task, result map[string]any) {
+	task.Status = TaskSucceeded
+	task.SuccessCount = intValue(result["valid"], 0) + intValue(result["invalid"], 0)
+	task.ErrorCount = intValue(result["failed"], 0)
+	task.ResultJSON = dumpJSON(result)
+	task.FinishedAt = sql.NullTime{Time: time.Now(), Valid: true}
+	s.db.Save(task)
+	s.appendTaskEvent(task.ID, "AT 检测任务完成", "log", "info", result)
+}
+
+func sunnyScheduledTaskDue(now time.Time, timeText string, frequencyHours int, latest *time.Time) bool {
+	configured, err := time.ParseInLocation("15:04", timeText, now.Location())
+	if err != nil {
+		return false
+	}
+	anchor := time.Date(now.Year(), now.Month(), now.Day(), configured.Hour(), configured.Minute(), 0, 0, now.Location())
+	if latest == nil {
+		return !now.Before(anchor)
+	}
+	return !now.Before(latest.Add(time.Duration(frequencyHours) * time.Hour))
+}
+
+func (s *Server) latestScheduledTaskTime(taskType string) *time.Time {
+	var tasks []Task
+	s.db.Where("type = ?", taskType).Order("created_at desc").Limit(30).Find(&tasks)
+	for _, task := range tasks {
+		if boolValue(jsonMap(task.PayloadJSON)["scheduled"], false) {
+			created := task.CreatedAt.In(applicationLocation())
+			return &created
+		}
+	}
+	return nil
+}
+
+func (s *Server) sunnyMaybeScheduleAccessTokenCheck() {
+	config := s.sunnyMaintenanceSnapshot()
+	if !boolValue(config["at_enabled"], true) {
+		return
+	}
+	var healthTasks int64
+	s.db.Model(&Task{}).Where("type = ? AND status NOT IN ?", sunnyHealthTaskType, []string{TaskSucceeded, TaskFailed, TaskInterrupted, TaskCancelled}).Count(&healthTasks)
+	if healthTasks > 0 {
+		return
+	}
+	now := time.Now().In(applicationLocation())
+	if !sunnyScheduledTaskDue(now, text(config["at_time"]), intValue(config["at_frequency_hours"], 24), s.latestScheduledTaskTime(sunnyAccessTokenCheckTaskType)) {
+		return
+	}
+	if _, err := s.createSunnyAccessTokenCheckTask(map[string]any{"scheduled": true}); err != nil && !strings.Contains(err.Error(), "正在执行") {
+		log.Printf("scheduled AT check skipped: %v", err)
+	}
+}

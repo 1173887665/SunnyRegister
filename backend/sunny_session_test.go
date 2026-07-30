@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -255,9 +256,9 @@ func TestSunnyAccessTokenProbeClassifiesAuthenticationResponses(t *testing.T) {
 		wantStatus  string
 		wantError   bool
 	}{
-		{name: "valid", statusCode: http.StatusOK, contentType: "application/json", body: `{}`, wantStatus: "valid"},
-		{name: "expired", statusCode: http.StatusUnauthorized, contentType: "application/json", body: `{"error":"token_expired"}`, wantStatus: "invalid"},
-		{name: "auth forbidden", statusCode: http.StatusForbidden, contentType: "application/json", body: `{"error":"invalid access token"}`, wantStatus: "invalid"},
+		{name: "valid", statusCode: http.StatusOK, contentType: "application/json", body: `{"title":"ChatGPT","models":[],"categories":[],"versions":[]}`, wantStatus: "valid"},
+		{name: "expired", statusCode: http.StatusUnauthorized, contentType: "application/json", body: `{"error":{"message":"Your authentication token has been invalidated.","type":"invalid_request_error","code":"token_invalidated"},"status":401}`, wantStatus: "invalid", wantError: true},
+		{name: "auth forbidden", statusCode: http.StatusForbidden, contentType: "application/json", body: `{"error":"invalid access token"}`, wantStatus: "invalid", wantError: true},
 		{name: "cloudflare forbidden", statusCode: http.StatusForbidden, contentType: "text/html", body: `<html>blocked</html>`, wantStatus: "probe_failed", wantError: true},
 		{name: "rate limited", statusCode: http.StatusTooManyRequests, contentType: "application/json", body: `{}`, wantStatus: "valid"},
 		{name: "upstream failure", statusCode: http.StatusBadGateway, contentType: "text/html", body: `<html>bad gateway</html>`, wantStatus: "probe_failed", wantError: true},
@@ -286,7 +287,8 @@ func TestSunnyAccessTokenProbeClassifiesAuthenticationResponses(t *testing.T) {
 func TestSunnySessionListReturnsPersistedHealthStates(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	if err := s.db.Model(&SunnySession{}).Where("email = ?", "session@example.com").Updates(map[string]any{
-		"access_token_status": "renewal_failed", "health_check_status": "failed",
+		"access_token_status": "renewal_failed", "access_token_error": "renewal detail",
+		"health_check_status": "failed", "health_check_error": "mail detail",
 	}).Error; err != nil {
 		t.Fatalf("update session state: %v", err)
 	}
@@ -302,31 +304,49 @@ func TestSunnySessionListReturnsPersistedHealthStates(t *testing.T) {
 	if payload.Items[0]["access_token_status"] != "renewal_failed" || payload.Items[0]["health_check_status"] != "failed" {
 		t.Fatalf("health states were not returned: %#v", payload.Items[0])
 	}
+	if payload.Items[0]["access_token_error"] != "renewal detail" || payload.Items[0]["health_check_error"] != "mail detail" {
+		t.Fatalf("health failure details were not returned: %#v", payload.Items[0])
+	}
 }
 
-func TestSunnyHealthTaskQueuesRenewalForRejectedAccessToken(t *testing.T) {
+func TestSunnyHealthFailurePersistsAttemptTimeAndReason(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	var session SunnySession
 	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
 		t.Fatalf("load session: %v", err)
 	}
-	originalEndpoint := sunnyProbeAccessTokenEndpoint
 	originalFetch := sunnyFetchOutlookMailSubjects
-	defer func() {
-		sunnyProbeAccessTokenEndpoint = originalEndpoint
-		sunnyFetchOutlookMailSubjects = originalFetch
-	}()
+	defer func() { sunnyFetchOutlookMailSubjects = originalFetch }()
+	sunnyFetchOutlookMailSubjects = func(_, _, _ string, _ int, _ string) ([]string, error) { return nil, fmt.Errorf("Graph token expired") }
+	task := s.createTask(sunnyHealthTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
+	s.executeSunnyAccountHealthCheckTask(&task, map[string]any{"session_ids": []any{float64(session.ID)}})
+	var refreshed SunnySession
+	if err := s.db.First(&refreshed, session.ID).Error; err != nil {
+		t.Fatalf("reload session: %v", err)
+	}
+	if refreshed.HealthCheckStatus != "failed" || !strings.Contains(refreshed.HealthCheckError, "Graph token expired") {
+		t.Fatalf("unexpected health failure state: %#v", refreshed)
+	}
+	var mailbox SunnyMailbox
+	if err := s.db.Where("email = ?", session.Email).First(&mailbox).Error; err != nil {
+		t.Fatalf("reload mailbox: %v", err)
+	}
+	if mailbox.LastHealthCheckedAt == nil {
+		t.Fatalf("health attempt time was not persisted")
+	}
+}
+
+func TestSunnyHealthTaskDoesNotInspectOrRenewAccessToken(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	originalFetch := sunnyFetchOutlookMailSubjects
+	defer func() { sunnyFetchOutlookMailSubjects = originalFetch }()
 	sunnyFetchOutlookMailSubjects = func(_, _, _ string, _ int, _ string) ([]string, error) {
 		return []string{"Welcome to ChatGPT"}, nil
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":"token_expired"}`))
-	}))
-	defer server.Close()
-	sunnyProbeAccessTokenEndpoint = server.URL
-
 	healthTask := s.createTask(sunnyHealthTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
 	s.executeSunnyAccountHealthCheckTask(&healthTask, map[string]any{"session_ids": []any{float64(session.ID)}})
 
@@ -334,8 +354,40 @@ func TestSunnyHealthTaskQueuesRenewalForRejectedAccessToken(t *testing.T) {
 	if err := s.db.Where("id = ?", session.ID).First(&refreshed).Error; err != nil {
 		t.Fatalf("reload session: %v", err)
 	}
-	if refreshed.AccessTokenStatus != "invalid" || refreshed.HealthCheckStatus != "alive" {
+	if refreshed.AccessTokenStatus != "unknown" || refreshed.HealthCheckStatus != "alive" {
 		t.Fatalf("unexpected session health state: AT=%q health=%q", refreshed.AccessTokenStatus, refreshed.HealthCheckStatus)
+	}
+	var renewalCount int64
+	s.db.Model(&Task{}).Where("type = ?", "sunny_refresh_session").Count(&renewalCount)
+	if renewalCount != 0 {
+		t.Fatalf("mail health check queued %d AT renewal task(s)", renewalCount)
+	}
+}
+
+func TestSunnyAccessTokenCheckQueuesRenewalForRejectedToken(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	originalEndpoint := sunnyProbeAccessTokenEndpoint
+	defer func() { sunnyProbeAccessTokenEndpoint = originalEndpoint }()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"Your authentication token has been invalidated.","type":"invalid_request_error","code":"token_invalidated"},"status":401}`))
+	}))
+	defer server.Close()
+	sunnyProbeAccessTokenEndpoint = server.URL
+
+	checkTask := s.createTask(sunnyAccessTokenCheckTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
+	s.executeSunnyAccessTokenCheckTask(&checkTask, map[string]any{"session_ids": []any{float64(session.ID)}})
+	var refreshed SunnySession
+	if err := s.db.Where("id = ?", session.ID).First(&refreshed).Error; err != nil {
+		t.Fatalf("reload session: %v", err)
+	}
+	if refreshed.AccessTokenStatus != "invalid" {
+		t.Fatalf("AT status=%q, want invalid", refreshed.AccessTokenStatus)
 	}
 	var renewal Task
 	if err := s.db.Where("type = ?", "sunny_refresh_session").First(&renewal).Error; err != nil {
@@ -344,6 +396,42 @@ func TestSunnyHealthTaskQueuesRenewalForRejectedAccessToken(t *testing.T) {
 	payload := jsonMap(renewal.PayloadJSON)
 	if ids := uintSlice(payload["account_ids"]); len(ids) != 1 || ids[0] != session.AccountID {
 		t.Fatalf("unexpected renewal payload: %#v", payload)
+	}
+}
+
+func TestSunnyScheduledAccessTokenCandidatesRequireAliveHealth(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	candidates, _, err := s.sunnyAccessTokenCandidates(nil, true)
+	if err != nil {
+		t.Fatalf("scheduled candidates: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("unknown-health account was scheduled: %#v", candidates)
+	}
+	s.db.Model(&SunnySession{}).Where("id = ?", session.ID).Update("health_check_status", "alive")
+	candidates, _, err = s.sunnyAccessTokenCandidates(nil, true)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("alive account was not scheduled: candidates=%#v err=%v", candidates, err)
+	}
+}
+
+func TestSunnyScheduledTaskDueUsesConfiguredTimeAndFrequency(t *testing.T) {
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	now := time.Date(2026, 7, 30, 6, 29, 0, 0, location)
+	if sunnyScheduledTaskDue(now, "06:30", 24, nil) {
+		t.Fatalf("task ran before configured time")
+	}
+	now = now.Add(time.Minute)
+	if !sunnyScheduledTaskDue(now, "06:30", 24, nil) {
+		t.Fatalf("task did not run at configured time")
+	}
+	latest := now.Add(-23 * time.Hour)
+	if sunnyScheduledTaskDue(now, "06:30", 24, &latest) {
+		t.Fatalf("task ignored configured frequency")
 	}
 }
 
@@ -545,5 +633,32 @@ func TestSunnyHealthTaskAliveDoesNotChangeEditOrStatusTime(t *testing.T) {
 	}
 	if afterMailbox.LastHealthCheckedAt == nil || afterAccount.LastHealthCheckedAt == nil {
 		t.Fatalf("alive health check did not persist health time")
+	}
+}
+
+func TestSunnyMaintenanceConfigRequiresRestart(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	s.maintenance = defaultSunnyMaintenanceConfig()
+
+	body := strings.NewReader(`{"health_enabled":true,"health_time":"07:15","health_frequency_hours":12,"at_enabled":true,"at_time":"07:45","at_frequency_hours":6}`)
+	req := httptest.NewRequest(http.MethodPut, "/sunny/maintenance-config", body)
+	recorder := httptest.NewRecorder()
+	s.sunnyMaintenanceConfigHandler(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("save maintenance config: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !boolValue(response["restart_required"], false) {
+		t.Fatalf("save response did not require restart: %#v", response)
+	}
+	if got := text(s.sunnyMaintenanceSnapshot()["health_time"]); got != "06:00" {
+		t.Fatalf("runtime config changed before restart: %s", got)
+	}
+	stored := s.sunnyGetConfig(sunnyCfgMaintenance, defaultSunnyMaintenanceConfig())
+	if text(stored["health_time"]) != "07:15" || intValue(stored["at_frequency_hours"], 0) != 6 {
+		t.Fatalf("stored maintenance config mismatch: %#v", stored)
 	}
 }
