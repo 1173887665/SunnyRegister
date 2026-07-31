@@ -201,22 +201,30 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request, rest string
 				writeJSON(w, 200, serializeTask(task))
 				return
 			}
+			isRegistrationTask := task.Type == "sunny_register" || task.Type == "sunny_login"
+			cancelMessage := "用户已停止任务"
+			requestMessage := "Task cancel requested"
+			if task.Type == "sunny_refresh_session" {
+				cancelMessage = "用户已停止 AT 续期任务"
+				requestMessage = "用户已请求停止 AT 续期任务，正在关闭当前任务进程、浏览器与邮箱读取资源；等待中的账户将不再执行"
+			} else if strings.HasPrefix(task.Type, "sunny_") && !sunnyGoTaskType(task.Type) {
+				cancelMessage = "用户已停止 SunnyRegister 注册任务"
+				requestMessage = "用户已请求停止 SunnyRegister 注册任务，正在关闭任务进程、浏览器与邮箱读取资源"
+			}
 			if task.Status == TaskPending {
 				task.Status = TaskCancelled
-				task.Error = "用户已停止注册任务"
+				task.Error = cancelMessage
 				task.FinishedAt = sql.NullTime{Time: time.Now(), Valid: true}
 			} else {
 				task.Status = TaskCancelRequested
 			}
 			s.db.Save(&task)
-			message := "Task cancel requested"
-			if strings.HasPrefix(task.Type, "sunny_") && !sunnyGoTaskType(task.Type) {
-				message = "用户已请求停止 SunnyRegister 注册任务，正在关闭任务进程、浏览器与邮箱读取资源"
-			}
-			s.appendTaskEvent(task.ID, message, "log", "warning", map[string]any{"cancelled": true})
+			s.appendTaskEvent(task.ID, requestMessage, "log", "warning", map[string]any{"cancelled": true})
 			if strings.HasPrefix(task.Type, "sunny_") && !sunnyGoTaskType(task.Type) {
 				if task.Status == TaskCancelled {
-					s.markSunnyUnfinishedMailboxes(&task, "任务已由用户停止，当前邮箱未完成本次注册流程")
+					if isRegistrationTask {
+						s.markSunnyUnfinishedMailboxes(&task, "任务已由用户停止，当前邮箱未完成本次注册流程")
+					}
 				} else if err := s.requestPythonWorkerCancel(task.ID); err != nil {
 					s.appendTaskEvent(task.ID, "Python Worker 停止接口调用失败，将继续通过数据库取消信号终止任务: "+err.Error(), "log", "warning", map[string]any{"cancelled": true})
 				}

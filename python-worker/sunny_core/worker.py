@@ -1330,6 +1330,8 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                     db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
                     continue
                 except Exception as exc:
+                    if _is_cancel_exception(exc):
+                        raise
                     refresh_error = str(exc)
                     renewal_total = 9
                     renewal_current = 3
@@ -1380,6 +1382,8 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
             renewal_current = 9
             _emit_renewal_progress(db, email, renewal_current, renewal_total, "completed", state="succeeded")
         except Exception as exc:
+            if _is_cancel_exception(exc):
+                raise
             errors.append(f"[{email}] {exc}")
             db.mark_access_token_renewal_failed(email, str(exc))
             db.event(errors[-1], "error")

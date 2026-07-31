@@ -280,8 +280,17 @@ class SunnyDB:
 
     def mark_cancelled(self, message: str = "用户已停止注册任务") -> dict[str, Any]:
         current = self.task_status()
-        summary = self.fail_unfinished_mailboxes(message)
         task = self.task()
+        task_type = str(task.get("type") or "")
+        if task_type in {"sunny_register", "sunny_login"}:
+            summary = self.fail_unfinished_mailboxes(message)
+        else:
+            summary = {
+                "completed": int(task.get("success_count") or 0),
+                "failed": int(task.get("error_count") or 0),
+                "completed_mailbox_ids": [],
+                "failed_mailbox_ids": [],
+            }
         try:
             result = json.loads(task.get("result_json") or "{}")
             if not isinstance(result, dict):
@@ -289,21 +298,24 @@ class SunnyDB:
         except Exception:
             result = {}
         result.update({"cancelled": True, **summary})
+        error_count = int(task.get("error_count") or 0)
+        if task_type in {"sunny_register", "sunny_login"}:
+            error_count = max(error_count, summary["failed"])
         self.update_task(
             status="cancelled",
             error=message,
-            progress_current=summary["completed"] + summary["failed"],
-            success_count=summary["completed"],
-            error_count=summary["failed"],
+            progress_current=max(int(task.get("progress_current") or 0), summary["completed"] + summary["failed"]),
+            success_count=max(int(task.get("success_count") or 0), summary["completed"]),
+            error_count=error_count,
             result_json=json.dumps(result, ensure_ascii=False),
             finished_at=now_sql(),
         )
         if current not in {"cancelled", "interrupted"}:
-            self.event(
-                f"{message}；已完成 {summary['completed']} 个，未完成并标记失败 {summary['failed']} 个",
-                "warning",
-                detail={"scope": "global", "cancelled": True, **summary},
-            )
+            if task_type in {"sunny_register", "sunny_login"}:
+                event_message = f"{message}；已完成 {summary['completed']} 个，未完成并标记失败 {summary['failed']} 个"
+            else:
+                event_message = f"{message}；当前操作已停止，尚未执行的账户不再继续处理"
+            self.event(event_message, "warning", detail={"scope": "global", "cancelled": True, **summary})
         return summary
 
     def fail_unfinished_mailboxes(self, reason: str = "任务已由用户停止，当前邮箱未完成本次注册流程") -> dict[str, Any]:

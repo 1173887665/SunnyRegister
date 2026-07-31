@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from sunny_core import worker
+from sunny_core.db import SunnyTaskCancelled
 
 
 class FakeRefreshDB:
@@ -52,6 +53,14 @@ class FakeRefreshDB:
 
 
 class RefreshSessionTests(unittest.TestCase):
+    def test_cancelled_renewal_stops_without_recording_failure(self):
+        db = FakeRefreshDB()
+        with patch.object(worker, "_run_one", side_effect=SunnyTaskCancelled("Task cancelled by user")):
+            with self.assertRaises(SunnyTaskCancelled):
+                worker._refresh_sessions(db, {"account_ids": [7]})
+
+        self.assertEqual(db.renewal_failure, "")
+
     def test_missing_refresh_token_falls_back_to_background_login(self):
         db = FakeRefreshDB()
         with patch.object(worker, "_run_one", return_value=(True, {"has_access_token": True, "has_refresh_token": False})) as run_one:
