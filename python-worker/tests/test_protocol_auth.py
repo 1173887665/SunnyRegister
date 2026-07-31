@@ -4,7 +4,7 @@ import json
 from unittest.mock import patch
 
 from sunny_core.mailbox import MailAccount
-from sunny_core.protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationFlow
+from sunny_core.protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationFlow, _response_error
 
 
 class FakeResponse:
@@ -72,6 +72,20 @@ class FakeReader:
 
     def close(self):
         self.closed = True
+
+
+def test_protocol_challenge_error_omits_upstream_html() -> None:
+    response = FakeResponse(
+        status_code=403,
+        text="<html><head><style>large challenge page</style></head><body>Cloudflare</body></html>",
+    )
+
+    error = _response_error(response, "ChatGPT CSRF initialization")
+
+    assert isinstance(error, ProtocolChallengeRequired)
+    assert "HTTP 403" in str(error)
+    assert "HTML challenge page was omitted" in str(error)
+    assert "<html>" not in str(error)
 
 
 def sentinel_response():

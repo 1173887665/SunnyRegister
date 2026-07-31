@@ -113,7 +113,7 @@ class RefreshSessionTests(unittest.TestCase):
         self.assertIn("login failed", errors[0])
         self.assertIn("login failed", db.renewal_failure)
 
-    def test_otp_403_retries_once_with_fresh_sentinel_protocol_session(self):
+    def test_otp_403_retries_once_with_fresh_headless_context(self):
         db = FakeRefreshDB()
         otp_error = (
             "邮箱验证码已由页面提交，但注册状态未推进。关键请求："
@@ -129,7 +129,7 @@ class RefreshSessionTests(unittest.TestCase):
                     (True, {"has_access_token": True, "has_refresh_token": False}),
                 ],
             ) as run_one,
-            patch.object(worker.time, "sleep", return_value=None),
+            patch.object(worker.time, "sleep", return_value=None) as sleep_mock,
         ):
             ok, errors, items = worker._refresh_sessions(db, {"account_ids": [7]})
 
@@ -138,9 +138,17 @@ class RefreshSessionTests(unittest.TestCase):
         self.assertEqual(items[0]["refresh_method"], "headless_login")
         self.assertEqual(run_one.call_count, 2)
         retry_payload = run_one.call_args_list[1].args[2]
-        self.assertEqual(retry_payload["execution_mode"], "protocol")
-        self.assertEqual(retry_payload["protocol_challenge_strategy"], "sentinel_protocol")
-        self.assertTrue(any("新的 Sentinel 协议登录会话" in message for message in db.events))
+        self.assertEqual(retry_payload["execution_mode"], "background")
+        self.assertTrue(retry_payload["renewal_retry_fresh_context"])
+        self.assertTrue(any("新的隔离无痕后台浏览器上下文" in message for message in db.events))
+        self.assertEqual(sleep_mock.call_count, 15)
+
+    def test_failed_renewal_does_not_duplicate_email_prefix(self):
+        db = FakeRefreshDB()
+        with patch.object(worker, "_run_one", return_value=(False, "[registered@example.com] login failed")):
+            _ok, errors, _items = worker._refresh_sessions(db, {"account_ids": [7]})
+
+        self.assertEqual(errors, ["[registered@example.com] login failed"])
 
     def test_wrong_otp_does_not_retry_security_context(self):
         self.assertFalse(worker._is_otp_security_context_failure("邮箱验证码被 OpenAI 拒绝；验证码错误"))

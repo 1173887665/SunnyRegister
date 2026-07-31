@@ -133,7 +133,8 @@ def _response_error(response, step: str) -> ProtocolRegistrationError:
     marker = body.lower()
     if status in {403, 429} or any(value in marker for value in ("cloudflare", "challenge", "turnstile", "captcha")):
         return ProtocolChallengeRequired(
-            f"{step} requires an interactive anti-bot challenge (HTTP {status}): {body}"
+            f"{step} requires an interactive anti-bot challenge (HTTP {status}); "
+            "the upstream HTML challenge page was omitted"
         )
     return ProtocolRegistrationError(f"{step} failed (HTTP {status}): {body}")
 

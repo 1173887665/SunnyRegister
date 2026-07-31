@@ -1356,24 +1356,25 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                 db.ensure_not_cancelled()
                 db.event(
                     f"[{email}] [认证] 后台登录的邮箱验证码请求被认证证明层拒绝；"
-                    "已停止使用旧验证码，将建立新的 Sentinel 协议登录会话并等待新验证码后重试一次",
+                    "已停止使用旧验证码，将建立新的隔离无痕后台浏览器上下文并等待新验证码后重试一次",
                     "warning",
-                    detail={"email": email, "scope": "selected", "renewal_fallback": "sentinel_protocol"},
+                    detail={"email": email, "scope": "selected", "renewal_fallback": "fresh_headless_context"},
                 )
                 _emit_renewal_progress(db, email, 6, renewal_total, "sentinel_login_retry")
-                for _ in range(5):
+                # The next reader filters mail by timestamp. Let the rejected OTP
+                # fall outside that window so the retry cannot consume it again.
+                for _ in range(15):
                     db.ensure_not_cancelled()
                     time.sleep(1)
-                protocol_payload = dict(fallback_payload)
-                protocol_payload.update(
-                    {
-                        "execution_mode": "protocol",
-                        "protocol_challenge_strategy": "sentinel_protocol",
-                    }
-                )
-                succeeded, result = _run_one(db, "sunny_login", protocol_payload, mailbox, idx, len(accounts))
+                retry_payload = dict(fallback_payload)
+                retry_payload["renewal_retry_fresh_context"] = True
+                succeeded, result = _run_one(db, "sunny_login", retry_payload, mailbox, idx, len(accounts))
             if not succeeded:
-                raise RuntimeError(str(result))
+                result_text = str(result).strip()
+                email_prefix = f"[{email}] "
+                if result_text.startswith(email_prefix):
+                    result_text = result_text[len(email_prefix):].strip()
+                raise RuntimeError(result_text)
             renewal_current = 8
             _emit_renewal_progress(db, email, renewal_current, renewal_total, "session_refreshed")
             items.append({"email": email, "has_access_token": bool(isinstance(result, dict) and result.get("has_access_token")), "has_refresh_token": bool(isinstance(result, dict) and result.get("has_refresh_token")), "refresh_method": "headless_login", "refresh_token_error": refresh_error})
