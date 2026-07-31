@@ -756,6 +756,41 @@ class BrowserEmailOTPSubmitTests(unittest.TestCase):
         wait_transition.assert_called_once()
         self.assertTrue(any("Camoufox" in item for item in logs))
 
+    def test_existing_account_camoufox_otp_uses_single_sentinel_request(self):
+        account = MailAccount(
+            email="registered@example.com",
+            password="password",
+            client_id="client-id",
+            refresh_token="outlook-refresh-token",
+            raw="registered@example.com----password----client-id----outlook-refresh-token",
+        )
+        logs: list[str] = []
+        flow = OpenAIEmailRegisterFlow(account, "", True, logs.append, existing_account=True)
+        flow.otp_reader = Mock()
+        flow.otp_reader.wait_for_code.return_value = "123456"
+        page = Mock()
+
+        with (
+            patch.object(flow, "_fill_email_code_inputs") as fill_inputs,
+            patch.object(flow, "_submit_email_code_form") as native_submit,
+            patch.object(flow, "_validate_email_code_api", return_value="https://chatgpt.com/") as api_submit,
+            patch.object(flow, "_wait_after_otp_submit") as wait_transition,
+        ):
+            flow._submit_email_code(page, 0)
+
+        fill_inputs.assert_not_called()
+        native_submit.assert_not_called()
+        api_submit.assert_called_once_with(page, "123456")
+        page.goto.assert_called_once_with("https://chatgpt.com/", wait_until="domcontentloaded", timeout=90000)
+        wait_transition.assert_called_once_with(page)
+        self.assertTrue(any("续期登录浏览器会话" in item for item in logs))
+
+    def test_sentinel_required_json_is_classified_as_challenge(self):
+        account = MailAccount("registered@example.com", "password", "client-id", "mail-rt", "raw")
+        flow = OpenAIEmailRegisterFlow(account, "", True, lambda _message: None, existing_account=True)
+
+        self.assertTrue(flow._is_cloudflare_challenge('{"error":{"code":"sentinel_required"}}'))
+
     def test_email_otp_falls_back_to_native_then_json_api_on_html_route_error(self):
         account = MailAccount(
             email="user@example.com",

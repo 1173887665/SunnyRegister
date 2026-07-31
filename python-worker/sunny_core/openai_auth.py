@@ -722,14 +722,27 @@ class OpenAIEmailRegisterFlow:
             self.otp_reader = HotmailReader(self.account, self.log, self.proxy_url)
         self.log("[邮箱] 等待 OpenAI 邮箱验证码")
         code = self.otp_reader.wait_for_code(min_timestamp, 180)
-        if not self._fill_email_code_inputs(page, code):
-            raise RuntimeError("Email OTP input was not found")
-        try:
-            page.wait_for_timeout(250)
-        except Exception:
-            pass
         journal, detach_journal = self._attach_email_otp_network_journal(page)
         try:
+            # Existing accounts only need a fresh authenticated session. Filling
+            # the OTP UI first can make the React form auto-submit before the
+            # worker adds the device/Sentinel headers, producing a 403 and then
+            # tripping the duplicate-code guard. Submit exactly once through the
+            # authenticated browser fetch path used by the protocol flow.
+            if self.browser_backend == "camoufox" and self.existing_account:
+                continue_url = self._validate_email_code_api(page, code)
+                self.log("[邮箱] 已通过续期登录浏览器会话提交邮箱验证码")
+                if continue_url:
+                    page.goto(continue_url, wait_until="domcontentloaded", timeout=90000)
+                self._wait_after_otp_submit(page)
+                return
+
+            if not self._fill_email_code_inputs(page, code):
+                raise RuntimeError("Email OTP input was not found")
+            try:
+                page.wait_for_timeout(250)
+            except Exception:
+                pass
             if self.browser_backend == "camoufox":
                 if self._submit_email_code_form(page):
                     self.log("[邮箱] Camoufox 已通过页面原生控件提交邮箱验证码")
@@ -951,6 +964,20 @@ class OpenAIEmailRegisterFlow:
                     except Exception:
                         pass
                     remember(f"RESP {response.status} {ctype[:60]} {url[:160]}")
+                    if int(response.status or 0) >= 400:
+                        try:
+                            body = str(response.text() or "")
+                            body = re.sub(r"\b\d{6}\b", "<redacted-code>", body)
+                            body = re.sub(
+                                r'("(?:access_token|refresh_token|id_token|token)"\s*:\s*")[^"]+',
+                                r'\1<redacted>',
+                                body,
+                                flags=re.I,
+                            )
+                            if body.strip():
+                                remember(f"RESPBODY {body.strip()[:500]}")
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
@@ -1210,7 +1237,19 @@ class OpenAIEmailRegisterFlow:
 
     def _is_cloudflare_challenge(self, text: str) -> bool:
         value = str(text or "")
-        return "Cloudflare" in value or "challenges.cloudflare.com" in value or "__cf_chl" in value or "Just a moment" in value
+        lowered = value.lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "cloudflare",
+                "challenges.cloudflare.com",
+                "__cf_chl",
+                "just a moment",
+                "sentinel_required",
+                "proof_required",
+                "challenge_required",
+            )
+        )
 
     def _extract_cloudflare_challenge_url(self, text: str) -> str:
         value = unescape(str(text or ""))
@@ -1895,5 +1934,4 @@ def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool 
             on_progress("phone_bound", session)
         return session
     return OpenAIEmailRegisterFlow(account, proxy_url, headless, log, phone_provider=phone_provider, existing_account=existing_account, require_refresh_token=require_refresh_token, should_cancel=should_cancel, execution_mode=execution_mode, on_progress=on_progress).run()
-
 

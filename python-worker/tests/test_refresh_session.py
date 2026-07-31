@@ -104,6 +104,38 @@ class RefreshSessionTests(unittest.TestCase):
         self.assertIn("login failed", errors[0])
         self.assertIn("login failed", db.renewal_failure)
 
+    def test_otp_403_retries_once_with_fresh_sentinel_protocol_session(self):
+        db = FakeRefreshDB()
+        otp_error = (
+            "邮箱验证码已由页面提交，但注册状态未推进。关键请求："
+            "REQ POST https://auth.openai.com/api/accounts/email-otp/validate | "
+            "RESP 403 application/json"
+        )
+        with (
+            patch.object(
+                worker,
+                "_run_one",
+                side_effect=[
+                    (False, otp_error),
+                    (True, {"has_access_token": True, "has_refresh_token": False}),
+                ],
+            ) as run_one,
+            patch.object(worker.time, "sleep", return_value=None),
+        ):
+            ok, errors, items = worker._refresh_sessions(db, {"account_ids": [7]})
+
+        self.assertEqual(ok, 1)
+        self.assertEqual(errors, [])
+        self.assertEqual(items[0]["refresh_method"], "headless_login")
+        self.assertEqual(run_one.call_count, 2)
+        retry_payload = run_one.call_args_list[1].args[2]
+        self.assertEqual(retry_payload["execution_mode"], "protocol")
+        self.assertEqual(retry_payload["protocol_challenge_strategy"], "sentinel_protocol")
+        self.assertTrue(any("新的 Sentinel 协议登录会话" in message for message in db.events))
+
+    def test_wrong_otp_does_not_retry_security_context(self):
+        self.assertFalse(worker._is_otp_security_context_failure("邮箱验证码被 OpenAI 拒绝；验证码错误"))
+
 
 class AcquireRefreshTokenTests(unittest.TestCase):
     def test_existing_refresh_token_returns_without_login(self):

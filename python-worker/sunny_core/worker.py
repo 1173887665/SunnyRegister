@@ -190,6 +190,29 @@ def _is_cancel_exception(exc: BaseException) -> bool:
     return isinstance(exc, (SunnyTaskCancelled, TaskCancelledError)) or "Task cancelled by user" in str(exc)
 
 
+def _is_otp_security_context_failure(error: Any) -> bool:
+    """Return true only for a rejected OTP request caused by auth proof context.
+
+    A retry must start a new authorization session and obtain a new OTP. Reusing
+    the old code is intentionally excluded because it can consume the upstream
+    attempt limit.
+    """
+    text = str(error or "").strip().lower()
+    otp_request = "emailotpvalidate" in text or "email-otp/validate" in text
+    security_rejection = any(
+        marker in text
+        for marker in (
+            "http 403",
+            "resp 403",
+            "cloudflare",
+            "sentinel_required",
+            "proof_required",
+            "challenge_required",
+        )
+    )
+    return otp_request and security_rejection
+
+
 def _raw_mailboxes(payload: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for idx, line in enumerate(str(payload.get("mailbox_lines") or "").splitlines(), start=1):
@@ -1327,6 +1350,26 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
             renewal_current = 5
             _emit_renewal_progress(db, email, renewal_current, renewal_total, "headless_login_started")
             succeeded, result = _run_one(db, "sunny_login", fallback_payload, mailbox, idx, len(accounts))
+            if not succeeded and _is_otp_security_context_failure(result):
+                db.ensure_not_cancelled()
+                db.event(
+                    f"[{email}] [认证] 后台登录的邮箱验证码请求被认证证明层拒绝；"
+                    "已停止使用旧验证码，将建立新的 Sentinel 协议登录会话并等待新验证码后重试一次",
+                    "warning",
+                    detail={"email": email, "scope": "selected", "renewal_fallback": "sentinel_protocol"},
+                )
+                _emit_renewal_progress(db, email, 6, renewal_total, "sentinel_login_retry")
+                for _ in range(5):
+                    db.ensure_not_cancelled()
+                    time.sleep(1)
+                protocol_payload = dict(fallback_payload)
+                protocol_payload.update(
+                    {
+                        "execution_mode": "protocol",
+                        "protocol_challenge_strategy": "sentinel_protocol",
+                    }
+                )
+                succeeded, result = _run_one(db, "sunny_login", protocol_payload, mailbox, idx, len(accounts))
             if not succeeded:
                 raise RuntimeError(str(result))
             renewal_current = 8
