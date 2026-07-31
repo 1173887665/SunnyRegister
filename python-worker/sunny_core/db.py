@@ -104,6 +104,9 @@ class SunnyDB:
                 "updated_at": "datetime",
             },
             "sunny_mailboxes": {
+                "mailbox_type": "text DEFAULT 'microsoft'",
+                "mailbox_channel": "text DEFAULT 'outlook'",
+                "access_key": "text DEFAULT ''",
                 "openai_rt": "text DEFAULT ''",
                 "registered_at": "datetime",
                 "last_error": "text DEFAULT ''",

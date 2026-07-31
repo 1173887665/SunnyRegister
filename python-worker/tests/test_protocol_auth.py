@@ -111,7 +111,7 @@ def test_protocol_registration_completes_without_browser() -> None:
         raw="user@outlook.com----MailboxPass123!----client-id----mail-refresh-token",
     )
     checkpoints = []
-    with patch("sunny_core.protocol_auth.HotmailReader", FakeReader):
+    with patch("sunny_core.protocol_auth.create_mailbox_reader", FakeReader):
         result = ProtocolRegistrationFlow(
             account,
             "http://proxy.example:8080",
@@ -151,7 +151,7 @@ def test_initial_email_verification_redirect_skips_duplicate_authorize_submit() 
     }
 
     with (
-        patch("sunny_core.protocol_auth.HotmailReader", FakeReader),
+        patch("sunny_core.protocol_auth.create_mailbox_reader", FakeReader),
         patch.object(flow, "_authorize_email") as duplicate_authorize,
     ):
         result = flow.run()

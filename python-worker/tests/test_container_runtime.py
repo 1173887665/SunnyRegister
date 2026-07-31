@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from sunny_core.browser_backend import camoufox_runtime_error
-from sunny_core.mailbox import HotmailReader, MailAccount, MailboxAccessError, _request_outlook_access_token, parse_account_line
+from sunny_core.mailbox import HotmailReader, MailAccount, MailboxAccessError, XbovoICloudReader, _request_outlook_access_token, account_from_row, create_mailbox_reader, parse_account_line
 
 
 def account(email: str = "user@example.com") -> MailAccount:
@@ -60,6 +60,46 @@ class OutlookImapRouteTests(unittest.TestCase):
                 reader._imap_proxy_candidates(),
                 ["http://task-proxy.example:8080", ""],
             )
+
+
+class XbovoICloudReaderTests(unittest.TestCase):
+    def test_account_from_row_parses_apple_xbovo_credential(self) -> None:
+        parsed = account_from_row(
+            {
+                "email": "alias@icloud.com",
+                "mailbox_type": "apple",
+                "mailbox_channel": "xbovo",
+                "access_key": "alias_key",
+                "raw": "alias@icloud.com----alias_key",
+            }
+        )
+        self.assertEqual(parsed.mailbox_type, "apple")
+        self.assertEqual(parsed.mailbox_channel, "xbovo")
+        self.assertEqual(parsed.access_key, "alias_key")
+        self.assertIsInstance(create_mailbox_reader(parsed, None), XbovoICloudReader)
+
+    def test_wait_for_code_uses_xbovo_long_poll(self) -> None:
+        parsed = account_from_row(
+            {
+                "email": "alias@icloud.com",
+                "mailbox_type": "apple",
+                "mailbox_channel": "xbovo",
+                "access_key": "alias_key",
+            }
+        )
+        response = Mock()
+        response.ok = True
+        response.text = '{"ok":true,"code":"123456"}'
+        response.json.return_value = {"ok": True, "code": "123456", "timeout": False}
+        reader = XbovoICloudReader(parsed, None, "http://proxy.example:8080")
+        with patch("sunny_core.mailbox.requests.get", return_value=response) as request_get:
+            code = reader.wait_for_code(1_700_000_000, timeout=5)
+        self.assertEqual(code, "123456")
+        kwargs = request_get.call_args.kwargs
+        self.assertEqual(kwargs["params"]["email"], "alias@icloud.com")
+        self.assertNotIn("key", kwargs["params"])
+        self.assertEqual(kwargs["headers"]["X-API-Key"], "alias_key")
+        self.assertEqual(kwargs["proxies"]["https"], "http://proxy.example:8080")
 
 
 class OutlookGraphCredentialTests(unittest.TestCase):

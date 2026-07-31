@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import unquote, urlencode, urlsplit
 
-from .mailbox import HotmailReader, MailAccount
+from .mailbox import MailAccount, create_mailbox_reader
 from .proxy import normalize_proxy_url
 from .sentinel import (
     SENTINEL_FRAME_URL,
@@ -164,7 +164,7 @@ class ProtocolRegistrationFlow:
         self.should_cancel = should_cancel or (lambda: False)
         self.on_progress = on_progress
         self.session = session
-        self.reader: HotmailReader | None = None
+        self.reader: Any | None = None
         self.device_id = ""
         self.auth_url = ""
         self.auth_page_url = ""
@@ -646,7 +646,7 @@ class ProtocolRegistrationFlow:
             self.log("[认证] 协议模式使用本项目原生挑战接管策略")
         try:
             self._check_cancelled()
-            self.reader = HotmailReader(self.account, self.log, self.proxy_url)
+            self.reader = create_mailbox_reader(self.account, self.log, self.proxy_url)
             self.reader.connect()
             self.session = self.session or self._new_session()
             self._emit("protocol_started")

@@ -32,6 +32,9 @@ var sunnyFetchMailHeadersViaIMAP = fetchMailHeadersViaIMAP
 type sunnyHealthCandidate struct {
 	SessionID    uint
 	Email        string
+	MailboxType  string
+	Channel      string
+	AccessKey    string
 	ClientID     string
 	RefreshToken string
 	Error        string
@@ -161,11 +164,16 @@ func (s *Server) sunnyHealthCandidates(ids []uint, all bool) ([]sunnyHealthCandi
 			skipped++
 			continue
 		}
-		if !ok || strings.TrimSpace(mailbox.ClientID) == "" || strings.TrimSpace(mailbox.RefreshToken) == "" {
+		if !ok {
 			candidates = append(candidates, sunnyHealthCandidate{SessionID: session.ID, Email: email, Error: "邮箱凭证不完整"})
 			continue
 		}
-		candidates = append(candidates, sunnyHealthCandidate{SessionID: session.ID, Email: mailbox.Email, ClientID: mailbox.ClientID, RefreshToken: mailbox.RefreshToken})
+		mailboxType := normalizeSunnyMailboxType(mailbox.MailboxType)
+		if (mailboxType == "apple" && strings.TrimSpace(mailbox.AccessKey) == "") || (mailboxType == "microsoft" && (strings.TrimSpace(mailbox.ClientID) == "" || strings.TrimSpace(mailbox.RefreshToken) == "")) {
+			candidates = append(candidates, sunnyHealthCandidate{SessionID: session.ID, Email: email, Error: "邮箱凭证不完整"})
+			continue
+		}
+		candidates = append(candidates, sunnyHealthCandidate{SessionID: session.ID, Email: mailbox.Email, MailboxType: mailboxType, Channel: normalizeSunnyMailboxChannel(mailboxType, mailbox.MailboxChannel), AccessKey: mailbox.AccessKey, ClientID: mailbox.ClientID, RefreshToken: mailbox.RefreshToken})
 	}
 	return candidates, skipped, nil
 }
@@ -232,7 +240,13 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 						results <- sunnyHealthResult{SessionID: candidate.SessionID, Email: candidate.Email, Error: candidate.Error}
 						continue
 					}
-					subjects, fetchErr := sunnyFetchOutlookMailSubjects(candidate.Email, candidate.ClientID, candidate.RefreshToken, 5, proxyURL)
+					var subjects []string
+					var fetchErr error
+					if candidate.MailboxType == "apple" && candidate.Channel == "xbovo" {
+						subjects, fetchErr = fetchXbovoMailSubjects(candidate.Email, candidate.AccessKey, 5, proxyURL)
+					} else {
+						subjects, fetchErr = sunnyFetchOutlookMailSubjects(candidate.Email, candidate.ClientID, candidate.RefreshToken, 5, proxyURL)
+					}
 					if fetchErr != nil {
 						results <- sunnyHealthResult{SessionID: candidate.SessionID, Email: candidate.Email, Error: fetchErr.Error()}
 						continue

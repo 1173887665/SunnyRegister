@@ -221,6 +221,7 @@ func serializeSunnyMailbox(m SunnyMailbox, groups map[uint]string, planType ...s
 	}
 	return map[string]any{
 		"id": m.ID, "account_id": accountID, "group_id": m.GroupID, "group_name": groups[m.GroupID], "email": m.Email,
+		"mailbox_type": normalizeSunnyMailboxType(m.MailboxType), "mailbox_channel": normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel), "access_key": m.AccessKey,
 		"password": m.Password, "client_id": m.ClientID, "refresh_token": m.RefreshToken, "openai_rt": m.OpenAIRT, "access_token": accessToken,
 		"raw": m.Raw, "account_type": fallback(m.AccountType, "free"), "plan_type": plan, "status": status, "enabled": m.Enabled,
 		"last_error": m.LastError, "latest_mail": jsonMap(m.LatestMailJSON),
@@ -245,7 +246,7 @@ func serializeSunnyMailboxList(m SunnyMailbox, groups map[uint]string, plan, acc
 	}
 	item["has_openai_rt"] = strings.TrimSpace(m.OpenAIRT) != ""
 	item["has_access_token"] = strings.TrimSpace(accessToken) != ""
-	for _, key := range []string{"password", "client_id", "refresh_token", "openai_rt", "access_token", "raw", "last_error", "latest_mail", "last_mail_at"} {
+	for _, key := range []string{"password", "client_id", "refresh_token", "access_key", "openai_rt", "access_token", "raw", "last_error", "latest_mail", "last_mail_at"} {
 		delete(item, key)
 	}
 	return item
@@ -495,7 +496,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			var allRows []SunnyMailbox
 			allQuery := query
 			if summary {
-				allQuery = allQuery.Select("id", "group_id", "email", "openai_rt", "account_type", "status", "enabled", "registered_at", "status_changed_at", "created_at", "updated_at")
+				allQuery = allQuery.Select("id", "group_id", "email", "mailbox_type", "mailbox_channel", "openai_rt", "account_type", "status", "enabled", "registered_at", "status_changed_at", "created_at", "updated_at")
 			}
 			allQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "status_changed_at": "status_changed_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Find(&allRows)
 			gm := s.sunnyGroupMap()
@@ -533,7 +534,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		var rows []SunnyMailbox
 		listQuery := query
 		if summary {
-			listQuery = listQuery.Select("id", "group_id", "email", "openai_rt", "account_type", "status", "enabled", "registered_at", "status_changed_at", "created_at", "updated_at")
+			listQuery = listQuery.Select("id", "group_id", "email", "mailbox_type", "mailbox_channel", "openai_rt", "account_type", "status", "enabled", "registered_at", "status_changed_at", "created_at", "updated_at")
 		}
 		listQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "status_changed_at": "status_changed_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Offset((page - 1) * size).Limit(size).Find(&rows)
 		gm := s.sunnyGroupMap()
@@ -587,8 +588,14 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		}
 		if len(parts) == 1 && r.Method == http.MethodPut {
 			body, _ := parseBody(r)
+			mailboxType := normalizeSunnyMailboxType(fallback(text(body["mailbox_type"]), m.MailboxType))
+			mailboxChannel := normalizeSunnyMailboxChannel(mailboxType, fallback(text(body["mailbox_channel"]), m.MailboxChannel))
+			m.MailboxType, m.MailboxChannel = mailboxType, mailboxChannel
 			if v := text(body["email"]); v != "" {
 				m.Email = v
+			}
+			if _, ok := body["access_key"]; ok {
+				m.AccessKey = text(body["access_key"])
 			}
 			if v := text(body["password"]); v != "" {
 				m.Password = v
@@ -603,16 +610,24 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				m.OpenAIRT = v
 			}
 			if v := text(body["raw"]); v != "" {
-				if p, err := parseSunnyMailboxLine(v); err == nil {
+				if p, err := parseSunnyMailboxLineForProvider(v, mailboxType, mailboxChannel); err == nil {
 					m.Email = p["email"]
 					m.Password = p["password"]
 					m.ClientID = p["client_id"]
 					m.RefreshToken = p["refresh_token"]
+					m.AccessKey = p["access_key"]
 					m.Raw = v
 					if p["openai_rt"] != "" {
 						m.OpenAIRT = p["openai_rt"]
 					}
 				}
+			}
+			if mailboxType == "apple" {
+				m.Password, m.ClientID, m.RefreshToken = "", "", ""
+				m.Raw = strings.Join([]string{strings.TrimSpace(m.Email), strings.TrimSpace(m.AccessKey)}, "----")
+			} else {
+				m.AccessKey = ""
+				m.Raw = strings.Join([]string{strings.TrimSpace(m.Email), strings.TrimSpace(m.Password), strings.TrimSpace(m.ClientID), strings.TrimSpace(m.RefreshToken)}, "----")
 			}
 			if gid := uint(intValue(body["group_id"], 0)); gid > 0 {
 				m.GroupID = gid
@@ -657,7 +672,9 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			case "access_token":
 				value = s.sunnyMailboxAccessTokensByEmail([]string{m.Email})[sunnyEmailKey(m.Email)]
 			case "secret_key":
-				if m.Email != "" && m.Password != "" && m.ClientID != "" && m.RefreshToken != "" {
+				if normalizeSunnyMailboxType(m.MailboxType) == "apple" && m.Email != "" && m.AccessKey != "" {
+					value = strings.Join([]string{m.Email, m.AccessKey}, "----")
+				} else if m.Email != "" && m.Password != "" && m.ClientID != "" && m.RefreshToken != "" {
 					value = strings.Join([]string{m.Email, m.Password, m.ClientID, m.RefreshToken}, "----")
 				} else {
 					value = strings.TrimSpace(m.Raw)
@@ -676,20 +693,26 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 }
 
 func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error) {
+	mailboxType := normalizeSunnyMailboxType(text(body["mailbox_type"]))
+	mailboxChannel := normalizeSunnyMailboxChannel(mailboxType, text(body["mailbox_channel"]))
 	raw := text(body["raw"])
-	email, password, clientID, refreshToken, openaiRT := "", "", "", "", ""
+	email, password, clientID, refreshToken, accessKey, openaiRT := "", "", "", "", "", ""
 	if raw != "" {
-		p, err := parseSunnyMailboxLine(raw)
+		p, err := parseSunnyMailboxLineForProvider(raw, mailboxType, mailboxChannel)
 		if err != nil {
 			return SunnyMailbox{}, err
 		}
-		email, password, clientID, refreshToken, openaiRT = p["email"], p["password"], p["client_id"], p["refresh_token"], p["openai_rt"]
+		email, password, clientID, refreshToken, accessKey, openaiRT = p["email"], p["password"], p["client_id"], p["refresh_token"], p["access_key"], p["openai_rt"]
 	} else {
-		email, password, clientID, refreshToken, openaiRT = text(body["email"]), text(body["password"]), text(body["client_id"]), text(body["refresh_token"]), text(body["openai_rt"])
-		raw = strings.Join([]string{email, password, clientID, refreshToken}, "----")
+		email, password, clientID, refreshToken, accessKey, openaiRT = text(body["email"]), text(body["password"]), text(body["client_id"]), text(body["refresh_token"]), text(body["access_key"]), text(body["openai_rt"])
+		if mailboxType == "apple" {
+			raw = strings.Join([]string{email, accessKey}, "----")
+		} else {
+			raw = strings.Join([]string{email, password, clientID, refreshToken}, "----")
+		}
 	}
-	if email == "" || clientID == "" || refreshToken == "" {
-		return SunnyMailbox{}, fmt.Errorf("邮箱格式必须为 email----password----client_id----refresh_token")
+	if email == "" || !strings.Contains(email, "@") || (mailboxType == "apple" && accessKey == "") || (mailboxType == "microsoft" && (clientID == "" || refreshToken == "")) {
+		return SunnyMailbox{}, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, mailboxChannel))
 	}
 	gid := uint(intValue(body["group_id"], 0))
 	if gid == 0 {
@@ -700,7 +723,33 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 	if openaiRT != "" && status == "未注册" {
 		status = "已注册"
 	}
-	return SunnyMailbox{GroupID: gid, Email: email, Password: password, ClientID: clientID, RefreshToken: refreshToken, OpenAIRT: openaiRT, Raw: raw, AccountType: fallback(normalizeSunnyPlanType(fallback(text(body["plan_type"]), text(body["account_type"]))), "free"), Status: status, Enabled: enabled, LatestMailJSON: "{}"}, nil
+	return SunnyMailbox{GroupID: gid, Email: email, MailboxType: mailboxType, MailboxChannel: mailboxChannel, AccessKey: accessKey, Password: password, ClientID: clientID, RefreshToken: refreshToken, OpenAIRT: openaiRT, Raw: raw, AccountType: fallback(normalizeSunnyPlanType(fallback(text(body["plan_type"]), text(body["account_type"]))), "free"), Status: status, Enabled: enabled, LatestMailJSON: "{}"}, nil
+}
+
+func normalizeSunnyMailboxType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "apple", "icloud":
+		return "apple"
+	default:
+		return "microsoft"
+	}
+}
+
+func normalizeSunnyMailboxChannel(mailboxType, value string) string {
+	if normalizeSunnyMailboxType(mailboxType) == "apple" {
+		if strings.EqualFold(strings.TrimSpace(value), "xbovo") || strings.TrimSpace(value) == "" {
+			return "xbovo"
+		}
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+	return "outlook"
+}
+
+func sunnyMailboxFormatHint(mailboxType, channel string) string {
+	if normalizeSunnyMailboxType(mailboxType) == "apple" && normalizeSunnyMailboxChannel(mailboxType, channel) == "xbovo" {
+		return "苹果邮箱凭证格式必须为 icloud_email----key"
+	}
+	return "微软邮箱凭证格式必须为 email----password----client_id----refresh_token"
 }
 
 func normalizeSunnyMailboxStatus(status string) string {
@@ -794,9 +843,9 @@ func parseSunnyMailboxLine(raw string) (map[string]string, error) {
 	}
 	email, password, clientID, rt := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2]), strings.TrimSpace(parts[3])
 	if email == "" || !strings.Contains(email, "@") || clientID == "" || rt == "" {
-		return nil, fmt.Errorf("email / client_id / refresh_token 涓嶈兘涓虹┖")
+		return nil, fmt.Errorf("email / client_id / refresh_token 不能为空")
 	}
-	out := map[string]string{"email": email, "password": password, "client_id": clientID, "refresh_token": rt, "openai_rt": ""}
+	out := map[string]string{"email": email, "password": password, "client_id": clientID, "refresh_token": rt, "access_key": "", "openai_rt": ""}
 	for _, extra := range parts[4:] {
 		extra = strings.TrimSpace(extra)
 		lower := strings.ToLower(extra)
@@ -808,8 +857,28 @@ func parseSunnyMailboxLine(raw string) (map[string]string, error) {
 	return out, nil
 }
 
+func parseSunnyMailboxLineForProvider(raw, mailboxType, channel string) (map[string]string, error) {
+	if normalizeSunnyMailboxType(mailboxType) != "apple" {
+		return parseSunnyMailboxLine(raw)
+	}
+	if normalizeSunnyMailboxChannel(mailboxType, channel) != "xbovo" {
+		return nil, fmt.Errorf("暂不支持该苹果邮箱渠道")
+	}
+	parts := strings.Split(strings.TrimSpace(raw), "----")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, channel))
+	}
+	email, accessKey := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	if email == "" || !strings.Contains(email, "@") || accessKey == "" {
+		return nil, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, channel))
+	}
+	return map[string]string{"email": email, "password": "", "client_id": "", "refresh_token": "", "access_key": accessKey, "openai_rt": ""}, nil
+}
+
 func (s *Server) sunnyImportMailboxes(w http.ResponseWriter, r *http.Request) {
 	body := s.sunnyReadImportBody(r)
+	mailboxType := normalizeSunnyMailboxType(text(body["mailbox_type"]))
+	mailboxChannel := normalizeSunnyMailboxChannel(mailboxType, text(body["mailbox_channel"]))
 	gid := uint(intValue(body["group_id"], 0))
 	if gid == 0 && text(body["group_name"]) != "" {
 		g := SunnyMailboxGroup{Name: text(body["group_name"])}
@@ -825,7 +894,7 @@ func (s *Server) sunnyImportMailboxes(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		p, err := parseSunnyMailboxLine(line)
+		p, err := parseSunnyMailboxLineForProvider(line, mailboxType, mailboxChannel)
 		if err != nil {
 			bad = append(bad, line+" => "+err.Error())
 			continue
@@ -834,7 +903,7 @@ func (s *Server) sunnyImportMailboxes(w http.ResponseWriter, r *http.Request) {
 		if p["openai_rt"] != "" {
 			status = "已注册"
 		}
-		m := SunnyMailbox{GroupID: gid, Email: p["email"], Password: p["password"], ClientID: p["client_id"], RefreshToken: p["refresh_token"], OpenAIRT: p["openai_rt"], Raw: strings.Join(strings.Split(strings.TrimSpace(line), "----")[:4], "----"), AccountType: "free", Status: status, Enabled: true, LatestMailJSON: "{}"}
+		m := SunnyMailbox{GroupID: gid, Email: p["email"], MailboxType: mailboxType, MailboxChannel: mailboxChannel, AccessKey: p["access_key"], Password: p["password"], ClientID: p["client_id"], RefreshToken: p["refresh_token"], OpenAIRT: p["openai_rt"], Raw: strings.TrimSpace(line), AccountType: "free", Status: status, Enabled: true, LatestMailJSON: "{}"}
 		var old SunnyMailbox
 		if err := s.db.First(&old, "email = ?", m.Email).Error; err == nil {
 			m.ID, m.CreatedAt = old.ID, old.CreatedAt
@@ -851,7 +920,7 @@ func (s *Server) sunnyReadImportBody(r *http.Request) map[string]any {
 	ct := r.Header.Get("Content-Type")
 	if strings.Contains(ct, "multipart/form-data") {
 		_ = r.ParseMultipartForm(32 << 20)
-		out := map[string]any{"lines": r.FormValue("lines"), "group_id": r.FormValue("group_id"), "group_name": r.FormValue("group_name")}
+		out := map[string]any{"lines": r.FormValue("lines"), "group_id": r.FormValue("group_id"), "group_name": r.FormValue("group_name"), "mailbox_type": r.FormValue("mailbox_type"), "mailbox_channel": r.FormValue("mailbox_channel")}
 		if r.MultipartForm != nil {
 			for _, files := range r.MultipartForm.File {
 				for _, fh := range files {
@@ -883,7 +952,13 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 		limit = 50
 	}
 	proxyURL := s.sunnyMailboxProxyURL()
-	payload, err := fetchOutlookLatestMail(m.Email, m.ClientID, m.RefreshToken, limit, proxyURL)
+	var payload map[string]any
+	var err error
+	if normalizeSunnyMailboxType(m.MailboxType) == "apple" {
+		payload, err = fetchXbovoLatestMail(m.Email, m.AccessKey, limit, proxyURL)
+	} else {
+		payload, err = fetchOutlookLatestMail(m.Email, m.ClientID, m.RefreshToken, limit, proxyURL)
+	}
 	if err != nil {
 		s.db.Model(m).UpdateColumn("last_error", err.Error())
 		mailErr := classifyOutlookMailError(err)

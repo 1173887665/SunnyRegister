@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlencode, unquote, urlparse
 import requests
 
 from .browser_backend import open_registration_browser
-from .mailbox import MailAccount, HotmailReader
+from .mailbox import MailAccount, create_mailbox_reader
 from .proxy import proxy_dict
 from .sentinel import browser_fetch, build_sentinel_token, generate_datadog_trace_headers
 
@@ -247,7 +247,7 @@ class OpenAIEmailRegisterFlow:
         self.should_cancel = should_cancel or (lambda: False)
         self.on_progress = on_progress
         self.phone_provider = phone_provider
-        self.otp_reader: HotmailReader | None = None
+        self.otp_reader: Any | None = None
         self.existing_account = existing_account
         self.fingerprint = generate_register_fingerprint()
         self.auth_action = "login" if existing_account else "unknown"
@@ -380,8 +380,9 @@ class OpenAIEmailRegisterFlow:
     def _preconnect_otp_reader(self) -> None:
         if self.otp_reader:
             return
-        self.log("[邮箱] 提前连接 Outlook IMAP，准备接收 OpenAI 验证码")
-        self.otp_reader = HotmailReader(self.account, self.log, self.proxy_url)
+        provider = "xbovo iCloud API" if self.account.mailbox_type == "apple" else "Outlook Graph/IMAP"
+        self.log(f"[邮箱] 提前连接 {provider}，准备接收 OpenAI 验证码")
+        self.otp_reader = create_mailbox_reader(self.account, self.log, self.proxy_url)
         self.otp_reader.connect()
 
     def _create_openai_signin_url(self, context, page=None) -> str:
@@ -719,7 +720,7 @@ class OpenAIEmailRegisterFlow:
 
     def _submit_email_code(self, page, min_timestamp: float) -> None:
         if not self.otp_reader:
-            self.otp_reader = HotmailReader(self.account, self.log, self.proxy_url)
+            self.otp_reader = create_mailbox_reader(self.account, self.log, self.proxy_url)
         self.log("[邮箱] 等待 OpenAI 邮箱验证码")
         code = self.otp_reader.wait_for_code(min_timestamp, 180)
         journal, detach_journal = self._attach_email_otp_network_journal(page)
@@ -1934,4 +1935,3 @@ def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool 
             on_progress("phone_bound", session)
         return session
     return OpenAIEmailRegisterFlow(account, proxy_url, headless, log, phone_provider=phone_provider, existing_account=existing_account, require_refresh_token=require_refresh_token, should_cancel=should_cancel, execution_mode=execution_mode, on_progress=on_progress).run()
-

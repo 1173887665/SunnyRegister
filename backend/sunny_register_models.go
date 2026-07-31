@@ -19,6 +19,9 @@ type SunnyMailbox struct {
 	ID                  uint         `gorm:"primaryKey" json:"id"`
 	GroupID             uint         `gorm:"index" json:"group_id"`
 	Email               string       `gorm:"uniqueIndex;index" json:"email"`
+	MailboxType         string       `gorm:"index;size:32;default:microsoft" json:"mailbox_type"`
+	MailboxChannel      string       `gorm:"index;size:64;default:outlook" json:"mailbox_channel"`
+	AccessKey           string       `gorm:"type:text" json:"access_key"`
 	Password            string       `gorm:"type:text" json:"password"`
 	ClientID            string       `gorm:"type:text" json:"client_id"`
 	RefreshToken        string       `gorm:"type:text" json:"refresh_token"`

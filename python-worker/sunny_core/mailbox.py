@@ -4,6 +4,7 @@ import base64
 import dataclasses
 import email as email_pkg
 import imaplib
+import json
 import os
 import re
 import socket
@@ -26,6 +27,7 @@ OUTLOOK_IMAP_PORT = 993
 IMAP_SCOPE = "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 GRAPH_MESSAGES_URL = "https://graph.microsoft.com/v1.0/me/messages"
+XBOVO_API_BASE_URL = os.getenv("XBOVO_ICLOUD_API_BASE_URL", "https://icloud.xbovo.online").rstrip("/")
 
 
 class MailboxAccessError(RuntimeError):
@@ -106,6 +108,9 @@ class MailAccount:
     raw: str
     account_type: str = "free"
     openai_rt: str = ""
+    mailbox_type: str = "microsoft"
+    mailbox_channel: str = "outlook"
+    access_key: str = ""
 
 
 def parse_account_line(line: str) -> MailAccount:
@@ -132,6 +137,29 @@ def parse_account_line(line: str) -> MailAccount:
 
 
 def account_from_row(row: dict[str, Any]) -> MailAccount:
+    mailbox_type = str(row.get("mailbox_type") or "microsoft").strip().lower()
+    if mailbox_type in {"apple", "icloud"}:
+        email = str(row.get("email") or "").strip()
+        access_key = str(row.get("access_key") or "").strip()
+        raw = str(row.get("raw") or "").strip()
+        if (not email or not access_key) and raw:
+            parts = [part.strip() for part in raw.split("----")]
+            if len(parts) == 2:
+                email, access_key = parts
+        if not email or "@" not in email or not access_key:
+            raise ValueError("Invalid Apple mailbox line; expected icloud_email----key")
+        return MailAccount(
+            email=email,
+            password="",
+            client_id="",
+            refresh_token="",
+            raw=f"{email}----{access_key}",
+            account_type=str(row.get("account_type") or "free"),
+            openai_rt=str(row.get("openai_rt") or ""),
+            mailbox_type="apple",
+            mailbox_channel=str(row.get("mailbox_channel") or "xbovo").strip().lower(),
+            access_key=access_key,
+        )
     raw = row.get("raw") or "----".join([
         row.get("email", ""),
         row.get("password", ""),
@@ -141,6 +169,8 @@ def account_from_row(row: dict[str, Any]) -> MailAccount:
     account = parse_account_line(raw)
     account.openai_rt = row.get("openai_rt") or account.openai_rt
     account.account_type = row.get("account_type") or account.account_type
+    account.mailbox_type = "microsoft"
+    account.mailbox_channel = "outlook"
     return account
 
 
@@ -659,6 +689,124 @@ class HotmailReader:
         except Exception:
             return ""
         return ""
+
+
+class XbovoICloudReader:
+    """xbovo iCloud API adapter implementing the mailbox reader contract."""
+
+    def __init__(self, account: MailAccount, log: Callable[[str], None] | None, proxy_url: str = ""):
+        self.account = account
+        self.log = log or (lambda _m: None)
+        self.proxy_url = proxy_url
+        self.proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+        self.seen_codes: set[str] = set()
+
+    def _request(self, path: str, params: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
+        query = dict(params)
+        try:
+            response = requests.get(
+                f"{XBOVO_API_BASE_URL}{path}",
+                params=query,
+                headers={"Accept": "application/json", "X-API-Key": self.account.access_key},
+                timeout=timeout,
+                proxies=self.proxies,
+            )
+        except requests.RequestException as exc:
+            raise MailboxAccessError(
+                "mailbox_network_error",
+                "iCloud 邮箱渠道网络连接失败，请检查服务器出网与代理配置",
+                str(exc),
+            ) from exc
+        try:
+            payload = response.json() if response.text else {}
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise MailboxAccessError(
+                "mailbox_service_response_invalid",
+                "iCloud 邮箱渠道返回了无法解析的响应，请稍后重试",
+                f"HTTP {response.status_code}",
+            ) from exc
+        if response.ok and payload.get("ok") is True:
+            return payload
+        detail = str(payload.get("error") or payload.get("message") or f"HTTP {response.status_code}")
+        lower = detail.lower()
+        if "key" in lower or "密钥" in detail or "不正确" in detail or "无效" in detail:
+            raise MailboxAccessError(
+                "mailbox_credential_invalid",
+                "iCloud 邮箱查询 Key 无效，请检查 xbovo 邮箱凭证",
+                detail,
+                terminal=True,
+            )
+        raise MailboxAccessError("mailbox_provider_failed", "iCloud 邮箱渠道请求失败，请稍后重试", detail)
+
+    def connect(self, access_token: str | None = None) -> None:
+        if self.account.mailbox_channel != "xbovo":
+            raise MailboxAccessError("mailbox_channel_unsupported", "暂不支持该 iCloud 邮箱渠道", self.account.mailbox_channel, terminal=True)
+        self.log(f"[{self.account.email}] Connecting xbovo iCloud mailbox API for OTP")
+        self._request("/api/v1/messages", {"email": self.account.email, "limit": 1})
+        self.log(f"[{self.account.email}] xbovo iCloud mailbox API connected")
+
+    def close(self) -> None:
+        return None
+
+    def latest_message(self) -> dict[str, Any]:
+        payload = self._request("/api/v1/messages", {"email": self.account.email, "limit": 1})
+        messages = payload.get("messages") or []
+        if not messages:
+            return {"email": self.account.email, "empty": True, "source": "xbovo"}
+        message = dict(messages[0])
+        preview = str(message.get("preview") or "")
+        otp = str(message.get("code") or "").strip()
+        if not re.fullmatch(r"\d{6}", otp):
+            match = re.search(r"(?<!\d)(\d{6})(?!\d)", preview)
+            otp = match.group(1) if match else ""
+        return {
+            "id": str(message.get("id") or ""),
+            "email": self.account.email,
+            "folder": "iCloud",
+            "subject": str(message.get("subject") or ""),
+            "from": str(message.get("from") or ""),
+            "to": str(message.get("to") or message.get("alias_email") or self.account.email),
+            "date": str(message.get("received_at") or ""),
+            "body": preview,
+            "body_preview": preview,
+            "otp": otp,
+            "source": "xbovo",
+        }
+
+    def wait_for_code(self, min_timestamp: float, timeout: int = 180) -> str:
+        started = time.monotonic()
+        last_notice = 0.0
+        while time.monotonic() - started < timeout:
+            elapsed = time.monotonic() - started
+            remaining = max(1, int(timeout - elapsed))
+            chunk = min(20, remaining)
+            params: dict[str, Any] = {
+                "email": self.account.email,
+                "timeout": chunk,
+                "interval": 2,
+                "after": int(min_timestamp),
+            }
+            if self.seen_codes:
+                params["exclude"] = ",".join(sorted(self.seen_codes))
+            payload = self._request("/api/v1/code/wait", params, timeout=chunk + 10)
+            code = str(payload.get("code") or "").strip()
+            if re.fullmatch(r"\d{6}", code):
+                self.seen_codes.add(code)
+                self.log(f"[{self.account.email}] Received OpenAI OTP from xbovo iCloud API ({len(code)} digits, redacted)")
+                return code
+            if code:
+                self.seen_codes.add(code)
+                self.log(f"[{self.account.email}] xbovo returned a non-OpenAI code; ignored and continuing to wait")
+            if time.monotonic() - last_notice >= 20:
+                self.log(f"[{self.account.email}] Still waiting for OpenAI email OTP via xbovo, about {remaining}s left")
+                last_notice = time.monotonic()
+        raise TimeoutError("Timed out waiting for OpenAI email OTP")
+
+
+def create_mailbox_reader(account: MailAccount, log: Callable[[str], None] | None, proxy_url: str = ""):
+    if account.mailbox_type == "apple":
+        return XbovoICloudReader(account, log, proxy_url)
+    return HotmailReader(account, log, proxy_url)
 
 
 def latest_outlook_mail(email: str, client_id: str, refresh_token: str, proxy_url: str = "") -> dict[str, Any]:
