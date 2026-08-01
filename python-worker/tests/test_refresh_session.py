@@ -61,7 +61,7 @@ class RefreshSessionTests(unittest.TestCase):
 
         self.assertEqual(db.renewal_failure, "")
 
-    def test_missing_refresh_token_falls_back_to_background_login(self):
+    def test_missing_refresh_token_reuses_protocol_native_headless_login(self):
         db = FakeRefreshDB()
         with patch.object(worker, "_run_one", return_value=(True, {"has_access_token": True, "has_refresh_token": False})) as run_one:
             ok, errors, items = worker._refresh_sessions(db, {"account_ids": [7]})
@@ -70,7 +70,8 @@ class RefreshSessionTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(items[0]["refresh_method"], "headless_login")
         payload = run_one.call_args.args[2]
-        self.assertEqual(payload["execution_mode"], "background")
+        self.assertEqual(payload["execution_mode"], "protocol")
+        self.assertEqual(payload["protocol_challenge_strategy"], "native_headless")
         self.assertEqual(payload["registration_stage"], "register_only")
         renewal = [item for item in db.event_details if item.get("progress_type") == "access_token_renewal"]
         self.assertEqual((renewal[0]["current"], renewal[0]["total"]), (1, 7))
@@ -142,6 +143,29 @@ class RefreshSessionTests(unittest.TestCase):
         self.assertTrue(retry_payload["renewal_retry_fresh_context"])
         self.assertTrue(any("新的隔离无痕后台浏览器上下文" in message for message in db.events))
         self.assertEqual(sleep_mock.call_count, 15)
+
+    def test_protocol_failure_falls_back_to_fresh_background_login(self):
+        db = FakeRefreshDB()
+        with (
+            patch.object(
+                worker,
+                "_run_one",
+                side_effect=[
+                    (False, "protocol request failed"),
+                    (True, {"has_access_token": True, "has_refresh_token": False}),
+                ],
+            ) as run_one,
+            patch.object(worker.time, "sleep", return_value=None) as sleep_mock,
+        ):
+            ok, errors, items = worker._refresh_sessions(db, {"account_ids": [7]})
+
+        self.assertEqual(ok, 1)
+        self.assertEqual(errors, [])
+        self.assertEqual(items[0]["refresh_method"], "headless_login")
+        self.assertEqual(run_one.call_args_list[0].args[2]["execution_mode"], "protocol")
+        self.assertEqual(run_one.call_args_list[1].args[2]["execution_mode"], "background")
+        self.assertTrue(run_one.call_args_list[1].args[2]["renewal_retry_fresh_context"])
+        self.assertEqual(sleep_mock.call_count, 2)
 
     def test_failed_renewal_does_not_duplicate_email_prefix(self):
         db = FakeRefreshDB()

@@ -58,10 +58,64 @@ _DRIVER_DISCONNECTED_MARKERS = (
     "connection closed",
 )
 
+_NAVIGATION_ABORT_MARKERS = (
+    "ns_binding_aborted",
+    "net::err_aborted",
+)
+
 
 def _is_browser_driver_disconnected(error: Any) -> bool:
     message = str(error or "").strip().lower()
     return any(marker in message for marker in _DRIVER_DISCONNECTED_MARKERS)
+
+
+def _is_navigation_aborted(error: Any) -> bool:
+    message = str(error or "").strip().lower()
+    return any(marker in message for marker in _NAVIGATION_ABORT_MARKERS)
+
+
+def _auth_navigation_landed(page: Any, previous_url: str = "") -> bool:
+    try:
+        current_url = str(page.url or "")
+        current = urlparse(current_url)
+    except Exception:
+        return False
+    if not current_url or current_url == str(previous_url or ""):
+        return False
+    allowed_host = current.hostname in {"auth.openai.com", "chatgpt.com"}
+    oauth_callback = current.hostname in {"localhost", "127.0.0.1"} and current.port == 1455
+    return current.scheme in {"http", "https"} and (allowed_host or oauth_callback)
+
+
+def _goto_auth_page(page: Any, url: str, log: Callable[[str], None] | None = None, *, timeout: int = 90000):
+    """Navigate to auth while tolerating browser-engine redirect cancellation.
+
+    Firefox/Camoufox reports NS_BINDING_ABORTED when an auth response replaces
+    the requested document with an immediate redirect. It is only considered
+    successful after the page has actually landed on an OpenAI/ChatGPT origin.
+    """
+    previous_url = str(getattr(page, "url", "") or "")
+    try:
+        return page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+    except Exception as exc:
+        if not _is_navigation_aborted(exc):
+            raise
+        try:
+            page.wait_for_timeout(600)
+        except Exception:
+            pass
+        if _auth_navigation_landed(page, previous_url):
+            if log:
+                log(f"[认证] 认证导航由上游重定向接管，继续处理当前页面：{page.url}")
+            return None
+        try:
+            return page.goto(url, wait_until="commit", timeout=min(timeout, 30000))
+        except Exception as retry_exc:
+            if _is_navigation_aborted(retry_exc) and _auth_navigation_landed(page, previous_url):
+                if log:
+                    log(f"[认证] 认证导航重试已进入目标站点，继续处理当前页面：{page.url}")
+                return None
+            raise
 
 
 @dataclass
@@ -310,7 +364,7 @@ class OpenAIEmailRegisterFlow:
                 self._check_cancelled()
                 signin_url = self._create_openai_signin_url(context, page)
                 otp_min_timestamp = time.time() - 10
-                page.goto(signin_url, wait_until="domcontentloaded", timeout=90000)
+                _goto_auth_page(page, signin_url, self.log, timeout=90000)
                 self._emit_progress("browser_started")
                 if self.headless:
                     self.log("[认证] 已打开 OpenAI 认证页，后台状态机开始自动处理注册/登录")
@@ -629,7 +683,7 @@ class OpenAIEmailRegisterFlow:
         try:
             self.existing_account = True
             signin_url = self._create_openai_signin_url(page.context, page)
-            page.goto(signin_url, wait_until="domcontentloaded", timeout=90000)
+            _goto_auth_page(page, signin_url, self.log, timeout=90000)
             self.auth_action = "login"
             self.log("[认证] 已重新打开同一邮箱登录流程，用于恢复已创建账号的 Session")
         except Exception as exc:
@@ -1861,7 +1915,7 @@ class OpenAIEmailRegisterFlow:
         page.route(callback_pattern, fulfill_callback)
         self.log("[Session] 在当前登录态发起 OAuth 授权获取 Refresh Token")
         try:
-            page.goto(oauth_url, wait_until="domcontentloaded", timeout=90000)
+            _goto_auth_page(page, oauth_url, self.log, timeout=90000)
             started = time.time()
             last_notice = 0.0
             while time.time() - started < 180:

@@ -1348,10 +1348,36 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
             renewal_current = 4
             _emit_renewal_progress(db, email, renewal_current, renewal_total, "mailbox_ready")
             fallback_payload = dict(payload)
-            fallback_payload.update({"execution_mode": "background", "registration_stage": "register_only", "mailbox_ids": [int(mailbox.get("id") or 0)]})
+            fallback_payload.update(
+                {
+                    "execution_mode": "protocol",
+                    "protocol_challenge_strategy": "native_headless",
+                    "registration_stage": "register_only",
+                    "mailbox_ids": [int(mailbox.get("id") or 0)],
+                }
+            )
             renewal_current = 5
-            _emit_renewal_progress(db, email, renewal_current, renewal_total, "headless_login_started")
+            _emit_renewal_progress(db, email, renewal_current, renewal_total, "protocol_login_started")
+            db.event(
+                f"[{email}] [Session] 复用注册机登录链路更新 AT：协议登录优先，遇到浏览器挑战时由原生无头浏览器接管",
+                detail={"email": email, "scope": "selected", "renewal_login_mode": "protocol_native_headless"},
+            )
             succeeded, result = _run_one(db, "sunny_login", fallback_payload, mailbox, idx, len(accounts))
+            if not succeeded:
+                db.ensure_not_cancelled()
+                wait_seconds = 15 if _is_otp_security_context_failure(result) else 2
+                db.event(
+                    f"[{email}] [认证] 协议/原生挑战登录链路未完成，将建立新的隔离无痕后台浏览器上下文重试一次：{result}",
+                    "warning",
+                    detail={"email": email, "scope": "selected", "renewal_fallback": "background_headless"},
+                )
+                _emit_renewal_progress(db, email, 6, renewal_total, "headless_login_fallback")
+                for _ in range(wait_seconds):
+                    db.ensure_not_cancelled()
+                    time.sleep(1)
+                background_payload = dict(fallback_payload)
+                background_payload.update({"execution_mode": "background", "renewal_retry_fresh_context": True})
+                succeeded, result = _run_one(db, "sunny_login", background_payload, mailbox, idx, len(accounts))
             if not succeeded and _is_otp_security_context_failure(result):
                 db.ensure_not_cancelled()
                 db.event(
@@ -1367,6 +1393,7 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                     db.ensure_not_cancelled()
                     time.sleep(1)
                 retry_payload = dict(fallback_payload)
+                retry_payload["execution_mode"] = "background"
                 retry_payload["renewal_retry_fresh_context"] = True
                 succeeded, result = _run_one(db, "sunny_login", retry_payload, mailbox, idx, len(accounts))
             if not succeeded:
