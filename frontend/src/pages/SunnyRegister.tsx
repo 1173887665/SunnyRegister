@@ -1240,7 +1240,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
             <SelectBox className="sr-select-like" value={status} onChange={(v)=>setStatus(String(v))} options={[{value:"",label:t.allStatus}, ...MAILBOX_STATUSES.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))]} />
             <SelectBox className="sr-select-like" value={planFilter} onChange={(v)=>setPlanFilter(String(v))} options={[{value:"",label:t.allPlanTypes}, ...PLAN_TYPE_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))]} />
           </div>
-          <button className="sr-text-btn" title={t.refreshList} onClick={refreshList}><RefreshCw className="h-5 w-5"/></button>
+          <button className="sr-text-btn sr-action-refresh" title={t.refreshList} onClick={refreshList}><RefreshCw className="h-5 w-5"/></button>
         </div>
       </div>
     </Card>
@@ -1484,7 +1484,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
               <SelectBox className="sr-select-like" value={statusFilter} onChange={(v)=>setStatusFilter(String(v))} options={[{value:"",label:t.allStatus}, ...MAILBOX_STATUSES.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))]} />
               <SelectBox className="sr-select-like" value={planFilter} onChange={(v)=>setPlanFilter(String(v))} options={[{value:"",label:t.allPlanTypes}, ...PLAN_TYPE_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))]} />
             </div>
-            <div className="sr-mailbox-actions flex flex-nowrap items-center gap-2"><SelectionSummary t={t} count={selected.length} onClear={()=>setSelected([])}/>{selected.length > 0 && <ConfirmBubble message={t.confirmBatchDeleteMailbox} detail={`${selected.length} ${t.selected}`} onConfirm={batchDelete}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.batchDelete} ({selected.length})</Button></ConfirmBubble>}{selected.length > 0 && <Button variant="outline" className="rounded-xl border-emerald-200 text-emerald-700" onClick={()=>setBatchEditing(true)}>{t.batchEdit} ({selected.length})</Button>}<button className="sr-text-btn" onClick={load}><RefreshCw className="h-4 w-4"/>{t.refresh}</button><Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setImportOpen(true)}><Download className="mr-2 h-4 w-4"/>{t.importMailboxes}</Button></div>
+            <div className="sr-mailbox-actions flex flex-nowrap items-center gap-2"><SelectionSummary t={t} count={selected.length} onClear={()=>setSelected([])}/>{selected.length > 0 && <ConfirmBubble message={t.confirmBatchDeleteMailbox} detail={`${selected.length} ${t.selected}`} onConfirm={batchDelete}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.batchDelete} ({selected.length})</Button></ConfirmBubble>}{selected.length > 0 && <Button variant="outline" className="rounded-xl border-emerald-200 text-emerald-700" onClick={()=>setBatchEditing(true)}>{t.batchEdit} ({selected.length})</Button>}<button className="sr-text-btn sr-action-refresh" onClick={load}><RefreshCw className="h-4 w-4"/>{t.refresh}</button><Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setImportOpen(true)}><Download className="mr-2 h-4 w-4"/>{t.importMailboxes}</Button></div>
           </div>
         </div>
         <div className="sr-table-card sr-mailbox-table-panel overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
@@ -2050,7 +2050,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
           <div className="flex flex-nowrap gap-2">
             <SelectionSummary t={t} count={selected.length} onClear={()=>setSelected([])}/>
             {selected.length > 0 && <ConfirmBubble message={t.phoneConfirmBatchDelete} detail={`${selected.length} ${t.selected}`} onConfirm={batchDelete}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.batchDelete} ({selected.length})</Button></ConfirmBubble>}
-            <button className="sr-text-btn" onClick={()=>run(t.refreshDone, load)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
+            <button className="sr-text-btn sr-action-refresh" onClick={()=>run(t.refreshDone, load)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
             <Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setImportOpen(true)}><Download className="mr-2 h-4 w-4"/>{t.importPhones}</Button>
           </div>
           </div>
@@ -2484,7 +2484,7 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
           <SelectionSummary t={t} count={selected.length} onClear={()=>setSelected([])}/>
           {selected.length > 0 && <Button variant="outline" className="sr-proxy-command-button" onClick={()=>setBatchEditing({country:"",status:"启用"})}>{t.proxyBatchEdit} ({selected.length})</Button>}
           {selected.length > 0 && <ConfirmBubble message={t.proxyConfirmBatchDelete} detail={`${selected.length} ${t.selected}`} onConfirm={batchDeleteProxy}><Button variant="outline" className="sr-proxy-command-button border-red-200 text-red-500">{t.proxyBatchDelete} ({selected.length})</Button></ConfirmBubble>}
-          <button className="sr-text-btn sr-proxy-command-button" onClick={refreshProxyList}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
+          <button className="sr-text-btn sr-action-refresh sr-proxy-command-button" onClick={refreshProxyList}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
           <Button variant="outline" className="sr-proxy-command-button" disabled={loading || !items.length} onClick={batchCheck}>{loading?<Loader2 className="mr-2 h-4 w-4 animate-spin"/>:<Settings2 className="mr-2 h-4 w-4"/>}{t.proxyBatchCheck}</Button>
         </div>
       </div>
@@ -2791,10 +2791,10 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       <SelectBox className="sr-select-like" value={plan} onChange={(v)=>setPlan(String(v))} options={[{value:"",label:t.planType}, ...SESSION_PLAN_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))]} />
       <SelectionSummary t={t} count={selected.length} onClear={()=>setSelected([])}/>
       <div className="ml-auto flex items-center gap-2">
-        <button className="sr-text-btn text-red-500" disabled={!activeRenewalTasks.length || stoppingRenewal} title={t.stopRenewalTip} onClick={()=>void stopRenewalTasks()}>{stoppingRenewal ? <Loader2 className="h-4 w-4 animate-spin"/> : <X className="h-4 w-4"/>}{stoppingRenewal ? t.stoppingRenewal : t.stopRenewal}</button>
-        <button className="sr-text-btn" disabled={batchATCheckBusy || selected.length === 0 || selected.some((id)=>atCheckingSessionIds.includes(id)||refreshingSessionIds.includes(id))} title={selected.length === 0 ? t.refreshATNoSelection : t.refreshAT} onClick={()=>refreshAccessTokens(selected)}>{batchATCheckBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{batchATCheckBusy ? t.refreshingAT : t.refreshAT}</button>
-        <button className="sr-text-btn" disabled={healthBusy || selected.length === 0} title={selected.length === 0 ? t.healthNoSelection : t.healthCheck} onClick={()=>runHealthCheck(selected)}>{healthBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Activity className="h-4 w-4"/>}{healthBusy ? t.healthChecking : t.healthCheck}</button>
-        <button className="sr-text-btn" disabled={healthBusy} onClick={refreshSessionList}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
+        <button className={cn("sr-text-btn sr-action-danger",stoppingRenewal&&"is-running")} aria-busy={stoppingRenewal} disabled={!activeRenewalTasks.length || stoppingRenewal} title={t.stopRenewalTip} onClick={()=>void stopRenewalTasks()}>{stoppingRenewal ? <Loader2 className="h-4 w-4 animate-spin"/> : <X className="h-4 w-4"/>}{stoppingRenewal ? t.stoppingRenewal : t.stopRenewal}</button>
+        <button className={cn("sr-text-btn sr-action-info",batchATCheckBusy&&"is-running")} aria-busy={batchATCheckBusy} disabled={batchATCheckBusy || selected.length === 0 || selected.some((id)=>atCheckingSessionIds.includes(id)||refreshingSessionIds.includes(id))} title={selected.length === 0 ? t.refreshATNoSelection : t.refreshAT} onClick={()=>refreshAccessTokens(selected)}>{batchATCheckBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{batchATCheckBusy ? t.refreshingAT : t.refreshAT}</button>
+        <button className={cn("sr-text-btn sr-action-health",healthBusy&&"is-running")} aria-busy={healthBusy} disabled={healthBusy || selected.length === 0} title={selected.length === 0 ? t.healthNoSelection : t.healthCheck} onClick={()=>runHealthCheck(selected)}>{healthBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Activity className="h-4 w-4"/>}{healthBusy ? t.healthChecking : t.healthCheck}</button>
+        <button className="sr-text-btn sr-action-refresh" disabled={healthBusy} onClick={refreshSessionList}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
       </div>
     </div>
     <div className="sr-table-scroll">
