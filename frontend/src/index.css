@@ -1076,9 +1076,8 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 }
 .confirm-bubble-wrap { position:relative; display:inline-flex; align-items:center; justify-content:center; }
 .confirm-bubble {
-  position:absolute;
-  top:calc(100% + 10px);
-  z-index:1200;
+  position:fixed;
+  z-index:9800;
   width:max-content;
   min-width:220px;
   max-width:320px;
@@ -1094,12 +1093,10 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   backdrop-filter:blur(18px) saturate(1.2);
   animation:rise-in .16s ease both;
 }
-.confirm-bubble-right { right:0; }
-.confirm-bubble-left { left:0; }
 .confirm-bubble::before {
   content:"";
   position:absolute;
-  top:-6px;
+  left:clamp(12px, calc(var(--confirm-anchor-x, 24px) - 6px), calc(100% - 24px));
   width:12px;
   height:12px;
   transform:rotate(45deg);
@@ -1107,8 +1104,11 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   border-top:1px solid rgba(20,184,166,.24);
   background:rgba(255,255,255,.98);
 }
-.confirm-bubble-right::before { right:18px; }
-.confirm-bubble-left::before { left:18px; }
+.confirm-bubble-bottom::before { top:-6px; }
+.confirm-bubble-top::before {
+  bottom:-6px;
+  transform:rotate(225deg);
+}
 .confirm-bubble-title { font-size:13px; font-weight:800; line-height:1.45; color:#0f172a; }
 .confirm-bubble-detail { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; line-height:1.4; color:#64748b; }
 .confirm-bubble-actions { display:flex; justify-content:flex-end; gap:8px; padding-top:2px; }
