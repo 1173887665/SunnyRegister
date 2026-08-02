@@ -623,6 +623,16 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				}
 			}
 			if mailboxType == "apple" {
+				if mailboxChannel != "xbovo" && mailboxChannel != "url_api" {
+					writeError(w, http.StatusUnprocessableEntity, "暂不支持该 iCloud 邮箱渠道")
+					return
+				}
+				if mailboxChannel == "url_api" {
+					if _, err := validateURLAPIMailAddress(m.AccessKey); err != nil {
+						writeError(w, http.StatusUnprocessableEntity, sunnyMailboxFormatHint(mailboxType, mailboxChannel))
+						return
+					}
+				}
 				m.Password, m.ClientID, m.RefreshToken = "", "", ""
 				m.Raw = strings.Join([]string{strings.TrimSpace(m.Email), strings.TrimSpace(m.AccessKey)}, "----")
 			} else {
@@ -714,6 +724,16 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 	if email == "" || !strings.Contains(email, "@") || (mailboxType == "apple" && accessKey == "") || (mailboxType == "microsoft" && (clientID == "" || refreshToken == "")) {
 		return SunnyMailbox{}, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, mailboxChannel))
 	}
+	if mailboxType == "apple" {
+		if mailboxChannel != "xbovo" && mailboxChannel != "url_api" {
+			return SunnyMailbox{}, fmt.Errorf("暂不支持该 iCloud 邮箱渠道")
+		}
+		if mailboxChannel == "url_api" {
+			if _, err := validateURLAPIMailAddress(accessKey); err != nil {
+				return SunnyMailbox{}, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, mailboxChannel))
+			}
+		}
+	}
 	gid := uint(intValue(body["group_id"], 0))
 	if gid == 0 {
 		gid = s.sunnyEnsureDefaultGroup()
@@ -737,16 +757,23 @@ func normalizeSunnyMailboxType(value string) string {
 
 func normalizeSunnyMailboxChannel(mailboxType, value string) string {
 	if normalizeSunnyMailboxType(mailboxType) == "apple" {
-		if strings.EqualFold(strings.TrimSpace(value), "xbovo") || strings.TrimSpace(value) == "" {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "xbovo" || normalized == "" {
 			return "xbovo"
 		}
-		return strings.ToLower(strings.TrimSpace(value))
+		if normalized == "url_api" || normalized == "url-api" {
+			return "url_api"
+		}
+		return normalized
 	}
 	return "outlook"
 }
 
 func sunnyMailboxFormatHint(mailboxType, channel string) string {
-	if normalizeSunnyMailboxType(mailboxType) == "apple" && normalizeSunnyMailboxChannel(mailboxType, channel) == "xbovo" {
+	if normalizeSunnyMailboxType(mailboxType) == "apple" {
+		if normalizeSunnyMailboxChannel(mailboxType, channel) == "url_api" {
+			return "url_api 苹果邮箱凭证格式必须为 icloud_email----取码URL"
+		}
 		return "苹果邮箱凭证格式必须为 icloud_email----key"
 	}
 	return "微软邮箱凭证格式必须为 email----password----client_id----refresh_token"
@@ -861,7 +888,8 @@ func parseSunnyMailboxLineForProvider(raw, mailboxType, channel string) (map[str
 	if normalizeSunnyMailboxType(mailboxType) != "apple" {
 		return parseSunnyMailboxLine(raw)
 	}
-	if normalizeSunnyMailboxChannel(mailboxType, channel) != "xbovo" {
+	normalizedChannel := normalizeSunnyMailboxChannel(mailboxType, channel)
+	if normalizedChannel != "xbovo" && normalizedChannel != "url_api" {
 		return nil, fmt.Errorf("暂不支持该苹果邮箱渠道")
 	}
 	parts := strings.Split(strings.TrimSpace(raw), "----")
@@ -871,6 +899,11 @@ func parseSunnyMailboxLineForProvider(raw, mailboxType, channel string) (map[str
 	email, accessKey := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
 	if email == "" || !strings.Contains(email, "@") || accessKey == "" {
 		return nil, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, channel))
+	}
+	if normalizedChannel == "url_api" {
+		if _, err := validateURLAPIMailAddress(accessKey); err != nil {
+			return nil, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, channel))
+		}
 	}
 	return map[string]string{"email": email, "password": "", "client_id": "", "refresh_token": "", "access_key": accessKey, "openai_rt": ""}, nil
 }
@@ -955,7 +988,14 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 	var payload map[string]any
 	var err error
 	if normalizeSunnyMailboxType(m.MailboxType) == "apple" {
-		payload, err = fetchXbovoLatestMail(m.Email, m.AccessKey, limit, proxyURL)
+		switch normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel) {
+		case "url_api":
+			payload, err = fetchURLAPILatestMail(m.Email, m.AccessKey, limit, proxyURL)
+		case "xbovo":
+			payload, err = fetchXbovoLatestMail(m.Email, m.AccessKey, limit, proxyURL)
+		default:
+			err = &outlookMailError{Code: "mailbox_channel_unsupported", Category: "format", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: "暂不支持该 iCloud 邮箱渠道", Terminal: true}
+		}
 	} else {
 		payload, err = fetchOutlookLatestMail(m.Email, m.ClientID, m.RefreshToken, limit, proxyURL)
 	}

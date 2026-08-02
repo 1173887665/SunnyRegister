@@ -434,7 +434,7 @@ class OpenAIEmailRegisterFlow:
     def _preconnect_otp_reader(self) -> None:
         if self.otp_reader:
             return
-        provider = "xbovo iCloud API" if self.account.mailbox_type == "apple" else "Outlook Graph/IMAP"
+        provider = f"{self.account.mailbox_channel} iCloud API" if self.account.mailbox_type == "apple" else "Outlook Graph/IMAP"
         self.log(f"[邮箱] 提前连接 {provider}，准备接收 OpenAI 验证码")
         self.otp_reader = create_mailbox_reader(self.account, self.log, self.proxy_url)
         self.otp_reader.connect()

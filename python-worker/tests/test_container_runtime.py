@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from sunny_core.browser_backend import camoufox_runtime_error
-from sunny_core.mailbox import HotmailReader, MailAccount, MailboxAccessError, XbovoICloudReader, _request_outlook_access_token, account_from_row, create_mailbox_reader, parse_account_line
+from sunny_core.mailbox import HotmailReader, MailAccount, MailboxAccessError, URLAPIICloudReader, XbovoICloudReader, _request_outlook_access_token, account_from_row, create_mailbox_reader, parse_account_line
 
 
 def account(email: str = "user@example.com") -> MailAccount:
@@ -100,6 +100,48 @@ class XbovoICloudReaderTests(unittest.TestCase):
         self.assertNotIn("key", kwargs["params"])
         self.assertEqual(kwargs["headers"]["X-API-Key"], "alias_key")
         self.assertEqual(kwargs["proxies"]["https"], "http://proxy.example:8080")
+
+
+class URLAPIICloudReaderTests(unittest.TestCase):
+    def test_account_from_row_routes_url_api_channel(self) -> None:
+        parsed = account_from_row({
+            "email": "alias@icloud.com",
+            "mailbox_type": "apple",
+            "mailbox_channel": "url_api",
+            "access_key": "https://mail.example.test/latest/alias@icloud.com",
+        })
+        self.assertEqual(parsed.mailbox_channel, "url_api")
+        self.assertIsInstance(create_mailbox_reader(parsed, None), URLAPIICloudReader)
+
+    def test_connect_baselines_old_code_and_wait_returns_new_code(self) -> None:
+        parsed = account_from_row({
+            "email": "alias@icloud.com",
+            "mailbox_type": "apple",
+            "mailbox_channel": "url_api",
+            "access_key": "https://mail.example.test/latest/alias@icloud.com",
+        })
+        old_response = Mock(ok=True, status_code=200, url=parsed.access_key, text="<html><h2>ChatGPT</h2><p>Code 111111</p></html>")
+        new_response = Mock(ok=True, status_code=200, url=parsed.access_key, text="<html><h2>ChatGPT</h2><p>Code 222222</p></html>")
+        reader = URLAPIICloudReader(parsed, None)
+        with patch("sunny_core.mailbox.requests.get", side_effect=[old_response, new_response]) as request_get:
+            reader.connect()
+            code = reader.wait_for_code(1_700_000_000, timeout=5)
+        self.assertEqual(code, "222222")
+        self.assertGreaterEqual(request_get.call_args.kwargs["timeout"], 35)
+
+    def test_latest_message_normalizes_html(self) -> None:
+        parsed = account_from_row({
+            "email": "alias@icloud.com",
+            "mailbox_type": "apple",
+            "mailbox_channel": "url_api",
+            "access_key": "https://mail.example.test/latest/alias@icloud.com",
+        })
+        response = Mock(ok=True, status_code=200, url=parsed.access_key, text="<html><h2>ChatGPT</h2><p>验证码 <b>654321</b></p></html>")
+        with patch("sunny_core.mailbox.requests.get", return_value=response):
+            message = URLAPIICloudReader(parsed, None).latest_message()
+        self.assertEqual(message["otp"], "654321")
+        self.assertEqual(message["source"], "url_api")
+        self.assertIn("验证码 654321", message["body"])
 
 
 class OutlookGraphCredentialTests(unittest.TestCase):

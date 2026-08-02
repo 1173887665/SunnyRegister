@@ -244,6 +244,8 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 					var fetchErr error
 					if candidate.MailboxType == "apple" && candidate.Channel == "xbovo" {
 						subjects, fetchErr = fetchXbovoMailSubjects(candidate.Email, candidate.AccessKey, 5, proxyURL)
+					} else if candidate.MailboxType == "apple" && candidate.Channel == "url_api" {
+						subjects, fetchErr = fetchURLAPIMailSubjects(candidate.Email, candidate.AccessKey, 5, proxyURL)
 					} else {
 						subjects, fetchErr = sunnyFetchOutlookMailSubjects(candidate.Email, candidate.ClientID, candidate.RefreshToken, 5, proxyURL)
 					}

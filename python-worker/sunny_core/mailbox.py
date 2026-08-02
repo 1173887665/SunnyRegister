@@ -4,6 +4,7 @@ import base64
 import dataclasses
 import email as email_pkg
 import imaplib
+import ipaddress
 import json
 import os
 import re
@@ -28,6 +29,7 @@ IMAP_SCOPE = "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 GRAPH_MESSAGES_URL = "https://graph.microsoft.com/v1.0/me/messages"
 XBOVO_API_BASE_URL = os.getenv("XBOVO_ICLOUD_API_BASE_URL", "https://icloud.xbovo.online").rstrip("/")
+URL_API_REQUEST_TIMEOUT = max(35, int(os.getenv("URL_API_ICLOUD_REQUEST_TIMEOUT", "40") or 40))
 
 
 class MailboxAccessError(RuntimeError):
@@ -181,6 +183,35 @@ def extract_otp(text: str) -> str:
         if match:
             return match.group(1)
     return ""
+
+
+def _validate_url_api_address(value: str) -> str:
+    raw = str(value or "").strip()
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise MailboxAccessError(
+            "mailbox_format_error",
+            "url_api 邮箱凭证格式错误，应为 icloud_email----取码URL",
+            terminal=True,
+        )
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname == "localhost" or hostname.endswith((".localhost", ".local")):
+        raise MailboxAccessError("mailbox_url_forbidden", "url_api 取码地址不能指向本机或内部服务", terminal=True)
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if address and (address.is_private or address.is_loopback or address.is_link_local or address.is_reserved):
+        raise MailboxAccessError("mailbox_url_forbidden", "url_api 取码地址不能指向私有网络", terminal=True)
+    return raw
+
+
+def _html_to_text(value: str) -> str:
+    raw = re.sub(r"(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)>", " ", str(value or ""))
+    raw = re.sub(r"(?i)<br\s*/?>|</(?:p|div|li|tr|h[1-6])>", "\n", raw)
+    raw = re.sub(r"(?s)<[^>]+>", " ", raw)
+    lines = [re.sub(r"\s+", " ", unescape(line)).strip() for line in raw.splitlines()]
+    return "\n".join(line for line in lines if line)
 
 
 TOKEN_ENDPOINTS = [
@@ -803,9 +834,116 @@ class XbovoICloudReader:
         raise TimeoutError("Timed out waiting for OpenAI email OTP")
 
 
+class URLAPIICloudReader:
+    """Slow URL-based iCloud adapter returning the newest mailbox message page."""
+
+    def __init__(self, account: MailAccount, log: Callable[[str], None] | None, proxy_url: str = ""):
+        self.account = account
+        self.log = log or (lambda _m: None)
+        self.proxy_url = proxy_url
+        self.proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+        self.url = _validate_url_api_address(account.access_key)
+        self.seen_codes: set[str] = set()
+
+    def _latest(self, timeout: int = URL_API_REQUEST_TIMEOUT) -> dict[str, Any]:
+        try:
+            response = requests.get(
+                self.url,
+                headers={"Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8", "User-Agent": "Mozilla/5.0"},
+                timeout=min(URL_API_REQUEST_TIMEOUT + 5, max(URL_API_REQUEST_TIMEOUT, int(timeout or 0))),
+                proxies=self.proxies,
+            )
+        except requests.RequestException as exc:
+            raise MailboxAccessError(
+                "mailbox_network_error",
+                "url_api 邮箱渠道连接超时或网络不可达，请检查取码 URL、服务器出网与代理配置",
+                str(exc),
+            ) from exc
+        _validate_url_api_address(str(getattr(response, "url", "") or self.url))
+        if response.status_code in {401, 403, 404, 410}:
+            raise MailboxAccessError(
+                "mailbox_credential_invalid",
+                "url_api 取码 URL 无效、已过期或无权访问",
+                f"HTTP {response.status_code}",
+                terminal=True,
+            )
+        if not response.ok:
+            raise MailboxAccessError("mailbox_provider_failed", "url_api 邮箱渠道请求失败，请稍后重试", f"HTTP {response.status_code}")
+        raw_html = str(response.text or "")
+        plain = _html_to_text(raw_html)
+        relevant = bool(re.search(r"openai|chatgpt", plain, flags=re.I))
+        otp = extract_otp(plain) if relevant else ""
+        heading = re.search(r"(?is)<h[1-4]\b[^>]*>(.*?)</h[1-4]>", raw_html)
+        subject = _html_to_text(heading.group(1)) if heading else ""
+        if not re.search(r"openai|chatgpt", subject, flags=re.I) or "@" in subject:
+            subject = next(
+                (
+                    line.strip()
+                    for line in plain.splitlines()
+                    if len(line.strip()) > len("ChatGPT")
+                    and len(line.strip()) <= 160
+                    and re.search(r"openai|chatgpt", line, flags=re.I)
+                    and "@" not in line
+                    and "url(" not in line.lower()
+                    and "team" not in line.lower()
+                ),
+                "",
+            )
+        return {
+            "id": f"url-api:{hash(raw_html)}",
+            "email": self.account.email,
+            "folder": "iCloud",
+            "subject": subject or ("ChatGPT" if relevant else "Latest iCloud mail"),
+            "from": "",
+            "to": self.account.email,
+            "date": "",
+            "body": plain,
+            "body_preview": plain[:500],
+            "raw_html": raw_html,
+            "otp": otp,
+            "source": "url_api",
+        }
+
+    def connect(self, access_token: str | None = None) -> None:
+        if self.account.mailbox_channel != "url_api":
+            raise MailboxAccessError("mailbox_channel_unsupported", "暂不支持该 iCloud 邮箱渠道", self.account.mailbox_channel, terminal=True)
+        self.log(f"[{self.account.email}] Connecting url_api iCloud mailbox URL for OTP")
+        message = self._latest()
+        if message.get("otp"):
+            self.seen_codes.add(str(message["otp"]))
+        self.log(f"[{self.account.email}] url_api iCloud mailbox URL connected")
+
+    def close(self) -> None:
+        return None
+
+    def latest_message(self) -> dict[str, Any]:
+        return self._latest()
+
+    def wait_for_code(self, min_timestamp: float, timeout: int = 180) -> str:
+        started = time.monotonic()
+        last_notice = 0.0
+        while time.monotonic() - started < timeout:
+            remaining = max(1, int(timeout - (time.monotonic() - started)))
+            message = self._latest(timeout=max(URL_API_REQUEST_TIMEOUT, remaining))
+            code = str(message.get("otp") or "").strip()
+            if re.fullmatch(r"\d{6}", code) and code not in self.seen_codes:
+                self.seen_codes.add(code)
+                self.log(f"[{self.account.email}] Received OpenAI OTP from url_api iCloud URL ({len(code)} digits, redacted)")
+                return code
+            if time.monotonic() - last_notice >= 20:
+                self.log(f"[{self.account.email}] Still waiting for OpenAI email OTP via url_api, about {remaining}s left")
+                last_notice = time.monotonic()
+            time.sleep(min(3, remaining))
+        raise TimeoutError("Timed out waiting for OpenAI email OTP")
+
+
 def create_mailbox_reader(account: MailAccount, log: Callable[[str], None] | None, proxy_url: str = ""):
     if account.mailbox_type == "apple":
-        return XbovoICloudReader(account, log, proxy_url)
+        if account.mailbox_channel == "xbovo":
+            return XbovoICloudReader(account, log, proxy_url)
+        if account.mailbox_channel == "url_api":
+            return URLAPIICloudReader(account, log, proxy_url)
+        raise MailboxAccessError("mailbox_channel_unsupported", "暂不支持该 iCloud 邮箱渠道", account.mailbox_channel, terminal=True)
     return HotmailReader(account, log, proxy_url)
 
 
