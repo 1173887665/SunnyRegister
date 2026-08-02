@@ -2576,6 +2576,7 @@ function renewalViewForSession(tasks: PersistentSessionTask[], row: AnyObj) {
 }
 
 function renewalStepLabel(t: AnyObj, checkpoint: string) {
+  if (checkpoint === "account_deactivated") return t.statusLabels?.["已封禁"] || "Account banned";
   return t.renewalSteps?.[checkpoint] || checkpoint;
 }
 

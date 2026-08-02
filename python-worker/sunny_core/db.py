@@ -741,6 +741,31 @@ class SunnyDB:
         )
         self.conn.commit()
 
+    def mark_account_deactivated(self, email: str, error: str = "") -> None:
+        if not email:
+            return
+        timestamp = now_sql()
+        detail = str(error or "account_deactivated")[:2000]
+        with self.conn:
+            self.conn.execute(
+                """update sunny_mailboxes
+                set status='已封禁', last_error=?, last_health_checked_at=?, status_changed_at=?, updated_at=?
+                where email=?""",
+                (detail, timestamp, timestamp, timestamp, email),
+            )
+            self.conn.execute(
+                """update sunny_accounts
+                set status='banned', last_error=?, last_health_checked_at=?, status_changed_at=?, updated_at=?
+                where email=?""",
+                (detail, timestamp, timestamp, timestamp, email),
+            )
+            self.conn.execute(
+                """update sunny_sessions
+                set access_token_status='invalid', access_token_checked_at=?, access_token_error=?, updated_at=?
+                where email=?""",
+                (timestamp, detail, timestamp, email),
+            )
+
     def mark_mailbox(self, mailbox_id: int, status: str, error: str = "", openai_rt: str = "") -> None:
         if mailbox_id <= 0:
             return

@@ -190,6 +190,11 @@ def _is_cancel_exception(exc: BaseException) -> bool:
     return isinstance(exc, (SunnyTaskCancelled, TaskCancelledError)) or "Task cancelled by user" in str(exc)
 
 
+def _is_account_deactivated(error: Any) -> bool:
+    text = str(error or "").strip().lower()
+    return "account_deactivated" in text or "account because it has been deleted or deactivated" in text
+
+
 def _is_otp_security_context_failure(error: Any) -> bool:
     """Return true only for a rejected OTP request caused by auth proof context.
 
@@ -198,6 +203,8 @@ def _is_otp_security_context_failure(error: Any) -> bool:
     attempt limit.
     """
     text = str(error or "").strip().lower()
+    if _is_account_deactivated(text):
+        return False
     otp_request = "emailotpvalidate" in text or "email-otp/validate" in text
     security_rejection = any(
         marker in text
@@ -1249,7 +1256,14 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
         err_text = str(exc)
         err = f"[{email}] {err_text}"
         traffic = getattr(exc, "traffic", None)
-        if "Phone verification required" in err_text or "phone verification" in err_text.lower():
+        if _is_account_deactivated(err_text):
+            db.mark_account_deactivated(email, err_text)
+            db.event(
+                f"[{email}] [认证] OpenAI 返回 account_deactivated，账户已标记为已封禁",
+                "warning",
+                detail={"email": email, "scope": "selected", "account_deactivated": True},
+            )
+        elif "Phone verification required" in err_text or "phone verification" in err_text.lower():
             db.mark_mailbox(mailbox_id, "需二验", err_text)
             db.event(f"[{email}] [接码] 账号需要手机号二次验证，但当前没有可用接码配置，本账号流程已停止", "warning", detail={"email": email, "scope": "selected"})
         elif original_completed_status:
@@ -1332,6 +1346,8 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                 except Exception as exc:
                     if _is_cancel_exception(exc):
                         raise
+                    if _is_account_deactivated(exc):
+                        raise
                     refresh_error = str(exc)
                     renewal_total = 9
                     renewal_current = 3
@@ -1363,6 +1379,8 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                 detail={"email": email, "scope": "selected", "renewal_login_mode": "protocol_native_headless"},
             )
             succeeded, result = _run_one(db, "sunny_login", fallback_payload, mailbox, idx, len(accounts))
+            if not succeeded and _is_account_deactivated(result):
+                raise RuntimeError(str(result).strip())
             if not succeeded:
                 db.ensure_not_cancelled()
                 wait_seconds = 15 if _is_otp_security_context_failure(result) else 2
@@ -1378,6 +1396,8 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                 background_payload = dict(fallback_payload)
                 background_payload.update({"execution_mode": "background", "renewal_retry_fresh_context": True})
                 succeeded, result = _run_one(db, "sunny_login", background_payload, mailbox, idx, len(accounts))
+            if not succeeded and _is_account_deactivated(result):
+                raise RuntimeError(str(result).strip())
             if not succeeded and _is_otp_security_context_failure(result):
                 db.ensure_not_cancelled()
                 db.event(
@@ -1413,9 +1433,18 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
             if _is_cancel_exception(exc):
                 raise
             errors.append(f"[{email}] {exc}")
-            db.mark_access_token_renewal_failed(email, str(exc))
-            db.event(errors[-1], "error")
-            _emit_renewal_progress(db, email, renewal_current, renewal_total, "failed", state="failed", error=str(exc))
+            if _is_account_deactivated(exc):
+                db.mark_account_deactivated(email, str(exc))
+                db.event(
+                    f"[{email}] [认证] AT 续期确认账户已停用，已归类为已封禁并更新最近测活时间",
+                    "warning",
+                    detail={"email": email, "scope": "selected", "account_deactivated": True},
+                )
+                _emit_renewal_progress(db, email, renewal_current, renewal_total, "account_deactivated", state="failed", error=str(exc))
+            else:
+                db.mark_access_token_renewal_failed(email, str(exc))
+                db.event(errors[-1], "error")
+                _emit_renewal_progress(db, email, renewal_current, renewal_total, "failed", state="failed", error=str(exc))
         db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
     return ok, errors, items
 
