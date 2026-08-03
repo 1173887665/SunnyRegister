@@ -559,7 +559,7 @@ const zh: AnyObj = new Proxy({
   mailboxPoolName: "自建邮箱池", mailboxPoolGlobalSwitch: "使用自建邮箱池", mailboxPoolSwitchTip: "关闭后，注册机不会从自建邮箱池分配邮箱。", mailboxOverviewTotal: "邮箱总数", mailboxOverviewPending: "待注册", mailboxOverviewRegistered: "已注册", mailboxOverviewPhoneBound: "已接码", mailboxOverviewReversed: "已反代", mailboxOverviewBanned: "已封禁", mailboxOverviewNeeds2FA: "待二验", mailboxOverviewFailed: "失败",
   phoneTip: "格式：+手机号----接码链接。成功后冷却 5 小时，最多 3 次。", phonePool: "自建手机号池", phonePoolGlobalSwitch: "使用自建手机号池", importPhones: "导入手机号", phonePoolSwitchTip: "关闭后，注册机不会从自建手机号池分配号码；后续可切换为外部接码平台。", phonePoolOn: "可用于接码", phonePoolOff: "不用于接码", phoneImportHelp: "每行一个长效接码：第一个字符必须是 +，手机号与接码链接之间必须使用四个中横线 ---- 连接。", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "手机号导入格式错误", phoneSearch: "搜索手机号...", phoneNumber: "手机号", smsLink: "接码链接", usedCount: "已用次数", countFilter: "次数筛选", allCount: "全部次数", lastUsedAt: "最近使用时间", phoneEdit: "编辑手机号", phoneStatusEnabled: "启用", phoneStatusDisabled: "停用", phoneConfirmDelete: "确认删除该手机号？此操作不可撤销。", phoneConfirmBatchDelete: "确认删除选中的手机号？此操作不可撤销。",
   smsbowerProvider: "SMSBower 接码供应商", smsbowerDesc: "当自建手机号池不可用或无可用号码时，注册机会使用 SMSBower API 自动获取一次性手机号。", smsbowerSwitch: "启用 SMSBower", smsbowerReady: "SMSBower 已配置", smsbowerApiKey: "API Key", smsbowerCountry: "默认国家", smsbowerService: "默认服务", smsbowerMaxPrice: "最大价格", smsbowerBaseURL: "接口地址", smsbowerCheck: "检测余额", smsbowerBalance: "余额：{balance}", smsbowerSaved: "SMSBower 配置已保存",
-  smspoolProvider: "SMSPool 接码供应商", smspoolDesc: "SMSPool 临时号码平台，可在自建手机号池和 SMSBower 不可用时自动购买一次性接码号码。", smspoolSwitch: "启用 SMSPool", smspoolReady: "SMSPool 已配置", smspoolApiKey: "API Key", smspoolCountry: "默认国家", smspoolService: "默认服务", refreshProviderOptions: "获取列表", smspoolMaxPrice: "最大价格", smspoolBaseURL: "接口地址", smspoolCheck: "检测余额", smspoolBalance: "余额：{balance}", smspoolSaved: "SMSPool 配置已保存",
+  smspoolProvider: "SMSPool 接码供应商", smspoolDesc: "SMSPool 临时号码平台，可在自建手机号池和 SMSBower 不可用时自动购买一次性接码号码。", smspoolSwitch: "启用 SMSPool", smspoolReady: "SMSPool 已配置", smspoolApiKey: "API Key", smspoolCountry: "默认国家", smspoolService: "默认服务", refreshProviderOptions: "获取列表", providerOptionSearch: "搜索 ID、代码或名称...", providerOptionNoResults: "没有匹配的选项", smspoolMaxPrice: "最大价格", smspoolBaseURL: "接口地址", smspoolCheck: "检测余额", smspoolBalance: "余额：{balance}", smspoolSaved: "SMSPool 配置已保存",
   proxyTip: "管理注册机发起注册/登录请求时使用的出站代理池；批量检测仅检测代理服务连通性，不访问 ChatGPT 官网。", proxyPool: "代理池", proxyEnabled: "启用", proxyDisabled: "停用", proxyAvailable: "失效", proxySearch: "搜索代理地址...", proxyCountry: "国家", proxyAllCountry: "全部国家", proxyAddress: "代理地址", proxyBatchCheck: "批量检测", proxyBatchDelete: "批量删除", proxyBatchEdit: "批量修改", proxyAdd: "新增代理", proxyEdit: "编辑代理", proxyCheckDone: "代理检测完成", proxyNoData: "暂无代理", proxyNoDataDesc: "请先新增代理地址，再对启用代理进行批量检测。", proxyStatusEnabled: "启用", proxyStatusDisabled: "停用", proxyStatusInvalid: "失效", proxyLastChecked: "上次检测", proxyLatency: "延迟", proxyCountryPlaceholder: "例如 US / HK / JP / Brazil", proxyCountryKeep: "留空保持各代理原国家不变", proxyAddressPlaceholder: "每行一个代理，例如 http://user:pass@host:port 或 socks5://host:port", proxyConfirmDelete: "确认删除该代理？此操作不可撤销。", proxyConfirmBatchDelete: "确认删除选中的代理？此操作不可撤销。", proxyTrafficSwitch: "注册流量代理", proxyTrafficOn: "代理开启", proxyTrafficOff: "代理关闭", proxyTrafficOnHint: "注册/登录请求走代理池", proxyTrafficOffHint: "使用服务器系统网络出口", proxySwitchSaved: "代理出口设置已更新",
   selected: "已选", selectedItems: "已选 {count} 项", clearSelection: "清除选择", globalLogs: "全局日志", selectedLogs: "当前邮箱日志", registrationTaskProgress: "注册任务进度", accountRegistrationProgress: "账户注册进度", clearLogs: "清除", latest: "查询最近邮件", done: "操作完成", failed: "操作失败", file: "选择文件", status: "状态", prev: "上一页", next: "下一页", pageSize: "每页", pageInfo: "第 {page} / {pages} 页", pageRange: "显示 {from} 至 {to} 共 {total} 条结果", noLogs: "暂无日志", noRegistrationTask: "暂无注册任务", noAccountProgress: "暂无正在处理的邮箱账户", taskTotal: "任务总数", taskCompleted: "当前完成", completedAccounts: "已完成注册", pendingAccounts: "未完成注册", abnormalAccounts: "注册状态异常", currentStep: "当前步骤", total: "总计", yes: "是", no: "否", step: "步骤",
   progressSteps: { queued: "等待任务调度", initializing: "初始化邮箱任务", proxy_ready: "代理与出口准备完成", browser_started: "启动隔离浏览器", protocol_started: "建立纯协议注册会话", email_submitted: "提交注册邮箱", email_verified: "完成邮箱验证码验证", auth_completed: "完成注册或登录认证", registered: "保存 ChatGPT Session", phone_started: "分配手机号并开始接码", phone_code_received: "收到并提交手机验证码", phone_bound: "完成 Codex 接码绑定", reverse_importing: "正在导入反代平台", reverse_imported: "完成反代平台导入", agent_identity_importing: "正在创建 Agent Identity 并导入反代平台", agent_identity_imported: "完成 Agent Identity 反代导入", stage_incomplete: "目标阶段未完成", cancelled: "任务已由用户中断", failed: "注册流程异常" },
@@ -582,7 +582,7 @@ const en = {
   register: "Register / Login", refresh: "Refresh", import: "Import", save: "Save", export: "Export", copy: "Copy", close: "Close", copySuccess: "Copied", secretKeyUnavailable: "This mailbox credential is incomplete and its SK cannot be copied", newGroup: "New Group", move: "Move Group",
   mailboxTip: "Microsoft mailboxes use four-part OAuth credentials. Apple iCloud mailboxes use the selected channel API for mail and OTP queries.", mailboxPoolName: "Self-managed Mailbox Pool", mailboxPoolGlobalSwitch: "Use Self-managed Mailbox Pool", mailboxPoolSwitchTip: "When disabled, SunnyRegister will not allocate mailboxes from the self-managed pool.", mailboxOverviewTotal: "Total Mailboxes", mailboxOverviewPending: "Pending", mailboxOverviewRegistered: "Registered", mailboxOverviewPhoneBound: "Phone Bound", mailboxOverviewReversed: "Reverse Proxied", mailboxOverviewBanned: "Banned", mailboxOverviewNeeds2FA: "Needs 2FA", mailboxOverviewFailed: "Failed",
   phoneTip: "Format: +phone----SMS URL. Cooldown 5 hours after success, max 3 successes.",
-  phonePool: "Self-managed Phone Pool", phonePoolGlobalSwitch: "Use Self-managed Phone Pool", importPhones: "Import Phones", phonePoolSwitchTip: "When disabled, SunnyRegister will not allocate numbers from this phone pool. You can switch to external SMS providers later.", phonePoolOn: "Usable for SMS", phonePoolOff: "Not used for SMS", phoneImportHelp: "One long-lived SMS record per line. The first character must be +, and the phone number and SMS URL must be separated with exactly four hyphens: ----.", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "Invalid phone import format", phoneSearch: "Search phone number...", phoneNumber: "Phone Number", smsLink: "SMS Link", usedCount: "Used Count", countFilter: "Count", allCount: "All Counts", lastUsedAt: "Last Used", phoneEdit: "Edit Phone", phoneStatusEnabled: "Enabled", phoneStatusDisabled: "Disabled", phoneConfirmDelete: "Delete this phone number? This cannot be undone.", phoneConfirmBatchDelete: "Delete selected phone numbers? This cannot be undone.", smsbowerProvider: "SMSBower Provider", smsbowerDesc: "When the self-managed phone pool is unavailable or empty, SunnyRegister can use SMSBower API to rent a one-time number automatically.", smsbowerSwitch: "Enable SMSBower", smsbowerReady: "SMSBower configured", smsbowerApiKey: "API Key", smsbowerCountry: "Default Country", smsbowerService: "Default Service", smsbowerMaxPrice: "Max Price", smsbowerBaseURL: "API URL", smsbowerCheck: "Check Balance", smsbowerBalance: "Balance: {balance}", smsbowerSaved: "SMSBower config saved", smspoolProvider: "SMSPool Provider", smspoolDesc: "SMSPool is a temporary-number provider used when the self-managed phone pool and SMSBower are unavailable.", smspoolSwitch: "Enable SMSPool", smspoolReady: "SMSPool configured", smspoolApiKey: "API Key", smspoolCountry: "Default Country", smspoolService: "Default Service", refreshProviderOptions: "Fetch options", smspoolMaxPrice: "Max Price", smspoolBaseURL: "API URL", smspoolCheck: "Check Balance", smspoolBalance: "Balance: {balance}", smspoolSaved: "SMSPool config saved",
+  phonePool: "Self-managed Phone Pool", phonePoolGlobalSwitch: "Use Self-managed Phone Pool", importPhones: "Import Phones", phonePoolSwitchTip: "When disabled, SunnyRegister will not allocate numbers from this phone pool. You can switch to external SMS providers later.", phonePoolOn: "Usable for SMS", phonePoolOff: "Not used for SMS", phoneImportHelp: "One long-lived SMS record per line. The first character must be +, and the phone number and SMS URL must be separated with exactly four hyphens: ----.", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "Invalid phone import format", phoneSearch: "Search phone number...", phoneNumber: "Phone Number", smsLink: "SMS Link", usedCount: "Used Count", countFilter: "Count", allCount: "All Counts", lastUsedAt: "Last Used", phoneEdit: "Edit Phone", phoneStatusEnabled: "Enabled", phoneStatusDisabled: "Disabled", phoneConfirmDelete: "Delete this phone number? This cannot be undone.", phoneConfirmBatchDelete: "Delete selected phone numbers? This cannot be undone.", smsbowerProvider: "SMSBower Provider", smsbowerDesc: "When the self-managed phone pool is unavailable or empty, SunnyRegister can use SMSBower API to rent a one-time number automatically.", smsbowerSwitch: "Enable SMSBower", smsbowerReady: "SMSBower configured", smsbowerApiKey: "API Key", smsbowerCountry: "Default Country", smsbowerService: "Default Service", smsbowerMaxPrice: "Max Price", smsbowerBaseURL: "API URL", smsbowerCheck: "Check Balance", smsbowerBalance: "Balance: {balance}", smsbowerSaved: "SMSBower config saved", smspoolProvider: "SMSPool Provider", smspoolDesc: "SMSPool is a temporary-number provider used when the self-managed phone pool and SMSBower are unavailable.", smspoolSwitch: "Enable SMSPool", smspoolReady: "SMSPool configured", smspoolApiKey: "API Key", smspoolCountry: "Default Country", smspoolService: "Default Service", refreshProviderOptions: "Fetch options", providerOptionSearch: "Search by ID, code, or name...", providerOptionNoResults: "No matching options", smspoolMaxPrice: "Max Price", smspoolBaseURL: "API URL", smspoolCheck: "Check Balance", smspoolBalance: "Balance: {balance}", smspoolSaved: "SMSPool config saved",
   proxyTip: "Manage the outbound proxy pool for register/login requests. Batch check only tests proxy server connectivity and does not access chatgpt.com.",
   proxyPool: "Proxy Pool", proxyEnabled: "Enabled", proxyAvailable: "Invalid", proxySearch: "Search proxy address...", proxyCountry: "Country", proxyAllCountry: "All Countries", proxyAddress: "Proxy Address", proxyBatchCheck: "Batch Check", proxyBatchDelete: "Batch Delete", proxyBatchEdit: "Batch Edit", proxyAdd: "Add Proxy", proxyEdit: "Edit Proxy", proxyCheckDone: "Proxy check completed", proxyNoData: "No Proxies", proxyNoDataDesc: "Add proxy addresses first, then batch-check enabled proxies.", proxyStatusEnabled: "Enabled", proxyStatusDisabled: "Disabled", proxyStatusInvalid: "Invalid", proxyLastChecked: "Last Checked", proxyLatency: "Latency", proxyCountryPlaceholder: "e.g. US / HK / JP / Brazil", proxyCountryKeep: "Leave blank to keep each proxy's current country", proxyAddressPlaceholder: "One proxy per line, e.g. http://user:pass@host:port or socks5://host:port", proxyConfirmDelete: "Delete this proxy? This cannot be undone.", proxyConfirmBatchDelete: "Delete selected proxies? This cannot be undone.", proxyTrafficSwitch: "Register Traffic Proxy", proxyTrafficOn: "Proxy On", proxyTrafficOff: "Proxy Off", proxyTrafficOnHint: "Register/login requests use proxy pool", proxyTrafficOffHint: "Use server/system network", proxySwitchSaved: "Proxy outlet setting updated",
   selected: "Selected", selectedItems: "{count} selected", clearSelection: "Clear Selection", globalLogs: "Global Logs", selectedLogs: "Current Mailbox Logs", registrationTaskProgress: "Registration Progress", accountRegistrationProgress: "Account Progress", clearLogs: "Clear", latest: "Latest Mail", done: "Done", failed: "Failed", file: "Choose File", status: "Status", prev: "Prev", next: "Next", pageSize: "Per page", pageInfo: "Page {page} / {pages}", pageRange: "Showing {from} to {to} of {total} results", noLogs: "No logs", noRegistrationTask: "No registration task yet", noAccountProgress: "No mailbox account is being processed", taskTotal: "Task Total", taskCompleted: "Completed", completedAccounts: "Completed Accounts", pendingAccounts: "Pending Accounts", abnormalAccounts: "Abnormal Accounts", currentStep: "Current Step", total: "Total", yes: "Yes", no: "No", step: "STEP",
@@ -640,15 +640,28 @@ function Tip({ text }: { text: string }) { return <span title={text} className="
 function Label({ children, tip }: { children: React.ReactNode; tip?: string }) { return <div className="form-label mb-2"><span className="inline-flex items-center gap-1.5">{children}{tip && <Tip text={tip} />}</span></div>; }
 function Input(props: React.InputHTMLAttributes<HTMLInputElement>) { return <input {...props} className={cn("control-surface h-11", props.className)} />; }
 function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) { return <textarea {...props} className={cn("control-surface min-h-28", props.className)} />; }
-function SelectBox({ value, onChange, options, className }: { value: string | number; onChange: (v: string | number) => void; options: { value: string | number; label: React.ReactNode }[]; className?: string }) {
+type SelectBoxOption = { value: string | number; label: React.ReactNode; searchText?: string };
+
+function SelectBox({ value, onChange, options, className, searchable = false, searchPlaceholder = "Search...", noResultsLabel = "No results" }: { value: string | number; onChange: (v: string | number) => void; options: SelectBoxOption[]; className?: string; searchable?: boolean; searchPlaceholder?: string; noResultsLabel?: string }) {
   const [open, setOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
   const [menuRect, setMenuRect] = useState<{ left: number; top: number; width: number; maxHeight: number; zIndex: number } | null>(null);
   const active = options.find((x) => String(x.value) === String(value)) || options[0];
+  const normalizedQuery = useDeferredValue(searchQuery).trim().toLocaleLowerCase();
+  const filteredOptions = normalizedQuery
+    ? options.filter((opt) => {
+        const primitiveLabel = typeof opt.label === "string" || typeof opt.label === "number" ? String(opt.label) : "";
+        return String(opt.searchText || `${opt.value} ${primitiveLabel}`).toLocaleLowerCase().includes(normalizedQuery);
+      })
+    : options;
   const updateRect = () => {
     const rect = wrapRef.current?.getBoundingClientRect();
     if (rect) {
-      const desiredHeight = Math.min(320, options.length * 44 + 12);
+      const desiredHeight = Math.min(320, options.length * 44 + (searchable ? 62 : 12));
       const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
       const spaceBelow = viewportHeight - rect.bottom - 14;
       const spaceAbove = rect.top - 14;
@@ -673,12 +686,42 @@ function SelectBox({ value, onChange, options, className }: { value: string | nu
       window.removeEventListener("scroll", onMove, true);
       window.removeEventListener("resize", onMove);
     };
+  }, [open, searchable, options.length]);
+  useEffect(() => {
+    if (!open || !searchable) return;
+    const frame = window.requestAnimationFrame(() => searchRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, searchable]);
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!wrapRef.current?.contains(target) && !menuRef.current?.contains(target)) {
+        setOpen(false);
+        setSearchQuery("");
+      }
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
   }, [open]);
-  const menu = open && menuRect ? createPortal(<div className={cn("sr-custom-select-menu sr-custom-select-menu-portal", className?.includes("sr-page-size-select") && "sr-page-size-select-menu", className?.includes("sr-mailbox-group-select") && "sr-mailbox-group-select-menu")} style={{ position: "fixed", left: menuRect.left, top: menuRect.top, width: menuRect.width, maxHeight: menuRect.maxHeight, overflowY: "auto", right: "auto", zIndex: menuRect.zIndex }}>
-      {options.map((opt) => <button type="button" key={String(opt.value)} className={cn("sr-custom-select-option", String(opt.value) === String(value) && "active")} onMouseDown={(e)=>e.preventDefault()} onClick={() => { onChange(opt.value); setOpen(false); }}>{opt.label}</button>)}
+  const closeMenu = () => {
+    setOpen(false);
+    setSearchQuery("");
+  };
+  const menu = open && menuRect ? createPortal(<div ref={menuRef} role="listbox" className={cn("sr-custom-select-menu sr-custom-select-menu-portal", searchable && "sr-custom-select-menu-searchable", className?.includes("sr-page-size-select") && "sr-page-size-select-menu", className?.includes("sr-mailbox-group-select") && "sr-mailbox-group-select-menu")} style={{ position: "fixed", left: menuRect.left, top: menuRect.top, width: menuRect.width, maxHeight: menuRect.maxHeight, overflowY: "auto", right: "auto", zIndex: menuRect.zIndex }}>
+      {searchable && <div className="sr-custom-select-search" onMouseDown={(event)=>event.stopPropagation()}>
+        <Search className="h-4 w-4" aria-hidden="true"/>
+        <input ref={searchRef} value={searchQuery} onChange={(event)=>setSearchQuery(event.target.value)} placeholder={searchPlaceholder} aria-label={searchPlaceholder} onKeyDown={(event)=>{
+          if (event.key === "Escape") { closeMenu(); triggerRef.current?.focus(); }
+          if (event.key === "ArrowDown") { event.preventDefault(); menuRef.current?.querySelector<HTMLButtonElement>(".sr-custom-select-option")?.focus(); }
+          if (event.key === "Enter" && filteredOptions.length === 1) { event.preventDefault(); onChange(filteredOptions[0].value); closeMenu(); triggerRef.current?.focus(); }
+        }}/>
+      </div>}
+      {filteredOptions.map((opt) => <button type="button" role="option" aria-selected={String(opt.value) === String(value)} key={String(opt.value)} className={cn("sr-custom-select-option", String(opt.value) === String(value) && "active")} onMouseDown={(e)=>e.preventDefault()} onClick={() => { onChange(opt.value); closeMenu(); }}>{opt.label}</button>)}
+      {searchable && filteredOptions.length === 0 && <div className="sr-custom-select-empty" role="status">{noResultsLabel}</div>}
     </div>, document.body) : null;
-  return <div ref={wrapRef} className={cn("sr-custom-select", className)} tabIndex={0} onBlur={() => window.setTimeout(() => setOpen(false), 120)}>
-    <button type="button" className={cn("sr-custom-select-trigger", open && "open")} onClick={() => { updateRect(); setOpen((v) => !v); }}>
+  return <div ref={wrapRef} className={cn("sr-custom-select", className)}>
+    <button ref={triggerRef} type="button" aria-haspopup="listbox" aria-expanded={open} className={cn("sr-custom-select-trigger", open && "open")} onClick={() => { updateRect(); setSearchQuery(""); setOpen((v) => !v); }} onKeyDown={(event)=>{ if (event.key === "Escape" && open) closeMenu(); }}>
       <span>{active?.label}</span><ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")} />
     </button>
     {menu}
@@ -1785,11 +1828,15 @@ function providerOptionLabel(opt: AnyObj) {
   return label && label !== value ? `${value} · ${label}` : value;
 }
 
-function ProviderOptionSelect({ value, onChange, options, placeholder, className }: { value: string; onChange: (v: string) => void; options: AnyObj[]; placeholder: string; className?: string }) {
-  const normalized = options.map((opt)=>({ value: String(opt.value ?? ""), label: providerOptionLabel(opt) })).filter((x)=>x.value);
+function ProviderOptionSelect({ value, onChange, options, placeholder, searchPlaceholder, noResultsLabel, className }: { value: string; onChange: (v: string) => void; options: AnyObj[]; placeholder: string; searchPlaceholder: string; noResultsLabel: string; className?: string }) {
+  const normalized = options.map((opt)=>{
+    const optionValue = String(opt.value ?? "");
+    const optionLabel = providerOptionLabel(opt);
+    return { value: optionValue, label: optionLabel, searchText: `${optionValue} ${String(opt.label ?? "")} ${optionLabel}` };
+  }).filter((x)=>x.value);
   const hasValue = normalized.some((x)=>x.value === String(value));
-  const merged = hasValue || !value ? normalized : [{ value, label: value }, ...normalized];
-  return <SelectBox className={className} value={value || ""} onChange={(v)=>onChange(String(v))} options={merged.length ? merged : [{ value: value || "", label: value || placeholder }]} />;
+  const merged = hasValue || !value ? normalized : [{ value, label: value, searchText: value }, ...normalized];
+  return <SelectBox searchable searchPlaceholder={searchPlaceholder} noResultsLabel={noResultsLabel} className={className} value={value || ""} onChange={(v)=>onChange(String(v))} options={merged.length ? merged : [{ value: value || "", label: value || placeholder, searchText: value || placeholder }]} />;
 }
 
 function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", text: string) => void }) {
@@ -1988,8 +2035,8 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
       {smsbowerEnabled && <div className="sr-sms-provider-form mt-4 space-y-3">
         <div className="sr-sms-provider-top-row">
           <div className="sr-sms-provider-api"><Label>{t.smsbowerApiKey}</Label><Input type="password" value={phoneCfg.smsbower_api_key||""} onChange={(e)=>setPhoneCfg({...phoneCfg,smsbower_api_key:e.target.value})} placeholder="xxxxxxxxxxxxxxxx"/></div>
-          <div><Label>{t.smsbowerCountry}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.smsbower_default_country||"187")} onChange={(v)=>setPhoneCfg({...phoneCfg,smsbower_default_country:v})} options={optionsFor("smsbower","countries")} placeholder="187"/></div>
-          <div><Label>{t.smsbowerService}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.smsbower_default_service||"dr")} onChange={(v)=>setPhoneCfg({...phoneCfg,smsbower_default_service:v})} options={optionsFor("smsbower","services",String(phoneCfg.smsbower_default_country||""))} placeholder="dr"/></div>
+          <div><Label>{t.smsbowerCountry}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.smsbower_default_country||"187")} onChange={(v)=>setPhoneCfg({...phoneCfg,smsbower_default_country:v})} options={optionsFor("smsbower","countries")} placeholder="187" searchPlaceholder={t.providerOptionSearch} noResultsLabel={t.providerOptionNoResults}/></div>
+          <div><Label>{t.smsbowerService}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.smsbower_default_service||"dr")} onChange={(v)=>setPhoneCfg({...phoneCfg,smsbower_default_service:v})} options={optionsFor("smsbower","services",String(phoneCfg.smsbower_default_country||""))} placeholder="dr" searchPlaceholder={t.providerOptionSearch} noResultsLabel={t.providerOptionNoResults}/></div>
           <div className="sr-sms-provider-price"><Label>{t.smsbowerMaxPrice}</Label><Input type="number" value={phoneCfg.smsbower_max_price ?? -1} onChange={(e)=>setPhoneCfg({...phoneCfg,smsbower_max_price:Number(e.target.value)})} placeholder="-1"/></div>
         </div>
         <div className="sr-sms-provider-bottom-row">
@@ -2016,8 +2063,8 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
       {smspoolEnabled && <div className="sr-sms-provider-form mt-4 space-y-3">
         <div className="sr-sms-provider-top-row">
           <div className="sr-sms-provider-api"><Label>{t.smspoolApiKey}</Label><Input type="password" value={phoneCfg.smspool_api_key||""} onChange={(e)=>setPhoneCfg({...phoneCfg,smspool_api_key:e.target.value})} placeholder="xxxxxxxxxxxxxxxx"/></div>
-          <div><Label>{t.smspoolCountry}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.smspool_default_country||"1")} onChange={(v)=>setPhoneCfg({...phoneCfg,smspool_default_country:v})} options={optionsFor("smspool","countries")} placeholder="1"/></div>
-          <div><Label>{t.smspoolService}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.smspool_default_service||"671")} onChange={(v)=>setPhoneCfg({...phoneCfg,smspool_default_service:v})} options={optionsFor("smspool","services",String(phoneCfg.smspool_default_country||""))} placeholder="OpenAI / ChatGPT"/></div>
+          <div><Label>{t.smspoolCountry}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.smspool_default_country||"1")} onChange={(v)=>setPhoneCfg({...phoneCfg,smspool_default_country:v})} options={optionsFor("smspool","countries")} placeholder="1" searchPlaceholder={t.providerOptionSearch} noResultsLabel={t.providerOptionNoResults}/></div>
+          <div><Label>{t.smspoolService}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.smspool_default_service||"671")} onChange={(v)=>setPhoneCfg({...phoneCfg,smspool_default_service:v})} options={optionsFor("smspool","services",String(phoneCfg.smspool_default_country||""))} placeholder="OpenAI / ChatGPT" searchPlaceholder={t.providerOptionSearch} noResultsLabel={t.providerOptionNoResults}/></div>
           <div className="sr-sms-provider-price"><Label>{t.smspoolMaxPrice}</Label><Input type="number" value={phoneCfg.smspool_max_price ?? -1} onChange={(e)=>setPhoneCfg({...phoneCfg,smspool_max_price:Number(e.target.value)})} placeholder="-1"/></div>
         </div>
         <div className="sr-sms-provider-bottom-row">
