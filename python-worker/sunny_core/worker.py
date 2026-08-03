@@ -20,7 +20,7 @@ from .phone_pool import wait_sms_code
 from .protocol_auth import ProtocolChallengeRequired, login_or_register_protocol
 from .proxy import build_proxy, proxy_target_tls_check, redact_proxy_url
 from .smsbower import SMSBowerClient
-from .smspool import SMSPoolClient
+from .smspool import SMSPOOL_CODE_TIMEOUT_SECONDS, SMSPoolClient
 
 REGISTER_ONLY = "register_only"
 CODEX_PHONE_BIND = "codex_phone_bind"
@@ -411,6 +411,9 @@ def _smsbower_provider(db: SunnyDB, email: str, proxy_url: str = ""):
 
 def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
     active: dict[str, Any] = {}
+    reuse_checked = False
+    new_number_attempts = 0
+    max_new_number_attempts = 3
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
     phone_cfg = db.get_config("phone")
     country_value = str(phone_cfg.get("smspool_default_country") or "1").strip()
@@ -433,45 +436,58 @@ def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
     client = SMSPoolClient(phone_cfg, proxies=proxies)
 
     def provider(action: str, _email: str, payload: Any = None):
-        nonlocal active
+        nonlocal active, reuse_checked, new_number_attempts
         if action == "next":
             db.event(
                 f"[{email}] [接码] 准备向 SMSPool 申请手机号：country={client.country}，service={client.service}，pool={client.pool or '-'}，max_price={client.max_price}",
                 detail={"email": email, "scope": "selected", "sms_provider": "smspool", "country": client.country, "service": client.service, "pool": client.pool, "max_price": client.max_price},
             )
-            reusable = db.reserve_sms_provider_number("smspool", client.country, client.service)
-            preferred_number = str((reusable or {}).get("phone_number") or "")
-            if preferred_number:
-                db.event(
-                    f"[{email}] [接码] SMSPool 尝试复用冷却已结束的手机号 {preferred_number}",
-                    detail={"email": email, "scope": "selected", "sms_provider": "smspool", "reuse": True},
-                )
-            try:
-                activation = client.get_number(preferred_number=preferred_number)
-            except Exception as exc:
-                if preferred_number:
-                    db.mark_sms_provider_number_error("smspool", preferred_number, str(exc))
+            activation = None
+            reused = False
+            if not reuse_checked:
+                reuse_checked = True
+                try:
+                    reusable = client.latest_reusable_order()
+                except Exception as exc:
+                    reusable = None
                     db.event(
-                        f"[{email}] [接码] SMSPool 复用手机号失败，将重新购买新号码：{exc}",
+                        f"[{email}] [接码] SMSPool orders_new 查询失败，本次跳过号码复用：{exc}",
                         "warning",
                         detail={"email": email, "scope": "selected", "sms_provider": "smspool", "reuse": True},
                     )
-                    try:
-                        activation = client.get_number()
-                    except Exception as fallback_exc:
-                        db.event(
-                            f"[{email}] [接码] SMSPool 重新购买手机号失败：{fallback_exc}",
-                            "error",
-                            detail={"email": email, "scope": "selected", "sms_provider": "smspool"},
-                        )
-                        raise
-                else:
+                if reusable:
                     db.event(
-                        f"[{email}] [接码] SMSPool 申请手机号失败：{exc}",
-                        "error",
-                        detail={"email": email, "scope": "selected", "sms_provider": "smspool"},
+                        f"[{email}] [接码] SMSPool 尝试复用 orders_new 中最新订单（id={reusable.id}）的手机号 {reusable.number}",
+                        detail={"email": email, "scope": "selected", "sms_provider": "smspool", "reuse": True, "orders_new_id": reusable.id},
                     )
-                    raise
+                    try:
+                        activation = client.get_number(preferred_number=reusable.number)
+                        reused = True
+                    except Exception as exc:
+                        db.mark_sms_provider_number_error("smspool", reusable.number, str(exc))
+                        db.event(
+                            f"[{email}] [接码] SMSPool 最新手机号复用失败，将申请新号码：{exc}",
+                            "warning",
+                            detail={"email": email, "scope": "selected", "sms_provider": "smspool", "reuse": True, "orders_new_id": reusable.id},
+                        )
+
+            while activation is None and new_number_attempts < max_new_number_attempts:
+                new_number_attempts += 1
+                try:
+                    activation = client.get_number()
+                except Exception as exc:
+                    db.event(
+                        f"[{email}] [接码] SMSPool 第 {new_number_attempts}/{max_new_number_attempts} 次申请新号码失败：{exc}",
+                        "warning",
+                        detail={"email": email, "scope": "selected", "sms_provider": "smspool", "new_number_attempt": new_number_attempts},
+                    )
+            if activation is None:
+                db.event(
+                    f"[{email}] [接码] SMSPool 已用完 {max_new_number_attempts} 次新号码机会，停止使用该供应商",
+                    "warning",
+                    detail={"email": email, "scope": "selected", "sms_provider": "smspool", "exhausted": True},
+                )
+                return None
             active = {
                 "provider": "smspool",
                 "order_id": activation.order_id,
@@ -482,6 +498,8 @@ def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
                 "country_iso": str(country_extra.get("short_name") or ""),
                 "country_name": str(country_extra.get("name") or (country_option or {}).get("label") or ""),
                 "country_code": str(country_extra.get("cc") or ""),
+                "reused": reused,
+                "new_number_attempt": 0 if reused else new_number_attempts,
             }
             db.record_sms_provider_number(
                 "smspool",
@@ -493,8 +511,9 @@ def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
                 token=activation.token,
             )
             db.event(
-                f"[{email}] [接码] 已从 SMSPool 获取手机号 {activation.number}，订单 ID {activation.order_id}",
-                detail={"email": email, "scope": "selected", "sms_provider": "smspool"},
+                f"[{email}] [接码] 已从 SMSPool 获取手机号 {activation.number}，订单 ID {activation.order_id}"
+                + ("（复用最新订单号码）" if reused else f"（新号码 {new_number_attempts}/{max_new_number_attempts}）"),
+                detail={"email": email, "scope": "selected", "sms_provider": "smspool", "reuse": reused, "new_number_attempt": 0 if reused else new_number_attempts},
             )
             return active
         if action == "code":
@@ -502,7 +521,7 @@ def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
             order_id = str(phone.get("order_id") or phone.get("activation_id") or "")
             return client.wait_code(
                 order_id,
-                timeout=180,
+                timeout=SMSPOOL_CODE_TIMEOUT_SECONDS,
                 log=lambda m: db.event(f"[{email}] [接码] {m}", detail={"email": email, "scope": "selected", "sms_provider": "smspool"}),
             )
         if action == "success":
@@ -513,12 +532,33 @@ def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
         if action == "bad":
             phone = payload or active
             order_id = str(phone.get("order_id") or phone.get("activation_id") or "")
+            cancel_error = ""
             try:
                 client.cancel(order_id)
-            finally:
-                db.mark_sms_provider_number_error("smspool", str(phone.get("number") or ""), str(phone.get("error") or "SMSPool order failed"))
-                db.event(f"[{email}] [接码] SMSPool 接码订单已取消", "warning", detail={"email": email, "scope": "selected", "sms_provider": "smspool"})
-            return True
+            except Exception as exc:
+                cancel_error = str(exc)
+            db.mark_sms_provider_number_error("smspool", str(phone.get("number") or ""), str(phone.get("error") or "SMSPool order failed"))
+            active = {}
+            retry_same_provider = new_number_attempts < max_new_number_attempts
+            if cancel_error:
+                db.event(
+                    f"[{email}] [接码] SMSPool 订单取消失败，但仍继续换号：{cancel_error}",
+                    "warning",
+                    detail={"email": email, "scope": "selected", "sms_provider": "smspool", "order_id": order_id},
+                )
+            else:
+                db.event(
+                    f"[{email}] [接码] SMSPool 接码订单已取消，将更换手机号",
+                    "warning",
+                    detail={"email": email, "scope": "selected", "sms_provider": "smspool", "order_id": order_id},
+                )
+            if not retry_same_provider:
+                db.event(
+                    f"[{email}] [接码] SMSPool 三次新号码均未完成接码，放弃该供应商",
+                    "warning",
+                    detail={"email": email, "scope": "selected", "sms_provider": "smspool", "exhausted": True},
+                )
+            return {"retry_same_provider": retry_same_provider}
         return None
 
     return provider
@@ -549,9 +589,22 @@ def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = ""):
     def provider(action: str, _email: str, payload: Any = None):
         nonlocal active_provider, active_name, active_phone
         if action == "next":
-            active_provider = None
-            active_name = ""
-            active_phone = {}
+            if active_provider:
+                try:
+                    phone = active_provider("next", _email, payload)
+                    if phone:
+                        active_phone = dict(phone)
+                        active_phone["provider_name"] = active_name
+                        return active_phone
+                except Exception as exc:
+                    db.event(
+                        f"[{email}] [接码] {active_name} 无法继续获取手机号，切换下一个接码资源：{exc}",
+                        "warning",
+                        detail={"email": email, "scope": "selected", "sms_provider": active_name, "error": str(exc)},
+                    )
+                active_provider = None
+                active_name = ""
+                active_phone = {}
             while remaining:
                 name, factory = remaining.pop(0)
                 db.event(
@@ -582,18 +635,23 @@ def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = ""):
             return None
         if not active_provider:
             return None
+        result = None
         try:
-            return active_provider(action, _email, payload or active_phone)
+            result = active_provider(action, _email, payload or active_phone)
+            return result
         finally:
             if action == "bad":
+                retry_same_provider = isinstance(result, dict) and result.get("retry_same_provider") is True
                 db.event(
-                    f"[{email}] [接码] {active_name} 本次号码失败，将切换到下一个接码资源",
+                    f"[{email}] [接码] {active_name} 本次号码失败，"
+                    + ("继续使用该供应商申请下一个号码" if retry_same_provider else "切换到下一个接码资源"),
                     "warning",
-                    detail={"email": email, "scope": "selected", "sms_provider": active_name},
+                    detail={"email": email, "scope": "selected", "sms_provider": active_name, "retry_same_provider": retry_same_provider},
                 )
-                active_provider = None
-                active_name = ""
                 active_phone = {}
+                if not retry_same_provider:
+                    active_provider = None
+                    active_name = ""
 
     return provider
 

@@ -9,6 +9,8 @@ import requests
 
 
 SMSPOOL_DEFAULT_BASE_URL = "https://api.smspool.net"
+SMSPOOL_CODE_TIMEOUT_SECONDS = 30
+SMSPOOL_POLL_INTERVAL_SECONDS = 3
 
 
 def _clean(value: Any, default: str = "") -> str:
@@ -38,12 +40,20 @@ class SMSPoolActivation:
     token: str = ""
 
 
+@dataclass(slots=True)
+class SMSPoolReusableOrder:
+    id: int
+    number: str
+    order_id: str = ""
+
+
 class SMSPoolClient:
     """SMSPool client rewritten for SunnyRegister.
 
     API reference: https://api.smspool.net/resources/postman.json
     Core flow:
     - POST /request/balance
+    - POST /request/orders_new to select the most recent reusable number
     - POST /purchase/sms with country/service/pool/max_price/phonenumber
     - POST /sms/check
     - POST /sms/cancel
@@ -89,6 +99,40 @@ class SMSPoolClient:
         body = self._post("/request/balance", {})
         return str(body.get("balance") or "").strip()
 
+    def latest_reusable_order(self) -> SMSPoolReusableOrder | None:
+        body = self._post("/request/orders_new", {}, timeout=20)
+        items: Any = body.get("orders_new")
+        if not isinstance(items, list):
+            items = body.get("items")
+        if not isinstance(items, list):
+            data = body.get("data")
+            items = data.get("orders_new") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            return None
+
+        candidates: list[SMSPoolReusableOrder] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                item_id = int(str(item.get("id") or item.get("ID") or "").strip())
+            except (TypeError, ValueError):
+                continue
+            phone = _join_phone(
+                str(item.get("cc") or item.get("country_code") or ""),
+                str(item.get("phonenumber") or item.get("phone_number") or item.get("number") or item.get("phone") or ""),
+            )
+            if not phone:
+                continue
+            candidates.append(
+                SMSPoolReusableOrder(
+                    id=item_id,
+                    number=phone,
+                    order_id=str(item.get("order_id") or item.get("orderid") or item.get("order_code") or "").strip(),
+                )
+            )
+        return max(candidates, key=lambda item: item.id) if candidates else None
+
     def get_number(self, preferred_number: str = "") -> SMSPoolActivation:
         data: dict[str, Any] = {
             "country": self.country,
@@ -116,11 +160,29 @@ class SMSPoolClient:
     def check_sms(self, order_id: str) -> dict[str, Any]:
         return self._post("/sms/check", {"orderid": order_id}, timeout=20)
 
-    def cancel(self, order_id: str) -> None:
-        if order_id:
-            self._post("/sms/cancel", {"orderid": order_id}, timeout=20)
+    def cancel(self, order_id: str, attempts: int = 3, retry_delay: float = 2) -> None:
+        if not order_id:
+            return
+        last_error: Exception | None = None
+        for attempt in range(1, max(1, attempts) + 1):
+            try:
+                self._post("/sms/cancel", {"orderid": order_id}, timeout=20)
+                return
+            except Exception as exc:
+                last_error = exc
+                locked = "cannot be cancelled yet" in str(exc).lower()
+                if not locked or attempt >= attempts:
+                    raise
+                time.sleep(max(0, retry_delay))
+        if last_error:
+            raise last_error
 
-    def wait_code(self, order_id: str, timeout: int = 180, log: Callable[[str], None] | None = None) -> str:
+    def wait_code(
+        self,
+        order_id: str,
+        timeout: int = SMSPOOL_CODE_TIMEOUT_SECONDS,
+        log: Callable[[str], None] | None = None,
+    ) -> str:
         deadline = time.time() + timeout
         last_status = ""
         while time.time() < deadline:
@@ -139,7 +201,7 @@ class SMSPoolClient:
             if status == 6:
                 raise RuntimeError(str(body.get("message") or "SMSPool order cancelled"))
             if log:
-                left = body.get("time_left")
-                log("SMSPool waiting for code" + (f", time left {left}s" if left else ""))
-            time.sleep(5)
+                local_left = max(0, int(deadline - time.time()))
+                log(f"SMSPool waiting for code, local timeout {local_left}s")
+            time.sleep(min(SMSPOOL_POLL_INTERVAL_SECONDS, max(0, deadline - time.time())))
         raise TimeoutError(f"SMSPool code timeout: {last_status or 'no status'}")
