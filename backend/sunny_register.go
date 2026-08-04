@@ -734,6 +734,10 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			s.sunnyLatestMail(w, r, &m)
 			return
 		}
+		if len(parts) == 2 && parts[1] == "url-api-preview" && r.Method == http.MethodGet {
+			s.sunnyURLAPIPreview(w, r, &m)
+			return
+		}
 		if len(parts) == 2 && parts[1] == "field" && r.Method == http.MethodGet {
 			field := strings.TrimSpace(r.URL.Query().Get("name"))
 			value := ""
@@ -1069,12 +1073,35 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 		})
 		return
 	}
+	if normalizeSunnyMailboxType(m.MailboxType) == "apple" && normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel) == "url_api" {
+		decorateURLAPIPreviewPayload(payload, m.AccessKey, m.ID)
+	}
 	s.db.Model(m).UpdateColumns(map[string]any{
 		"latest_mail_json": dumpJSON(payload),
 		"last_mail_at":     time.Now(),
 		"last_error":       "",
 	})
 	writeJSON(w, 200, payload)
+}
+
+func (s *Server) sunnyURLAPIPreview(w http.ResponseWriter, r *http.Request, m *SunnyMailbox) {
+	if normalizeSunnyMailboxType(m.MailboxType) != "apple" || normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel) != "url_api" {
+		http.Error(w, "This preview is only available for url_api iCloud mailboxes.", http.StatusUnprocessableEntity)
+		return
+	}
+	page, err := fetchURLAPIPreviewHTML(m.AccessKey, strings.TrimSpace(r.URL.Query().Get("target")), s.sunnyMailboxProxyURL(), m.ID)
+	if err != nil {
+		mailErr := classifyOutlookMailError(err)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(mailErr.HTTPStatus)
+		_, _ = fmt.Fprintf(w, "<!doctype html><html><body style='font-family:system-ui;padding:32px;color:#b91c1c'><h3>%s</h3><p>%s</p></body></html>", html.EscapeString(mailErr.UserMessage), html.EscapeString(mailErr.Detail))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data: http: https:; style-src 'unsafe-inline' http: https:; font-src data: http: https:; script-src 'unsafe-inline'; form-action 'none'; connect-src 'none'; frame-ancestors 'self'")
+	_, _ = io.WriteString(w, page)
 }
 
 // sunnyMailboxProxyURL returns the same enabled proxy used by registration tasks.

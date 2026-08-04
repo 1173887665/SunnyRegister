@@ -2,7 +2,7 @@ import { Fragment, useDeferredValue, useEffect, useLayoutEffect, useRef, useStat
 import type { Dispatch, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
-import { Activity, ChevronDown, CircleHelp, Download, Inbox, Loader2, Pencil, Plus, RefreshCw, Save, Search, Settings2, Trash2, Upload, X } from "lucide-react";
+import { Activity, ArrowLeft, ArrowRight, ChevronDown, CircleHelp, Download, Globe2, Inbox, Loader2, Pencil, Plus, RefreshCw, RotateCw, Save, Search, Settings2, Trash2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -564,7 +564,7 @@ const zh: AnyObj = new Proxy({
   selected: "已选", selectedItems: "已选 {count} 项", clearSelection: "清除选择", globalLogs: "全局日志", selectedLogs: "当前邮箱日志", registrationTaskProgress: "注册任务进度", accountRegistrationProgress: "账户注册进度", clearLogs: "清除", latest: "查询最近邮件", done: "操作完成", failed: "操作失败", file: "选择文件", status: "状态", prev: "上一页", next: "下一页", pageSize: "每页", pageInfo: "第 {page} / {pages} 页", pageRange: "显示 {from} 至 {to} 共 {total} 条结果", noLogs: "暂无日志", noRegistrationTask: "暂无注册任务", noAccountProgress: "暂无正在处理的邮箱账户", taskTotal: "任务总数", taskCompleted: "当前完成", completedAccounts: "已完成注册", pendingAccounts: "未完成注册", abnormalAccounts: "注册状态异常", currentStep: "当前步骤", total: "总计", yes: "是", no: "否", step: "步骤",
   progressSteps: { queued: "等待任务调度", initializing: "初始化邮箱任务", proxy_ready: "代理与出口准备完成", browser_started: "启动隔离浏览器", protocol_started: "建立纯协议注册会话", email_submitted: "提交注册邮箱", email_verified: "完成邮箱验证码验证", auth_completed: "完成注册或登录认证", registered: "保存 ChatGPT Session", phone_started: "分配手机号并开始接码", phone_code_received: "收到并提交手机验证码", phone_bound: "完成 Codex 接码绑定", reverse_importing: "正在导入反代平台", reverse_imported: "完成反代平台导入", agent_identity_importing: "正在创建 Agent Identity 并导入反代平台", agent_identity_imported: "完成 Agent Identity 反代导入", stage_incomplete: "目标阶段未完成", cancelled: "任务已由用户中断", failed: "注册流程异常" },
   logProxy: "代理", logMailbox: "邮箱", logPhone: "手机", logSession: "Session", logAuth: "认证", logSystem: "系统",
-  defaultGroup: "默认分组", allGroups: "全部分组", mailboxGroup: "所属分组", importMailboxes: "导入邮箱", manualImport: "手动导入", fileImport: "文件导入", dragFile: "拖拽邮箱文件到这里，或点击选择文件", importToGroup: "导入到分组", addGroup: "新建分组", editGroup: "编辑分组名", deleteGroup: "删除分组", enterGroup: "输入分组名后回车", groupCreated: "邮箱分组新建成功", groupRenamed: "邮箱分组名称修改成功", groupDeleted: "邮箱分组删除成功", groupNotEmpty: "该邮箱分组下存在邮箱账户，请移除后再删除分组", defaultGroupCannotDelete: "默认分组不能删除", groupNameConflict: "邮箱分组名称已存在", confirmDeleteGroup: "确认删除该邮箱分组？", mailboxCount: "邮箱数量", validationOk: "校验通过", validationFailed: "校验失败", mailboxList: "邮箱列表", enabled: "启用", updatedAt: "更新时间", actions: "操作", queryMailbox: "搜索邮箱...", allStatus: "全部状态", allPlanTypes: "全部套餐", edit: "编辑", delete: "删除", batchDelete: "批量删除", batchEdit: "批量编辑", confirmDeleteMailbox: "确认删除该邮箱记录？此操作不可撤销。", confirmBatchDeleteMailbox: "确认删除选中的邮箱记录？此操作不可撤销。", queryMail: "邮件查询", currentMailbox: "当前邮箱", getMail: "获取邮件", mailFetchCount: "查询数量", mailFetchCountSuffix: "封", mailList: "邮件列表", sender: "发件人", receiver: "收件人", time: "时间", subject: "主题", content: "邮件内容", emptyMail: "暂无邮件", mailboxName: "邮箱名", password: "密码", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "批量编辑邮箱", applyToSelected: "应用到选中的邮箱", mailboxType: "邮箱类型", microsoftMailbox: "微软邮箱", appleMailbox: "苹果邮箱", channelType: "渠道类型", xbovoChannel: "xbovo", xbovoChannelTip: "验证码查询入口：https://icloud.xbovo.online/code", urlAPIChannel: "url_api", urlAPIChannelTip: "通过邮箱专属取码 URL 查询最新邮件，单次响应最长约 30 秒", icloudAccessKey: "查询 Key", icloudQueryURL: "取码 URL",
+  defaultGroup: "默认分组", allGroups: "全部分组", mailboxGroup: "所属分组", importMailboxes: "导入邮箱", manualImport: "手动导入", fileImport: "文件导入", dragFile: "拖拽邮箱文件到这里，或点击选择文件", importToGroup: "导入到分组", addGroup: "新建分组", editGroup: "编辑分组名", deleteGroup: "删除分组", enterGroup: "输入分组名后回车", groupCreated: "邮箱分组新建成功", groupRenamed: "邮箱分组名称修改成功", groupDeleted: "邮箱分组删除成功", groupNotEmpty: "该邮箱分组下存在邮箱账户，请移除后再删除分组", defaultGroupCannotDelete: "默认分组不能删除", groupNameConflict: "邮箱分组名称已存在", confirmDeleteGroup: "确认删除该邮箱分组？", mailboxCount: "邮箱数量", validationOk: "校验通过", validationFailed: "校验失败", mailboxList: "邮箱列表", enabled: "启用", updatedAt: "更新时间", actions: "操作", queryMailbox: "搜索邮箱...", allStatus: "全部状态", allPlanTypes: "全部套餐", edit: "编辑", delete: "删除", batchDelete: "批量删除", batchEdit: "批量编辑", confirmDeleteMailbox: "确认删除该邮箱记录？此操作不可撤销。", confirmBatchDeleteMailbox: "确认删除选中的邮箱记录？此操作不可撤销。", queryMail: "邮件查询", currentMailbox: "当前邮箱", getMail: "获取邮件", mailFetchCount: "查询数量", mailFetchCountSuffix: "封", mailList: "邮件列表", sender: "发件人", receiver: "收件人", time: "时间", subject: "主题", content: "邮件内容", emptyMail: "暂无邮件", mailboxName: "邮箱名", password: "密码", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "批量编辑邮箱", applyToSelected: "应用到选中的邮箱", mailboxType: "邮箱类型", microsoftMailbox: "微软邮箱", appleMailbox: "苹果邮箱", channelType: "渠道类型", xbovoChannel: "xbovo", xbovoChannelTip: "验证码查询入口：https://icloud.xbovo.online/code", urlAPIChannel: "url_api", urlAPIChannelTip: "通过邮箱专属取码 URL 查询最新邮件，单次响应最长约 30 秒", icloudAccessKey: "查询 Key", icloudQueryURL: "取码 URL", urlAPIBrowser: "URL API 邮件浏览器", browserBack: "后退", browserForward: "前进", browserReload: "刷新页面", browserLoading: "正在加载邮件页面", browserGetOnly: "当前预览仅支持网页链接和 GET 表单跳转",
   autoRegister: "自动注册", interruptTask: "停止", interruptingTask: "停止中...", interruptTaskTip: "停止整批注册任务，包括提交、排队、Worker 启动和邮箱执行阶段。", interruptTaskRequested: "已请求停止整批注册任务，正在关闭任务进程、浏览器与邮箱读取资源", interruptTaskFailed: "停止任务失败", registerTaskRunning: "当前注册任务正在执行，请等待任务结束或先停止任务", manualNew: "手动新增", searchAccount: "搜索账号邮箱...", refreshQuota: "刷新额度", refreshList: "刷新列表", refreshDone: "列表已刷新", loadingData: "正在更新数据...", refreshStatus: "刷新账号状态", statusChangedAt: "状态变更时间", planType: "套餐类型", email: "邮箱", trialLink: "试用链接", registeredAt: "注册时间", operation: "操作", noData: "暂无数据", noDataDesc: "当前平台没有找到任何账号记录。请先到邮箱配置中导入邮箱，然后选择邮箱进行自动注册。", chooseMailbox: "请选择邮箱", createTaskLog: "创建 ChatGPT 注册任务，数量", taskSubmitted: "注册任务已提交，正在开始执行", taskCreated: "自动注册任务已创建", taskDone: "任务完成", taskFailed: "任务失败", taskPollRecovered: "检测到上次注册任务仍在进行，已恢复日志轮询", taskPollLost: "任务状态轮询暂时失败，将继续等待任务状态：{error}", taskPollTimeout: "任务状态轮询时间较长，仍将继续等待；可使用停止按钮中断任务", importDone: "导入完成", exportDone: "导出完成", manualNewTip: "请到邮箱配置中手动新增邮箱", autoRegisterTitle: "自动注册 ChatGPT", step1Title: "选择注册身份", step1Desc: "当前优先使用自建 Outlook/Hotmail 邮箱池进行邮箱验证。", systemMailbox: "系统邮箱", systemMailboxPoolDisabled: "系统邮箱池功能未启用，请先启用邮箱池功能", smsConfigDisabled: "请前往接码配置页面启用接码配置", registerStageUnavailable: "请先启用至少一种邮箱注册方式", googleMailboxDisabled: "Google 邮箱功能未启用，请先启用对应的邮箱功能", microsoftMailboxDisabled: "Microsoft 邮箱功能未启用，请先启用对应的邮箱功能", systemMailboxDesc: "使用邮箱池自动收取验证码并完成注册", googleDesc: "预留身份，后续接入 Google 账号", microsoftDesc: "预留身份，后续接入 Microsoft 账号", step2Title: "选择执行方式", step2Desc: "支持后台浏览器自动与可视浏览器自动；后台模式不显示窗口，更适合批量执行。", protocolMode: "协议模式", protocolDesc: "占位能力，暂未开放选择", protocolChallengeStrategy: "浏览器挑战策略", protocolNativeChallenge: "原生无头接管", protocolNativeChallengeDesc: "遇到挑战时由完整后台浏览器接管注册流程", protocolSentinelChallenge: "Sentinel 协议运行时", protocolSentinelChallengeDesc: "注册请求保持协议模式，仅用窄范围 Camoufox 生成浏览器证明", backgroundMode: "后台浏览器自动", backgroundDesc: "无窗口 Headless 执行，仍使用隔离无痕浏览器上下文自动注册", visibleMode: "可视浏览器自动", visibleDesc: "会打开浏览器窗口，适合排查人机验证或页面异常", registerCount: "注册数量", concurrency: "并发数", identityLabel: "注册身份", modeLabel: "执行方式", registerAccounts: "注册账号", verifyStrategy: "验证策略：自动识别 Outlook/Hotmail Graph API 或 IMAP/XOAUTH2 并读取验证码", step3Title: "选择注册阶段", step3Desc: "控制本次任务执行到哪个阶段，默认仅完成 ChatGPT 注册/登录与 Session 存储。", registerOnly: "仅注册 ChatGPT", registerOnlyDesc: "注册或登录成功后，只读取并保存 ChatGPT Session 信息", codexPhoneBind: "Codex接码绑定", codexPhoneBindDesc: "注册/登录后继续使用接码配置完成手机验证并获取 Refresh Token", importReverseProxy: "导入反代平台", importReverseProxyDesc: "完成账号 Session/RT 后导入已配置的 sub2api 反代平台", agentIdentityReverseProxy: "绕过接码导入反代平台", agentIdentityReverseProxyDesc: "注册/登录后使用 Access Token 创建 Agent Identity，跳过手机号绑定并直接导入 sub2api", stageLabel: "注册阶段", startAutoRegister: "开始自动注册", cancel: "取消", noMailbox: "暂无邮箱", noMailboxDesc: "请点击右上角“导入邮箱”添加自建 Outlook/Hotmail 邮箱池。", inbox: "收件箱", fillOrChooseMailboxFile: "请先填写或选择邮箱文件",
   sub2apiDesc: "用于“导入反代平台”阶段。填写 sub2api 地址与管理员 Key 后，注册任务可将已获取 Session/RT 的 GPT 账号导入平台。", baseURL: "Base URL", adminToken: "Admin Token", accountNamePrefix: "账号名前缀", targetGroup: "目标分组", targetGroupPlaceholder: "请选择目标分组", noGroupsFetch: "暂无分组，请点击右侧“获取”", fetch: "获取", priority: "优先级", check: "检测", configUnchanged: "配置未更改", fillURLToken: "请先填写 Base URL 和 Admin Token", fetchedGroups: "已获取 {count} 个目标分组", fillURLTokenShort: "请先填写 URL 和 Token", checking: "检测中...", checkPassedGroups: "检测通过，发现 {count} 个分组", checkFailed: "检测失败：{error}", lineFormatPhone: "+手机号----https://接码链接", sessionJSON: "Auth Session", accessToken: "Access Token", mailboxAccountExport: "邮箱账户", exportFormat: "导出内容", selectExportRows: "请选择需要导出的账号", tokenPreview: "Token预览", sessionRefreshToken: "Refresh Token", secretKey: "Secret Key", allInfo: "全部信息", exportSK: "导出SK", exportAT: "导出AT", exportSUB: "导出SUB", acquireRT: "获取", acquiringRT: "正在获取RT", acquireRTDone: "账户 {email} 的 RT 已获取", acquireRTFailed: "无法获取该账户RT", sessionFieldTitle: "查看 {field}", sessionFieldLoading: "正在获取 {field}，请耐心等待...", sessionFieldEmpty: "该账户暂无 {field}", updated: "更新时间", groupFilter: "所属分组", atExpiresAt: "AT过期时间", atInvalidOrExpired: "AT无效或已过期", atRenewalFailed: "AT续期失败", atProbeFailed: "AT检测失败", lastHealthCheckedAt: "最近测活时间", accountHealthCheckFailed: "账户测活失败", refreshAT: "续期", refreshingAT: "续期中...", updateAT: "续期", refreshATDone: "账户 {email} 的 AT 已更新（AT续期）", refreshATSummary: "AT检测完成：有效 {valid} 个，无效 {invalid} 个，检测失败 {failed} 个；已对无效账户启动续期", refreshATNoSelection: "请选择需要续期 AT 的账户", stopRenewal: "停止续期", stoppingRenewal: "停止中...", stopRenewalTip: "停止当前所有正在执行或等待执行的 AT 续期任务", stopRenewalRequested: "已请求停止续期任务，正在关闭当前续期流程；等待中的账户将不再执行", stopRenewalFailed: "停止续期任务失败", closeRenewalProgress: "关闭续期进度", healthCheck: "测活", healthChecking: "测活中...", healthCheckSummary: "测活完成：测试 {total} 个，存活 {alive} 个，封禁 {banned} 个，失败 {failed} 个", healthAlive: "账户 {email}：存活", healthBanned: "账户 {email}：已封禁", currentATValid: "当前AT有效，无需续期", currentATInvalid: "当前AT无效，已启动AT续期任务", atCheckFailed: "AT检测失败：{error}", alreadyBanned: "该账户当前状态无需测活", healthNoSelection: "请选择需要测活的账户", failureDetails: "失败详情", maintenanceSettings: "定时任务设置", healthSchedule: "账户定时测活", atSchedule: "AT定时检测", scheduleTime: "执行时间", scheduleFrequency: "执行频率（小时）", restartRequired: "设置已保存，将在下一次服务重启后生效", saveSettings: "保存设置",
   renewalSteps: { queued: "等待续期任务调度", preparing: "准备续期任务", credentials_loaded: "读取账户凭证", refresh_token_ready: "Refresh Token 已就绪", token_received: "已获取新 Access Token", saving_session: "正在保存 Session", session_saved: "Session 已更新", refresh_token_unavailable: "Refresh Token 续期不可用，切换登录流程", refresh_token_missing: "未发现 Refresh Token，切换登录流程", mailbox_ready: "邮箱凭证已就绪", protocol_login_started: "正在启动协议登录与原生挑战接管", headless_login_started: "正在启动后台无头登录", headless_login_fallback: "协议登录未完成，正在降级到后台无头登录", sentinel_login_retry: "认证证明失效，正在建立新会话重试", proxy_ready: "代理与网络出口准备完成", authentication_running: "正在完成账户登录验证", session_reading: "正在读取并更新 Session", session_refreshed: "Session 已刷新", stopping: "正在停止续期任务", cancelled: "续期已中断", completed: "续期成功", failed: "续期失败" },
@@ -589,7 +589,7 @@ const en = {
   progressSteps: { queued: "Waiting for task scheduling", initializing: "Initializing mailbox task", proxy_ready: "Proxy and network outlet ready", browser_started: "Starting isolated browser", protocol_started: "Establishing protocol registration session", email_submitted: "Submitting registration email", email_verified: "Email verification completed", auth_completed: "Registration or login authenticated", registered: "ChatGPT Session saved", phone_started: "Allocating phone and starting SMS", phone_code_received: "Phone code received and submitted", phone_bound: "Codex phone binding completed", reverse_importing: "Importing to reverse proxy", reverse_imported: "Reverse proxy import completed", agent_identity_importing: "Creating Agent Identity and importing to reverse proxy", agent_identity_imported: "Agent Identity reverse proxy import completed", stage_incomplete: "Target stage incomplete", cancelled: "Task interrupted by user", failed: "Registration flow failed" },
   logProxy: "Proxy", logMailbox: "Mailbox", logPhone: "Phone", logSession: "Session", logAuth: "Auth", logSystem: "System",
   defaultGroup: "Default Group", allGroups: "All Groups", mailboxGroup: "Group", importMailboxes: "Import Mailboxes", manualImport: "Manual", fileImport: "File", dragFile: "Drag mailbox file here, or click to choose a file", importToGroup: "Import to group", addGroup: "New Group", editGroup: "Rename Group", deleteGroup: "Delete Group", enterGroup: "Type group name and press Enter", groupCreated: "Mailbox group created", groupRenamed: "Mailbox group renamed", groupDeleted: "Mailbox group deleted", groupNotEmpty: "This mailbox group contains accounts. Move them before deleting the group.", defaultGroupCannotDelete: "The default group cannot be deleted", groupNameConflict: "A mailbox group with this name already exists", confirmDeleteGroup: "Delete this mailbox group?", mailboxCount: "Mailboxes", validationOk: "Validation passed", validationFailed: "Validation failed", mailboxList: "Mailbox List", enabled: "Enabled", updatedAt: "Updated", actions: "Actions", queryMailbox: "Search mailbox...",
-  allStatus: "All Status", allPlanTypes: "All Plans", edit: "Edit", delete: "Delete", batchDelete: "Batch Delete", batchEdit: "Batch Edit", confirmDeleteMailbox: "Delete this mailbox record? This cannot be undone.", confirmBatchDeleteMailbox: "Delete the selected mailbox records? This cannot be undone.", queryMail: "Mail Query", currentMailbox: "Current Mailbox", getMail: "Get Mail", mailFetchCount: "Count", mailFetchCountSuffix: "mails", mailList: "Mail List", sender: "Sender", receiver: "Receiver", time: "Time", subject: "Subject", content: "Mail Content", emptyMail: "No mails", mailboxName: "Mailbox", password: "Password", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "Batch Edit Mailboxes", applyToSelected: "Apply to selected mailboxes", mailboxType: "Mailbox Type", microsoftMailbox: "Microsoft Mailbox", appleMailbox: "Apple Mailbox", channelType: "Channel", xbovoChannel: "xbovo", xbovoChannelTip: "Verification code portal: https://icloud.xbovo.online/code", urlAPIChannel: "url_api", urlAPIChannelTip: "Read the newest mail from a mailbox-specific URL; one request may take up to about 30 seconds", icloudAccessKey: "Query Key", icloudQueryURL: "Code URL",
+  allStatus: "All Status", allPlanTypes: "All Plans", edit: "Edit", delete: "Delete", batchDelete: "Batch Delete", batchEdit: "Batch Edit", confirmDeleteMailbox: "Delete this mailbox record? This cannot be undone.", confirmBatchDeleteMailbox: "Delete the selected mailbox records? This cannot be undone.", queryMail: "Mail Query", currentMailbox: "Current Mailbox", getMail: "Get Mail", mailFetchCount: "Count", mailFetchCountSuffix: "mails", mailList: "Mail List", sender: "Sender", receiver: "Receiver", time: "Time", subject: "Subject", content: "Mail Content", emptyMail: "No mails", mailboxName: "Mailbox", password: "Password", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "Batch Edit Mailboxes", applyToSelected: "Apply to selected mailboxes", mailboxType: "Mailbox Type", microsoftMailbox: "Microsoft Mailbox", appleMailbox: "Apple Mailbox", channelType: "Channel", xbovoChannel: "xbovo", xbovoChannelTip: "Verification code portal: https://icloud.xbovo.online/code", urlAPIChannel: "url_api", urlAPIChannelTip: "Read the newest mail from a mailbox-specific URL; one request may take up to about 30 seconds", icloudAccessKey: "Query Key", icloudQueryURL: "Code URL", urlAPIBrowser: "URL API Mail Browser", browserBack: "Back", browserForward: "Forward", browserReload: "Reload page", browserLoading: "Loading mail page", browserGetOnly: "This preview supports web links and GET form navigation only",
   autoRegister: "Auto Register", interruptTask: "Stop", interruptingTask: "Stopping...", interruptTaskTip: "Stop the entire registration batch during submission, queueing, Worker startup or mailbox execution.", interruptTaskRequested: "Stop requested for the entire batch; closing task processes, browsers and mailbox readers", interruptTaskFailed: "Failed to stop task", registerTaskRunning: "A registration task is running. Wait for it to finish or stop it first.", manualNew: "Manual Add", searchAccount: "Search account email...", refreshQuota: "Refresh Quota", refreshList: "Refresh List", refreshDone: "List refreshed", loadingData: "Updating data...", refreshStatus: "Refresh Account Status", statusChangedAt: "Status Changed At", planType: "Plan Type", email: "Email", trialLink: "Trial Link", registeredAt: "Registered At", operation: "Action", noData: "No Data", noDataDesc: "No mailbox records were found. Import mailboxes in Mailbox settings, then select mailboxes to start auto registration.", chooseMailbox: "Please select mailboxes", createTaskLog: "Created ChatGPT register task, count", taskSubmitted: "Registration task submitted and starting", taskCreated: "Auto register task created", taskDone: "Task completed", taskFailed: "Task failed", taskPollRecovered: "Detected an unfinished registration task and resumed log polling", taskPollLost: "Task status polling temporarily failed; the app will keep waiting: {error}", taskPollTimeout: "Task polling is taking longer than expected. The app will keep waiting; use Stop to interrupt it.", importDone: "Import completed", exportDone: "Export completed", manualNewTip: "Please add mailboxes manually in Mailbox settings", autoRegisterTitle: "Auto Register ChatGPT", step1Title: "Choose Identity", step1Desc: "The self-managed Outlook/Hotmail mailbox pool is used first for email verification.", systemMailbox: "System Mailbox", systemMailboxPoolDisabled: "System mailbox pool is not enabled. Please enable the mailbox pool first.", smsConfigDisabled: "Please enable SMS settings on the SMS configuration page first.", registerStageUnavailable: "Please enable at least one mailbox registration method first.", googleMailboxDisabled: "Google mailbox is not enabled. Please enable the corresponding mailbox feature first.", microsoftMailboxDisabled: "Microsoft mailbox is not enabled. Please enable the corresponding mailbox feature first.", systemMailboxDesc: "Use mailbox pool to receive verification codes and complete registration", googleDesc: "Reserved identity; Google account integration will be added later", microsoftDesc: "Reserved identity; Microsoft account integration will be added later", step2Title: "Choose Execution Mode", step2Desc: "Background browser and visible browser automation are supported. Background mode runs without a window and is better for batches.", protocolMode: "Protocol Mode", protocolDesc: "Reserved; not selectable yet", protocolChallengeStrategy: "Browser challenge strategy", protocolNativeChallenge: "Native headless takeover", protocolNativeChallengeDesc: "Let the full background browser take over when a challenge is encountered", protocolSentinelChallenge: "Sentinel protocol runtime", protocolSentinelChallengeDesc: "Keep registration requests in protocol mode and use narrow Camoufox only for browser proofs", backgroundMode: "Background Browser", backgroundDesc: "Run headless without a visible window while still using an isolated incognito browser context", visibleMode: "Visible Browser", visibleDesc: "Open a browser window for easier challenge or page issue troubleshooting", registerCount: "Register Count", concurrency: "Concurrency", identityLabel: "Identity", modeLabel: "Execution Mode", registerAccounts: "Accounts", verifyStrategy: "Verification: automatically detect Outlook/Hotmail Graph API or IMAP/XOAUTH2 and read the code", step3Title: "Choose Registration Stage", step3Desc: "Control how far this task should run. Default only completes ChatGPT registration/login and Session storage.", registerOnly: "Register ChatGPT Only", registerOnlyDesc: "After register/login, only read and save ChatGPT Session info", codexPhoneBind: "Codex Phone Binding", codexPhoneBindDesc: "Continue phone verification with SMS settings and acquire Refresh Token", importReverseProxy: "Import Reverse Proxy", importReverseProxyDesc: "Import the account into configured sub2api after Session/RT is ready", agentIdentityReverseProxy: "Bypass SMS and Import Reverse Proxy", agentIdentityReverseProxyDesc: "Create Agent Identity from the Access Token after register/login, skip phone binding, and import directly into sub2api", stageLabel: "Stage", startAutoRegister: "Start Auto Register", cancel: "Cancel", noMailbox: "No Mailboxes", noMailboxDesc: "Click 'Import Mailboxes' in the upper-right corner to add your Outlook/Hotmail mailbox pool.", inbox: "Inbox", fillOrChooseMailboxFile: "Please fill in or choose a mailbox file",
   sub2apiDesc: "Used by the 'Import Reverse Proxy' stage. After Base URL and Admin Key are configured, registration tasks can import GPT accounts with Session/RT into the platform.", baseURL: "Base URL", adminToken: "Admin Token", accountNamePrefix: "Account Name Prefix", targetGroup: "Target Group", targetGroupPlaceholder: "Select target groups", noGroupsFetch: "No groups yet. Click 'Fetch' on the right.", fetch: "Fetch", priority: "Priority", check: "Check", configUnchanged: "Configuration unchanged", fillURLToken: "Please fill in Base URL and Admin Token first", fetchedGroups: "Fetched {count} target groups", fillURLTokenShort: "Please fill in URL and Token first", checking: "Checking...", checkPassedGroups: "Check passed, found {count} groups", checkFailed: "Check failed: {error}", lineFormatPhone: "+phone----https://sms-url", sessionJSON: "Auth Session", accessToken: "Access Token", mailboxAccountExport: "Mailbox Account", exportFormat: "Export Content", selectExportRows: "Please select accounts to export", tokenPreview: "Token Preview", sessionRefreshToken: "Refresh Token", secretKey: "Secret Key", allInfo: "All Info", exportSK: "Export SK", exportAT: "Export AT", exportSUB: "Export SUB", acquireRT: "Get", acquiringRT: "Getting RT", acquireRTDone: "RT acquired for {email}", acquireRTFailed: "Unable to acquire this account RT", sessionFieldTitle: "View {field}", sessionFieldLoading: "Fetching {field}. Please wait...", sessionFieldEmpty: "This account has no {field}", updated: "Updated", groupFilter: "Group", atExpiresAt: "AT Expires", atInvalidOrExpired: "AT invalid or expired", atRenewalFailed: "AT renewal failed", atProbeFailed: "AT check failed", lastHealthCheckedAt: "Last Health Check", accountHealthCheckFailed: "Account health check failed", refreshAT: "Renew", refreshingAT: "Renewing...", updateAT: "Renew", refreshATDone: "AT renewed for {email}", refreshATSummary: "AT check complete: {valid} valid, {invalid} invalid, {failed} failed; renewal started for invalid accounts", refreshATNoSelection: "Select accounts to renew AT", stopRenewal: "Stop Renewal", stoppingRenewal: "Stopping...", stopRenewalTip: "Stop all AT renewal tasks that are running or waiting", stopRenewalRequested: "Renewal stop requested; closing the active renewal flow and skipping waiting accounts", stopRenewalFailed: "Failed to stop renewal task", closeRenewalProgress: "Close renewal progress", healthCheck: "Health Check", healthChecking: "Checking...", healthCheckSummary: "Health check complete: tested {total}, alive {alive}, banned {banned}, failed {failed}", healthAlive: "Account {email}: alive", healthBanned: "Account {email}: banned", currentATValid: "The current AT is valid; renewal is not required", currentATInvalid: "The current AT is invalid; AT renewal has started", atCheckFailed: "AT check failed: {error}", alreadyBanned: "This account status is not eligible for a health check", healthNoSelection: "Select accounts to check", failureDetails: "Failure details", maintenanceSettings: "Scheduled task settings", healthSchedule: "Scheduled account health check", atSchedule: "Scheduled AT check", scheduleTime: "Run time", scheduleFrequency: "Frequency (hours)", restartRequired: "Settings saved and will take effect after the next service restart", saveSettings: "Save settings",
   renewalSteps: { queued: "Waiting for renewal scheduling", preparing: "Preparing renewal", credentials_loaded: "Loading account credentials", refresh_token_ready: "Refresh Token ready", token_received: "New Access Token received", saving_session: "Saving Session", session_saved: "Session updated", refresh_token_unavailable: "Refresh Token unavailable; switching to login flow", refresh_token_missing: "No Refresh Token; switching to login flow", mailbox_ready: "Mailbox credentials ready", protocol_login_started: "Starting protocol login and native challenge takeover", headless_login_started: "Starting background headless login", headless_login_fallback: "Protocol login incomplete; falling back to background headless login", sentinel_login_retry: "Authentication proof rejected; retrying with a fresh session", proxy_ready: "Proxy and network outlet ready", authentication_running: "Completing account authentication", session_reading: "Reading and updating Session", session_refreshed: "Session refreshed", stopping: "Stopping renewal task", cancelled: "Renewal interrupted", completed: "Renewal succeeded", failed: "Renewal failed" },
@@ -1661,6 +1661,120 @@ function MailboxBatchEditModal({ t, selected, groups, onClose, onSaved, notify }
   </div></div>;
 }
 
+function URLAPIMailBrowser({ t, mailboxId, initialHTML }: { t: typeof zh; mailboxId:number; initialHTML:string }) {
+  const frameRef=useRef<HTMLIFrameElement|null>(null);
+  const [history,setHistory]=useState<string[]>([""]);
+  const [historyIndex,setHistoryIndex]=useState(0);
+  const [currentURL,setCurrentURL]=useState("");
+  const [pageHTML,setPageHTML]=useState(initialHTML);
+  const [documentVersion,setDocumentVersion]=useState(0);
+  const [loading,setLoading]=useState(true);
+  const [reloadKey,setReloadKey]=useState(0);
+  const [notice,setNotice]=useState("");
+  const target=history[historyIndex] || "";
+
+  useEffect(()=>{
+    setHistory([""]);
+    setHistoryIndex(0);
+    setCurrentURL("");
+    setPageHTML(initialHTML);
+    setDocumentVersion((value)=>value+1);
+    setNotice("");
+    setLoading(true);
+  },[mailboxId,initialHTML]);
+
+  useEffect(()=>{
+    if(!target) {
+      setPageHTML(initialHTML);
+      return;
+    }
+    const controller=new AbortController();
+    setCurrentURL(target);
+    setLoading(true);
+    void fetch(`${API_BASE}/sunny/mailboxes/${mailboxId}/url-api-preview?target=${encodeURIComponent(target)}`,{
+      credentials:"include",
+      headers:{Accept:"text/html"},
+      signal:controller.signal,
+    }).then(async(response)=>{
+      if(response.status===401) {
+        window.location.reload();
+        return "";
+      }
+      return response.text();
+    }).then((html)=>{
+      if(html) {
+        setPageHTML(html);
+        setDocumentVersion((value)=>value+1);
+      }
+    }).catch((error)=>{
+      if(error?.name!=="AbortError") setNotice(String(error?.message||error));
+    }).finally(()=>{
+      if(!controller.signal.aborted) setLoading(false);
+    });
+    return ()=>controller.abort();
+  },[initialHTML,mailboxId,reloadKey,target]);
+
+  useEffect(()=>{
+    function receive(event:MessageEvent) {
+      if(event.source!==frameRef.current?.contentWindow) return;
+      const data=event.data as AnyObj;
+      if(data?.source!=="sunny-url-api-preview" || Number(data.mailboxId)!==mailboxId) return;
+      if(data.type==="ready") {
+        setCurrentURL(String(data.url||""));
+        setLoading(false);
+        setNotice("");
+      }
+      if(data.type==="unsupported") setNotice(t.browserGetOnly);
+      if(data.type==="navigate" && /^https?:\/\//i.test(String(data.url||""))) {
+        const next=String(data.url);
+        setPageHTML("<!doctype html><html><body></body></html>");
+        setDocumentVersion((value)=>value+1);
+        setHistory((previous)=>{
+          const entries=[...previous.slice(0,historyIndex+1),next];
+          setHistoryIndex(entries.length-1);
+          return entries;
+        });
+        setLoading(true);
+        setNotice("");
+      }
+    }
+    window.addEventListener("message",receive);
+    return ()=>window.removeEventListener("message",receive);
+  },[historyIndex,mailboxId,t.browserGetOnly]);
+
+  let address=t.urlAPIBrowser;
+  if(currentURL) {
+    try { address=new URL(currentURL).host; } catch { address=t.urlAPIBrowser; }
+  }
+  function move(index:number) {
+    if(index<0 || index>=history.length) return;
+    setPageHTML(index===0 ? initialHTML : "<!doctype html><html><body></body></html>");
+    setDocumentVersion((value)=>value+1);
+    setHistoryIndex(index);
+    setLoading(true);
+    setNotice("");
+  }
+  return <div className="sr-url-api-browser">
+    <div className="sr-url-api-browser-toolbar">
+      <div className="sr-url-api-browser-nav">
+        <button type="button" title={t.browserBack} aria-label={t.browserBack} disabled={historyIndex===0} onClick={()=>move(historyIndex-1)}><ArrowLeft/></button>
+        <button type="button" title={t.browserForward} aria-label={t.browserForward} disabled={historyIndex>=history.length-1} onClick={()=>move(historyIndex+1)}><ArrowRight/></button>
+        <button type="button" title={t.browserReload} aria-label={t.browserReload} onClick={()=>{setLoading(true);setReloadKey((value)=>value+1)}}><RotateCw/></button>
+      </div>
+      <div className="sr-url-api-browser-address"><Globe2/><span>{address}</span>{loading&&<Loader2 className="animate-spin"/>}</div>
+    </div>
+    {notice&&<div className="sr-url-api-browser-notice">{notice}</div>}
+    <iframe
+      key={`${mailboxId}:${historyIndex}:${reloadKey}:${documentVersion}:${target}`}
+      ref={frameRef}
+      title={t.urlAPIBrowser}
+      sandbox="allow-scripts allow-forms"
+      srcDoc={pageHTML}
+      onLoad={()=>setLoading(false)}
+    />
+  </div>;
+}
+
 function MailboxMailModal({ t, mailbox, onClose, notify }: { t: typeof zh; mailbox: AnyObj; onClose:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
   const [items,setItems]=useState<AnyObj[]>([]);
   const [selected,setSelected]=useState(0);
@@ -1679,6 +1793,7 @@ function MailboxMailModal({ t, mailbox, onClose, notify }: { t: typeof zh; mailb
   }
   useEffect(()=>{void load()},[]);
   const mail = items[selected] || {};
+  const useURLAPIBrowser=String(mailbox.mailbox_type||"").toLowerCase()==="apple" && String(mailbox.mailbox_channel||"").toLowerCase()==="url_api";
   return createPortal(<div className="sr-modal-mask"><div className="sr-modal sr-mail-modal">
     <div className="sr-mail-head">
       <div className="sr-current-mail">{t.currentMailbox}: <b>{mailbox.email}</b></div>
@@ -1704,7 +1819,7 @@ function MailboxMailModal({ t, mailbox, onClose, notify }: { t: typeof zh; mailb
           <h2>{mail.subject || "(no subject)"}</h2>
           <div className="sr-mail-meta"><span>{t.sender}</span><b>{mail.from || "-"}</b><span>{t.receiver}</span><b>{mail.to || mailbox.email}</b><span>{t.time}</span><b>{mail.date || "-"}</b></div>
           <div className="sr-mail-content">
-            {mail.raw_html && /<html|<body|<div|<p|<table/i.test(String(mail.raw_html)) ? <iframe title="mail-content" sandbox="" srcDoc={String(mail.raw_html)} /> : <pre>{mail.body || mail.body_preview || ""}</pre>}
+            {useURLAPIBrowser ? <URLAPIMailBrowser key={String(mail.id||selected)} t={t} mailboxId={Number(mailbox.id)} initialHTML={String(mail.preview_html||mail.raw_html||"")}/> : mail.raw_html && /<html|<body|<div|<p|<table/i.test(String(mail.raw_html)) ? <iframe title="mail-content" sandbox="" srcDoc={String(mail.raw_html)} /> : <pre>{mail.body || mail.body_preview || ""}</pre>}
           </div>
         </> : <div className="sr-empty"><Inbox className="h-10 w-10 text-slate-400"/><p>{t.emptyMail}</p></div>}
       </section>
