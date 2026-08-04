@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"golang.org/x/text/encoding/htmlindex"
+	"gorm.io/gorm"
 )
 
 const (
@@ -367,6 +368,44 @@ func (s *Server) sunnyMailboxAccessTokensByEmail(emails []string) map[string]str
 	return out
 }
 
+func sunnySaveMailboxAccessToken(tx *gorm.DB, mailbox SunnyMailbox, groupName, accessToken string) error {
+	if strings.TrimSpace(accessToken) == "" {
+		if err := tx.Model(&SunnyAccount{}).Where("email = ?", mailbox.Email).Update("access_token", "").Error; err != nil {
+			return err
+		}
+		return tx.Model(&SunnySession{}).Where("email = ?", mailbox.Email).Updates(map[string]any{
+			"access_token": "", "access_token_status": "unknown", "access_token_error": "",
+			"access_token_checked_at": nil, "expires_at": nil,
+		}).Error
+	}
+	account := SunnyAccount{Email: mailbox.Email}
+	if err := tx.Where("email = ?", mailbox.Email).Attrs(SunnyAccount{
+		MailboxID: mailbox.ID, GroupName: groupName, Status: mailbox.Status, AccountType: mailbox.AccountType,
+		OpenAIRT: mailbox.OpenAIRT, MetadataJSON: "{}",
+	}).FirstOrCreate(&account).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&account).Updates(map[string]any{
+		"mailbox_id": mailbox.ID, "group_name": groupName,
+		"account_type": mailbox.AccountType, "access_token": accessToken,
+	}).Error; err != nil {
+		return err
+	}
+
+	session := SunnySession{Email: mailbox.Email}
+	if err := tx.Where("email = ?", mailbox.Email).Attrs(SunnySession{
+		AccountID: account.ID, RefreshToken: mailbox.OpenAIRT, RawMailboxLine: mailbox.Raw,
+		AccessTokenStatus: "unknown", HealthCheckStatus: "unknown",
+	}).FirstOrCreate(&session).Error; err != nil {
+		return err
+	}
+	return tx.Model(&session).Updates(map[string]any{
+		"account_id": account.ID, "access_token": accessToken, "raw_mailbox_line": mailbox.Raw,
+		"access_token_status": "unknown", "access_token_error": "", "access_token_checked_at": nil,
+		"expires_at": nil,
+	}).Error
+}
+
 func (s *Server) sunnyAccountIDsByEmail(emails []string) map[string]uint {
 	out := map[string]uint{}
 	if len(emails) == 0 {
@@ -588,6 +627,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		}
 		if len(parts) == 1 && r.Method == http.MethodPut {
 			body, _ := parseBody(r)
+			originalEmail := m.Email
 			mailboxType := normalizeSunnyMailboxType(fallback(text(body["mailbox_type"]), m.MailboxType))
 			mailboxChannel := normalizeSunnyMailboxChannel(mailboxType, fallback(text(body["mailbox_channel"]), m.MailboxChannel))
 			m.MailboxType, m.MailboxChannel = mailboxType, mailboxChannel
@@ -654,14 +694,33 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			if _, ok := body["last_error"]; ok {
 				m.LastError = text(body["last_error"])
 			}
-			s.db.Save(&m)
-			if v, ok := body["access_token"]; ok {
-				accessToken := text(v)
-				s.db.Model(&SunnyAccount{}).Where("email = ?", m.Email).Update("access_token", accessToken)
-				s.db.Model(&SunnySession{}).Where("email = ?", m.Email).Update("access_token", accessToken)
-			}
-			if m.AccountType != "" {
-				s.db.Model(&SunnyAccount{}).Where("email = ?", m.Email).Update("account_type", m.AccountType)
+			groupName := s.sunnyGroupMap()[m.GroupID]
+			if err := s.db.Transaction(func(tx *gorm.DB) error {
+				if err := tx.Save(&m).Error; err != nil {
+					return err
+				}
+				if originalEmail != m.Email {
+					if err := tx.Model(&SunnyAccount{}).Where("email = ?", originalEmail).Update("email", m.Email).Error; err != nil {
+						return err
+					}
+					if err := tx.Model(&SunnySession{}).Where("email = ?", originalEmail).Update("email", m.Email).Error; err != nil {
+						return err
+					}
+				}
+				if v, ok := body["access_token"]; ok {
+					if err := sunnySaveMailboxAccessToken(tx, m, groupName, text(v)); err != nil {
+						return err
+					}
+				}
+				if m.AccountType != "" {
+					if err := tx.Model(&SunnyAccount{}).Where("email = ?", m.Email).Update("account_type", m.AccountType).Error; err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
 			}
 			writeJSON(w, 200, serializeSunnyMailbox(m, s.sunnyGroupMap(), sunnyPlanTypeForMailbox(m, s.sunnySessionPlanTypesByEmail([]string{m.Email}), s.sunnyAccountPresenceByEmail([]string{m.Email})), s.sunnyMailboxAccessTokensByEmail([]string{m.Email})[sunnyEmailKey(m.Email)]))
 			return
