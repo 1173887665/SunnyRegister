@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 
 from sunny_core.browser_backend import camoufox_runtime_error
+from sunny_core import mailbox as mailbox_module
 from sunny_core.mailbox import HotmailReader, MailAccount, MailboxAccessError, URLAPIICloudReader, XbovoICloudReader, _request_outlook_access_token, account_from_row, create_mailbox_reader, parse_account_line
 
 
@@ -63,6 +67,17 @@ class OutlookImapRouteTests(unittest.TestCase):
 
 
 class XbovoICloudReaderTests(unittest.TestCase):
+    @staticmethod
+    def _account() -> MailAccount:
+        return account_from_row(
+            {
+                "email": "alias@icloud.com",
+                "mailbox_type": "apple",
+                "mailbox_channel": "xbovo",
+                "access_key": "alias_key",
+            }
+        )
+
     def test_account_from_row_parses_apple_xbovo_credential(self) -> None:
         parsed = account_from_row(
             {
@@ -100,6 +115,79 @@ class XbovoICloudReaderTests(unittest.TestCase):
         self.assertNotIn("key", kwargs["params"])
         self.assertEqual(kwargs["headers"]["X-API-Key"], "alias_key")
         self.assertEqual(kwargs["proxies"]["https"], "http://proxy.example:8080")
+
+    def test_pool_exhaustion_is_retried_and_responses_are_closed(self) -> None:
+        busy = Mock(ok=False, status_code=503, text='{"ok":false,"error":"PoolError: connection pool exhausted"}')
+        busy.json.return_value = {"ok": False, "error": "PoolError: connection pool exhausted"}
+        success = Mock(ok=True, status_code=200, text='{"ok":true,"messages":[]}')
+        success.json.return_value = {"ok": True, "messages": []}
+        logs: list[str] = []
+        reader = XbovoICloudReader(self._account(), logs.append)
+
+        with (
+            patch("sunny_core.mailbox.requests.get", side_effect=[busy, success]) as request_get,
+            patch("sunny_core.mailbox.random.uniform", return_value=0),
+            patch("sunny_core.mailbox.time.sleep"),
+        ):
+            payload = reader._request("/api/v1/messages", {"email": "alias@icloud.com"})
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(request_get.call_count, 2)
+        busy.close.assert_called_once()
+        success.close.assert_called_once()
+        self.assertTrue(any("连接池繁忙" in message for message in logs))
+
+    def test_pool_exhaustion_after_retries_has_busy_error_code(self) -> None:
+        busy = Mock(ok=False, status_code=503, text="<html>PoolError: connection pool exhausted</html>")
+        busy.json.side_effect = ValueError("not json")
+        reader = XbovoICloudReader(self._account(), None)
+
+        with (
+            patch("sunny_core.mailbox.requests.get", return_value=busy),
+            patch("sunny_core.mailbox.XBOVO_POOL_RETRIES", 1),
+            patch("sunny_core.mailbox.random.uniform", return_value=0),
+            patch("sunny_core.mailbox.time.sleep"),
+        ):
+            with self.assertRaises(MailboxAccessError) as raised:
+                reader._request("/api/v1/messages", {"email": "alias@icloud.com"})
+
+        self.assertEqual(raised.exception.code, "mailbox_provider_busy")
+        self.assertEqual(busy.close.call_count, 2)
+
+    def test_request_gate_limits_concurrent_provider_calls(self) -> None:
+        gate = threading.BoundedSemaphore(2)
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+
+        def request(*_args, **_kwargs):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.02)
+            with lock:
+                active -= 1
+            response = Mock(ok=True, status_code=200, text='{"ok":true,"messages":[]}')
+            response.json.return_value = {"ok": True, "messages": []}
+            return response
+
+        with (
+            patch.object(mailbox_module, "_XBOVO_REQUEST_GATE", gate),
+            patch("sunny_core.mailbox.requests.get", side_effect=request),
+        ):
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                results = list(
+                    executor.map(
+                        lambda _: XbovoICloudReader(self._account(), None)._request(
+                            "/api/v1/messages", {"email": "alias@icloud.com"}
+                        ),
+                        range(8),
+                    )
+                )
+
+        self.assertEqual(len(results), 8)
+        self.assertLessEqual(peak, 2)
 
 
 class URLAPIICloudReaderTests(unittest.TestCase):

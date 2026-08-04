@@ -7,9 +7,11 @@ import imaplib
 import ipaddress
 import json
 import os
+import random
 import re
 import socket
 import ssl
+import threading
 import time
 from datetime import datetime
 from email.header import decode_header, make_header
@@ -29,7 +31,23 @@ IMAP_SCOPE = "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 GRAPH_MESSAGES_URL = "https://graph.microsoft.com/v1.0/me/messages"
 XBOVO_API_BASE_URL = os.getenv("XBOVO_ICLOUD_API_BASE_URL", "https://icloud.xbovo.online").rstrip("/")
+
+
+def _int_env(name: str, default: int, minimum: int, maximum: int | None = None) -> int:
+    try:
+        value = int(os.getenv(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    value = max(minimum, value)
+    return min(maximum, value) if maximum is not None else value
+
+
+XBOVO_MAX_CONCURRENT_REQUESTS = _int_env("XBOVO_ICLOUD_MAX_CONCURRENCY", 3, 1, 20)
+XBOVO_POOL_RETRIES = _int_env("XBOVO_ICLOUD_POOL_RETRIES", 4, 0, 10)
+XBOVO_QUEUE_TIMEOUT = _int_env("XBOVO_ICLOUD_QUEUE_TIMEOUT", 120, 30, 600)
+XBOVO_LONG_POLL_SECONDS = _int_env("XBOVO_ICLOUD_LONG_POLL_SECONDS", 10, 5, 20)
 URL_API_REQUEST_TIMEOUT = max(35, int(os.getenv("URL_API_ICLOUD_REQUEST_TIMEOUT", "40") or 40))
+_XBOVO_REQUEST_GATE = threading.BoundedSemaphore(XBOVO_MAX_CONCURRENT_REQUESTS)
 
 
 class MailboxAccessError(RuntimeError):
@@ -734,40 +752,86 @@ class XbovoICloudReader:
 
     def _request(self, path: str, params: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
         query = dict(params)
-        try:
-            response = requests.get(
-                f"{XBOVO_API_BASE_URL}{path}",
-                params=query,
-                headers={"Accept": "application/json", "X-API-Key": self.account.access_key},
-                timeout=timeout,
-                proxies=self.proxies,
+        attempts = XBOVO_POOL_RETRIES + 1
+        for attempt in range(attempts):
+            acquired = _XBOVO_REQUEST_GATE.acquire(timeout=XBOVO_QUEUE_TIMEOUT)
+            if not acquired:
+                raise MailboxAccessError(
+                    "mailbox_provider_busy",
+                    "iCloud 邮箱渠道当前请求较多，请稍后重试",
+                    f"local concurrency queue timed out after {XBOVO_QUEUE_TIMEOUT}s",
+                )
+            response = None
+            payload: dict[str, Any] = {}
+            request_error: Exception | None = None
+            try:
+                response = requests.get(
+                    f"{XBOVO_API_BASE_URL}{path}",
+                    params=query,
+                    headers={"Accept": "application/json", "X-API-Key": self.account.access_key},
+                    timeout=timeout,
+                    proxies=self.proxies,
+                )
+                try:
+                    payload = response.json() if response.text else {}
+                except (ValueError, json.JSONDecodeError) as exc:
+                    request_error = exc
+            except requests.RequestException as exc:
+                request_error = exc
+            finally:
+                if response is not None:
+                    close = getattr(response, "close", None)
+                    if callable(close):
+                        close()
+                _XBOVO_REQUEST_GATE.release()
+
+            try:
+                status_code = int(getattr(response, "status_code", 0) or 0)
+            except (TypeError, ValueError):
+                status_code = 0
+            detail = str(payload.get("error") or payload.get("message") or request_error or f"HTTP {status_code}")
+            lower = detail.lower()
+            pool_busy = status_code in {429, 503} or any(
+                marker in lower
+                for marker in ("poolerror", "connection pool exhausted", "pool exhausted", "too many connections")
             )
-        except requests.RequestException as exc:
-            raise MailboxAccessError(
-                "mailbox_network_error",
-                "iCloud 邮箱渠道网络连接失败，请检查服务器出网与代理配置",
-                str(exc),
-            ) from exc
-        try:
-            payload = response.json() if response.text else {}
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise MailboxAccessError(
-                "mailbox_service_response_invalid",
-                "iCloud 邮箱渠道返回了无法解析的响应，请稍后重试",
-                f"HTTP {response.status_code}",
-            ) from exc
-        if response.ok and payload.get("ok") is True:
-            return payload
-        detail = str(payload.get("error") or payload.get("message") or f"HTTP {response.status_code}")
-        lower = detail.lower()
-        if "key" in lower or "密钥" in detail or "不正确" in detail or "无效" in detail:
-            raise MailboxAccessError(
-                "mailbox_credential_invalid",
-                "iCloud 邮箱查询 Key 无效，请检查 xbovo 邮箱凭证",
-                detail,
-                terminal=True,
-            )
-        raise MailboxAccessError("mailbox_provider_failed", "iCloud 邮箱渠道请求失败，请稍后重试", detail)
+            if pool_busy and attempt + 1 < attempts:
+                delay = min(4.0, 0.5 * (2**attempt)) + random.uniform(0, 0.35)
+                self.log(
+                    f"[{self.account.email}] xbovo 连接池繁忙，等待 {delay:.1f}s 后重试 "
+                    f"{attempt + 1}/{XBOVO_POOL_RETRIES}"
+                )
+                time.sleep(delay)
+                continue
+            if pool_busy:
+                raise MailboxAccessError(
+                    "mailbox_provider_busy",
+                    "iCloud 邮箱渠道当前请求较多，请稍后重试",
+                    detail,
+                )
+            if request_error is not None:
+                if isinstance(request_error, requests.RequestException):
+                    raise MailboxAccessError(
+                        "mailbox_network_error",
+                        "iCloud 邮箱渠道网络连接失败，请检查服务器出网与代理配置",
+                        detail,
+                    ) from request_error
+                raise MailboxAccessError(
+                    "mailbox_service_response_invalid",
+                    "iCloud 邮箱渠道返回了无法解析的响应，请稍后重试",
+                    f"HTTP {status_code}",
+                ) from request_error
+            if response is not None and response.ok and payload.get("ok") is True:
+                return payload
+            if "key" in lower or "密钥" in detail or "不正确" in detail or "无效" in detail:
+                raise MailboxAccessError(
+                    "mailbox_credential_invalid",
+                    "iCloud 邮箱查询 Key 无效，请检查 xbovo 邮箱凭证",
+                    detail,
+                    terminal=True,
+                )
+            raise MailboxAccessError("mailbox_provider_failed", "iCloud 邮箱渠道请求失败，请稍后重试", detail)
+        raise MailboxAccessError("mailbox_provider_busy", "iCloud 邮箱渠道当前请求较多，请稍后重试")
 
     def connect(self, access_token: str | None = None) -> None:
         if self.account.mailbox_channel != "xbovo":
@@ -810,7 +874,7 @@ class XbovoICloudReader:
         while time.monotonic() - started < timeout:
             elapsed = time.monotonic() - started
             remaining = max(1, int(timeout - elapsed))
-            chunk = min(20, remaining)
+            chunk = min(XBOVO_LONG_POLL_SECONDS, remaining)
             params: dict[str, Any] = {
                 "email": self.account.email,
                 "timeout": chunk,
