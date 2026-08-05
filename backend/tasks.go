@@ -544,6 +544,10 @@ func (s *Server) executeTask(taskID string) {
 		s.executeSunnyAccessTokenCheckTask(&task, jsonMap(task.PayloadJSON))
 		return
 	}
+	if task.Type == sunnySubscriptionTaskType {
+		s.executeSunnySubscriptionTask(&task, jsonMap(task.PayloadJSON))
+		return
+	}
 	if s.tryDispatchPythonWorker(&task) {
 		return
 	}

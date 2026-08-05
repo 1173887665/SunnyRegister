@@ -25,7 +25,7 @@ const sunnyAccessTokenProbeEndpoint = "https://chatgpt.com/backend-api/models"
 var sunnyProbeAccessTokenEndpoint = sunnyAccessTokenProbeEndpoint
 
 func sunnyGoTaskType(taskType string) bool {
-	return taskType == sunnyHealthTaskType || taskType == sunnyAccessTokenCheckTaskType
+	return taskType == sunnyHealthTaskType || taskType == sunnyAccessTokenCheckTaskType || taskType == sunnySubscriptionTaskType
 }
 
 type sunnyAccessTokenCandidate struct {

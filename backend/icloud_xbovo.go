@@ -117,13 +117,25 @@ func fetchXbovoLatestMail(email, accessKey string, limit int, proxyURL string) (
 }
 
 func fetchXbovoMailSubjects(email, accessKey string, limit int, proxyURL string) ([]string, error) {
-	payload, err := fetchXbovoLatestMail(email, accessKey, limit, proxyURL)
+	email = strings.TrimSpace(email)
+	accessKey = strings.TrimSpace(accessKey)
+	if email == "" || !strings.Contains(email, "@") || accessKey == "" {
+		return nil, &outlookMailError{Code: "mailbox_format_error", Category: "format", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: "苹果邮箱凭证格式错误，应为 icloud_email----key", Terminal: true}
+	}
+	if limit < 1 {
+		limit = 5
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	payload, err := fetchXbovoJSON(xbovoHTTPClient(proxyURL), "/api/v1/messages", accessKey, url.Values{"email": {email}, "limit": {fmt.Sprintf("%d", limit)}})
 	if err != nil {
 		return nil, err
 	}
-	items, _ := payload["items"].([]map[string]any)
-	subjects := make([]string, 0, len(items))
-	for _, item := range items {
+	rawItems, _ := payload["messages"].([]any)
+	subjects := make([]string, 0, len(rawItems))
+	for _, raw := range rawItems {
+		item, _ := raw.(map[string]any)
 		if subject := strings.TrimSpace(text(item["subject"])); subject != "" {
 			subjects = append(subjects, subject)
 		}

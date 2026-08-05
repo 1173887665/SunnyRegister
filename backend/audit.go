@@ -238,6 +238,8 @@ func auditMetaForRequest(r *http.Request, body, response map[string]any, status 
 		meta.Category, meta.Action, meta.EntityType = "sms", "refresh", "sms_provider_options"
 	case strings.Contains(path, "/sunny/sessions/health-check"):
 		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "health_check", "account_health"
+	case strings.Contains(path, "/sunny/sessions/subscription-check"):
+		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "subscription_check", "account_subscription"
 	case strings.Contains(path, "/sunny/tasks/refresh-session"):
 		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "refresh_access_token", "account_token"
 	case strings.Contains(path, "/sunny/tasks/acquire-rt"):
@@ -306,7 +308,7 @@ func auditAction(path, method string) string {
 
 func auditSummary(category, action, status string, count int, entity string) string {
 	categoryLabels := map[string]string{"authentication": "系统认证", "mailbox": "邮箱配置", "sms": "接码配置", "reverse_proxy": "反代配置", "proxy": "代理配置", "account": "账户管理", "registration_task": "注册任务", "audit": "日志管理", "configuration": "系统配置", "system": "系统"}
-	actionLabels := map[string]string{"login": "登录", "logout": "退出登录", "create": "新增", "update": "修改", "delete": "删除", "import": "导入", "export": "导出", "health_check": "账户测活", "refresh_access_token": "AT 续期", "acquire_refresh_token": "获取 RT", "check": "检测", "refresh": "刷新", "cancel": "取消", "batch_update": "批量修改", "toggle": "启用状态切换", "test": "测试", "restart": "重启"}
+	actionLabels := map[string]string{"login": "登录", "logout": "退出登录", "create": "新增", "update": "修改", "delete": "删除", "import": "导入", "export": "导出", "health_check": "账户测活", "subscription_check": "订阅检测", "refresh_access_token": "AT 续期", "acquire_refresh_token": "获取 RT", "check": "检测", "refresh": "刷新", "cancel": "取消", "batch_update": "批量修改", "toggle": "启用状态切换", "test": "测试", "restart": "重启"}
 	result := "成功"
 	if status != "success" {
 		result = "失败"
@@ -843,7 +845,7 @@ func (s *Server) auditCompletedTasks() {
 func auditTaskResultSummary(raw string) map[string]any {
 	result := jsonMap(raw)
 	summary := map[string]any{}
-	for _, key := range []string{"requested", "checked", "alive", "banned", "failed", "skipped", "success", "imported", "refreshed"} {
+	for _, key := range []string{"requested", "checked", "alive", "banned", "subscribed", "not_subscribed", "failed", "skipped", "success", "imported", "refreshed"} {
 		if value, ok := result[key]; ok {
 			summary[key] = intValue(value, 0)
 		}
@@ -862,6 +864,8 @@ func auditTaskClassification(taskType string, scheduled bool) (logType, category
 	switch strings.ToLower(strings.TrimSpace(taskType)) {
 	case sunnyHealthTaskType:
 		category, action, entityType, displayName = "account", "health_check", "account_health", "账户测活"
+	case sunnySubscriptionTaskType:
+		category, action, entityType, displayName = "account", "subscription_check", "account_subscription", "订阅检测"
 	case "sunny_refresh_session":
 		category, action, entityType, displayName = "account", "refresh_access_token", "account_token", "AT 续期"
 	case "sunny_acquire_rt":

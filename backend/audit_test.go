@@ -118,6 +118,7 @@ func TestAuditNewFeatureRouteClassification(t *testing.T) {
 		logType                            string
 	}{
 		{"/api/sunny/sessions/health-check", "account", "health_check", "account_health", "task"},
+		{"/api/sunny/sessions/subscription-check", "account", "subscription_check", "account_subscription", "task"},
 		{"/api/sunny/tasks/refresh-session", "account", "refresh_access_token", "account_token", "task"},
 		{"/api/sunny/tasks/acquire-rt", "account", "acquire_refresh_token", "account_token", "task"},
 		{"/api/sunny/sessions/export", "account", "export", "account", "operation"},
