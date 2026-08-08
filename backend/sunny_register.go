@@ -506,6 +506,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 	}
 	if len(parts) == 0 && r.Method == http.MethodGet {
 		q := r.URL.Query()
+		selectionOnly := strings.EqualFold(strings.TrimSpace(q.Get("selection")), "all")
 		summary := boolValue(q.Get("summary"), false)
 		page := intValue(q.Get("page"), 1)
 		if page < 1 {
@@ -557,6 +558,20 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				}
 			}
 			total := int64(len(filtered))
+			if selectionOnly {
+				ids := make([]uint, 0, len(filtered))
+				selectionItems := make([]map[string]any, 0, len(filtered))
+				for _, item := range filtered {
+					id := uint(intValue(item["id"], 0))
+					if id == 0 {
+						continue
+					}
+					ids = append(ids, id)
+					selectionItems = append(selectionItems, map[string]any{"id": id, "email": text(item["email"])})
+				}
+				writeJSON(w, 200, map[string]any{"ids": ids, "items": selectionItems, "total": len(ids)})
+				return
+			}
 			start := (page - 1) * size
 			if start > len(filtered) {
 				start = len(filtered)
@@ -566,6 +581,21 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				end = len(filtered)
 			}
 			writeJSON(w, 200, s.sunnyMailboxListResponse(filtered[start:end], total, page, size, summary))
+			return
+		}
+		if selectionOnly {
+			var rows []struct {
+				ID    uint
+				Email string
+			}
+			query.Select("id", "email").Order("id desc").Scan(&rows)
+			ids := make([]uint, 0, len(rows))
+			selectionItems := make([]map[string]any, 0, len(rows))
+			for _, row := range rows {
+				ids = append(ids, row.ID)
+				selectionItems = append(selectionItems, map[string]any{"id": row.ID, "email": row.Email})
+			}
+			writeJSON(w, 200, map[string]any{"ids": ids, "items": selectionItems, "total": len(ids)})
 			return
 		}
 		var total int64
@@ -1825,6 +1855,12 @@ func (s *Server) sunnyPhones(w http.ResponseWriter, r *http.Request, parts []str
 				query = query.Where("success_count = ?", count)
 			}
 		}
+		if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("selection")), "all") {
+			var ids []uint
+			query.Order("id desc").Pluck("id", &ids)
+			writeJSON(w, 200, map[string]any{"ids": ids, "total": len(ids)})
+			return
+		}
 		var total int64
 		query.Count(&total)
 		query.Order(sunnySortClause(r.URL.Query().Get("sort_by"), r.URL.Query().Get("sort_order"), map[string]string{"last_used_at": "last_used_at", "updated_at": "updated_at", "created_at": "created_at", "cooldown_until": "cooldown_until"}, "id desc")).Limit(pageSize).Offset((page - 1) * pageSize).Find(&rows)
@@ -2466,6 +2502,12 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 			db = db.Where("status = ?", "disabled")
 		case "invalid":
 			db = db.Where("status = ? OR (last_check_ok = ? AND last_checked_at IS NOT NULL)", "invalid", false)
+		}
+		if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("selection")), "all") {
+			var ids []uint
+			db.Order("id desc").Pluck("id", &ids)
+			writeJSON(w, 200, map[string]any{"ids": ids, "total": len(ids)})
+			return
 		}
 		var total int64
 		db.Count(&total)
@@ -3282,6 +3324,12 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 				mailboxEmails := s.db.Model(&SunnyMailbox{}).Select("email").Where("group_id = ?", groupFilter)
 				query = query.Where("email IN (?)", mailboxEmails)
 			}
+			if strings.EqualFold(strings.TrimSpace(q.Get("selection")), "all") {
+				var ids []uint
+				query.Order("id desc").Pluck("id", &ids)
+				writeJSON(w, 200, map[string]any{"ids": ids, "total": len(ids)})
+				return
+			}
 			var total int64
 			query.Count(&total)
 			orderClause := sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "created_at": "created_at", "last_refresh_at": "last_refresh_at", "access_token_expires_at": "expires_at"}, "updated_at desc")
@@ -3324,6 +3372,16 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 				continue
 			}
 			itemsAll = append(itemsAll, item)
+		}
+		if strings.EqualFold(strings.TrimSpace(q.Get("selection")), "all") {
+			ids := make([]uint, 0, len(itemsAll))
+			for _, item := range itemsAll {
+				if id := uint(intValue(item["id"], 0)); id != 0 {
+					ids = append(ids, id)
+				}
+			}
+			writeJSON(w, 200, map[string]any{"ids": ids, "total": len(ids)})
+			return
 		}
 		if sortBy == "" {
 			sortBy = "last_health_checked_at"

@@ -86,7 +86,7 @@ const copy = {
     total: "日志总量", today: "今日新增", failed: "异常/失败", system: "系统事件", search: "搜索摘要、对象、路径、任务或请求 ID...",
     all: "全部", type: "日志类型", category: "操作类别", action: "操作行为", actor: "操作人", ip: "IP 地址", level: "级别", status: "结果",
     source: "来源", entity: "对象类型", task: "任务 ID", request: "请求 ID", from: "开始时间", to: "结束时间", reset: "重置筛选",
-    refresh: "刷新", retention: "保留天数", save: "保存策略", selected: "已选 {count} 项", clear: "清除选择", delete: "删除日志",
+    refresh: "刷新", retention: "保留天数", save: "保存策略", selected: "已选 {count} 项", selectAll: "全选", selectAllDone: "已选中当前筛选结果中的 {count} 条记录", clear: "清除选择", delete: "删除日志",
     deleteSelected: "确认删除选中的日志？", deleteFiltered: "确认删除当前筛选结果？", deleteHint: "删除后不可恢复。",
     exportFormat: "导出格式", export: "异步导出", exportRunning: "正在后台整理并打包日志，请耐心等待...", exportReady: "日志导出完成，已开始下载",
     time: "时间", kind: "类型 / 类别", behavior: "行为", operator: "操作人 / IP", target: "对象 / 任务", result: "结果", summary: "日志摘要", operation: "操作",
@@ -98,7 +98,7 @@ const copy = {
     total: "Total Logs", today: "Today", failed: "Failed / Error", system: "System Events", search: "Search summary, target, path, task, or request ID...",
     all: "All", type: "Log Type", category: "Category", action: "Action", actor: "Actor", ip: "IP Address", level: "Level", status: "Result",
     source: "Source", entity: "Entity Type", task: "Task ID", request: "Request ID", from: "From", to: "To", reset: "Reset Filters",
-    refresh: "Refresh", retention: "Retention", save: "Save Policy", selected: "{count} selected", clear: "Clear", delete: "Delete Logs",
+    refresh: "Refresh", retention: "Retention", save: "Save Policy", selected: "{count} selected", selectAll: "Select All", selectAllDone: "Selected {count} records from the current filters", clear: "Clear", delete: "Delete Logs",
     deleteSelected: "Delete selected logs?", deleteFiltered: "Delete all filtered logs?", deleteHint: "This action cannot be undone.",
     exportFormat: "Export Format", export: "Export Async", exportRunning: "Preparing and packaging logs in the background...", exportReady: "Export completed and download started",
     time: "Time", kind: "Type / Category", behavior: "Action", operator: "Actor / IP", target: "Entity / Task", result: "Result", summary: "Summary", operation: "Action",
@@ -133,6 +133,7 @@ export default function AuditLogPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<number[]>([]);
+  const [selectingAll, setSelectingAll] = useState(false);
   const [detail, setDetail] = useState<AuditRow | null>(null);
   const [retention, setRetention] = useState(7);
   const [savedRetention, setSavedRetention] = useState(7);
@@ -202,6 +203,23 @@ export default function AuditLogPage() {
       await apiFetch("/audit/settings", {method:"PUT", body:JSON.stringify({retention_days:retention, enabled:true})});
       setSavedRetention(retention); setNotice({type:"ok",text:c.saved});
     } catch(error:any) { setNotice({type:"fail",text:error.message||String(error)}); }
+  }
+
+  async function selectAllFiltered() {
+    setSelectingAll(true);
+    try {
+      const params = new URLSearchParams({selection:"all", sort_order:"desc"});
+      Object.entries(activeFilters).forEach(([key,value])=>params.set(key,value));
+      const result = await apiFetch(`/audit/logs?${params.toString()}`);
+      const values = (Array.isArray(result.ids) ? result.ids : []).map(Number).filter((id:number)=>id > 0);
+      const ids = Array.from(new Set<number>(values));
+      setSelected(ids);
+      setNotice({type:"ok",text:interpolate(c.selectAllDone,{count:ids.length})});
+    } catch(error:any) {
+      setNotice({type:"fail",text:error.message||String(error)});
+    } finally {
+      setSelectingAll(false);
+    }
   }
 
   async function deleteLogs() {
@@ -289,7 +307,7 @@ export default function AuditLogPage() {
       <button className="audit-reset" onClick={()=>{setFilters(emptyFilters);setPage(1);setSelected([])}}><FilterX/>{c.reset}</button>
     </div>
     <div className="audit-actions">
-      <div>{selected.length>0 && <span className="audit-selection">{interpolate(c.selected,{count:selected.length})}<button onClick={()=>setSelected([])}>{c.clear}</button></span>}</div>
+      <div className="audit-selection-controls"><button className="audit-select-all" disabled={selectingAll || total <= 0} onClick={selectAllFiltered}>{selectingAll && <Loader2 className="animate-spin"/>}{c.selectAll}</button>{selected.length>0 && <span className="audit-selection">{interpolate(c.selected,{count:selected.length})}<button onClick={()=>setSelected([])}>{c.clear}</button></span>}</div>
       <div className="audit-actions-right">
         <button className="audit-icon-action" onClick={()=>void Promise.all([loadLogs(true),loadMeta()])}><RefreshCw/>{c.refresh}</button>
         <select value={format} onChange={(e)=>setFormat(e.target.value)} aria-label={c.exportFormat}><option value="csv">CSV</option><option value="txt">TXT</option></select>

@@ -561,7 +561,7 @@ const zh: AnyObj = new Proxy({
   smsbowerProvider: "SMSBower 接码供应商", smsbowerDesc: "当自建手机号池不可用或无可用号码时，注册机会使用 SMSBower API 自动获取一次性手机号。", smsbowerSwitch: "启用 SMSBower", smsbowerReady: "SMSBower 已配置", smsbowerApiKey: "API Key", smsbowerCountry: "默认国家", smsbowerService: "默认服务", smsbowerMaxPrice: "最大价格", smsbowerBaseURL: "接口地址", smsbowerCheck: "检测余额", smsbowerBalance: "余额：{balance}", smsbowerSaved: "SMSBower 配置已保存",
   smspoolProvider: "SMSPool 接码供应商", smspoolDesc: "SMSPool 临时号码平台，可在自建手机号池和 SMSBower 不可用时自动购买一次性接码号码。", smspoolSwitch: "启用 SMSPool", smspoolReady: "SMSPool 已配置", smspoolApiKey: "API Key", smspoolCountry: "默认国家", smspoolService: "默认服务", refreshProviderOptions: "获取列表", providerOptionSearch: "搜索 ID、代码或名称...", providerOptionNoResults: "没有匹配的选项", smspoolMaxPrice: "最大价格", smspoolBaseURL: "接口地址", smspoolCheck: "检测余额", smspoolBalance: "余额：{balance}", smspoolSaved: "SMSPool 配置已保存",
   proxyTip: "管理注册机发起注册/登录请求时使用的出站代理池；批量检测仅检测代理服务连通性，不访问 ChatGPT 官网。", proxyPool: "代理池", proxyEnabled: "启用", proxyDisabled: "停用", proxyAvailable: "失效", proxySearch: "搜索代理地址...", proxyCountry: "国家", proxyAllCountry: "全部国家", proxyAddress: "代理地址", proxyBatchCheck: "批量检测", proxyBatchDelete: "批量删除", proxyBatchEdit: "批量修改", proxyAdd: "新增代理", proxyEdit: "编辑代理", proxyCheckDone: "代理检测完成", proxyNoData: "暂无代理", proxyNoDataDesc: "请先新增代理地址，再对启用代理进行批量检测。", proxyStatusEnabled: "启用", proxyStatusDisabled: "停用", proxyStatusInvalid: "失效", proxyLastChecked: "上次检测", proxyLatency: "延迟", proxyCountryPlaceholder: "例如 US / HK / JP / Brazil", proxyCountryKeep: "留空保持各代理原国家不变", proxyAddressPlaceholder: "每行一个代理，例如 http://user:pass@host:port 或 socks5://host:port", proxyConfirmDelete: "确认删除该代理？此操作不可撤销。", proxyConfirmBatchDelete: "确认删除选中的代理？此操作不可撤销。", proxyTrafficSwitch: "注册流量代理", proxyTrafficOn: "代理开启", proxyTrafficOff: "代理关闭", proxyTrafficOnHint: "注册/登录请求走代理池", proxyTrafficOffHint: "使用服务器系统网络出口", proxySwitchSaved: "代理出口设置已更新",
-  selected: "已选", selectedItems: "已选 {count} 项", clearSelection: "清除选择", globalLogs: "全局日志", selectedLogs: "当前邮箱日志", registrationTaskProgress: "注册任务进度", accountRegistrationProgress: "账户注册进度", clearLogs: "清除", latest: "查询最近邮件", done: "操作完成", failed: "操作失败", file: "选择文件", status: "状态", prev: "上一页", next: "下一页", pageSize: "每页", pageInfo: "第 {page} / {pages} 页", pageRange: "显示 {from} 至 {to} 共 {total} 条结果", noLogs: "暂无日志", noRegistrationTask: "暂无注册任务", noAccountProgress: "暂无正在处理的邮箱账户", taskTotal: "任务总数", taskCompleted: "当前完成", completedAccounts: "已完成注册", pendingAccounts: "未完成注册", abnormalAccounts: "注册状态异常", currentStep: "当前步骤", total: "总计", yes: "是", no: "否", step: "步骤",
+  selected: "已选", selectedItems: "已选 {count} 项", selectAll: "全选", selectAllDone: "已选中当前筛选结果中的 {count} 条记录", clearSelection: "清除选择", globalLogs: "全局日志", selectedLogs: "当前邮箱日志", registrationTaskProgress: "注册任务进度", accountRegistrationProgress: "账户注册进度", clearLogs: "清除", latest: "查询最近邮件", done: "操作完成", failed: "操作失败", file: "选择文件", status: "状态", prev: "上一页", next: "下一页", pageSize: "每页", pageInfo: "第 {page} / {pages} 页", pageRange: "显示 {from} 至 {to} 共 {total} 条结果", noLogs: "暂无日志", noRegistrationTask: "暂无注册任务", noAccountProgress: "暂无正在处理的邮箱账户", taskTotal: "任务总数", taskCompleted: "当前完成", completedAccounts: "已完成注册", pendingAccounts: "未完成注册", abnormalAccounts: "注册状态异常", currentStep: "当前步骤", total: "总计", yes: "是", no: "否", step: "步骤",
   progressSteps: { queued: "等待任务调度", initializing: "初始化邮箱任务", proxy_ready: "代理与出口准备完成", browser_started: "启动隔离浏览器", protocol_started: "建立纯协议注册会话", email_submitted: "提交注册邮箱", email_verified: "完成邮箱验证码验证", auth_completed: "完成注册或登录认证", registered: "保存 ChatGPT Session", phone_started: "分配手机号并开始接码", phone_code_received: "收到并提交手机验证码", phone_bound: "完成 Codex 接码绑定", reverse_importing: "正在导入反代平台", reverse_imported: "完成反代平台导入", agent_identity_importing: "正在创建 Agent Identity 并导入反代平台", agent_identity_imported: "完成 Agent Identity 反代导入", stage_incomplete: "目标阶段未完成", cancelled: "任务已由用户中断", failed: "注册流程异常" },
   logProxy: "代理", logMailbox: "邮箱", logPhone: "手机", logSession: "Session", logAuth: "认证", logSystem: "系统",
   defaultGroup: "默认分组", allGroups: "全部分组", mailboxGroup: "所属分组", importMailboxes: "导入邮箱", manualImport: "手动导入", fileImport: "文件导入", dragFile: "拖拽邮箱文件到这里，或点击选择文件", importToGroup: "导入到分组", addGroup: "新建分组", editGroup: "编辑分组名", deleteGroup: "删除分组", enterGroup: "输入分组名后回车", groupCreated: "邮箱分组新建成功", groupRenamed: "邮箱分组名称修改成功", groupDeleted: "邮箱分组删除成功", groupNotEmpty: "该邮箱分组下存在邮箱账户，请移除后再删除分组", defaultGroupCannotDelete: "默认分组不能删除", groupNameConflict: "邮箱分组名称已存在", confirmDeleteGroup: "确认删除该邮箱分组？", mailboxCount: "邮箱数量", validationOk: "校验通过", validationFailed: "校验失败", mailboxList: "邮箱列表", enabled: "启用", updatedAt: "更新时间", actions: "操作", queryMailbox: "搜索邮箱...", allStatus: "全部状态", allPlanTypes: "全部套餐", edit: "编辑", delete: "删除", batchDelete: "批量删除", batchEdit: "批量编辑", confirmDeleteMailbox: "确认删除该邮箱记录？此操作不可撤销。", confirmBatchDeleteMailbox: "确认删除选中的邮箱记录？此操作不可撤销。", queryMail: "邮件查询", currentMailbox: "当前邮箱", getMail: "获取邮件", mailFetchCount: "查询数量", mailFetchCountSuffix: "封", mailList: "邮件列表", sender: "发件人", receiver: "收件人", time: "时间", subject: "主题", content: "邮件内容", emptyMail: "暂无邮件", mailboxName: "邮箱名", password: "密码", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "批量编辑邮箱", applyToSelected: "应用到选中的邮箱", mailboxType: "邮箱类型", microsoftMailbox: "微软邮箱", appleMailbox: "苹果邮箱", channelType: "渠道类型", xbovoChannel: "xbovo", xbovoChannelTip: "验证码查询入口：https://icloud.xbovo.online/code", urlAPIChannel: "url_api", urlAPIChannelTip: "通过邮箱专属取码 URL 查询最新邮件，单次响应最长约 30 秒", icloudAccessKey: "查询 Key", icloudQueryURL: "取码 URL", urlAPIBrowser: "URL API 邮件浏览器", browserBack: "后退", browserForward: "前进", browserReload: "刷新页面", browserLoading: "正在加载邮件页面", browserGetOnly: "当前预览仅支持网页链接和 GET 表单跳转",
@@ -586,7 +586,7 @@ const en = {
   phonePool: "Self-managed Phone Pool", phonePoolGlobalSwitch: "Use Self-managed Phone Pool", importPhones: "Import Phones", phonePoolSwitchTip: "When disabled, SunnyRegister will not allocate numbers from this phone pool. You can switch to external SMS providers later.", phonePoolOn: "Usable for SMS", phonePoolOff: "Not used for SMS", phoneImportHelp: "One long-lived SMS record per line. The first character must be +, and the phone number and SMS URL must be separated with exactly four hyphens: ----.", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "Invalid phone import format", phoneSearch: "Search phone number...", phoneNumber: "Phone Number", smsLink: "SMS Link", usedCount: "Used Count", countFilter: "Count", allCount: "All Counts", lastUsedAt: "Last Used", phoneEdit: "Edit Phone", phoneStatusEnabled: "Enabled", phoneStatusDisabled: "Disabled", phoneConfirmDelete: "Delete this phone number? This cannot be undone.", phoneConfirmBatchDelete: "Delete selected phone numbers? This cannot be undone.", smsbowerProvider: "SMSBower Provider", smsbowerDesc: "When the self-managed phone pool is unavailable or empty, SunnyRegister can use SMSBower API to rent a one-time number automatically.", smsbowerSwitch: "Enable SMSBower", smsbowerReady: "SMSBower configured", smsbowerApiKey: "API Key", smsbowerCountry: "Default Country", smsbowerService: "Default Service", smsbowerMaxPrice: "Max Price", smsbowerBaseURL: "API URL", smsbowerCheck: "Check Balance", smsbowerBalance: "Balance: {balance}", smsbowerSaved: "SMSBower config saved", smspoolProvider: "SMSPool Provider", smspoolDesc: "SMSPool is a temporary-number provider used when the self-managed phone pool and SMSBower are unavailable.", smspoolSwitch: "Enable SMSPool", smspoolReady: "SMSPool configured", smspoolApiKey: "API Key", smspoolCountry: "Default Country", smspoolService: "Default Service", refreshProviderOptions: "Fetch options", providerOptionSearch: "Search by ID, code, or name...", providerOptionNoResults: "No matching options", smspoolMaxPrice: "Max Price", smspoolBaseURL: "API URL", smspoolCheck: "Check Balance", smspoolBalance: "Balance: {balance}", smspoolSaved: "SMSPool config saved",
   proxyTip: "Manage the outbound proxy pool for register/login requests. Batch check only tests proxy server connectivity and does not access chatgpt.com.",
   proxyPool: "Proxy Pool", proxyEnabled: "Enabled", proxyAvailable: "Invalid", proxySearch: "Search proxy address...", proxyCountry: "Country", proxyAllCountry: "All Countries", proxyAddress: "Proxy Address", proxyBatchCheck: "Batch Check", proxyBatchDelete: "Batch Delete", proxyBatchEdit: "Batch Edit", proxyAdd: "Add Proxy", proxyEdit: "Edit Proxy", proxyCheckDone: "Proxy check completed", proxyNoData: "No Proxies", proxyNoDataDesc: "Add proxy addresses first, then batch-check enabled proxies.", proxyStatusEnabled: "Enabled", proxyStatusDisabled: "Disabled", proxyStatusInvalid: "Invalid", proxyLastChecked: "Last Checked", proxyLatency: "Latency", proxyCountryPlaceholder: "e.g. US / HK / JP / Brazil", proxyCountryKeep: "Leave blank to keep each proxy's current country", proxyAddressPlaceholder: "One proxy per line, e.g. http://user:pass@host:port or socks5://host:port", proxyConfirmDelete: "Delete this proxy? This cannot be undone.", proxyConfirmBatchDelete: "Delete selected proxies? This cannot be undone.", proxyTrafficSwitch: "Register Traffic Proxy", proxyTrafficOn: "Proxy On", proxyTrafficOff: "Proxy Off", proxyTrafficOnHint: "Register/login requests use proxy pool", proxyTrafficOffHint: "Use server/system network", proxySwitchSaved: "Proxy outlet setting updated",
-  selected: "Selected", selectedItems: "{count} selected", clearSelection: "Clear Selection", globalLogs: "Global Logs", selectedLogs: "Current Mailbox Logs", registrationTaskProgress: "Registration Progress", accountRegistrationProgress: "Account Progress", clearLogs: "Clear", latest: "Latest Mail", done: "Done", failed: "Failed", file: "Choose File", status: "Status", prev: "Prev", next: "Next", pageSize: "Per page", pageInfo: "Page {page} / {pages}", pageRange: "Showing {from} to {to} of {total} results", noLogs: "No logs", noRegistrationTask: "No registration task yet", noAccountProgress: "No mailbox account is being processed", taskTotal: "Task Total", taskCompleted: "Completed", completedAccounts: "Completed Accounts", pendingAccounts: "Pending Accounts", abnormalAccounts: "Abnormal Accounts", currentStep: "Current Step", total: "Total", yes: "Yes", no: "No", step: "STEP",
+  selected: "Selected", selectedItems: "{count} selected", selectAll: "Select All", selectAllDone: "Selected {count} records from the current filters", clearSelection: "Clear Selection", globalLogs: "Global Logs", selectedLogs: "Current Mailbox Logs", registrationTaskProgress: "Registration Progress", accountRegistrationProgress: "Account Progress", clearLogs: "Clear", latest: "Latest Mail", done: "Done", failed: "Failed", file: "Choose File", status: "Status", prev: "Prev", next: "Next", pageSize: "Per page", pageInfo: "Page {page} / {pages}", pageRange: "Showing {from} to {to} of {total} results", noLogs: "No logs", noRegistrationTask: "No registration task yet", noAccountProgress: "No mailbox account is being processed", taskTotal: "Task Total", taskCompleted: "Completed", completedAccounts: "Completed Accounts", pendingAccounts: "Pending Accounts", abnormalAccounts: "Abnormal Accounts", currentStep: "Current Step", total: "Total", yes: "Yes", no: "No", step: "STEP",
   progressSteps: { queued: "Waiting for task scheduling", initializing: "Initializing mailbox task", proxy_ready: "Proxy and network outlet ready", browser_started: "Starting isolated browser", protocol_started: "Establishing protocol registration session", email_submitted: "Submitting registration email", email_verified: "Email verification completed", auth_completed: "Registration or login authenticated", registered: "ChatGPT Session saved", phone_started: "Allocating phone and starting SMS", phone_code_received: "Phone code received and submitted", phone_bound: "Codex phone binding completed", reverse_importing: "Importing to reverse proxy", reverse_imported: "Reverse proxy import completed", agent_identity_importing: "Creating Agent Identity and importing to reverse proxy", agent_identity_imported: "Agent Identity reverse proxy import completed", stage_incomplete: "Target stage incomplete", cancelled: "Task interrupted by user", failed: "Registration flow failed" },
   logProxy: "Proxy", logMailbox: "Mailbox", logPhone: "Phone", logSession: "Session", logAuth: "Auth", logSystem: "System",
   defaultGroup: "Default Group", allGroups: "All Groups", mailboxGroup: "Group", importMailboxes: "Import Mailboxes", manualImport: "Manual", fileImport: "File", dragFile: "Drag mailbox file here, or click to choose a file", importToGroup: "Import to group", addGroup: "New Group", editGroup: "Rename Group", deleteGroup: "Delete Group", enterGroup: "Type group name and press Enter", groupCreated: "Mailbox group created", groupRenamed: "Mailbox group renamed", groupDeleted: "Mailbox group deleted", groupNotEmpty: "This mailbox group contains accounts. Move them before deleting the group.", defaultGroupCannotDelete: "The default group cannot be deleted", groupNameConflict: "A mailbox group with this name already exists", confirmDeleteGroup: "Delete this mailbox group?", mailboxCount: "Mailboxes", validationOk: "Validation passed", validationFailed: "Validation failed", mailboxList: "Mailbox List", enabled: "Enabled", updatedAt: "Updated", actions: "Actions", queryMailbox: "Search mailbox...",
@@ -755,12 +755,24 @@ function nextSortOrder(v: SortOrder): SortOrder { return v === "asc" ? "desc" : 
 function SortTimeHeader({ label, order, onToggle }: { label: string; order: SortOrder; onToggle: () => void }) {
   return <button type="button" className="sr-sort-th" onClick={onToggle} title={order === "asc" ? "ASC" : "DESC"}><span>{label}</span><span className="sr-sort-icon">{order === "asc" ? "↑" : "↓"}</span></button>;
 }
-function SelectionSummary({ t, count, onClear }: { t: typeof zh; count: number; onClear: () => void }) {
-  if (count <= 0) return null;
+function SelectionSummary({ t, count, total, selectingAll, onSelectAll, onClear }: { t: typeof zh; count: number; total: number; selectingAll: boolean; onSelectAll: () => void; onClear: () => void }) {
   return <div className="sr-selection-summary" aria-live="polite">
-    <span>{template(t.selectedItems, { count })}</span>
-    <button type="button" className="sr-clear-selection" onClick={onClear}>{t.clearSelection}</button>
+    <button type="button" className="sr-select-all" disabled={selectingAll || total <= 0} onClick={onSelectAll}>{selectingAll && <Loader2 className="h-3.5 w-3.5 animate-spin"/>}{t.selectAll}</button>
+    {count > 0 && <><span>{template(t.selectedItems, { count })}</span><button type="button" className="sr-clear-selection" onClick={onClear}>{t.clearSelection}</button></>}
   </div>;
+}
+
+function allSelectionParams(params: URLSearchParams) {
+  const next = new URLSearchParams(params);
+  next.delete("page");
+  next.delete("page_size");
+  next.set("selection", "all");
+  return next;
+}
+
+function selectionIDs(result: AnyObj): number[] {
+  const ids = (Array.isArray(result?.ids) ? result.ids : []).map(Number).filter((id: number)=>id > 0);
+  return Array.from(new Set<number>(ids));
 }
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 function pageCount(total: number, pageSize: number) {
@@ -854,6 +866,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const [mailboxes, setMailboxes] = useCachedState<AnyObj[]>("workbench.mailboxes", []);
   const [groups, setGroups] = useCachedState<AnyObj[]>("workbench.groups", []);
   const [selected, setSelected] = useCachedState<number[]>("workbench.selected", []);
+  const [selectingAll, setSelectingAll] = useState(false);
   const [selectedRowCache, setSelectedRowCache] = useCachedState<Record<string,AnyObj>>("workbench.selectedRows", {});
   const [query, setQuery] = useCachedState("workbench.query", "");
   const debouncedQuery = useDebouncedValue(query);
@@ -907,6 +920,26 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       notify("ok", t.refreshDone);
     } catch (e: any) {
       notify("fail", e.message || String(e));
+    }
+  };
+  const selectAllFiltered = async () => {
+    setSelectingAll(true);
+    try {
+      const params = new URLSearchParams({ enabled: "true", summary: "true", sort_by: "status_changed_at", sort_order: timeSort });
+      if (debouncedQuery.trim()) params.set("q", debouncedQuery.trim());
+      if (groupFilter) params.set("group_id", String(groupFilter));
+      if (status) params.set("status", status);
+      if (planFilter) params.set("plan_type", planFilter);
+      const result = await apiFetch(`/sunny/mailboxes?${allSelectionParams(params).toString()}`);
+      const ids = selectionIDs(result);
+      const selectionItems = Array.isArray(result.items) ? result.items : [];
+      setSelected(ids);
+      setSelectedRowCache(Object.fromEntries(selectionItems.map((item: AnyObj)=>[String(item.id), { id:Number(item.id), email:String(item.email || ""), account:{id:0} }])));
+      notify("ok", template(t.selectAllDone, { count: ids.length }));
+    } catch (e: any) {
+      notify("fail", e.message || String(e));
+    } finally {
+      setSelectingAll(false);
     }
   };
   useEffect(() => { void load(); }, [pageNo, pageSize, debouncedQuery, status, planFilter, groupFilter, timeSort]);
@@ -1267,7 +1300,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     </div>
     <Card className="sr-toolbar rounded-[18px] p-5">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-4"><h2 className="text-2xl font-bold text-slate-950 dark:text-white">ChatGPT</h2><SelectionSummary t={t} count={selected.length} onClear={clearWorkbenchSelection}/></div>
+        <div className="flex items-center gap-4"><h2 className="text-2xl font-bold text-slate-950 dark:text-white">ChatGPT</h2><SelectionSummary t={t} count={selected.length} total={total} selectingAll={selectingAll} onSelectAll={selectAllFiltered} onClear={clearWorkbenchSelection}/></div>
         <div className="flex flex-wrap gap-2">
           <button className="sr-btn sr-danger-btn disabled:cursor-not-allowed disabled:opacity-50" title={activeTaskId || submittingTask ? t.interruptTaskTip : ""} onClick={cancelActiveTask} disabled={(!activeTaskId && !submittingTask) || stopRequested}><X className="h-4 w-4"/>{stopRequested ? t.interruptingTask : t.interruptTask}</button>
           <span title={busy ? t.registerTaskRunning : !selected.length ? t.chooseMailbox : ""}>
@@ -1417,6 +1450,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   const [planFilter,setPlanFilter]=useCachedState("mailbox.planFilter", "");
   const [timeSort,setTimeSort]=useCachedState<SortOrder>("mailbox.timeSort", "desc");
   const [selected,setSelected]=useCachedState<number[]>("mailbox.selected", []);
+  const [selectingAll,setSelectingAll]=useState(false);
   const [importOpen,setImportOpen]=useState(false);
   const [editing,setEditing]=useState<AnyObj|null>(null);
   const [batchEditing,setBatchEditing]=useState(false);
@@ -1439,6 +1473,21 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
     setMailboxTotal(Number(m.mailbox_total || 0));
     setStatusCounts(m.status_counts || {});
   });
+  const selectAllFiltered=async()=>{
+    setSelectingAll(true);
+    try {
+      const params=new URLSearchParams({summary:"true",sort_by:"updated_at",sort_order:timeSort});
+      if(debouncedQuery.trim()) params.set("q",debouncedQuery.trim());
+      if(groupFilter) params.set("group_id",String(groupFilter));
+      if(statusFilter) params.set("status",statusFilter);
+      if(planFilter) params.set("plan_type",planFilter);
+      const result=await apiFetch(`/sunny/mailboxes?${allSelectionParams(params).toString()}`);
+      const ids=selectionIDs(result);
+      setSelected(ids);
+      notify("ok",template(t.selectAllDone,{count:ids.length}));
+    } catch(e:any) { notify("fail",e.message||String(e)); }
+    finally { setSelectingAll(false); }
+  };
   useEffect(()=>{void load()},[page, debouncedQuery, groupFilter, statusFilter, planFilter, timeSort, pageSize]);
   const loadGroups=()=>apiFetch("/sunny/mailbox-groups").then((g)=>{setGroups(g.items||[]);return g.items||[]});
   useEffect(()=>{void loadGroups().catch(()=>{})},[]);
@@ -1529,7 +1578,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
               <SelectBox className="sr-select-like" value={statusFilter} onChange={(v)=>setStatusFilter(String(v))} options={[{value:"",label:t.allStatus}, ...MAILBOX_STATUSES.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))]} />
               <SelectBox className="sr-select-like" value={planFilter} onChange={(v)=>setPlanFilter(String(v))} options={[{value:"",label:t.allPlanTypes}, ...PLAN_TYPE_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))]} />
             </div>
-            <div className="sr-mailbox-actions flex flex-nowrap items-center gap-2"><SelectionSummary t={t} count={selected.length} onClear={()=>setSelected([])}/>{selected.length > 0 && <ConfirmBubble message={t.confirmBatchDeleteMailbox} detail={`${selected.length} ${t.selected}`} onConfirm={batchDelete}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.batchDelete} ({selected.length})</Button></ConfirmBubble>}{selected.length > 0 && <Button variant="outline" className="rounded-xl border-emerald-200 text-emerald-700" onClick={()=>setBatchEditing(true)}>{t.batchEdit} ({selected.length})</Button>}<button className="sr-text-btn sr-action-refresh" onClick={load}><RefreshCw className="h-4 w-4"/>{t.refresh}</button><Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setImportOpen(true)}><Download className="mr-2 h-4 w-4"/>{t.importMailboxes}</Button></div>
+            <div className="sr-mailbox-actions flex flex-nowrap items-center gap-2"><SelectionSummary t={t} count={selected.length} total={total} selectingAll={selectingAll} onSelectAll={selectAllFiltered} onClear={()=>setSelected([])}/>{selected.length > 0 && <ConfirmBubble message={t.confirmBatchDeleteMailbox} detail={`${selected.length} ${t.selected}`} onConfirm={batchDelete}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.batchDelete} ({selected.length})</Button></ConfirmBubble>}{selected.length > 0 && <Button variant="outline" className="rounded-xl border-emerald-200 text-emerald-700" onClick={()=>setBatchEditing(true)}>{t.batchEdit} ({selected.length})</Button>}<button className="sr-text-btn sr-action-refresh" onClick={load}><RefreshCw className="h-4 w-4"/>{t.refresh}</button><Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setImportOpen(true)}><Download className="mr-2 h-4 w-4"/>{t.importMailboxes}</Button></div>
           </div>
         </div>
         <div className="sr-table-card sr-mailbox-table-panel overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
@@ -1965,6 +2014,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   const [countFilter,setCountFilter]=useCachedState("phone.count","all");
   const [timeSort,setTimeSort]=useCachedState<SortOrder>("phone.timeSort","desc");
   const [selected,setSelected]=useCachedState<number[]>("phone.selected",[]);
+  const [selectingAll,setSelectingAll]=useState(false);
   const [page,setPage]=useCachedState("phone.page",1);
   const [pageSize,setPageSize]=useCachedState("phone.pageSize",10);
   const [phoneCfg,setPhoneCfg]=useCachedState<AnyObj>("phone.config",{pool_enabled:true, smsbower_enabled:false, smsbower_base_url:"https://smsbower.page/stubs/handler_api.php", smsbower_default_country:"187", smsbower_default_service:"dr", smsbower_max_price:-1, smspool_enabled:false, smspool_base_url:"https://api.smspool.net", smspool_default_country:"1", smspool_default_service:"671", smspool_max_price:-1});
@@ -1986,6 +2036,20 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
     setItems(data.items || []);
     setTotal(data.total || 0);
   });
+  const selectAllFiltered=async()=>{
+    setSelectingAll(true);
+    try {
+      const params=new URLSearchParams({sort_by:"last_used_at",sort_order:timeSort});
+      if(debouncedQuery.trim()) params.set("q",debouncedQuery.trim());
+      if(statusFilter) params.set("status",statusFilter);
+      if(countFilter!=="all") params.set("count",countFilter);
+      const result=await apiFetch(`/sunny/phones?${allSelectionParams(params).toString()}`);
+      const ids=selectionIDs(result);
+      setSelected(ids);
+      notify("ok",template(t.selectAllDone,{count:ids.length}));
+    } catch(e:any) { notify("fail",e.message||String(e)); }
+    finally { setSelectingAll(false); }
+  };
   useEffect(()=>{void load()},[page, debouncedQuery, statusFilter, countFilter, timeSort, pageSize]);
   useEffect(()=>{apiFetch("/sunny/phones/config").then((cfg)=>{ const next = cfg || {pool_enabled:true}; setPhoneCfg(next); setSavedPhoneCfg(next); }).catch(()=>{})},[]);
   useEffect(()=>{setPage(1)},[query, statusFilter, countFilter, timeSort, pageSize]);
@@ -2212,7 +2276,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
             <SelectBox className="sr-select-like" value={countFilter} onChange={(v)=>setCountFilter(String(v))} options={countOptions} />
           </div>
           <div className="flex flex-nowrap gap-2">
-            <SelectionSummary t={t} count={selected.length} onClear={()=>setSelected([])}/>
+            <SelectionSummary t={t} count={selected.length} total={total} selectingAll={selectingAll} onSelectAll={selectAllFiltered} onClear={()=>setSelected([])}/>
             {selected.length > 0 && <ConfirmBubble message={t.phoneConfirmBatchDelete} detail={`${selected.length} ${t.selected}`} onConfirm={batchDelete}><Button variant="outline" className="rounded-xl border-red-200 text-red-500">{t.batchDelete} ({selected.length})</Button></ConfirmBubble>}
             <button className="sr-text-btn sr-action-refresh" onClick={()=>run(t.refreshDone, load)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
             <Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={()=>setImportOpen(true)}><Download className="mr-2 h-4 w-4"/>{t.importPhones}</Button>
@@ -2529,6 +2593,7 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
   const { loading: listLoading, track: trackListLoad } = useLoadingTracker();
   const [editing,setEditing]=useCachedState<AnyObj|null>("proxy.editing",null);
   const [selected,setSelected]=useCachedState<number[]>("proxy.selected",[]);
+  const [selectingAll,setSelectingAll]=useState(false);
   const [batchEditing,setBatchEditing]=useCachedState<AnyObj|null>("proxy.batchEditing",null);
   const [proxyCfg,setProxyCfg]=useCachedState<AnyObj>("proxy.cfg",{proxy_enabled:true});
   const [proxySaving,setProxySaving]=useCachedState("proxy.savingCfg",false);
@@ -2540,6 +2605,17 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
     setCountries(res.countries || []);
     setTotal(Number(res.total || 0));
   });
+  const selectAllFiltered=async()=>{
+    setSelectingAll(true);
+    try {
+      const qs=new URLSearchParams({q:debouncedQuery,status,country,sort_by:"last_checked_at",sort_order:timeSort});
+      const result=await apiFetch(`/sunny/proxy-config/pool?${allSelectionParams(qs).toString()}`);
+      const ids=selectionIDs(result);
+      setSelected(ids);
+      notify("ok",template(t.selectAllDone,{count:ids.length}));
+    } catch(e:any) { notify("fail",e.message||String(e)); }
+    finally { setSelectingAll(false); }
+  };
   const loadConfig = async () => {
     const cfg = await apiFetch("/sunny/proxy-config");
     setProxyCfg(cfg || {proxy_enabled:true});
@@ -2645,7 +2721,7 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
           <SelectBox className="sr-select-like" value={country} onChange={(v)=>setCountry(String(v))} options={countryOptions} />
         </div>
         <div className="sr-proxy-toolbar-actions flex flex-wrap gap-2">
-          <SelectionSummary t={t} count={selected.length} onClear={()=>setSelected([])}/>
+          <SelectionSummary t={t} count={selected.length} total={total} selectingAll={selectingAll} onSelectAll={selectAllFiltered} onClear={()=>setSelected([])}/>
           {selected.length > 0 && <Button variant="outline" className="sr-proxy-command-button" onClick={()=>setBatchEditing({country:"",status:"启用"})}>{t.proxyBatchEdit} ({selected.length})</Button>}
           {selected.length > 0 && <ConfirmBubble message={t.proxyConfirmBatchDelete} detail={`${selected.length} ${t.selected}`} onConfirm={batchDeleteProxy}><Button variant="outline" className="sr-proxy-command-button border-red-200 text-red-500">{t.proxyBatchDelete} ({selected.length})</Button></ConfirmBubble>}
           <button className="sr-text-btn sr-action-refresh sr-proxy-command-button" onClick={refreshProxyList}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
@@ -2754,6 +2830,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const [group,setGroup]=useCachedState("session.group","");
   const [groups,setGroups]=useState<AnyObj[]>([]);
   const [selected,setSelected]=useCachedState<number[]>("session.selected",[]);
+  const [selectingAll,setSelectingAll]=useState(false);
   const [editing,setEditing]=useCachedState<AnyObj|null>("session.editing",null);
   const [fieldLoading,setFieldLoading]=useState<Record<string,boolean>>({});
   const [mailboxForMail,setMailboxForMail]=useState<AnyObj|null>(null);
@@ -2793,6 +2870,21 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     setItems(res.items||[]);
     setTotal(Number(res.total || 0));
   });
+  const selectAllFiltered=async()=>{
+    setSelectingAll(true);
+    try {
+      const qs=new URLSearchParams({sort_by:sortBy,sort_order:timeSort});
+      if(debouncedQuery.trim()) qs.set("q",debouncedQuery.trim());
+      if(status) qs.set("status",status);
+      if(plan) qs.set("plan_type",plan);
+      if(group) qs.set("group_id",group);
+      const result=await apiFetch(`/sunny/sessions?${allSelectionParams(qs).toString()}`);
+      const ids=selectionIDs(result);
+      setSelected(ids);
+      notify("ok",template(t.selectAllDone,{count:ids.length}));
+    } catch(e:any) { notify("fail",e.message||String(e)); }
+    finally { setSelectingAll(false); }
+  };
   useEffect(()=>{void load()},[sortBy, timeSort, page, pageSize, debouncedQuery, status, plan, group]);
   useEffect(()=>{setPage(1)},[sortBy, timeSort, pageSize, query, status, plan, group]);
   useEffect(()=>{apiFetch("/sunny/mailbox-groups").then((res)=>setGroups(res.items||[])).catch(()=>setGroups([]));},[]);
@@ -2986,7 +3078,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       <SelectBox className="sr-select-like" value={group} onChange={(v)=>setGroup(String(v))} options={[{value:"",label:t.allGroups}, ...groups.map((item)=>({value:String(item.id),label:item.name}))]} />
       <SelectBox className="sr-select-like" value={status} onChange={(v)=>setStatus(String(v))} options={[{value:"",label:t.allStatus}, ...SESSION_STATUS_OPTIONS.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))]} />
       <SelectBox className="sr-select-like" value={plan} onChange={(v)=>setPlan(String(v))} options={[{value:"",label:t.planType}, ...SESSION_PLAN_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))]} />
-      <SelectionSummary t={t} count={selected.length} onClear={()=>setSelected([])}/>
+      <SelectionSummary t={t} count={selected.length} total={total} selectingAll={selectingAll} onSelectAll={selectAllFiltered} onClear={()=>setSelected([])}/>
       <div className="ml-auto flex items-center gap-2">
         {activeRenewalTasks.length > 0 && <button className={cn("sr-text-btn sr-action-danger",stoppingRenewal&&"is-running")} aria-busy={stoppingRenewal} disabled={stoppingRenewal} title={t.stopRenewalTip} onClick={()=>void stopRenewalTasks()}>{stoppingRenewal ? <Loader2 className="h-4 w-4 animate-spin"/> : <X className="h-4 w-4"/>}{stoppingRenewal ? t.stoppingRenewal : t.stopRenewal}</button>}
         <button className={cn("sr-text-btn sr-action-info",batchATCheckBusy&&"is-running")} aria-busy={batchATCheckBusy} disabled={batchATCheckBusy || selected.length === 0 || selected.some((id)=>atCheckingSessionIds.includes(id)||refreshingSessionIds.includes(id))} title={selected.length === 0 ? t.refreshATNoSelection : t.refreshAT} onClick={()=>refreshAccessTokens(selected)}>{batchATCheckBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{batchATCheckBusy ? t.refreshingAT : t.refreshAT}</button>

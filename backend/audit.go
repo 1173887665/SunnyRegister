@@ -518,6 +518,12 @@ func (s *Server) handleAuditList(w http.ResponseWriter, r *http.Request) {
 		size = 100
 	}
 	query := applyAuditFilters(s.db.Model(&AuditLog{}), auditQueryValues(r), nil)
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("selection")), "all") {
+		var ids []uint
+		query.Order("occurred_at DESC, id DESC").Pluck("id", &ids)
+		writeJSON(w, 200, map[string]any{"ids": ids, "total": len(ids)})
+		return
+	}
 	var total int64
 	query.Count(&total)
 	order := "occurred_at DESC, id DESC"
