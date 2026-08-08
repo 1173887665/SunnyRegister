@@ -105,7 +105,18 @@ func (s *Server) sunnyMailboxGroups(w http.ResponseWriter, r *http.Request, part
 	if len(parts) == 0 && r.Method == http.MethodGet {
 		s.sunnyEnsureDefaultGroup()
 		var rows []SunnyMailboxGroup
-		s.db.Order("id asc").Find(&rows)
+		s.db.Find(&rows)
+		sort.SliceStable(rows, func(i, j int) bool {
+			iDefault := rows[i].Name == defaultGroupName
+			jDefault := rows[j].Name == defaultGroupName
+			if iDefault != jDefault {
+				return iDefault
+			}
+			if !rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
+				return rows[i].CreatedAt.After(rows[j].CreatedAt)
+			}
+			return rows[i].ID > rows[j].ID
+		})
 		var countRows []struct {
 			GroupID uint  `gorm:"column:group_id"`
 			Count   int64 `gorm:"column:mailbox_count"`
