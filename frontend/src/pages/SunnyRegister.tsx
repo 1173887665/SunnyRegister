@@ -560,6 +560,7 @@ const zh: AnyObj = new Proxy({
   phoneTip: "格式：+手机号----接码链接。成功后冷却 5 小时，最多 3 次。", phonePool: "自建手机号池", phonePoolGlobalSwitch: "使用自建手机号池", importPhones: "导入手机号", phonePoolSwitchTip: "关闭后，注册机不会从自建手机号池分配号码；后续可切换为外部接码平台。", phonePoolOn: "可用于接码", phonePoolOff: "不用于接码", phoneImportHelp: "每行一个长效接码：第一个字符必须是 +，手机号与接码链接之间必须使用四个中横线 ---- 连接。", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "手机号导入格式错误", phoneSearch: "搜索手机号...", phoneNumber: "手机号", smsLink: "接码链接", usedCount: "已用次数", countFilter: "次数筛选", allCount: "全部次数", lastUsedAt: "最近使用时间", phoneEdit: "编辑手机号", phoneStatusEnabled: "启用", phoneStatusDisabled: "停用", phoneConfirmDelete: "确认删除该手机号？此操作不可撤销。", phoneConfirmBatchDelete: "确认删除选中的手机号？此操作不可撤销。",
   smsbowerProvider: "SMSBower 接码供应商", smsbowerDesc: "当自建手机号池不可用或无可用号码时，注册机会使用 SMSBower API 自动获取一次性手机号。", smsbowerSwitch: "启用 SMSBower", smsbowerReady: "SMSBower 已配置", smsbowerApiKey: "API Key", smsbowerCountry: "默认国家", smsbowerService: "默认服务", smsbowerMaxPrice: "最大价格", smsbowerBaseURL: "接口地址", smsbowerCheck: "检测余额", smsbowerBalance: "余额：{balance}", smsbowerSaved: "SMSBower 配置已保存",
   smspoolProvider: "SMSPool 接码供应商", smspoolDesc: "SMSPool 临时号码平台，可在自建手机号池和 SMSBower 不可用时自动购买一次性接码号码。", smspoolSwitch: "启用 SMSPool", smspoolReady: "SMSPool 已配置", smspoolApiKey: "API Key", smspoolCountry: "默认国家", smspoolService: "默认服务", refreshProviderOptions: "获取列表", providerOptionSearch: "搜索 ID、代码或名称...", providerOptionNoResults: "没有匹配的选项", smspoolMaxPrice: "最大价格", smspoolBaseURL: "接口地址", smspoolCheck: "检测余额", smspoolBalance: "余额：{balance}", smspoolSaved: "SMSPool 配置已保存",
+  firefoxProvider: "FireFox 接码供应商", firefoxDesc: "FireFox 临时号码平台。取号时强制限制最高单价，每 5 秒轮询验证码，不可用号码将在 35 秒后自动释放。", firefoxSwitch: "启用 FireFox", firefoxReady: "FireFox 已配置", firefoxApiName: "API 账号", firefoxPassword: "API 密码", firefoxCountry: "默认国家", firefoxService: "默认服务", firefoxMaxPrice: "单号最高价格", firefoxBaseURL: "接口地址", firefoxCheck: "检测余额", firefoxBalance: "余额：{balance}", firefoxSaved: "FireFox 配置已保存", firefoxMaxPriceRequired: "FireFox 单号最高价格必须大于 0",
   proxyTip: "管理注册机发起注册/登录请求时使用的出站代理池；批量检测仅检测代理服务连通性，不访问 ChatGPT 官网。", proxyPool: "代理池", proxyEnabled: "启用", proxyDisabled: "停用", proxyAvailable: "失效", proxySearch: "搜索代理地址...", proxyCountry: "国家", proxyAllCountry: "全部国家", proxyAddress: "代理地址", proxyBatchCheck: "批量检测", proxyBatchDelete: "批量删除", proxyBatchEdit: "批量修改", proxyAdd: "新增代理", proxyEdit: "编辑代理", proxyCheckDone: "代理检测完成", proxyNoData: "暂无代理", proxyNoDataDesc: "请先新增代理地址，再对启用代理进行批量检测。", proxyStatusEnabled: "启用", proxyStatusDisabled: "停用", proxyStatusInvalid: "失效", proxyLastChecked: "上次检测", proxyLatency: "延迟", proxyCountryPlaceholder: "例如 US / HK / JP / Brazil", proxyCountryKeep: "留空保持各代理原国家不变", proxyAddressPlaceholder: "每行一个代理，例如 http://user:pass@host:port 或 socks5://host:port", proxyConfirmDelete: "确认删除该代理？此操作不可撤销。", proxyConfirmBatchDelete: "确认删除选中的代理？此操作不可撤销。", proxyTrafficSwitch: "注册流量代理", proxyTrafficOn: "代理开启", proxyTrafficOff: "代理关闭", proxyTrafficOnHint: "注册/登录请求走代理池", proxyTrafficOffHint: "使用服务器系统网络出口", proxySwitchSaved: "代理出口设置已更新",
   selected: "已选", selectedItems: "已选 {count} 项", selectAll: "全选", selectAllDone: "已选中当前筛选结果中的 {count} 条记录", clearSelection: "清除选择", globalLogs: "全局日志", selectedLogs: "当前邮箱日志", registrationTaskProgress: "注册任务进度", accountRegistrationProgress: "账户注册进度", clearLogs: "清除", latest: "查询最近邮件", done: "操作完成", failed: "操作失败", file: "选择文件", status: "状态", prev: "上一页", next: "下一页", pageSize: "每页", pageInfo: "第 {page} / {pages} 页", pageRange: "显示 {from} 至 {to} 共 {total} 条结果", noLogs: "暂无日志", noRegistrationTask: "暂无注册任务", noAccountProgress: "暂无正在处理的邮箱账户", taskTotal: "任务总数", taskCompleted: "当前完成", completedAccounts: "已完成注册", pendingAccounts: "未完成注册", abnormalAccounts: "注册状态异常", currentStep: "当前步骤", total: "总计", yes: "是", no: "否", step: "步骤",
   progressSteps: { queued: "等待任务调度", initializing: "初始化邮箱任务", proxy_ready: "代理与出口准备完成", browser_started: "启动隔离浏览器", protocol_started: "建立纯协议注册会话", email_submitted: "提交注册邮箱", email_verified: "完成邮箱验证码验证", auth_completed: "完成注册或登录认证", registered: "保存 ChatGPT Session", phone_started: "分配手机号并开始接码", phone_code_received: "收到并提交手机验证码", phone_bound: "完成 Codex 接码绑定", reverse_importing: "正在导入反代平台", reverse_imported: "完成反代平台导入", agent_identity_importing: "正在创建 Agent Identity 并导入反代平台", agent_identity_imported: "完成 Agent Identity 反代导入", stage_incomplete: "目标阶段未完成", cancelled: "任务已由用户中断", failed: "注册流程异常" },
@@ -583,7 +584,7 @@ const en = {
   register: "Register / Login", refresh: "Refresh", import: "Import", save: "Save", export: "Export", copy: "Copy", close: "Close", copySuccess: "Copied", secretKeyUnavailable: "This mailbox credential is incomplete and its SK cannot be copied", newGroup: "New Group", move: "Move Group",
   mailboxTip: "Microsoft mailboxes use four-part OAuth credentials. Apple iCloud mailboxes use the selected channel API for mail and OTP queries.", mailboxPoolName: "Self-managed Mailbox Pool", mailboxPoolGlobalSwitch: "Use Self-managed Mailbox Pool", mailboxPoolSwitchTip: "When disabled, SunnyRegister will not allocate mailboxes from the self-managed pool.", mailboxOverviewTotal: "Total Mailboxes", mailboxOverviewPending: "Pending", mailboxOverviewRegistered: "Registered", mailboxOverviewPhoneBound: "Phone Bound", mailboxOverviewReversed: "Reverse Proxied", mailboxOverviewBanned: "Banned", mailboxOverviewNeeds2FA: "Needs 2FA", mailboxOverviewFailed: "Failed",
   phoneTip: "Format: +phone----SMS URL. Cooldown 5 hours after success, max 3 successes.",
-  phonePool: "Self-managed Phone Pool", phonePoolGlobalSwitch: "Use Self-managed Phone Pool", importPhones: "Import Phones", phonePoolSwitchTip: "When disabled, SunnyRegister will not allocate numbers from this phone pool. You can switch to external SMS providers later.", phonePoolOn: "Usable for SMS", phonePoolOff: "Not used for SMS", phoneImportHelp: "One long-lived SMS record per line. The first character must be +, and the phone number and SMS URL must be separated with exactly four hyphens: ----.", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "Invalid phone import format", phoneSearch: "Search phone number...", phoneNumber: "Phone Number", smsLink: "SMS Link", usedCount: "Used Count", countFilter: "Count", allCount: "All Counts", lastUsedAt: "Last Used", phoneEdit: "Edit Phone", phoneStatusEnabled: "Enabled", phoneStatusDisabled: "Disabled", phoneConfirmDelete: "Delete this phone number? This cannot be undone.", phoneConfirmBatchDelete: "Delete selected phone numbers? This cannot be undone.", smsbowerProvider: "SMSBower Provider", smsbowerDesc: "When the self-managed phone pool is unavailable or empty, SunnyRegister can use SMSBower API to rent a one-time number automatically.", smsbowerSwitch: "Enable SMSBower", smsbowerReady: "SMSBower configured", smsbowerApiKey: "API Key", smsbowerCountry: "Default Country", smsbowerService: "Default Service", smsbowerMaxPrice: "Max Price", smsbowerBaseURL: "API URL", smsbowerCheck: "Check Balance", smsbowerBalance: "Balance: {balance}", smsbowerSaved: "SMSBower config saved", smspoolProvider: "SMSPool Provider", smspoolDesc: "SMSPool is a temporary-number provider used when the self-managed phone pool and SMSBower are unavailable.", smspoolSwitch: "Enable SMSPool", smspoolReady: "SMSPool configured", smspoolApiKey: "API Key", smspoolCountry: "Default Country", smspoolService: "Default Service", refreshProviderOptions: "Fetch options", providerOptionSearch: "Search by ID, code, or name...", providerOptionNoResults: "No matching options", smspoolMaxPrice: "Max Price", smspoolBaseURL: "API URL", smspoolCheck: "Check Balance", smspoolBalance: "Balance: {balance}", smspoolSaved: "SMSPool config saved",
+  phonePool: "Self-managed Phone Pool", phonePoolGlobalSwitch: "Use Self-managed Phone Pool", importPhones: "Import Phones", phonePoolSwitchTip: "When disabled, SunnyRegister will not allocate numbers from this phone pool. You can switch to external SMS providers later.", phonePoolOn: "Usable for SMS", phonePoolOff: "Not used for SMS", phoneImportHelp: "One long-lived SMS record per line. The first character must be +, and the phone number and SMS URL must be separated with exactly four hyphens: ----.", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "Invalid phone import format", phoneSearch: "Search phone number...", phoneNumber: "Phone Number", smsLink: "SMS Link", usedCount: "Used Count", countFilter: "Count", allCount: "All Counts", lastUsedAt: "Last Used", phoneEdit: "Edit Phone", phoneStatusEnabled: "Enabled", phoneStatusDisabled: "Disabled", phoneConfirmDelete: "Delete this phone number? This cannot be undone.", phoneConfirmBatchDelete: "Delete selected phone numbers? This cannot be undone.", smsbowerProvider: "SMSBower Provider", smsbowerDesc: "When the self-managed phone pool is unavailable or empty, SunnyRegister can use SMSBower API to rent a one-time number automatically.", smsbowerSwitch: "Enable SMSBower", smsbowerReady: "SMSBower configured", smsbowerApiKey: "API Key", smsbowerCountry: "Default Country", smsbowerService: "Default Service", smsbowerMaxPrice: "Max Price", smsbowerBaseURL: "API URL", smsbowerCheck: "Check Balance", smsbowerBalance: "Balance: {balance}", smsbowerSaved: "SMSBower config saved", smspoolProvider: "SMSPool Provider", smspoolDesc: "SMSPool is a temporary-number provider used when the self-managed phone pool and SMSBower are unavailable.", smspoolSwitch: "Enable SMSPool", smspoolReady: "SMSPool configured", smspoolApiKey: "API Key", smspoolCountry: "Default Country", smspoolService: "Default Service", refreshProviderOptions: "Fetch options", providerOptionSearch: "Search by ID, code, or name...", providerOptionNoResults: "No matching options", smspoolMaxPrice: "Max Price", smspoolBaseURL: "API URL", smspoolCheck: "Check Balance", smspoolBalance: "Balance: {balance}", smspoolSaved: "SMSPool config saved", firefoxProvider: "FireFox Provider", firefoxDesc: "FireFox temporary-number provider. Acquisitions enforce a maximum unit price, poll every 5 seconds, and release rejected numbers after 35 seconds.", firefoxSwitch: "Enable FireFox", firefoxReady: "FireFox configured", firefoxApiName: "API Account", firefoxPassword: "API Password", firefoxCountry: "Default Country", firefoxService: "Default Service", firefoxMaxPrice: "Maximum Unit Price", firefoxBaseURL: "API URL", firefoxCheck: "Check Balance", firefoxBalance: "Balance: {balance}", firefoxSaved: "FireFox config saved", firefoxMaxPriceRequired: "FireFox maximum unit price must be greater than 0",
   proxyTip: "Manage the outbound proxy pool for register/login requests. Batch check only tests proxy server connectivity and does not access chatgpt.com.",
   proxyPool: "Proxy Pool", proxyEnabled: "Enabled", proxyAvailable: "Invalid", proxySearch: "Search proxy address...", proxyCountry: "Country", proxyAllCountry: "All Countries", proxyAddress: "Proxy Address", proxyBatchCheck: "Batch Check", proxyBatchDelete: "Batch Delete", proxyBatchEdit: "Batch Edit", proxyAdd: "Add Proxy", proxyEdit: "Edit Proxy", proxyCheckDone: "Proxy check completed", proxyNoData: "No Proxies", proxyNoDataDesc: "Add proxy addresses first, then batch-check enabled proxies.", proxyStatusEnabled: "Enabled", proxyStatusDisabled: "Disabled", proxyStatusInvalid: "Invalid", proxyLastChecked: "Last Checked", proxyLatency: "Latency", proxyCountryPlaceholder: "e.g. US / HK / JP / Brazil", proxyCountryKeep: "Leave blank to keep each proxy's current country", proxyAddressPlaceholder: "One proxy per line, e.g. http://user:pass@host:port or socks5://host:port", proxyConfirmDelete: "Delete this proxy? This cannot be undone.", proxyConfirmBatchDelete: "Delete selected proxies? This cannot be undone.", proxyTrafficSwitch: "Register Traffic Proxy", proxyTrafficOn: "Proxy On", proxyTrafficOff: "Proxy Off", proxyTrafficOnHint: "Register/login requests use proxy pool", proxyTrafficOffHint: "Use server/system network", proxySwitchSaved: "Proxy outlet setting updated",
   selected: "Selected", selectedItems: "{count} selected", selectAll: "Select All", selectAllDone: "Selected {count} records from the current filters", clearSelection: "Clear Selection", globalLogs: "Global Logs", selectedLogs: "Current Mailbox Logs", registrationTaskProgress: "Registration Progress", accountRegistrationProgress: "Account Progress", clearLogs: "Clear", latest: "Latest Mail", done: "Done", failed: "Failed", file: "Choose File", status: "Status", prev: "Prev", next: "Next", pageSize: "Per page", pageInfo: "Page {page} / {pages}", pageRange: "Showing {from} to {to} of {total} results", noLogs: "No logs", noRegistrationTask: "No registration task yet", noAccountProgress: "No mailbox account is being processed", taskTotal: "Task Total", taskCompleted: "Completed", completedAccounts: "Completed Accounts", pendingAccounts: "Pending Accounts", abnormalAccounts: "Abnormal Accounts", currentStep: "Current Step", total: "Total", yes: "Yes", no: "No", step: "STEP",
@@ -1360,6 +1361,13 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
   const poolPhoneReady = phoneCfg.pool_enabled !== false && usablePhones > 0;
   const smsbowerReady = phoneCfg.smsbower_enabled === true && !!String(phoneCfg.smsbower_api_key || "").trim();
   const smspoolReady = phoneCfg.smspool_enabled === true && !!String(phoneCfg.smspool_api_key || "").trim();
+  const firefoxReady = phoneCfg.firefox_enabled === true
+    && !!String(phoneCfg.firefox_api_name || "").trim()
+    && !!String(phoneCfg.firefox_password || "").trim()
+    && !!String(phoneCfg.firefox_default_country || "").trim()
+    && !!String(phoneCfg.firefox_default_service || "").trim()
+    && Number(phoneCfg.firefox_max_price || 0) > 0;
+  const phoneResourceReady = !selectedNeedPhone || poolPhoneReady || smsbowerReady || smspoolReady || firefoxReady;
   const sub2apiReady = reverseCfg.enabled !== false && !!String(reverseCfg.base_url || "").trim() && !!String(reverseCfg.admin_token || "").trim() && Array.isArray(reverseCfg.group_ids) && reverseCfg.group_ids.length > 0;
   const mailboxPoolReady = mailboxCfg.pool_enabled !== false;
   const googleMailboxReady = false;
@@ -1367,12 +1375,12 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
   const identityValid = (identity === "system" && mailboxPoolReady) || (identity === "google" && googleMailboxReady) || (identity === "microsoft" && microsoftMailboxReady);
   const modeValid = mode === "visible" || mode === "background" || mode === "protocol";
   const registerOnlyDisabled = !identityValid;
-  const stageValid = identityValid;
+  const stageValid = identityValid && (stage !== CODEX_PHONE_BIND || phoneResourceReady);
   const startDisabled = busy || !identityValid || !modeValid || !stageValid;
   const mailboxHint = t.linkedMailboxConfig + " · " + (mailboxPoolReady ? t.resourceReady : t.resourceMissing);
-  const phoneHint = t.linkedPhoneConfig + " · " + (!selectedNeedPhone ? t.existingRTReady : poolPhoneReady ? template(t.usablePhones, { count: usablePhones }) : smsbowerReady ? t.smsbowerReady : smspoolReady ? t.smspoolReady : t.resourceMissing);
+  const phoneHint = t.linkedPhoneConfig + " · " + (!selectedNeedPhone ? t.existingRTReady : poolPhoneReady ? template(t.usablePhones, { count: usablePhones }) : smsbowerReady ? t.smsbowerReady : smspoolReady ? t.smspoolReady : firefoxReady ? t.firefoxReady : t.resourceMissing);
   const reverseHint = t.linkedReverseConfig + " · " + (sub2apiReady ? t.sub2apiReady : t.sub2apiMissing);
-  const codexDisabled = !identityValid;
+  const codexDisabled = !identityValid || !phoneResourceReady;
   const importDisabled = !identityValid;
   const agentIdentityDisabled = !identityValid;
   const safeConcurrency = Math.max(1, Math.min(Number(concurrency) || 1, Math.max(1, selectedEmails.length)));
@@ -2017,10 +2025,11 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   const [selectingAll,setSelectingAll]=useState(false);
   const [page,setPage]=useCachedState("phone.page",1);
   const [pageSize,setPageSize]=useCachedState("phone.pageSize",10);
-  const [phoneCfg,setPhoneCfg]=useCachedState<AnyObj>("phone.config",{pool_enabled:true, smsbower_enabled:false, smsbower_base_url:"https://smsbower.page/stubs/handler_api.php", smsbower_default_country:"187", smsbower_default_service:"dr", smsbower_max_price:-1, smspool_enabled:false, smspool_base_url:"https://api.smspool.net", smspool_default_country:"1", smspool_default_service:"671", smspool_max_price:-1});
+  const [phoneCfg,setPhoneCfg]=useCachedState<AnyObj>("phone.config",{pool_enabled:true, smsbower_enabled:false, smsbower_base_url:"https://smsbower.page/stubs/handler_api.php", smsbower_default_country:"187", smsbower_default_service:"dr", smsbower_max_price:-1, smspool_enabled:false, smspool_base_url:"https://api.smspool.net", smspool_default_country:"1", smspool_default_service:"671", smspool_max_price:-1, firefox_enabled:false, firefox_base_url:"http://www.firefox.fun/yhapi.ashx", firefox_api_name:"", firefox_password:"", firefox_default_country:"usa", firefox_default_service:"1096", firefox_max_price:0});
   const [savedPhoneCfg,setSavedPhoneCfg]=useState<AnyObj|null>(null);
   const [smsCheck,setSmsCheck]=useState("");
   const [smsPoolCheck,setSmsPoolCheck]=useState("");
+  const [firefoxCheck,setFireFoxCheck]=useState("");
   const [smsOptions,setSmsOptions]=useCachedState<AnyObj>("phone.providerOptions",{});
   const [editing,setEditing]=useState<AnyObj|null>(null);
   const [importOpen,setImportOpen]=useState(false);
@@ -2054,7 +2063,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   useEffect(()=>{apiFetch("/sunny/phones/config").then((cfg)=>{ const next = cfg || {pool_enabled:true}; setPhoneCfg(next); setSavedPhoneCfg(next); }).catch(()=>{})},[]);
   useEffect(()=>{setPage(1)},[query, statusFilter, countFilter, timeSort, pageSize]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
-  async function loadProviderOptions(provider: "smsbower"|"smspool", kind: "countries"|"services", refresh=false, country="") {
+  async function loadProviderOptions(provider: "smsbower"|"smspool"|"firefox", kind: "countries"|"services", refresh=false, country="") {
     const key = `${provider}_${kind}_${country || "all"}`;
     try {
       const params = new URLSearchParams({ provider, kind });
@@ -2065,7 +2074,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
       const items = Array.isArray(res.items) ? res.items : [];
       setSmsOptions((old: AnyObj)=>({ ...old, [key]: items }));
       if (kind === "services") {
-        const field = provider === "smspool" ? "smspool_default_service" : "smsbower_default_service";
+        const field = provider === "smspool" ? "smspool_default_service" : provider === "firefox" ? "firefox_default_service" : "smsbower_default_service";
         const current = String(phoneCfg[field] || "").trim();
         const exact = items.some((item: AnyObj)=>String(item.value ?? "") === current);
         if (current && !exact) {
@@ -2080,9 +2089,10 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
       if (refresh) notify("fail", e.message || String(e));
     }
   }
-  const optionsFor = (provider: "smsbower"|"smspool", kind: "countries"|"services", country="") => smsOptions[`${provider}_${kind}_${country || "all"}`] || [];
+  const optionsFor = (provider: "smsbower"|"smspool"|"firefox", kind: "countries"|"services", country="") => smsOptions[`${provider}_${kind}_${country || "all"}`] || [];
   useEffect(()=>{ if (phoneCfg.smsbower_enabled === true) { void loadProviderOptions("smsbower","countries"); void loadProviderOptions("smsbower","services", false, String(phoneCfg.smsbower_default_country || "")); } },[phoneCfg.smsbower_enabled, phoneCfg.smsbower_default_country]);
   useEffect(()=>{ if (phoneCfg.smspool_enabled === true) { void loadProviderOptions("smspool","countries"); void loadProviderOptions("smspool","services", false, String(phoneCfg.smspool_default_country || "")); } },[phoneCfg.smspool_enabled, phoneCfg.smspool_default_country]);
+  useEffect(()=>{ if (phoneCfg.firefox_enabled === true) { void loadProviderOptions("firefox","countries"); void loadProviderOptions("firefox","services", false, String(phoneCfg.firefox_default_country || "")); } },[phoneCfg.firefox_enabled, phoneCfg.firefox_default_country]);
   async function run(label:string, fn:()=>Promise<any>){
     try{await fn(); notify("ok",label); void load();}
     catch(e:any){notify("fail",e.message||String(e));}
@@ -2106,6 +2116,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   }
   const SMSBOWER_CONFIG_KEYS = ["smsbower_base_url", "smsbower_api_key", "smsbower_default_country", "smsbower_default_service", "smsbower_max_price"];
   const SMSPOOL_CONFIG_KEYS = ["smspool_base_url", "smspool_api_key", "smspool_default_country", "smspool_default_service", "smspool_max_price"];
+  const FIREFOX_CONFIG_KEYS = ["firefox_base_url", "firefox_api_name", "firefox_password", "firefox_default_country", "firefox_default_service", "firefox_max_price"];
   const pickConfig = (cfg: AnyObj | null | undefined, keys: string[]) => {
     const out: AnyObj = {};
     keys.forEach((key)=>{ out[key] = cfg?.[key] ?? ""; });
@@ -2117,6 +2128,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   };
   const smsbowerDirty = configChanged(SMSBOWER_CONFIG_KEYS);
   const smspoolDirty = configChanged(SMSPOOL_CONFIG_KEYS);
+  const firefoxDirty = configChanged(FIREFOX_CONFIG_KEYS);
   const mergeSavedProviderFields = (saved: AnyObj, keys: string[]) => {
     const patch = pickConfig(saved, keys);
     setSavedPhoneCfg(saved);
@@ -2126,11 +2138,12 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
       pool_enabled: saved.pool_enabled,
       smsbower_enabled: saved.smsbower_enabled,
       smspool_enabled: saved.smspool_enabled,
+      firefox_enabled: saved.firefox_enabled,
       usable_count: saved.usable_count ?? current.usable_count,
       total_count: saved.total_count ?? current.total_count,
     }));
   };
-  async function savePhoneSwitch(key: "pool_enabled" | "smsbower_enabled" | "smspool_enabled", next: boolean) {
+  async function savePhoneSwitch(key: "pool_enabled" | "smsbower_enabled" | "smspool_enabled" | "firefox_enabled", next: boolean) {
     const before = phoneCfg;
     setPhoneCfg((current: AnyObj)=>({ ...current, [key]: next }));
     try {
@@ -2153,6 +2166,9 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   }
   async function toggleSMSPoolEnabled() {
     await savePhoneSwitch("smspool_enabled", !(phoneCfg.smspool_enabled === true));
+  }
+  async function toggleFireFoxEnabled() {
+    await savePhoneSwitch("firefox_enabled", !(phoneCfg.firefox_enabled === true));
   }
   async function saveSMSBowerConfig() {
     if (!smsbowerDirty) return;
@@ -2198,11 +2214,42 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
       notify("fail", msg);
     }
   }
+  async function saveFireFoxConfig() {
+    if (!firefoxDirty) return;
+    if (Number(phoneCfg.firefox_max_price || 0) <= 0) {
+      notify("fail", t.firefoxMaxPriceRequired);
+      return;
+    }
+    try {
+      const body = { ...(savedPhoneCfg || phoneCfg), ...pickConfig(phoneCfg, FIREFOX_CONFIG_KEYS), firefox_enabled: phoneCfg.firefox_enabled === true };
+      const saved = await apiFetch("/sunny/phones/config", { method:"PUT", body: JSON.stringify(body) });
+      mergeSavedProviderFields(saved || body, FIREFOX_CONFIG_KEYS);
+      notify("ok", t.firefoxSaved);
+    } catch(e:any) { notify("fail", e.message || String(e)); }
+  }
+  async function checkFireFox() {
+    if (Number(phoneCfg.firefox_max_price || 0) <= 0) {
+      notify("fail", t.firefoxMaxPriceRequired);
+      return;
+    }
+    setFireFoxCheck(t.checking);
+    try {
+      const res = await apiFetch("/sunny/phones/firefox/check", { method:"POST", body: JSON.stringify(phoneCfg) });
+      const text = template(t.firefoxBalance, { balance: res.balance || res.raw || "-" });
+      setFireFoxCheck(text);
+      notify("ok", text);
+    } catch(e:any) {
+      const msg = e.message || String(e);
+      setFireFoxCheck(msg);
+      notify("fail", msg);
+    }
+  }
   const allChecked = items.length > 0 && items.every((p)=>selected.includes(p.id));
   const countOptions = [{value:"all",label:t.allCount}, ...[0,1,2,3].map((n)=>({value:String(n),label:`${n} ${t.usedCount}`}))];
   const poolEnabled = phoneCfg.pool_enabled !== false;
   const smsbowerEnabled = phoneCfg.smsbower_enabled === true;
   const smspoolEnabled = phoneCfg.smspool_enabled === true;
+  const firefoxEnabled = phoneCfg.firefox_enabled === true;
   return <div className="space-y-6">
     <Card className="rounded-[24px] p-5 sr-sms-provider-card">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2257,6 +2304,33 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
             <Button disabled={!smspoolDirty} className="rounded-xl bg-emerald-600 px-5 text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50" onClick={saveSMSPoolConfig}><Save className="mr-2 h-4 w-4"/>{t.save}</Button>
           </span>
         </div>
+        </div>
+      </div>}
+    </Card>
+    <Card className="rounded-[24px] p-5 sr-sms-provider-card">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2"><h2 className="text-lg font-bold">{t.firefoxProvider}</h2><Tip text={t.firefoxDesc}/></div>
+        <button type="button" aria-label={t.firefoxSwitch} title={t.firefoxSwitch} className={cn("sr-switch-only", firefoxEnabled && "on")} onClick={toggleFireFoxEnabled}>
+          <span />
+        </button>
+      </div>
+      {firefoxEnabled && <div className="sr-sms-provider-form mt-4 space-y-3">
+        <div className="sr-firefox-provider-top-row">
+          <div><Label>{t.firefoxApiName}</Label><Input value={phoneCfg.firefox_api_name||""} onChange={(e)=>setPhoneCfg({...phoneCfg,firefox_api_name:e.target.value})} autoComplete="off"/></div>
+          <div><Label>{t.firefoxPassword}</Label><Input type="password" value={phoneCfg.firefox_password||""} onChange={(e)=>setPhoneCfg({...phoneCfg,firefox_password:e.target.value})} autoComplete="new-password"/></div>
+          <div><Label>{t.firefoxCountry}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.firefox_default_country||"usa")} onChange={(v)=>setPhoneCfg({...phoneCfg,firefox_default_country:v})} options={optionsFor("firefox","countries")} placeholder="usa" searchPlaceholder={t.providerOptionSearch} noResultsLabel={t.providerOptionNoResults}/></div>
+          <div><Label>{t.firefoxService}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.firefox_default_service||"1096")} onChange={(v)=>setPhoneCfg({...phoneCfg,firefox_default_service:v})} options={optionsFor("firefox","services",String(phoneCfg.firefox_default_country||""))} placeholder="1096 · OpenAI / ChatGPT" searchPlaceholder={t.providerOptionSearch} noResultsLabel={t.providerOptionNoResults}/></div>
+          <div className="sr-sms-provider-price"><Label>{t.firefoxMaxPrice}</Label><Input type="number" min="0.01" step="0.01" value={phoneCfg.firefox_max_price ?? 0} onChange={(e)=>setPhoneCfg({...phoneCfg,firefox_max_price:Number(e.target.value)})} placeholder="0.65"/></div>
+        </div>
+        <div className="sr-sms-provider-bottom-row">
+          <div><Label>{t.firefoxBaseURL}</Label><Input value={phoneCfg.firefox_base_url||"http://www.firefox.fun/yhapi.ashx"} onChange={(e)=>setPhoneCfg({...phoneCfg,firefox_base_url:e.target.value})}/></div>
+          <div className="sr-sms-provider-actions">
+            {firefoxCheck ? <span className="sr-inline-result">{firefoxCheck}</span> : null}
+            <Button variant="outline" className="rounded-xl" onClick={checkFireFox}><RefreshCw className="mr-2 h-4 w-4"/>{t.firefoxCheck}</Button>
+            <span title={!firefoxDirty ? t.configUnchanged : ""}>
+              <Button disabled={!firefoxDirty} className="rounded-xl bg-emerald-600 px-5 text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50" onClick={saveFireFoxConfig}><Save className="mr-2 h-4 w-4"/>{t.save}</Button>
+            </span>
+          </div>
         </div>
       </div>}
     </Card>

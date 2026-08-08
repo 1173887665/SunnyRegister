@@ -536,6 +536,21 @@ class SunnyDB:
         phone_cfg = self.get_config("phone")
         return bool(phone_cfg.get("smspool_enabled") and str(phone_cfg.get("smspool_api_key") or "").strip())
 
+    def firefox_available(self) -> bool:
+        phone_cfg = self.get_config("phone")
+        try:
+            max_price = float(phone_cfg.get("firefox_max_price") or 0)
+        except (TypeError, ValueError):
+            max_price = 0
+        return bool(
+            phone_cfg.get("firefox_enabled")
+            and str(phone_cfg.get("firefox_api_name") or "").strip()
+            and str(phone_cfg.get("firefox_password") or "").strip()
+            and str(phone_cfg.get("firefox_default_country") or "").strip()
+            and str(phone_cfg.get("firefox_default_service") or "").strip()
+            and max_price > 0
+        )
+
     def resolve_sms_provider_option(self, provider: str, kind: str, value: str, parent: str = "") -> dict[str, Any] | None:
         value = str(value or "").strip()
         if not value:

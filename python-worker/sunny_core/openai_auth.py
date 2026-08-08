@@ -1535,6 +1535,24 @@ class OpenAIEmailRegisterFlow:
             text = ""
         return bool(re.search(r"SMS|text message|phone number|\+\d", text, flags=re.I) and re.search(r"code|verification", text, flags=re.I))
 
+    def _phone_number_was_rejected(self, page) -> bool:
+        summary = self._page_text_summary(page, 500).lower()
+        return any(
+            phrase in summary
+            for phrase in (
+                "invalid phone number",
+                "phone number is invalid",
+                "phone number is not available",
+                "phone number is not supported",
+                "unable to use this phone number",
+                "couldn't verify this phone number",
+                "try another phone number",
+                "別の電話番号",
+                "電話番号は利用できません",
+                "無効な電話番号",
+            )
+        )
+
     def _handle_phone_if_possible(self, page) -> bool:
         if not self.phone_provider:
             return False
@@ -1573,7 +1591,9 @@ class OpenAIEmailRegisterFlow:
                     while time.time() < probe_deadline and not self._looks_like_phone_code_page(page):
                         if self._has_chatgpt_session(page):
                             return True
-                        if "invalid" in self._page_text_summary(page, 180).lower() and idx < len(candidates) - 1:
+                        if self._phone_number_was_rejected(page):
+                            if idx >= len(candidates) - 1:
+                                raise RuntimeError(f"手机号被页面拒绝：{self._page_text_summary(page, 200)}")
                             break
                         self._sleep_checked(1)
                     if self._looks_like_phone_code_page(page):

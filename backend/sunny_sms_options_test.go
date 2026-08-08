@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -83,5 +85,76 @@ func TestSunnySMSProviderOptionsFetchesOnceAndThenUsesDatabaseCache(t *testing.T
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("cached request called provider again: %d", got)
+	}
+}
+
+func TestFetchFireFoxOptionsBuildsCountryAndPricedServiceLists(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("act") != "getItem" {
+			t.Fatalf("unexpected action: %s", r.URL.Query().Get("act"))
+		}
+		writeJSON(w, http.StatusOK, []map[string]any{
+			{"Item_ID": "1096", "Item_Name": "OpenAI / ChatGpt", "Item_UPrice": "0.6500", "Country_ID": "usa", "Country_Title": "+1/美国/usa"},
+			{"Item_ID": "1008", "Item_Name": "WhatsApp", "Item_UPrice": "2.0000", "Country_ID": "usa", "Country_Title": "+1/美国/usa"},
+			{"Item_ID": "1096", "Item_Name": "OpenAI / ChatGpt", "Item_UPrice": "0.4500", "Country_ID": "idn", "Country_Title": "+62/印度尼西亚/indonesia"},
+		})
+	}))
+	t.Cleanup(provider.Close)
+	cfg := mergeConfig(defaultPhoneConfig(), map[string]any{"firefox_base_url": provider.URL})
+
+	countries, err := fetchFireFoxOptions(context.Background(), "country", "", cfg)
+	if err != nil || len(countries) != 2 {
+		t.Fatalf("countries = %#v, err = %v", countries, err)
+	}
+	services, err := fetchFireFoxOptions(context.Background(), "service", "usa", cfg)
+	if err != nil || len(services) != 2 {
+		t.Fatalf("services = %#v, err = %v", services, err)
+	}
+	if services[0]["label"] != "OpenAI / ChatGpt · 0.6500" {
+		t.Fatalf("unexpected FireFox service label: %#v", services[0])
+	}
+}
+
+func TestSunnyCheckFireFoxLogsInAndReadsBalance(t *testing.T) {
+	var calls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		switch r.URL.Query().Get("act") {
+		case "login":
+			if r.URL.Query().Get("ApiName") != "api-user" || r.URL.Query().Get("PassWord") != "secret" {
+				t.Fatalf("unexpected login query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte("1|stable-token"))
+		case "myInfo":
+			if r.URL.Query().Get("token") != "stable-token" {
+				t.Fatalf("unexpected token: %s", r.URL.Query().Get("token"))
+			}
+			_, _ = w.Write([]byte("1|12.34|1|0"))
+		default:
+			http.Error(w, "unexpected action", http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(provider.Close)
+	s := newSunnySMSOptionsTestServer(t)
+	body, _ := json.Marshal(map[string]any{
+		"firefox_base_url": provider.URL,
+		"firefox_api_name": "api-user",
+		"firefox_password": "secret",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/phones/firefox/check", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.sunnyCheckFireFox(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || response["balance"] != "12.34" {
+		t.Fatalf("unexpected response: %s, err = %v", rec.Body.String(), err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d, want 2", calls.Load())
 	}
 }

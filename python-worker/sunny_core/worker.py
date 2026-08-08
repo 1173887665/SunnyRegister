@@ -14,6 +14,7 @@ import requests
 
 from .agent_identity import AgentIdentityUnavailableError, create_agent_identity_auth
 from .db import SunnyDB, SunnyTaskCancelled, now_sql
+from .firefox_sms import FIREFOX_RELEASE_DELAY_SECONDS, FireFoxSMSClient
 from .mailbox import account_from_row, parse_account_line
 from .openai_auth import TaskCancelledError, login_or_register, refresh_openai_access_token
 from .phone_pool import wait_sms_code
@@ -564,12 +565,100 @@ def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
     return provider
 
 
+def _firefox_provider(db: SunnyDB, email: str, proxy_url: str = ""):
+    active: dict[str, Any] = {}
+    number_attempts = 0
+    max_number_attempts = 3
+    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+    phone_cfg = db.get_config("phone")
+    country_value = str(phone_cfg.get("firefox_default_country") or "").strip()
+    country_option = db.resolve_sms_provider_option("firefox", "country", country_value)
+    resolved_country = str((country_option or {}).get("value") or country_value)
+    service_value = str(phone_cfg.get("firefox_default_service") or "1096").strip()
+    service_option = db.resolve_sms_provider_option("firefox", "service", service_value, resolved_country)
+    resolved_service = str((service_option or {}).get("value") or service_value)
+    phone_cfg = {
+        **phone_cfg,
+        "firefox_default_country": resolved_country,
+        "firefox_default_service": resolved_service,
+    }
+    client = FireFoxSMSClient(phone_cfg, proxies=proxies)
+
+    def provider(action: str, _email: str, payload: Any = None):
+        nonlocal active, number_attempts
+        if action == "next":
+            if number_attempts >= max_number_attempts:
+                return None
+            number_attempts += 1
+            db.event(
+                f"[{email}] [接码] 准备向 FireFox 申请手机号：country={client.country}，service={client.service}，max_price={client.max_price}，quantity=1",
+                detail={"email": email, "scope": "selected", "sms_provider": "firefox", "country": client.country, "service": client.service, "max_price": client.max_price, "quantity": 1},
+            )
+            activation = client.get_number()
+            active = {
+                "provider": "firefox",
+                "pkey": activation.pkey,
+                "activation_id": activation.pkey,
+                "number": activation.number,
+                "country": activation.country or client.country,
+                "country_code": activation.country_code,
+                "new_number_attempt": number_attempts,
+            }
+            db.record_sms_provider_number(
+                "firefox",
+                activation.number,
+                country=activation.country or client.country,
+                service=client.service,
+                order_id=activation.pkey,
+            )
+            db.event(
+                f"[{email}] [接码] 已从 FireFox 获取手机号 {activation.number}，pkey {activation.pkey}（{number_attempts}/{max_number_attempts}）",
+                detail={"email": email, "scope": "selected", "sms_provider": "firefox", "pkey": activation.pkey, "number_attempt": number_attempts},
+            )
+            return active
+        if action == "code":
+            phone = payload or active
+            pkey = str(phone.get("pkey") or phone.get("activation_id") or "")
+            return client.wait_code(
+                pkey,
+                timeout=180,
+                log=lambda message: db.event(
+                    f"[{email}] [接码] {message}",
+                    detail={"email": email, "scope": "selected", "sms_provider": "firefox"},
+                ),
+            )
+        if action == "success":
+            phone = payload or active
+            db.mark_sms_provider_number_success("firefox", str(phone.get("number") or ""), str(phone.get("code") or ""))
+            db.event(f"[{email}] [接码] FireFox 手机号接码完成", detail={"email": email, "scope": "selected", "sms_provider": "firefox"})
+            return True
+        if action == "bad":
+            phone = payload or active
+            pkey = str(phone.get("pkey") or phone.get("activation_id") or "")
+            client.release_later(pkey, FIREFOX_RELEASE_DELAY_SECONDS)
+            db.mark_sms_provider_number_error("firefox", str(phone.get("number") or ""), str(phone.get("error") or "FireFox phone verification failed"))
+            active = {}
+            retry_same_provider = number_attempts < max_number_attempts
+            db.event(
+                f"[{email}] [接码] FireFox 当前号码不可用，已安排 {FIREFOX_RELEASE_DELAY_SECONDS} 秒后异步释放，"
+                + ("立即申请下一个号码" if retry_same_provider else "三次号码均未完成接码，放弃该供应商"),
+                "warning",
+                detail={"email": email, "scope": "selected", "sms_provider": "firefox", "pkey": pkey, "retry_same_provider": retry_same_provider},
+            )
+            return {"retry_same_provider": retry_same_provider}
+        return None
+
+    return provider
+
+
 def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = ""):
     candidates: list[tuple[str, Any]] = []
     if db.smsbower_available():
         candidates.append(("SMSBower", lambda: _smsbower_provider(db, email, proxy_url)))
     if db.smspool_available():
         candidates.append(("SMSPool", lambda: _smspool_provider(db, email, proxy_url)))
+    if db.firefox_available():
+        candidates.append(("FireFox", lambda: _firefox_provider(db, email, proxy_url)))
     random.shuffle(candidates)
     if db.usable_phone_count() > 0:
         candidates.append(("自建手机号池", lambda: _phone_provider(db, email)))
@@ -1029,8 +1118,8 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     if wants_rt:
         sms_cfg = db.get_config("phone")
         db.event(
-            f"[{email}] [接码] 接码资源检查：自建号池可用 {db.usable_phone_count()} 个，SMSBower={'启用' if db.smsbower_available() else '不可用'}，SMSPool={'启用' if db.smspool_available() else '不可用'}",
-            detail={"email": email, "scope": "selected", "sms_provider": "resource_check", "phone_config": {"pool_enabled": sms_cfg.get("pool_enabled"), "smsbower_enabled": sms_cfg.get("smsbower_enabled"), "smspool_enabled": sms_cfg.get("smspool_enabled")}},
+            f"[{email}] [接码] 接码资源检查：自建号池可用 {db.usable_phone_count()} 个，SMSBower={'启用' if db.smsbower_available() else '不可用'}，SMSPool={'启用' if db.smspool_available() else '不可用'}，FireFox={'启用' if db.firefox_available() else '不可用'}",
+            detail={"email": email, "scope": "selected", "sms_provider": "resource_check", "phone_config": {"pool_enabled": sms_cfg.get("pool_enabled"), "smsbower_enabled": sms_cfg.get("smsbower_enabled"), "smspool_enabled": sms_cfg.get("smspool_enabled"), "firefox_enabled": sms_cfg.get("firefox_enabled")}},
         )
         if account.openai_rt:
             require_refresh_token = True

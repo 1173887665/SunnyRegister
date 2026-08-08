@@ -1793,6 +1793,13 @@ func defaultPhoneConfig() map[string]any {
 		"smspool_default_country":  "1",
 		"smspool_default_service":  "671",
 		"smspool_max_price":        -1,
+		"firefox_enabled":          false,
+		"firefox_base_url":         "http://www.firefox.fun/yhapi.ashx",
+		"firefox_api_name":         "",
+		"firefox_password":         "",
+		"firefox_default_country":  "usa",
+		"firefox_default_service":  "1096",
+		"firefox_max_price":        0,
 	}
 }
 func defaultMailboxConfig() map[string]any { return map[string]any{"pool_enabled": true} }
@@ -1817,6 +1824,10 @@ func (s *Server) sunnyPhones(w http.ResponseWriter, r *http.Request, parts []str
 	}
 	if len(parts) == 2 && parts[0] == "smspool" && parts[1] == "check" && r.Method == http.MethodPost {
 		s.sunnyCheckSMSPool(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[0] == "firefox" && parts[1] == "check" && r.Method == http.MethodPost {
+		s.sunnyCheckFireFox(w, r)
 		return
 	}
 	if len(parts) == 1 && parts[0] == "provider-options" && (r.Method == http.MethodGet || r.Method == http.MethodPost) {
@@ -2011,6 +2022,81 @@ func (s *Server) sunnyCheckSMSPool(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "balance": balance, "raw": raw})
 }
 
+func (s *Server) sunnyCheckFireFox(w http.ResponseWriter, r *http.Request) {
+	body, _ := parseBody(r)
+	cfg := mergeConfig(s.sunnyGetConfig(sunnyCfgPhone, defaultPhoneConfig()), body)
+	apiName := strings.TrimSpace(text(cfg["firefox_api_name"]))
+	password := strings.TrimSpace(text(cfg["firefox_password"]))
+	if apiName == "" || password == "" {
+		writeError(w, 400, "FireFox API account and password are required")
+		return
+	}
+	baseURL := strings.TrimSpace(text(cfg["firefox_base_url"]))
+	if baseURL == "" {
+		baseURL = "http://www.firefox.fun/yhapi.ashx"
+	}
+	loginRaw, err := getFireFoxAPI(r.Context(), baseURL, url.Values{
+		"act":      {"login"},
+		"ApiName":  {apiName},
+		"PassWord": {password},
+	})
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	loginParts := strings.Split(loginRaw, "|")
+	if len(loginParts) < 2 || strings.TrimSpace(loginParts[0]) != "1" || strings.TrimSpace(loginParts[1]) == "" {
+		writeError(w, 400, "FireFox login failed: "+loginRaw)
+		return
+	}
+	infoRaw, err := getFireFoxAPI(r.Context(), baseURL, url.Values{
+		"act":   {"myInfo"},
+		"token": {strings.TrimSpace(loginParts[1])},
+	})
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	infoParts := strings.Split(infoRaw, "|")
+	if len(infoParts) < 2 || strings.TrimSpace(infoParts[0]) != "1" {
+		writeError(w, 400, "FireFox account check failed: "+infoRaw)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "balance": strings.TrimSpace(infoParts[1]), "raw": infoRaw})
+}
+
+func getFireFoxAPI(ctx context.Context, baseURL string, params url.Values) (string, error) {
+	target, err := url.Parse(baseURL)
+	if err != nil {
+		return "", err
+	}
+	query := target.Query()
+	for key, values := range params {
+		for _, value := range values {
+			query.Set(key, value)
+		}
+	}
+	target.RawQuery = query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	raw := strings.TrimSpace(strings.TrimPrefix(string(b), "\ufeff"))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("FireFox HTTP %d: %s", resp.StatusCode, raw[:min(len(raw), 500)])
+	}
+	if raw == "" {
+		return "", fmt.Errorf("FireFox returned an empty response")
+	}
+	return raw, nil
+}
+
 func postSunnyMultipart(ctx context.Context, targetURL string, apiKey string, fields map[string]string) (string, int, error) {
 	var requestBody bytes.Buffer
 	writer := multipart.NewWriter(&requestBody)
@@ -2050,7 +2136,7 @@ func (s *Server) sunnySMSProviderOptions(w http.ResponseWriter, r *http.Request)
 	kind := strings.ToLower(strings.TrimSpace(fallback(text(body["kind"]), q.Get("kind"))))
 	parent := strings.TrimSpace(fallback(text(body["country"]), q.Get("country")))
 	refresh := boolValue(firstText(body["refresh"], q.Get("refresh")), false)
-	if provider != "smsbower" && provider != "smspool" {
+	if provider != "smsbower" && provider != "smspool" && provider != "firefox" {
 		writeError(w, 400, "invalid sms provider")
 		return
 	}
@@ -2163,6 +2249,8 @@ func (s *Server) sunnyFetchSMSProviderOptions(ctx context.Context, provider, kin
 		return fetchSMSBowerOptions(ctx, kind, parent, cfg)
 	case "smspool":
 		return fetchSMSPoolOptions(ctx, kind, parent, cfg)
+	case "firefox":
+		return fetchFireFoxOptions(ctx, kind, parent, cfg)
 	default:
 		return nil, fmt.Errorf("invalid sms provider")
 	}
@@ -2172,16 +2260,21 @@ func (s *Server) sunnyWarmSMSProviderOptions() {
 	time.Sleep(800 * time.Millisecond)
 	cfg := s.sunnyGetConfig(sunnyCfgPhone, defaultPhoneConfig())
 	providers := []struct {
-		name       string
-		enabledKey string
-		apiKey     string
-		countryKey string
+		name           string
+		enabledKey     string
+		credentialKeys []string
+		countryKey     string
 	}{
-		{name: "smsbower", enabledKey: "smsbower_enabled", apiKey: "smsbower_api_key", countryKey: "smsbower_default_country"},
-		{name: "smspool", enabledKey: "smspool_enabled", apiKey: "smspool_api_key", countryKey: "smspool_default_country"},
+		{name: "smsbower", enabledKey: "smsbower_enabled", credentialKeys: []string{"smsbower_api_key"}, countryKey: "smsbower_default_country"},
+		{name: "smspool", enabledKey: "smspool_enabled", credentialKeys: []string{"smspool_api_key"}, countryKey: "smspool_default_country"},
+		{name: "firefox", enabledKey: "firefox_enabled", credentialKeys: []string{"firefox_api_name", "firefox_password"}, countryKey: "firefox_default_country"},
 	}
 	for _, p := range providers {
-		if !boolValue(cfg[p.enabledKey], false) || strings.TrimSpace(text(cfg[p.apiKey])) == "" {
+		ready := boolValue(cfg[p.enabledKey], false)
+		for _, key := range p.credentialKeys {
+			ready = ready && strings.TrimSpace(text(cfg[key])) != ""
+		}
+		if !ready {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -2275,6 +2368,64 @@ func fetchSMSPoolOptions(ctx context.Context, kind, parent string, cfg map[strin
 		return normalizeSMSProviderOptions(data, []string{"ID", "id", "country_id", "short_name"}, []string{"name", "short_name", "region"}, "country"), nil
 	}
 	return normalizeSMSProviderOptions(data, []string{"ID", "id", "code", "name"}, []string{"name", "code"}, "service"), nil
+}
+
+func fetchFireFoxOptions(ctx context.Context, kind, parent string, cfg map[string]any) ([]map[string]any, error) {
+	baseURL := strings.TrimSpace(text(cfg["firefox_base_url"]))
+	if baseURL == "" {
+		baseURL = "http://www.firefox.fun/yhapi.ashx"
+	}
+	raw, err := getFireFoxAPI(ctx, baseURL, url.Values{"act": {"getItem"}, "key": {""}})
+	if err != nil {
+		return nil, err
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(raw), &rows); err != nil {
+		return nil, fmt.Errorf("FireFox getItem returned invalid JSON: %w", err)
+	}
+	seen := map[string]bool{}
+	items := make([]map[string]any, 0)
+	for _, row := range rows {
+		countryID := strings.TrimSpace(text(row["Country_ID"]))
+		countryTitle := strings.TrimSpace(text(row["Country_Title"]))
+		if kind == "country" {
+			if countryID == "" || seen[countryID] {
+				continue
+			}
+			seen[countryID] = true
+			items = append(items, map[string]any{
+				"value": countryID,
+				"label": fallback(countryTitle, countryID),
+				"kind":  "country",
+				"extra": row,
+			})
+			continue
+		}
+		if parent != "" && countryID != parent {
+			continue
+		}
+		serviceID := strings.TrimSpace(text(row["Item_ID"]))
+		if serviceID == "" || seen[serviceID] {
+			continue
+		}
+		seen[serviceID] = true
+		name := strings.TrimSpace(fallback(text(row["Item_Name"]), serviceID))
+		price := strings.TrimSpace(text(row["Item_UPrice"]))
+		label := name
+		if price != "" {
+			label += " · " + price
+		}
+		items = append(items, map[string]any{
+			"value": serviceID,
+			"label": label,
+			"kind":  "service",
+			"extra": row,
+		})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return strings.ToLower(text(items[i]["label"])) < strings.ToLower(text(items[j]["label"]))
+	})
+	return items, nil
 }
 
 func normalizeSMSProviderOptions(data any, valueKeys []string, labelKeys []string, kind string) []map[string]any {
@@ -3819,7 +3970,16 @@ func (s *Server) sunnyHasUsableSMSConfig() bool {
 	if boolValue(cfg["smsbower_enabled"], false) && strings.TrimSpace(text(cfg["smsbower_api_key"])) != "" {
 		return true
 	}
-	return boolValue(cfg["smspool_enabled"], false) && strings.TrimSpace(text(cfg["smspool_api_key"])) != ""
+	if boolValue(cfg["smspool_enabled"], false) && strings.TrimSpace(text(cfg["smspool_api_key"])) != "" {
+		return true
+	}
+	maxPrice, _ := strconv.ParseFloat(strings.TrimSpace(text(cfg["firefox_max_price"])), 64)
+	return boolValue(cfg["firefox_enabled"], false) &&
+		strings.TrimSpace(text(cfg["firefox_api_name"])) != "" &&
+		strings.TrimSpace(text(cfg["firefox_password"])) != "" &&
+		strings.TrimSpace(text(cfg["firefox_default_country"])) != "" &&
+		strings.TrimSpace(text(cfg["firefox_default_service"])) != "" &&
+		maxPrice > 0
 }
 
 func (s *Server) sunnyProxyStats() map[string]int64 {

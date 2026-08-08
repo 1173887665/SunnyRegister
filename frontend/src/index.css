@@ -2078,6 +2078,12 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   gap: 12px;
   align-items: end;
 }
+.sr-firefox-provider-top-row {
+  display: grid;
+  grid-template-columns: minmax(180px, .8fr) minmax(180px, .8fr) minmax(180px, 1fr) minmax(220px, 1.15fr) 132px;
+  gap: 12px;
+  align-items: end;
+}
 .sr-sms-provider-bottom-row {
   display: grid;
   grid-template-columns: minmax(320px, 1fr) auto;
@@ -2106,6 +2112,9 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   .sr-sms-provider-top-row {
     grid-template-columns: minmax(260px, 1fr) minmax(160px, 1fr);
   }
+  .sr-firefox-provider-top-row {
+    grid-template-columns: minmax(220px, 1fr) minmax(180px, 1fr);
+  }
   .sr-sms-provider-price {
     width: 100%;
     justify-self: stretch;
@@ -2116,6 +2125,9 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 }
 @media (max-width: 720px) {
   .sr-sms-provider-top-row {
+    grid-template-columns: 1fr;
+  }
+  .sr-firefox-provider-top-row {
     grid-template-columns: 1fr;
   }
   .sr-sms-provider-actions {
