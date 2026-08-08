@@ -2174,6 +2174,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .sr-mailbox-stat-card[data-tone="reversed"] { --stat-color: #0891b2; }
 .sr-mailbox-stat-card[data-tone="banned"] { --stat-color: #dc2626; }
 .sr-mailbox-stat-card[data-tone="verify"] { --stat-color: #d97706; }
+.sr-mailbox-stat-card[data-tone="refreshing"] { --stat-color: #7c3aed; }
 .sr-mailbox-stat-card[data-tone="failed"] { --stat-color: #e11d48; }
 .sr-mailbox-stat-card:hover { transform: translateY(-2px); box-shadow: 0 9px 22px color-mix(in srgb, var(--stat-color) 13%, transparent); }
 .sr-mailbox-stat-card.active {

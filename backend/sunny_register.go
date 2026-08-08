@@ -40,7 +40,7 @@ const (
 	defaultGroupName = "默认分组"
 )
 
-var sunnyMailboxStatuses = []string{"未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "失败"}
+var sunnyMailboxStatuses = []string{"未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "登录刷新", "失败"}
 
 func (s *Server) handleSunny(w http.ResponseWriter, r *http.Request, rest string) {
 	rest = strings.Trim(rest, "/")
@@ -3267,10 +3267,15 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 	if trialCheckedAt == nil {
 		trialCheckedAt = mb.TrialCheckedAt
 	}
+	groupName := ""
+	if mb.GroupID != 0 {
+		groupName = s.sunnyGroupMap()[mb.GroupID]
+	}
 	return map[string]any{
-		"id": sess.ID, "account_id": sess.AccountID, "email": sess.Email,
-		"status": status, "plan_type": plan, "trial_eligibility": trialEligibility,
-		"access_token": accessToken, "refresh_token": refreshToken, "id_token": sess.IDToken,
+		"id": sess.ID, "account_id": sess.AccountID, "mailbox_id": mb.ID, "email": sess.Email,
+		"status": status, "plan_type": plan, "group_id": mb.GroupID, "group_name": groupName,
+		"trial_eligibility": trialEligibility,
+		"access_token":      accessToken, "refresh_token": refreshToken, "id_token": sess.IDToken,
 		"session_json": sess.SessionJSON, "storage_state_json": sess.StorageStateJSON,
 		"raw_mailbox_line": raw,
 		"mailbox_password": mb.Password, "mailbox_client_id": mb.ClientID, "mailbox_refresh_token": mb.RefreshToken,
@@ -3717,26 +3722,83 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		}
 		if r.Method == http.MethodPut {
 			body, _ := parseBody(r)
-			if v := text(body["access_token"]); v != "" {
-				sess.AccessToken = v
+			status := strings.TrimSpace(text(body["status"]))
+			planType := ""
+			if _, ok := body["plan_type"]; ok {
+				planType = normalizeSunnyPlanType(text(body["plan_type"]))
+				allowedPlans := map[string]bool{"free": true, "plus": true, "k12": true, "team": true, "pro": true}
+				if !allowedPlans[planType] {
+					writeError(w, 400, "invalid plan type")
+					return
+				}
 			}
-			if _, ok := body["refresh_token"]; ok {
-				sess.RefreshToken = text(body["refresh_token"])
+			var targetGroup *SunnyMailboxGroup
+			if _, ok := body["group_id"]; ok {
+				groupID := uint(intValue(body["group_id"], 0))
+				var group SunnyMailboxGroup
+				if groupID == 0 || s.db.First(&group, groupID).Error != nil {
+					writeError(w, 400, "mailbox group not found")
+					return
+				}
+				targetGroup = &group
 			}
-			if v := text(body["session_json"]); v != "" {
-				sess.SessionJSON = v
-			}
-			s.db.Save(&sess)
-			if _, ok := body["trial_eligibility"]; ok {
-				trialEligibility := normalizeSunnyTrialEligibility(text(body["trial_eligibility"]))
-				trialCheckedAt := sunnyManualTrialCheckedAt(trialEligibility)
-				updates := map[string]any{"trial_eligibility": trialEligibility, "trial_check_error": "", "trial_checked_at": trialCheckedAt}
-				s.db.Model(&SunnyAccount{}).Where("email = ?", sess.Email).Updates(updates)
-				s.db.Model(&SunnyMailbox{}).Where("email = ?", sess.Email).Updates(updates)
-			}
-			if status := text(body["status"]); status != "" {
-				s.db.Model(&SunnyAccount{}).Where("email = ?", sess.Email).Updates(map[string]any{"status": status})
-				s.db.Model(&SunnyMailbox{}).Where("email = ?", sess.Email).Updates(map[string]any{"status": status})
+			now := time.Now()
+			if err := s.db.Transaction(func(tx *gorm.DB) error {
+				accountUpdates := map[string]any{"updated_at": now}
+				mailboxUpdates := map[string]any{"updated_at": now}
+				if _, ok := body["access_token"]; ok {
+					sess.AccessToken = text(body["access_token"])
+					accountUpdates["access_token"] = sess.AccessToken
+				}
+				if _, ok := body["refresh_token"]; ok {
+					sess.RefreshToken = text(body["refresh_token"])
+					accountUpdates["openai_rt"] = sess.RefreshToken
+					mailboxUpdates["openai_rt"] = sess.RefreshToken
+				}
+				if v := text(body["session_json"]); v != "" {
+					sess.SessionJSON = v
+				}
+				if err := tx.Save(&sess).Error; err != nil {
+					return err
+				}
+				if status != "" {
+					accountUpdates["status"] = status
+					accountUpdates["status_changed_at"] = now
+					mailboxUpdates["status"] = status
+					mailboxUpdates["status_changed_at"] = now
+				}
+				if planType != "" {
+					accountUpdates["account_type"] = planType
+					mailboxUpdates["account_type"] = planType
+				}
+				if _, ok := body["trial_eligibility"]; ok {
+					trialEligibility := normalizeSunnyTrialEligibility(text(body["trial_eligibility"]))
+					trialCheckedAt := sunnyManualTrialCheckedAt(trialEligibility)
+					accountUpdates["trial_eligibility"] = trialEligibility
+					accountUpdates["trial_check_error"] = ""
+					accountUpdates["trial_checked_at"] = trialCheckedAt
+					mailboxUpdates["trial_eligibility"] = trialEligibility
+					mailboxUpdates["trial_check_error"] = ""
+					mailboxUpdates["trial_checked_at"] = trialCheckedAt
+				}
+				if targetGroup != nil {
+					accountUpdates["group_name"] = targetGroup.Name
+					mailboxUpdates["group_id"] = targetGroup.ID
+				}
+				if err := tx.Model(&SunnyAccount{}).Where("email = ?", sess.Email).Updates(accountUpdates).Error; err != nil {
+					return err
+				}
+				mailboxResult := tx.Model(&SunnyMailbox{}).Where("email = ?", sess.Email).Updates(mailboxUpdates)
+				if mailboxResult.Error != nil {
+					return mailboxResult.Error
+				}
+				if targetGroup != nil && mailboxResult.RowsAffected == 0 {
+					return fmt.Errorf("mailbox not found for session")
+				}
+				return nil
+			}); err != nil {
+				writeError(w, 400, err.Error())
+				return
 			}
 			accounts, mailboxes := s.sunnySessionSidecars([]SunnySession{sess})
 			writeJSON(w, 200, s.serializeSunnySession(sess, accounts, mailboxes))

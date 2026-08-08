@@ -15,6 +15,10 @@ func TestSunnyMailboxSummaryReturnsGlobalStatusCounts(t *testing.T) {
 			t.Fatalf("create %s mailbox: %v", status, err)
 		}
 	}
+	refreshingMailbox := SunnyMailbox{Email: "refreshing@summary.example", Status: "\u767b\u5f55\u5237\u65b0", Enabled: true}
+	if err := s.db.Create(&refreshingMailbox).Error; err != nil {
+		t.Fatalf("create login refreshing mailbox: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sunny/mailboxes?summary=true&status=已注册&page=1&page_size=10", nil)
 	rec := httptest.NewRecorder()
@@ -30,7 +34,7 @@ func TestSunnyMailboxSummaryReturnsGlobalStatusCounts(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if payload.Total != 1 || payload.MailboxTotal != 7 {
+	if payload.Total != 1 || payload.MailboxTotal != 8 {
 		t.Fatalf("filtered total = %d, mailbox total = %d", payload.Total, payload.MailboxTotal)
 	}
 	for _, status := range sunnyMailboxStatuses {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -160,6 +161,63 @@ func TestSunnySessionListDoesNotReturnSecrets(t *testing.T) {
 	}
 	if item["plan_type"] != "plus" || item["email"] != "session@example.com" {
 		t.Fatalf("summary fields are incorrect: %#v", item)
+	}
+}
+
+func TestSunnySessionUpdateSynchronizesMailboxAndAccountMetadata(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	group := SunnyMailboxGroup{Name: "Target Group"}
+	if err := s.db.Create(&group).Error; err != nil {
+		t.Fatalf("create mailbox group: %v", err)
+	}
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"status":        "\u767b\u5f55\u5237\u65b0",
+		"group_id":      group.ID,
+		"plan_type":     "team",
+		"access_token":  "updated-access-token",
+		"refresh_token": "updated-refresh-token",
+	})
+	if err != nil {
+		t.Fatalf("encode update request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/sunny/sessions/"+strconv.Itoa(int(session.ID)), bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.sunnySessions(rec, req, []string{strconv.Itoa(int(session.ID))})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var mailbox SunnyMailbox
+	if err := s.db.Where("email = ?", session.Email).First(&mailbox).Error; err != nil {
+		t.Fatalf("load updated mailbox: %v", err)
+	}
+	if mailbox.GroupID != group.ID || mailbox.AccountType != "team" || mailbox.Status != "\u767b\u5f55\u5237\u65b0" || mailbox.OpenAIRT != "updated-refresh-token" {
+		t.Fatalf("mailbox metadata was not synchronized: %#v", mailbox)
+	}
+	var account SunnyAccount
+	if err := s.db.Where("email = ?", session.Email).First(&account).Error; err != nil {
+		t.Fatalf("load updated account: %v", err)
+	}
+	if account.GroupName != group.Name || account.AccountType != "team" || account.Status != "\u767b\u5f55\u5237\u65b0" || account.AccessToken != "updated-access-token" || account.OpenAIRT != "updated-refresh-token" {
+		t.Fatalf("account metadata was not synchronized: %#v", account)
+	}
+	var updatedSession SunnySession
+	if err := s.db.First(&updatedSession, session.ID).Error; err != nil {
+		t.Fatalf("load updated session: %v", err)
+	}
+	if updatedSession.AccessToken != "updated-access-token" || updatedSession.RefreshToken != "updated-refresh-token" {
+		t.Fatalf("session tokens were not updated: %#v", updatedSession)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode update response: %v", err)
+	}
+	if payload["group_name"] != group.Name || payload["plan_type"] != "team" || payload["status"] != "\u767b\u5f55\u5237\u65b0" {
+		t.Fatalf("updated session response is incomplete: %#v", payload)
 	}
 }
 
