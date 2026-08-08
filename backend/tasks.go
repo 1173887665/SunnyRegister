@@ -548,6 +548,10 @@ func (s *Server) executeTask(taskID string) {
 		s.executeSunnySubscriptionTask(&task, jsonMap(task.PayloadJSON))
 		return
 	}
+	if task.Type == sunnyTrialTaskType {
+		s.executeSunnyTrialTask(&task, jsonMap(task.PayloadJSON))
+		return
+	}
 	if s.tryDispatchPythonWorker(&task) {
 		return
 	}

@@ -531,6 +531,11 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   justify-content:center;
   white-space:nowrap;
 }
+.sr-session-table tbody tr:not(.sr-renewal-progress-row) > td:last-child:not([colspan]) > .flex {
+  flex-wrap:wrap !important;
+  justify-content:flex-start;
+  white-space:normal;
+}
 .sr-resizable-table td > .font-semibold,
 .sr-resizable-table td > div:not([class*="flex"]):not(.sr-empty):not(.sr-renewal-progress) {
   overflow:hidden;

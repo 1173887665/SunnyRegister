@@ -220,16 +220,21 @@ func serializeSunnyMailbox(m SunnyMailbox, groups map[uint]string, planType ...s
 	if len(planType) > 2 {
 		accountID = uint(intValue(planType[2], 0))
 	}
+	trialEligibility := normalizeSunnyTrialEligibility(m.TrialEligibility)
+	if len(planType) > 3 && strings.TrimSpace(planType[3]) != "" {
+		trialEligibility = normalizeSunnyTrialEligibility(planType[3])
+	}
 	return map[string]any{
 		"id": m.ID, "account_id": accountID, "group_id": m.GroupID, "group_name": groups[m.GroupID], "email": m.Email,
 		"mailbox_type": normalizeSunnyMailboxType(m.MailboxType), "mailbox_channel": normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel), "access_key": m.AccessKey,
 		"password": m.Password, "client_id": m.ClientID, "refresh_token": m.RefreshToken, "openai_rt": m.OpenAIRT, "access_token": accessToken,
-		"raw": m.Raw, "account_type": fallback(m.AccountType, "free"), "plan_type": plan, "status": status, "enabled": m.Enabled,
+		"raw": m.Raw, "account_type": fallback(m.AccountType, "free"), "plan_type": plan, "trial_eligibility": trialEligibility, "status": status, "enabled": m.Enabled,
 		"last_error": m.LastError, "latest_mail": jsonMap(m.LatestMailJSON),
 		"last_mail_at":  nullableTime(m.LastMailAt.Valid, m.LastMailAt.Time),
 		"registered_at": nullableTime(m.RegisteredAt.Valid, m.RegisteredAt.Time),
 		"created_at":    formatTime(m.CreatedAt), "updated_at": formatTime(m.UpdatedAt),
 		"status_changed_at": nullableTime(m.StatusChangedAt != nil, pointerTime(m.StatusChangedAt)),
+		"trial_checked_at":  nullableTime(m.TrialCheckedAt != nil, pointerTime(m.TrialCheckedAt)),
 	}
 }
 
@@ -240,8 +245,8 @@ func pointerTime(value *time.Time) time.Time {
 	return *value
 }
 
-func serializeSunnyMailboxList(m SunnyMailbox, groups map[uint]string, plan, accessToken string, accountID uint, summary bool) map[string]any {
-	item := serializeSunnyMailbox(m, groups, plan, accessToken, strconv.FormatUint(uint64(accountID), 10))
+func serializeSunnyMailboxList(m SunnyMailbox, groups map[uint]string, plan, accessToken string, accountID uint, trialEligibility string, summary bool) map[string]any {
+	item := serializeSunnyMailbox(m, groups, plan, accessToken, strconv.FormatUint(uint64(accountID), 10), trialEligibility)
 	if !summary {
 		return item
 	}
@@ -381,6 +386,7 @@ func sunnySaveMailboxAccessToken(tx *gorm.DB, mailbox SunnyMailbox, groupName, a
 	account := SunnyAccount{Email: mailbox.Email}
 	if err := tx.Where("email = ?", mailbox.Email).Attrs(SunnyAccount{
 		MailboxID: mailbox.ID, GroupName: groupName, Status: mailbox.Status, AccountType: mailbox.AccountType,
+		TrialEligibility: mailbox.TrialEligibility, TrialCheckError: mailbox.TrialCheckError, TrialCheckedAt: mailbox.TrialCheckedAt,
 		OpenAIRT: mailbox.OpenAIRT, MetadataJSON: "{}",
 	}).FirstOrCreate(&account).Error; err != nil {
 		return err
@@ -388,6 +394,7 @@ func sunnySaveMailboxAccessToken(tx *gorm.DB, mailbox SunnyMailbox, groupName, a
 	if err := tx.Model(&account).Updates(map[string]any{
 		"mailbox_id": mailbox.ID, "group_name": groupName,
 		"account_type": mailbox.AccountType, "access_token": accessToken,
+		"trial_eligibility": mailbox.TrialEligibility, "trial_check_error": mailbox.TrialCheckError, "trial_checked_at": mailbox.TrialCheckedAt,
 	}).Error; err != nil {
 		return err
 	}
@@ -420,31 +427,36 @@ func (s *Server) sunnyAccountIDsByEmail(emails []string) map[string]uint {
 }
 
 type sunnyMailboxLinkedData struct {
-	sessionPlans  map[string]string
-	accountExists map[string]bool
-	accessTokens  map[string]string
-	accountIDs    map[string]uint
-	accountRTs    map[string]string
+	sessionPlans     map[string]string
+	accountExists    map[string]bool
+	accessTokens     map[string]string
+	accountIDs       map[string]uint
+	accountRTs       map[string]string
+	trialEligibility map[string]string
 }
 
 func (s *Server) sunnyMailboxLinkedDataByEmail(emails []string) sunnyMailboxLinkedData {
 	linked := sunnyMailboxLinkedData{
-		sessionPlans:  map[string]string{},
-		accountExists: map[string]bool{},
-		accessTokens:  map[string]string{},
-		accountIDs:    map[string]uint{},
-		accountRTs:    map[string]string{},
+		sessionPlans:     map[string]string{},
+		accountExists:    map[string]bool{},
+		accessTokens:     map[string]string{},
+		accountIDs:       map[string]uint{},
+		accountRTs:       map[string]string{},
+		trialEligibility: map[string]string{},
 	}
 	if len(emails) == 0 {
 		return linked
 	}
 	var accounts []SunnyAccount
-	s.db.Select("id", "email", "access_token", "openai_rt").Where("email IN ?", emails).Find(&accounts)
+	s.db.Select("id", "email", "access_token", "openai_rt", "trial_eligibility").Where("email IN ?", emails).Find(&accounts)
 	for _, account := range accounts {
 		key := sunnyEmailKey(account.Email)
 		linked.accountExists[key] = true
 		linked.accountIDs[key] = account.ID
 		linked.accountRTs[key] = account.OpenAIRT
+		if trialEligibility := normalizeSunnyTrialEligibility(account.TrialEligibility); trialEligibility != sunnyTrialUnknown {
+			linked.trialEligibility[key] = trialEligibility
+		}
 		if strings.TrimSpace(account.AccessToken) != "" {
 			linked.accessTokens[key] = account.AccessToken
 		}
@@ -550,7 +562,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				key := sunnyEmailKey(m.Email)
 				plan := sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists)
 				if normalizeSunnyPlanType(plan) == planFilter {
-					item := serializeSunnyMailboxList(m, gm, plan, linked.accessTokens[key], linked.accountIDs[key], summary)
+					item := serializeSunnyMailboxList(m, gm, plan, linked.accessTokens[key], linked.accountIDs[key], linked.trialEligibility[key], summary)
 					if summary && strings.TrimSpace(linked.accountRTs[key]) != "" {
 						item["has_openai_rt"] = true
 					}
@@ -615,7 +627,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		items := []map[string]any{}
 		for _, m := range rows {
 			key := sunnyEmailKey(m.Email)
-			item := serializeSunnyMailboxList(m, gm, sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists), linked.accessTokens[key], linked.accountIDs[key], summary)
+			item := serializeSunnyMailboxList(m, gm, sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists), linked.accessTokens[key], linked.accountIDs[key], linked.trialEligibility[key], summary)
 			if summary && strings.TrimSpace(linked.accountRTs[key]) != "" {
 				item["has_openai_rt"] = true
 			}
@@ -652,12 +664,13 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		if len(parts) == 1 && r.Method == http.MethodGet {
 			key := sunnyEmailKey(m.Email)
 			linked := s.sunnyMailboxLinkedDataByEmail([]string{m.Email})
-			writeJSON(w, 200, serializeSunnyMailboxList(m, s.sunnyGroupMap(), sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists), linked.accessTokens[key], linked.accountIDs[key], false))
+			writeJSON(w, 200, serializeSunnyMailboxList(m, s.sunnyGroupMap(), sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists), linked.accessTokens[key], linked.accountIDs[key], linked.trialEligibility[key], false))
 			return
 		}
 		if len(parts) == 1 && r.Method == http.MethodPut {
 			body, _ := parseBody(r)
 			originalEmail := m.Email
+			trialUpdated := false
 			mailboxType := normalizeSunnyMailboxType(fallback(text(body["mailbox_type"]), m.MailboxType))
 			mailboxChannel := normalizeSunnyMailboxChannel(mailboxType, fallback(text(body["mailbox_channel"]), m.MailboxChannel))
 			m.MailboxType, m.MailboxChannel = mailboxType, mailboxChannel
@@ -724,6 +737,12 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			if _, ok := body["last_error"]; ok {
 				m.LastError = text(body["last_error"])
 			}
+			if _, ok := body["trial_eligibility"]; ok {
+				trialUpdated = true
+				m.TrialEligibility = normalizeSunnyTrialEligibility(text(body["trial_eligibility"]))
+				m.TrialCheckError = ""
+				m.TrialCheckedAt = sunnyManualTrialCheckedAt(m.TrialEligibility)
+			}
 			groupName := s.sunnyGroupMap()[m.GroupID]
 			if err := s.db.Transaction(func(tx *gorm.DB) error {
 				if err := tx.Save(&m).Error; err != nil {
@@ -744,6 +763,13 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				}
 				if m.AccountType != "" {
 					if err := tx.Model(&SunnyAccount{}).Where("email = ?", m.Email).Update("account_type", m.AccountType).Error; err != nil {
+						return err
+					}
+				}
+				if trialUpdated {
+					if err := tx.Model(&SunnyAccount{}).Where("email = ?", m.Email).Updates(map[string]any{
+						"trial_eligibility": m.TrialEligibility, "trial_check_error": "", "trial_checked_at": m.TrialCheckedAt,
+					}).Error; err != nil {
 						return err
 					}
 				}
@@ -3236,9 +3262,14 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 	}
 	accessToken := fallback(sess.AccessToken, fallback(sunnyAccessTokenFromSessionJSON(sess.SessionJSON), acc.AccessToken))
 	expiresAt := sunnyAccessTokenExpiry(accessToken, sess.ExpiresAt)
+	trialEligibility := sunnyTrialEligibilityFor(acc.TrialEligibility, mb.TrialEligibility)
+	trialCheckedAt := acc.TrialCheckedAt
+	if trialCheckedAt == nil {
+		trialCheckedAt = mb.TrialCheckedAt
+	}
 	return map[string]any{
 		"id": sess.ID, "account_id": sess.AccountID, "email": sess.Email,
-		"status": status, "plan_type": plan,
+		"status": status, "plan_type": plan, "trial_eligibility": trialEligibility,
 		"access_token": accessToken, "refresh_token": refreshToken, "id_token": sess.IDToken,
 		"session_json": sess.SessionJSON, "storage_state_json": sess.StorageStateJSON,
 		"raw_mailbox_line": raw,
@@ -3246,6 +3277,7 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 		"expires_at":      nullableTime(expiresAt.Valid, expiresAt.Time),
 		"last_refresh_at": nullableTime(sess.LastRefreshAt.Valid, sess.LastRefreshAt.Time),
 		"created_at":      formatTime(sess.CreatedAt), "updated_at": formatTime(sess.UpdatedAt),
+		"trial_checked_at": nullableTime(trialCheckedAt != nil, pointerTime(trialCheckedAt)),
 	}
 }
 
@@ -3278,6 +3310,8 @@ type sunnySessionAccountSummary struct {
 	Email               string     `gorm:"column:email"`
 	Status              string     `gorm:"column:status"`
 	AccountType         string     `gorm:"column:account_type"`
+	TrialEligibility    string     `gorm:"column:trial_eligibility"`
+	TrialCheckedAt      *time.Time `gorm:"column:trial_checked_at"`
 	AccessToken         string     `gorm:"column:access_token"`
 	HasAccessToken      int        `gorm:"column:has_access_token"`
 	HasRefreshToken     int        `gorm:"column:has_refresh_token"`
@@ -3289,6 +3323,8 @@ type sunnySessionMailboxSummary struct {
 	Email               string     `gorm:"column:email"`
 	Status              string     `gorm:"column:status"`
 	AccountType         string     `gorm:"column:account_type"`
+	TrialEligibility    string     `gorm:"column:trial_eligibility"`
+	TrialCheckedAt      *time.Time `gorm:"column:trial_checked_at"`
 	HasSecretKey        int        `gorm:"column:has_secret_key"`
 	GroupID             uint       `gorm:"column:group_id"`
 	GroupName           string     `gorm:"column:group_name"`
@@ -3327,13 +3363,18 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 		lastHealthText = formatTime(*lastHealthCheckedAt)
 	}
 	expiresAt := sunnyAccessTokenExpiry(fallback(row.AccessToken, account.AccessToken), row.ExpiresAt)
+	trialEligibility := sunnyTrialEligibilityFor(account.TrialEligibility, mailbox.TrialEligibility)
+	trialCheckedAt := account.TrialCheckedAt
+	if trialCheckedAt == nil {
+		trialCheckedAt = mailbox.TrialCheckedAt
+	}
 	accountID := row.AccountID
 	if accountID == 0 {
 		accountID = account.ID
 	}
 	return map[string]any{
 		"id": row.ID, "account_id": accountID, "mailbox_id": mailbox.ID, "email": row.Email,
-		"status": status, "plan_type": plan, "group_id": mailbox.GroupID, "group_name": mailbox.GroupName,
+		"status": status, "plan_type": plan, "trial_eligibility": trialEligibility, "group_id": mailbox.GroupID, "group_name": mailbox.GroupName,
 		"has_access_token":  row.HasAccessToken != 0 || account.HasAccessToken != 0,
 		"has_refresh_token": row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
 		"has_secret_key":    row.HasSecretKey != 0 || mailbox.HasSecretKey != 0,
@@ -3341,6 +3382,7 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 		"access_token_status": fallback(row.AccessTokenStatus, "unknown"), "access_token_error": row.AccessTokenError,
 		"access_token_checked_at": nullableTime(row.AccessTokenCheckedAt != nil, sunnyTimePointerValue(row.AccessTokenCheckedAt)),
 		"health_check_status":     fallback(row.HealthCheckStatus, "unknown"), "health_check_error": row.HealthCheckError,
+		"trial_checked_at": nullableTime(trialCheckedAt != nil, pointerTime(trialCheckedAt)),
 	}
 }
 
@@ -3384,14 +3426,14 @@ func (s *Server) sunnySessionListSidecars(rows []sunnySessionListRow) (map[strin
 		return accounts, mailboxes
 	}
 	var accRows []sunnySessionAccountSummary
-	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, access_token, last_health_checked_at,
+	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, trial_eligibility, trial_checked_at, access_token, last_health_checked_at,
 		CASE WHEN access_token IS NOT NULL AND access_token <> '' THEN 1 ELSE 0 END AS has_access_token,
 		CASE WHEN openai_rt IS NOT NULL AND openai_rt <> '' THEN 1 ELSE 0 END AS has_refresh_token`).Where("email IN ?", emails).Find(&accRows)
 	for _, account := range accRows {
 		accounts[sunnyEmailKey(account.Email)] = account
 	}
 	var mailboxRows []sunnySessionMailboxSummary
-	s.db.Model(&SunnyMailbox{}).Select(`sunny_mailboxes.id, sunny_mailboxes.email, sunny_mailboxes.status, sunny_mailboxes.account_type,
+	s.db.Model(&SunnyMailbox{}).Select(`sunny_mailboxes.id, sunny_mailboxes.email, sunny_mailboxes.status, sunny_mailboxes.account_type, sunny_mailboxes.trial_eligibility, sunny_mailboxes.trial_checked_at,
 		sunny_mailboxes.group_id, sunny_mailboxes.last_health_checked_at, sunny_mailbox_groups.name AS group_name,
 		CASE WHEN sunny_mailboxes.email IS NOT NULL AND sunny_mailboxes.email <> '' AND sunny_mailboxes.password IS NOT NULL AND sunny_mailboxes.password <> '' AND sunny_mailboxes.client_id IS NOT NULL AND sunny_mailboxes.client_id <> '' AND sunny_mailboxes.refresh_token IS NOT NULL AND sunny_mailboxes.refresh_token <> '' THEN 1 ELSE 0 END AS has_secret_key`).
 		Joins("LEFT JOIN sunny_mailbox_groups ON sunny_mailbox_groups.id = sunny_mailboxes.group_id").
@@ -3464,9 +3506,10 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		kw := strings.ToLower(strings.TrimSpace(q.Get("q")))
 		statusFilter := strings.TrimSpace(q.Get("status"))
 		planFilter := strings.ToLower(strings.TrimSpace(q.Get("plan_type")))
+		trialFilter := normalizeSunnyTrialFilter(q.Get("trial_eligibility"))
 		groupFilter := uint(intValue(q.Get("group_id"), 0))
 		sortBy := strings.TrimSpace(q.Get("sort_by"))
-		if statusFilter == "" && planFilter == "" {
+		if statusFilter == "" && planFilter == "" && trialFilter == "" {
 			query := s.db.Model(&SunnySession{})
 			if kw != "" {
 				query = query.Where("LOWER(email) LIKE ?", "%"+kw+"%")
@@ -3518,6 +3561,11 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			}
 			if planFilter != "" && strings.ToLower(text(item["plan_type"])) != planFilter {
 				continue
+			}
+			if trialFilter != "" {
+				if !sunnyTrialApplies(text(item["status"]), text(item["plan_type"])) || normalizeSunnyTrialEligibility(text(item["trial_eligibility"])) != trialFilter {
+					continue
+				}
 			}
 			if groupFilter != 0 && uint(intValue(item["group_id"], 0)) != groupFilter {
 				continue
@@ -3578,6 +3626,20 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			return
 		}
 		task, err := s.createSunnySubscriptionTask(body)
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, serializeTask(task))
+		return
+	}
+	if len(parts) == 1 && parts[0] == "trial-check" && r.Method == http.MethodPost {
+		body, err := parseBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		task, err := s.createSunnyTrialTask(body)
 		if err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return
@@ -3665,6 +3727,13 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 				sess.SessionJSON = v
 			}
 			s.db.Save(&sess)
+			if _, ok := body["trial_eligibility"]; ok {
+				trialEligibility := normalizeSunnyTrialEligibility(text(body["trial_eligibility"]))
+				trialCheckedAt := sunnyManualTrialCheckedAt(trialEligibility)
+				updates := map[string]any{"trial_eligibility": trialEligibility, "trial_check_error": "", "trial_checked_at": trialCheckedAt}
+				s.db.Model(&SunnyAccount{}).Where("email = ?", sess.Email).Updates(updates)
+				s.db.Model(&SunnyMailbox{}).Where("email = ?", sess.Email).Updates(updates)
+			}
 			if status := text(body["status"]); status != "" {
 				s.db.Model(&SunnyAccount{}).Where("email = ?", sess.Email).Updates(map[string]any{"status": status})
 				s.db.Model(&SunnyMailbox{}).Where("email = ?", sess.Email).Updates(map[string]any{"status": status})

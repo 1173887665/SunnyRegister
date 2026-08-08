@@ -240,6 +240,8 @@ func auditMetaForRequest(r *http.Request, body, response map[string]any, status 
 		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "health_check", "account_health"
 	case strings.Contains(path, "/sunny/sessions/subscription-check"):
 		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "subscription_check", "account_subscription"
+	case strings.Contains(path, "/sunny/sessions/trial-check"):
+		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "trial_check", "account_trial"
 	case strings.Contains(path, "/sunny/tasks/refresh-session"):
 		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "refresh_access_token", "account_token"
 	case strings.Contains(path, "/sunny/tasks/acquire-rt"):

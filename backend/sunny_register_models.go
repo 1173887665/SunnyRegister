@@ -28,6 +28,9 @@ type SunnyMailbox struct {
 	OpenAIRT            string       `gorm:"column:openai_rt;type:text" json:"openai_rt"`
 	Raw                 string       `gorm:"type:text" json:"raw"`
 	AccountType         string       `gorm:"index;default:free" json:"account_type"`
+	TrialEligibility    string       `gorm:"index;default:unknown" json:"trial_eligibility"`
+	TrialCheckError     string       `gorm:"type:text" json:"trial_check_error"`
+	TrialCheckedAt      *time.Time   `gorm:"index" json:"trial_checked_at"`
 	Status              string       `gorm:"index;default:unused" json:"status"`
 	Enabled             bool         `gorm:"default:true" json:"enabled"`
 	LastError           string       `gorm:"type:text" json:"last_error"`
@@ -83,6 +86,9 @@ type SunnyAccount struct {
 	GroupName           string     `gorm:"index" json:"group_name"`
 	Status              string     `gorm:"index;default:pending" json:"status"`
 	AccountType         string     `gorm:"index;default:free" json:"account_type"`
+	TrialEligibility    string     `gorm:"index;default:unknown" json:"trial_eligibility"`
+	TrialCheckError     string     `gorm:"type:text" json:"trial_check_error"`
+	TrialCheckedAt      *time.Time `gorm:"index" json:"trial_checked_at"`
 	OpenAIRT            string     `gorm:"column:openai_rt;type:text" json:"openai_rt"`
 	AccessToken         string     `gorm:"type:text" json:"access_token"`
 	PhoneNumber         string     `gorm:"index" json:"phone_number"`
