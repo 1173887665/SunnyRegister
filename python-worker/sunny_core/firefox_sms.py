@@ -5,11 +5,12 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
 
-FIREFOX_DEFAULT_BASE_URL = "http://www.firefox.fun/yhapi.ashx"
+FIREFOX_DEFAULT_BASE_URL = "https://www.firefox.fun/yhapi.ashx"
 FIREFOX_DEFAULT_SERVICE = "1096"
 FIREFOX_POLL_INTERVAL_SECONDS = 5
 FIREFOX_RELEASE_DELAY_SECONDS = 35
@@ -37,6 +38,20 @@ def _normal_phone(country_code: str, phone: str) -> str:
     return "+" + phone
 
 
+def _api_url(value: Any) -> str:
+    raw = _clean(value, FIREFOX_DEFAULT_BASE_URL)
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("FireFox API URL must be a valid HTTP or HTTPS URL")
+    scheme = "https" if (parsed.hostname or "").lower() in {"www.firefox.fun", "web.firefox.fun"} else parsed.scheme
+    path = parsed.path.rstrip("/")
+    if not path:
+        path = "/yhapi.ashx"
+    elif not path.lower().endswith("/yhapi.ashx"):
+        path += "/yhapi.ashx"
+    return urlunsplit((scheme, parsed.netloc, path, "", ""))
+
+
 class FireFoxAPIError(RuntimeError):
     def __init__(self, action: str, code: str, message: str = ""):
         self.action = action
@@ -58,16 +73,60 @@ class FireFoxSMSClient:
     """FireFox SMS client following the provider's GET API protocol."""
 
     _ERRORS = {
-        "-1": "no number is currently available",
-        "-2": "token is missing or invalid",
-        "-3": "request is still waiting",
-        "-4": "resource is offline or already released",
-        "-8": "account balance is insufficient",
-        "-9": "too many occupied numbers",
+        "login": {
+            "-1": "API account is empty",
+            "-2": "API account must contain 3-30 characters",
+            "-3": "API account cannot contain '|'",
+            "-4": "API account cannot contain Chinese characters",
+            "-5": "API password is empty",
+            "-6": "API password must contain 3-30 characters",
+            "-7": "the previous login from this IP failed; verify the credentials and retry after one minute",
+            "-8": "the account is disabled",
+            "-9": "the API account or password is incorrect",
+        },
+        "myInfo": {
+            "-1": "token is missing",
+            "-2": "token is invalid",
+            "-3": "account information can only be requested once every 60 seconds",
+        },
+        "getPhone": {
+            "-1": "no number is currently available",
+            "-2": "token is missing",
+            "-3": "service ID does not exist",
+            "-4": "country code is invalid",
+            "-5": "service is not approved",
+            "-6": "service is disabled",
+            "-7": "account is disabled",
+            "-8": "account balance is insufficient",
+            "-9": "too many occupied numbers; release unused numbers before retrying",
+            "-10": "the service does not allow requesting a specified number",
+        },
+        "getPhoneCode": {
+            "-1": "token is missing",
+            "-2": "pkey is invalid",
+            "-3": "waiting for the verification code",
+            "-4": "the number is offline or already released",
+            "-5": "the number was forcibly blacklisted",
+        },
+        "setRel": {
+            "-1": "token is missing",
+            "-2": "pkey is invalid",
+            "-3": "the number does not exist or was already released",
+            "-4": "a code was received, so the number cannot be released",
+            "-5": "an outgoing SMS was submitted, so the number cannot be released",
+            "-6": "the release limit was exceeded and the number was blacklisted",
+        },
+    }
+
+    _TOKEN_ERRORS = {
+        "myInfo": {"-1", "-2"},
+        "getPhone": {"-2"},
+        "getPhoneCode": {"-1"},
+        "setRel": {"-1"},
     }
 
     def __init__(self, config: dict[str, Any], proxies: dict[str, str] | None = None):
-        self.base_url = _clean(config.get("firefox_base_url"), FIREFOX_DEFAULT_BASE_URL)
+        self.base_url = _api_url(config.get("firefox_base_url"))
         self.api_name = _clean(config.get("firefox_api_name"))
         self.password = _clean(config.get("firefox_password"))
         self.country = _clean(config.get("firefox_default_country"))
@@ -75,8 +134,14 @@ class FireFoxSMSClient:
         self.max_price = _as_float(config.get("firefox_max_price"), 0)
         self.proxies = proxies or None
         self._token = ""
-        if not self.api_name or not self.password:
+        if not self.api_name or not self.password.strip():
             raise RuntimeError("FireFox API account or password is not configured")
+        if not 3 <= len(self.api_name) <= 30:
+            raise RuntimeError("FireFox API account must contain 3-30 characters")
+        if "|" in self.api_name or re.search(r"[\u3400-\u9fff]", self.api_name):
+            raise RuntimeError("FireFox API account cannot contain '|' or Chinese characters")
+        if not 3 <= len(self.password) <= 30:
+            raise RuntimeError("FireFox API password must contain 3-30 characters (official login error -6)")
         if not self.country:
             raise RuntimeError("FireFox country is not configured")
         if not self.service:
@@ -99,7 +164,28 @@ class FireFoxSMSClient:
         if ok:
             return parts
         code = parts[1] if len(parts) > 1 else raw
-        message = self._ERRORS.get(code, raw)
+        message = self._error_message(action, code, raw)
+        raise FireFoxAPIError(action, code, f"FireFox {action} failed ({code}): {message}")
+
+    def _error_message(self, action: str, code: str, raw: str) -> str:
+        return self._ERRORS.get(action, {}).get(code, raw)
+
+    def _authorized_raw(self, action: str, timeout: int = 30, **params: Any) -> tuple[bool, list[str], str]:
+        for attempt in range(2):
+            ok, parts, raw = self._request_raw(action, timeout=timeout, token=self.login(), **params)
+            code = parts[1] if len(parts) > 1 else raw
+            if not ok and code in self._TOKEN_ERRORS.get(action, set()) and attempt == 0:
+                self._token = ""
+                continue
+            return ok, parts, raw
+        raise RuntimeError(f"FireFox {action} authorization retry was exhausted")
+
+    def _authorized(self, action: str, timeout: int = 30, **params: Any) -> list[str]:
+        ok, parts, raw = self._authorized_raw(action, timeout=timeout, **params)
+        if ok:
+            return parts
+        code = parts[1] if len(parts) > 1 else raw
+        message = self._error_message(action, code, raw)
         raise FireFoxAPIError(action, code, f"FireFox {action} failed ({code}): {message}")
 
     def login(self) -> str:
@@ -111,16 +197,15 @@ class FireFoxSMSClient:
         return self._token
 
     def balance(self) -> str:
-        parts = self._request("myInfo", token=self.login())
+        parts = self._authorized("myInfo")
         if len(parts) < 2:
             raise RuntimeError("FireFox account info did not return a balance")
         return parts[1]
 
     def get_number(self) -> FireFoxActivation:
-        parts = self._request(
+        parts = self._authorized(
             "getPhone",
             timeout=45,
-            token=self.login(),
             iid=self.service,
             country=self.country,
             maxPrice=f"{self.max_price:g}",
@@ -141,19 +226,19 @@ class FireFoxSMSClient:
         )
 
     def get_code(self, pkey: str) -> str | None:
-        ok, parts, raw = self._request_raw("getPhoneCode", timeout=20, token=self.login(), pkey=pkey)
+        ok, parts, raw = self._authorized_raw("getPhoneCode", timeout=20, pkey=pkey)
         if ok:
             code = parts[1] if len(parts) > 1 else ""
-            if not code and len(parts) > 2:
-                match = re.search(r"\b(\d{4,8})\b", parts[2])
+            if not re.fullmatch(r"\d{6}", code) and len(parts) > 2:
+                match = re.search(r"(?<!\d)(\d{6})(?!\d)", parts[2])
                 code = match.group(1) if match else ""
-            if not code:
-                raise RuntimeError("FireFox getPhoneCode returned success without a code")
+            if not re.fullmatch(r"\d{6}", code):
+                raise RuntimeError("FireFox getPhoneCode did not return an independent 6-digit code")
             return code
         error_code = parts[1] if len(parts) > 1 else raw
         if error_code == "-3":
             return None
-        raise FireFoxAPIError("getPhoneCode", error_code, f"FireFox getPhoneCode failed ({error_code}): {self._ERRORS.get(error_code, raw)}")
+        raise FireFoxAPIError("getPhoneCode", error_code, f"FireFox getPhoneCode failed ({error_code}): {self._error_message('getPhoneCode', error_code, raw)}")
 
     def wait_code(self, pkey: str, timeout: int = 180, log: Callable[[str], None] | None = None) -> str:
         deadline = time.monotonic() + timeout
@@ -172,7 +257,7 @@ class FireFoxSMSClient:
         if not pkey:
             return
         for attempt in range(max_attempts):
-            ok, parts, raw = self._request_raw("setRel", timeout=20, token=self.login(), pkey=pkey)
+            ok, parts, raw = self._authorized_raw("setRel", timeout=20, pkey=pkey)
             if ok:
                 return
             code = parts[1] if len(parts) > 1 else raw
@@ -181,7 +266,7 @@ class FireFoxSMSClient:
                 continue
             if code in {"-3", "-4"}:
                 return
-            raise FireFoxAPIError("setRel", code, f"FireFox setRel failed ({code}): {raw}")
+            raise FireFoxAPIError("setRel", code, f"FireFox setRel failed ({code}): {self._error_message('setRel', code, raw)}")
 
     def release_later(self, pkey: str, delay: int = FIREFOX_RELEASE_DELAY_SECONDS) -> threading.Thread:
         def run() -> None:

@@ -527,7 +527,7 @@ const zh: AnyObj = new Proxy({
   lubanProvider: "LubanSMS 接码供应商", lubanDesc: "通过供应商编号从 LubanSMS 获取一次性手机号并自动轮询验证码。", lubanSwitch: "启用 LubanSMS", lubanApiKey: "API Key", lubanServiceId: "供应商编号", lubanBaseURL: "接口地址", lubanCheck: "检测连接", lubanChecked: "LubanSMS 连接正常", lubanSaved: "LubanSMS 配置已保存",
   smsbowerProvider: "SMSBower 接码供应商", smsbowerDesc: "当自建手机号池不可用或无可用号码时，注册机会使用 SMSBower API 自动获取一次性手机号。", smsbowerSwitch: "启用 SMSBower", smsbowerReady: "SMSBower 已配置", smsbowerApiKey: "API Key", smsbowerCountry: "默认国家", smsbowerService: "默认服务", smsbowerMaxPrice: "最大价格", smsbowerBaseURL: "接口地址", smsbowerCheck: "检测余额", smsbowerBalance: "余额：{balance}", smsbowerSaved: "SMSBower 配置已保存",
   smspoolProvider: "SMSPool 接码供应商", smspoolDesc: "SMSPool 临时号码平台，可在自建手机号池和 SMSBower 不可用时自动购买一次性接码号码。", smspoolSwitch: "启用 SMSPool", smspoolReady: "SMSPool 已配置", smspoolApiKey: "API Key", smspoolCountry: "默认国家", smspoolService: "默认服务", refreshProviderOptions: "获取列表", providerOptionSearch: "搜索 ID、代码或名称...", providerOptionNoResults: "没有匹配的选项", smspoolMaxPrice: "最大价格", smspoolBaseURL: "接口地址", smspoolCheck: "检测余额", smspoolBalance: "余额：{balance}", smspoolSaved: "SMSPool 配置已保存",
-  firefoxProvider: "FireFox 接码供应商", firefoxDesc: "FireFox 临时号码平台。取号时强制限制最高单价，每 5 秒轮询验证码，不可用号码将在 35 秒后自动释放。", firefoxSwitch: "启用 FireFox", firefoxReady: "FireFox 已配置", firefoxApiName: "API 账号", firefoxPassword: "API 密码", firefoxCountry: "默认国家", firefoxService: "默认服务", firefoxMaxPrice: "单号最高价格", firefoxBaseURL: "接口地址", firefoxCheck: "检测余额", firefoxBalance: "余额：{balance}", firefoxSaved: "FireFox 配置已保存", firefoxMaxPriceRequired: "FireFox 单号最高价格必须大于 0",
+  firefoxProvider: "FireFox 接码供应商", firefoxDesc: "FireFox 临时号码平台。取号时强制限制最高单价，每 5 秒轮询验证码，不可用号码将在 35 秒后自动释放。", firefoxSwitch: "启用 FireFox", firefoxReady: "FireFox 已配置", firefoxApiName: "API 专用账号", firefoxPassword: "登录密码", firefoxCountry: "默认国家", firefoxService: "默认服务", firefoxMaxPrice: "单号最高价格", firefoxBaseURL: "接口地址", firefoxCheck: "检测余额", firefoxBalance: "余额：{balance}", firefoxSaved: "FireFox 配置已保存", firefoxMaxPriceRequired: "FireFox 单号最高价格必须大于 0",
   proxyTip: "管理注册机发起注册/登录请求时使用的出站代理池；批量检测仅检测代理服务连通性，不访问 ChatGPT 官网。", proxyPool: "代理池", proxyEnabled: "启用", proxyDisabled: "停用", proxyAvailable: "失效", proxySearch: "搜索代理地址...", proxyCountry: "国家", proxyAllCountry: "全部国家", proxyAddress: "代理地址", proxyBatchCheck: "批量检测", proxyBatchDelete: "批量删除", proxyBatchEdit: "批量修改", proxyAdd: "新增代理", proxyEdit: "编辑代理", proxyCheckDone: "代理检测完成", proxyNoData: "暂无代理", proxyNoDataDesc: "请先新增代理地址，再对启用代理进行批量检测。", proxyStatusEnabled: "启用", proxyStatusDisabled: "停用", proxyStatusInvalid: "失效", proxyLastChecked: "上次检测", proxyLatency: "延迟", proxyCountryPlaceholder: "例如 US / HK / JP / Brazil", proxyCountryKeep: "留空保持各代理原国家不变", proxyAddressPlaceholder: "每行一个代理，例如 http://user:pass@host:port 或 socks5://host:port", proxyConfirmDelete: "确认删除该代理？此操作不可撤销。", proxyConfirmBatchDelete: "确认删除选中的代理？此操作不可撤销。", proxyTrafficSwitch: "注册流量代理", proxyTrafficOn: "代理开启", proxyTrafficOff: "代理关闭", proxyTrafficOnHint: "注册/登录请求走代理池", proxyTrafficOffHint: "使用服务器系统网络出口", proxySwitchSaved: "代理出口设置已更新",
   selected: "已选", selectedItems: "已选 {count} 项", selectAll: "全选", selectAllDone: "已选中当前筛选结果中的 {count} 条记录", clearSelection: "清除选择", globalLogs: "全局日志", selectedLogs: "当前邮箱日志", registrationTaskProgress: "注册任务进度", accountRegistrationProgress: "账户注册进度", clearLogs: "清除", latest: "查询最近邮件", done: "操作完成", failed: "操作失败", file: "选择文件", status: "状态", prev: "上一页", next: "下一页", pageSize: "每页", pageInfo: "第 {page} / {pages} 页", pageRange: "显示 {from} 至 {to} 共 {total} 条结果", noLogs: "暂无日志", noRegistrationTask: "暂无注册任务", noAccountProgress: "暂无正在处理的邮箱账户", taskTotal: "任务总数", taskCompleted: "当前完成", completedAccounts: "已完成注册", pendingAccounts: "未完成注册", abnormalAccounts: "注册状态异常", currentStep: "当前步骤", total: "总计", yes: "是", no: "否", step: "步骤",
   progressSteps: { queued: "等待任务调度", initializing: "初始化邮箱任务", proxy_ready: "代理与出口准备完成", browser_started: "启动隔离浏览器", protocol_started: "建立纯协议注册会话", email_submitted: "提交注册邮箱", email_verified: "完成邮箱验证码验证", auth_completed: "完成注册或登录认证", registered: "保存 ChatGPT Session", phone_started: "分配手机号并开始接码", phone_code_received: "收到并提交手机验证码", phone_bound: "完成 Codex 接码绑定", reverse_importing: "正在导入反代平台", reverse_imported: "完成反代平台导入", agent_identity_importing: "正在创建 Agent Identity 并导入反代平台", agent_identity_imported: "完成 Agent Identity 反代导入", stage_incomplete: "目标阶段未完成", cancelled: "任务已由用户中断", failed: "注册流程异常" },
@@ -2041,6 +2041,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   const [lubanCheck,setLubanCheck]=useState("");
   const [smsPoolCheck,setSmsPoolCheck]=useState("");
   const [firefoxCheck,setFireFoxCheck]=useState("");
+  const [firefoxOptionsLoading,setFireFoxOptionsLoading]=useState(false);
   const [smsOptions,setSmsOptions]=useCachedState<AnyObj>("phone.providerOptions",{});
   const [editing,setEditing]=useState<AnyObj|null>(null);
   const [importOpen,setImportOpen]=useState(false);
@@ -2074,7 +2075,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   useEffect(()=>{apiFetch("/sunny/phones/config").then((cfg)=>{ const next = cfg || {pool_enabled:true}; setPhoneCfg(next); setSavedPhoneCfg(next); }).catch(()=>{})},[]);
   useEffect(()=>{setPage(1)},[query, statusFilter, countFilter, timeSort, pageSize]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
-  async function loadProviderOptions(provider: "smsbower"|"smspool"|"firefox", kind: "countries"|"services", refresh=false, country="") {
+  async function loadProviderOptions(provider: "smsbower"|"smspool"|"firefox", kind: "countries"|"services", refresh=false, country="", announceRefresh=true) {
     const key = `${provider}_${kind}_${country || "all"}`;
     try {
       const params = new URLSearchParams({ provider, kind });
@@ -2095,9 +2096,11 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
           if (match?.value != null) setPhoneCfg((old: AnyObj)=>({ ...old, [field]: String(match.value) }));
         }
       }
-      if (refresh) notify("ok", t.refreshDone);
+      if (refresh && announceRefresh) notify("ok", t.refreshDone);
+      return true;
     } catch(e:any) {
-      if (refresh) notify("fail", e.message || String(e));
+      if (refresh && announceRefresh) notify("fail", e.message || String(e));
+      return false;
     }
   }
   const optionsFor = (provider: "smsbower"|"smspool"|"firefox", kind: "countries"|"services", country="") => smsOptions[`${provider}_${kind}_${country || "all"}`] || [];
@@ -2264,10 +2267,6 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
     } catch(e:any) { notify("fail", e.message || String(e)); }
   }
   async function checkFireFox() {
-    if (Number(phoneCfg.firefox_max_price || 0) <= 0) {
-      notify("fail", t.firefoxMaxPriceRequired);
-      return;
-    }
     setFireFoxCheck(t.checking);
     try {
       const res = await apiFetch("/sunny/phones/firefox/check", { method:"POST", body: JSON.stringify(phoneCfg) });
@@ -2278,6 +2277,20 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
       const msg = e.message || String(e);
       setFireFoxCheck(msg);
       notify("fail", msg);
+    }
+  }
+  async function refreshFireFoxOptions() {
+    if (firefoxOptionsLoading) return;
+    setFireFoxOptionsLoading(true);
+    try {
+      const country = String(phoneCfg.firefox_default_country || "");
+      const results = await Promise.all([
+        loadProviderOptions("firefox", "countries", true, "", false),
+        loadProviderOptions("firefox", "services", true, country, false),
+      ]);
+      notify(results.every(Boolean) ? "ok" : "fail", results.every(Boolean) ? t.refreshDone : t.providerOptionNoResults);
+    } finally {
+      setFireFoxOptionsLoading(false);
     }
   }
   const allChecked = items.length > 0 && items.every((p)=>selected.includes(p.id));
@@ -2369,16 +2382,17 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
       </div>
       {firefoxEnabled && <div className="sr-sms-provider-form mt-4 space-y-3">
         <div className="sr-firefox-provider-top-row">
-          <div><Label>{t.firefoxApiName}</Label><Input value={phoneCfg.firefox_api_name||""} onChange={(e)=>setPhoneCfg({...phoneCfg,firefox_api_name:e.target.value})} autoComplete="off"/></div>
-          <div><Label>{t.firefoxPassword}</Label><Input type="password" value={phoneCfg.firefox_password||""} onChange={(e)=>setPhoneCfg({...phoneCfg,firefox_password:e.target.value})} autoComplete="new-password"/></div>
+          <div><Label>{t.firefoxApiName}</Label><Input minLength={3} maxLength={30} value={phoneCfg.firefox_api_name||""} onChange={(e)=>setPhoneCfg({...phoneCfg,firefox_api_name:e.target.value})} autoComplete="off"/></div>
+          <div><Label>{t.firefoxPassword}</Label><Input type="password" minLength={3} maxLength={30} value={phoneCfg.firefox_password||""} onChange={(e)=>setPhoneCfg({...phoneCfg,firefox_password:e.target.value})} autoComplete="new-password"/></div>
           <div><Label>{t.firefoxCountry}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.firefox_default_country||"usa")} onChange={(v)=>setPhoneCfg({...phoneCfg,firefox_default_country:v})} options={optionsFor("firefox","countries")} placeholder="usa" searchPlaceholder={t.providerOptionSearch} noResultsLabel={t.providerOptionNoResults}/></div>
           <div><Label>{t.firefoxService}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.firefox_default_service||"1096")} onChange={(v)=>setPhoneCfg({...phoneCfg,firefox_default_service:v})} options={optionsFor("firefox","services",String(phoneCfg.firefox_default_country||""))} placeholder="1096 · OpenAI / ChatGPT" searchPlaceholder={t.providerOptionSearch} noResultsLabel={t.providerOptionNoResults}/></div>
           <div className="sr-sms-provider-price"><Label>{t.firefoxMaxPrice}</Label><Input type="number" min="0.01" step="0.01" value={phoneCfg.firefox_max_price ?? 0} onChange={(e)=>setPhoneCfg({...phoneCfg,firefox_max_price:Number(e.target.value)})} placeholder="0.65"/></div>
         </div>
         <div className="sr-sms-provider-bottom-row">
-          <div><Label>{t.firefoxBaseURL}</Label><Input value={phoneCfg.firefox_base_url||"http://www.firefox.fun/yhapi.ashx"} onChange={(e)=>setPhoneCfg({...phoneCfg,firefox_base_url:e.target.value})}/></div>
+          <div><Label>{t.firefoxBaseURL}</Label><Input value={phoneCfg.firefox_base_url||"https://www.firefox.fun/yhapi.ashx"} onChange={(e)=>setPhoneCfg({...phoneCfg,firefox_base_url:e.target.value})}/></div>
           <div className="sr-sms-provider-actions">
             {firefoxCheck ? <span className="sr-inline-result">{firefoxCheck}</span> : null}
+            <Button variant="outline" className="rounded-xl" disabled={firefoxOptionsLoading} onClick={refreshFireFoxOptions}><RefreshCw className={cn("mr-2 h-4 w-4", firefoxOptionsLoading && "animate-spin")}/>{t.refreshProviderOptions}</Button>
             <Button variant="outline" className="rounded-xl" onClick={checkFireFox}><RefreshCw className="mr-2 h-4 w-4"/>{t.firefoxCheck}</Button>
             <span title={!firefoxDirty ? t.configUnchanged : ""}>
               <Button disabled={!firefoxDirty} className="rounded-xl bg-emerald-600 px-5 text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50" onClick={saveFireFoxConfig}><Save className="mr-2 h-4 w-4"/>{t.save}</Button>
