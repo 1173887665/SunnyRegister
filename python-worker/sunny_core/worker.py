@@ -242,47 +242,104 @@ def _raw_mailboxes(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _proxy_snapshot(payload: dict[str, Any], slot: int = 0) -> dict[str, str]:
+def _proxy_pool_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_pool = payload.get("proxy_pool")
+    pool_items = raw_pool if isinstance(raw_pool, list) else []
+    raw_ids = payload.get("proxy_ids")
+    proxy_ids = raw_ids if isinstance(raw_ids, list) else []
+    candidates: list[dict[str, Any]] = []
+    for index, item in enumerate(pool_items):
+        stored_address = build_proxy("", str(item or "")).url
+        if not stored_address:
+            continue
+        try:
+            proxy_id = max(0, int(proxy_ids[index])) if index < len(proxy_ids) else 0
+        except (TypeError, ValueError):
+            proxy_id = 0
+        candidates.append({
+            "id": proxy_id,
+            "address": stored_address,
+            "register": _container_host_proxy(stored_address),
+        })
+    return candidates
+
+
+def _proxy_snapshot(payload: dict[str, Any], slot: int = 0) -> dict[str, Any]:
     if payload.get("proxy_enabled") is False:
         system_proxy = str(payload.get("system_proxy") or "").strip()
         normalized_system_proxy = _container_host_proxy(build_proxy("", system_proxy).url)
         return {"register": normalized_system_proxy, "mode": "system_proxy" if normalized_system_proxy else "direct", "local_proxy": ""}
     base = str(payload.get("proxy") or "").strip()
-    raw_pool = payload.get("proxy_pool")
-    pool_items = raw_pool if isinstance(raw_pool, list) else []
-    pool = [_container_host_proxy(build_proxy("", str(item or "")).url) for item in pool_items if str(item or "").strip()]
-    if pool:
-        register_proxy = pool[max(0, int(slot)) % len(pool)]
+    candidates = _proxy_pool_candidates(payload)
+    if candidates:
+        selected = candidates[max(0, int(slot)) % len(candidates)]
+        register_proxy = selected["register"]
+        proxy_id = selected["id"]
     else:
         register_proxy = _container_host_proxy(build_proxy("", str(payload.get("register_proxy") or base)).url)
+        proxy_id = 0
     local_proxy = _container_host_proxy(build_proxy(str(payload.get("local_proxy") or ""), "").url)
-    return {"register": register_proxy, "mode": "proxy_pool", "local_proxy": local_proxy}
+    return {"register": register_proxy, "mode": "proxy_pool", "local_proxy": local_proxy, "proxy_id": proxy_id}
 
 
-def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, slot: int = 0) -> dict[str, str]:
+def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, slot: int = 0) -> dict[str, Any]:
     proxies = _proxy_snapshot(payload, slot)
     proxy = proxies.get("register", "")
     if not proxy or proxies.get("mode") != "proxy_pool":
         return proxies
-    check = proxy_target_tls_check(proxy, timeout=10)
-    if check.get("ok"):
-        db.event(
-            f"[{email}] [代理] 代理 HTTPS 隧道预检通过：{redact_proxy_url(proxy)}，延迟 {check.get('latency_ms', 0)}ms",
-            detail={"email": email, "scope": "selected", "proxy": proxy, "proxy_mode": proxies.get("mode"), "proxy_precheck": check},
+
+    candidates = _proxy_pool_candidates(payload)
+    if candidates:
+        start = max(0, int(slot)) % len(candidates)
+        candidates = candidates[start:] + candidates[:start]
+        fallbacks = candidates[1:]
+        random.SystemRandom().shuffle(fallbacks)
+        candidates = candidates[:1] + fallbacks
+    else:
+        candidates = [{"id": 0, "address": proxy, "register": proxy}]
+
+    failures: list[str] = []
+    for attempt, candidate in enumerate(candidates, start=1):
+        proxy_id = int(candidate.get("id") or 0)
+        candidate_proxy = str(candidate.get("register") or "")
+        stored_address = str(candidate.get("address") or candidate_proxy)
+        if proxy_id > 0 and not db.proxy_is_usable(proxy_id):
+            db.event(
+                f"[{email}] [代理] 跳过已被其他任务标记为失效的代理：{redact_proxy_url(candidate_proxy)}",
+                "warning",
+                detail={"email": email, "scope": "selected", "proxy": candidate_proxy, "proxy_id": proxy_id, "proxy_mode": "proxy_pool", "proxy_skipped": True},
+            )
+            continue
+        check = proxy_target_tls_check(candidate_proxy, timeout=10)
+        if check.get("ok"):
+            selected = {**proxies, "register": candidate_proxy, "proxy_id": proxy_id}
+            db.event(
+                f"[{email}] [代理] 代理 HTTPS 隧道预检通过：{redact_proxy_url(candidate_proxy)}，延迟 {check.get('latency_ms', 0)}ms",
+                detail={"email": email, "scope": "selected", "proxy": candidate_proxy, "proxy_id": proxy_id, "proxy_mode": selected.get("mode"), "proxy_precheck": check, "proxy_attempt": attempt},
+            )
+            return selected
+        err = str(check.get("error") or "unknown error")
+        failures.append(f"{redact_proxy_url(candidate_proxy)}: {err}")
+        marked_invalid = db.mark_proxy_invalid(
+            proxy_id,
+            stored_address,
+            err,
+            int(check.get("latency_ms") or 0),
         )
-        return proxies
-    err = str(check.get("error") or "unknown error")
-    db.event(
-        f"[{email}] [代理] 直接代理无法建立到 chatgpt.com:443 的 HTTPS 隧道：{redact_proxy_url(proxy)}；原因：{err}",
-        "warning",
-        detail={"email": email, "scope": "selected", "proxy": proxy, "proxy_mode": proxies.get("mode"), "proxy_precheck": check},
-    )
+        transition = "已置为失效并切换下一条" if marked_invalid else "无法回写代理池状态，继续切换下一条"
+        db.event(
+            f"[{email}] [代理] 代理无法建立到 chatgpt.com:443 的 HTTPS 隧道，{transition}：{redact_proxy_url(candidate_proxy)}；原因：{err}",
+            "warning",
+            detail={"email": email, "scope": "selected", "proxy": candidate_proxy, "proxy_id": proxy_id, "proxy_mode": "proxy_pool", "proxy_precheck": check, "proxy_attempt": attempt, "proxy_invalidated": marked_invalid},
+        )
+
     local_proxy = proxies.get("local_proxy", "")
-    if local_proxy and local_proxy != proxy:
+    attempted_proxies = {str(candidate.get("register") or "") for candidate in candidates}
+    if local_proxy and local_proxy not in attempted_proxies:
         local_check = proxy_target_tls_check(local_proxy, timeout=10)
         if local_check.get("ok"):
             db.event(
-                f"[{email}] [代理] 已自动回退到本地代理出口：{redact_proxy_url(local_proxy)}。该模式适合 Clash/Surge 等本地代理继续链式转发到静态住宅 IP。",
+                f"[{email}] [代理] 代理池候选均不可用，已自动回退到本地代理出口：{redact_proxy_url(local_proxy)}。",
                 "warning",
                 detail={"email": email, "scope": "selected", "proxy": local_proxy, "proxy_mode": "local_proxy_fallback", "proxy_precheck": local_check},
             )
@@ -292,7 +349,8 @@ def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, sl
             "warning",
             detail={"email": email, "scope": "selected", "proxy": local_proxy, "proxy_mode": "local_proxy_fallback", "proxy_precheck": local_check},
         )
-    raise RuntimeError(f"代理不可用于 ChatGPT 注册链路：{redact_proxy_url(proxy)}；{err}")
+    failure_summary = "；".join(failures[-3:]) or "任务快照中的代理均已失效"
+    raise RuntimeError(f"代理池中没有可用于 ChatGPT 注册链路的代理；{failure_summary}")
 
 
 def _log_proxy_startup(db: SunnyDB, payload: dict[str, Any]) -> None:
@@ -1047,7 +1105,29 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     stage = _stage(payload)
     explicit_rt_acquire = task_type == "sunny_acquire_rt"
     _emit_registration_progress(db, str(email), stage, "initializing")
-    proxies = _prepare_register_proxy(db, payload, str(email), index - 1)
+    try:
+        proxies = _prepare_register_proxy(db, payload, str(email), index - 1)
+    except Exception as exc:
+        if _is_cancel_exception(exc):
+            raise
+        mailbox_id = max(0, int(mailbox.get("id") or 0))
+        err_text = str(exc)
+        err = f"[{email}] {err_text}"
+        mailbox_status = str(mailbox.get("status") or "")
+        completed_status = mailbox_status if _MAILBOX_PROGRESS_RANK.get(mailbox_status, -1) > 0 else ""
+        if completed_status:
+            db.mark_mailbox(mailbox_id, completed_status, err_text)
+            db.upsert_account(str(email), mailbox_id=mailbox_id, status=_account_status_for_mailbox(completed_status), last_error=err_text)
+        else:
+            db.mark_mailbox(mailbox_id, "失败", err_text)
+            db.upsert_account(str(email), mailbox_id=mailbox_id, status="failed", last_error=err_text)
+        db.event(
+            err,
+            "error",
+            detail={"email": email, "scope": "selected", "proxy_pool_exhausted": True, "traceback": traceback.format_exc()[-3000:]},
+        )
+        _emit_registration_progress(db, str(email), stage, "failed", state="abnormal", error=err_text)
+        return False, err
     execution_mode = str(payload.get("execution_mode") or payload.get("mode") or "background").strip().lower()
     if execution_mode not in {"background", "visible", "protocol"}:
         execution_mode = "background"

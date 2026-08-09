@@ -803,6 +803,40 @@ class SunnyDB:
         row = self.conn.execute("select status from sunny_mailboxes where id=?", (mailbox_id,)).fetchone()
         return str(row["status"] if row else "")
 
+    def proxy_is_usable(self, proxy_id: int) -> bool:
+        if proxy_id <= 0:
+            return True
+        row = self.conn.execute(
+            "select status,enabled,last_check_ok from sunny_proxies where id=?",
+            (proxy_id,),
+        ).fetchone()
+        return bool(
+            row
+            and str(row["status"] or "").strip().lower() == "enabled"
+            and int(row["enabled"] or 0) == 1
+            and int(row["last_check_ok"] or 0) == 1
+        )
+
+    def mark_proxy_invalid(self, proxy_id: int, address: str, error: str, latency_ms: int = 0) -> bool:
+        timestamp = now_sql()
+        detail = str(error or "proxy target HTTPS tunnel check failed")[:2000]
+        params: list[Any] = [max(0, int(latency_ms or 0)), detail, timestamp, timestamp]
+        if proxy_id > 0:
+            where, target = "id=?", proxy_id
+        elif str(address or "").strip():
+            where, target = "address=?", str(address).strip()
+        else:
+            return False
+        cursor = self.conn.execute(
+            f"""update sunny_proxies
+            set status='invalid', enabled=0, last_check_ok=0, latency_ms=?,
+                last_error=?, last_checked_at=?, updated_at=?
+            where {where}""",
+            [*params, target],
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
     def mark_mailbox_by_email(self, email: str, status: str, error: str = "", openai_rt: str = "") -> None:
         if not email:
             return

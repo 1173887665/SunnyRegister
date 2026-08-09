@@ -88,6 +88,32 @@ class StageStatusTests(unittest.TestCase):
             ok, result = worker._run_one(db, "sunny_register", payload, mailbox(status), 1, 1)
         return db, ok, result
 
+    def test_proxy_pool_exhaustion_fails_only_current_mailbox(self):
+        db = FakeDB()
+        payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "background"}
+        with (
+            patch.object(worker, "_prepare_register_proxy", side_effect=RuntimeError("代理池中没有可用代理")),
+            patch.object(worker, "login_or_register") as executor,
+        ):
+            ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 2)
+
+        self.assertFalse(ok)
+        self.assertIn("代理池中没有可用代理", str(result))
+        self.assertEqual(db.mailbox_updates[-1]["status"], "失败")
+        self.assertEqual(db.account_updates[-1]["status"], "failed")
+        executor.assert_not_called()
+
+    def test_proxy_pool_exhaustion_preserves_registered_mailbox_status(self):
+        db = FakeDB()
+        payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "background"}
+        with patch.object(worker, "_prepare_register_proxy", side_effect=RuntimeError("代理池中没有可用代理")):
+            ok, result = worker._run_one(db, "sunny_login", payload, mailbox(status="已注册"), 1, 1)
+
+        self.assertFalse(ok)
+        self.assertIn("代理池中没有可用代理", str(result))
+        self.assertEqual(db.mailbox_updates[-1]["status"], "已注册")
+        self.assertEqual(db.account_updates[-1]["status"], "registered")
+
     def test_protocol_mode_dispatches_without_browser_executor(self):
         db = FakeDB()
         payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "protocol"}
