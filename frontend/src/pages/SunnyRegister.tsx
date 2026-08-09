@@ -1377,7 +1377,7 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
   const agentIdentityDisabled = !identityValid;
   const safeConcurrency = Math.max(1, Math.min(Number(concurrency) || 1, Math.max(1, selectedEmails.length)));
   const allTrafficProxyPoolLabel = t === zh ? "全流程使用代理池" : "Use proxy pool for all traffic";
-  const allTrafficProxyPoolTip = t === zh ? "默认关闭：只有 ChatGPT 官方注册/登录使用代理池；邮箱读取、接码、试用和其他外部 API 使用系统代理。勾选后，整个注册任务统一使用代理池出口。" : "Off by default: only ChatGPT registration/login uses the proxy pool. Mail, SMS, trial checks and other external APIs use the system proxy. Turn this on to route the entire registration task through the proxy pool.";
+  const allTrafficProxyPoolTip = t === zh ? "默认关闭：只有 ChatGPT 官方注册/登录使用代理池；邮箱读取、接码、试用和其他外部 API 由服务器直接访问。勾选后，整个注册任务统一使用代理池出口。" : "Off by default: only ChatGPT registration/login uses the proxy pool; mail, SMS, trial checks and other external APIs use direct server egress. Turn this on to route the entire registration task through the proxy pool.";
   return <div className="sr-modal-mask"><div className="sr-modal sr-register-modal">
     <div className="sr-modal-head"><h3>{t.autoRegisterTitle}</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div>
     <div className="sr-modal-body">

@@ -1323,15 +1323,10 @@ func (s *Server) sunnyURLAPIPreview(w http.ResponseWriter, r *http.Request, m *S
 	_, _ = io.WriteString(w, page)
 }
 
-// sunnyMailboxProxyURL returns the configured system/local proxy for auxiliary
-// services such as mailbox, health, subscription and trial API requests.
-// ChatGPT registration traffic selects a proxy-pool entry separately.
+// sunnyMailboxProxyURL returns an empty proxy so auxiliary services use direct
+// server egress. ChatGPT registration traffic selects a proxy-pool entry separately.
 func (s *Server) sunnyMailboxProxyURL() string {
-	cfg := s.sunnyGetConfig(sunnyCfgProxy, defaultProxyConfig())
-	if !boolValue(cfg["proxy_enabled"], true) {
-		return ""
-	}
-	return normalizeSunnyProxyAddress(text(cfg["local_proxy"]))
+	return ""
 }
 
 func fetchOutlookLatestMail(email, clientID, refreshToken string, limit int, proxyURL string) (map[string]any, error) {

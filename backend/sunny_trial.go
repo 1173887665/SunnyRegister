@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -23,8 +24,13 @@ const (
 
 var (
 	sunnyTrialCheckEndpoint    = "https://tools.oai9.com/api/trial/check"
-	sunnyCheckTrialEligibility = checkSunnyTrialEligibility
+	sunnyCheckTrialEligibility = func(ctx context.Context, accessToken string) (bool, string, bool, error) {
+		proxyURL, _ := ctx.Value(sunnyTrialProxyContextKey{}).(string)
+		return checkSunnyTrialEligibility(ctx, accessToken, proxyURL)
+	}
 )
+
+type sunnyTrialProxyContextKey struct{}
 
 type sunnyTrialCandidate struct {
 	SessionID   uint
@@ -87,7 +93,7 @@ func sunnyTrialApplies(status, plan string) bool {
 	return normalizeSunnyDisplayStatus(status) == "已注册" && normalizeSunnyPlanType(plan) == "free"
 }
 
-func checkSunnyTrialEligibility(ctx context.Context, accessToken string) (bool, string, bool, error) {
+func checkSunnyTrialEligibility(ctx context.Context, accessToken string, proxyURLs ...string) (bool, string, bool, error) {
 	body, err := json.Marshal(map[string]string{"access_token": strings.TrimSpace(accessToken)})
 	if err != nil {
 		return false, "", false, err
@@ -99,7 +105,16 @@ func checkSunnyTrialEligibility(ctx context.Context, accessToken string) (bool, 
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "SunnyRegister/1.0")
-	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	client := &http.Client{Timeout: 20 * time.Second}
+	if len(proxyURLs) > 0 {
+		proxyText := strings.TrimSpace(proxyURLs[0])
+		if proxyText != "" {
+			if proxy, parseErr := url.Parse(proxyText); parseErr == nil && proxy.Scheme != "" && proxy.Host != "" {
+				client.Transport = &http.Transport{Proxy: http.ProxyURL(proxy)}
+			}
+		}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return false, "", false, fmt.Errorf("试用资格检测站点连接失败: %w", err)
 	}
@@ -218,7 +233,8 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 			for candidate := range jobs {
 				outcome := sunnyTrialResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, SkipReason: candidate.SkipReason, Error: candidate.Error}
 				if outcome.SkipReason == "" && outcome.Error == "" {
-					eligible, message, invalidToken, checkErr := sunnyCheckTrialEligibility(context.Background(), candidate.AccessToken)
+					trialCtx := context.WithValue(context.Background(), sunnyTrialProxyContextKey{}, s.sunnyMailboxProxyURL())
+					eligible, message, invalidToken, checkErr := sunnyCheckTrialEligibility(trialCtx, candidate.AccessToken)
 					outcome.Message, outcome.InvalidToken = message, invalidToken
 					if checkErr != nil {
 						outcome.Error = checkErr.Error()

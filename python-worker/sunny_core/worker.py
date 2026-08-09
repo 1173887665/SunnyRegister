@@ -290,10 +290,10 @@ def _proxy_snapshot(payload: dict[str, Any], slot: int = 0) -> dict[str, Any]:
 
 
 def _auxiliary_proxy(payload: dict[str, Any], proxies: dict[str, Any]) -> str:
-    """Return the non-ChatGPT network route for this registration task."""
-    if payload.get("proxy_all_traffic") is True or proxies.get("mode") == "system_proxy":
+    """Return the auxiliary route; empty means direct server egress."""
+    if payload.get("proxy_all_traffic") is True:
         return str(proxies.get("register") or "")
-    return str(proxies.get("local_proxy") or "")
+    return ""
 
 
 def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, slot: int = 0) -> dict[str, Any]:
