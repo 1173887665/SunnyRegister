@@ -73,17 +73,6 @@ class FireFoxSMSClient:
     """FireFox SMS client following the provider's GET API protocol."""
 
     _ERRORS = {
-        "login": {
-            "-1": "API account is empty",
-            "-2": "API account must contain 3-30 characters",
-            "-3": "API account cannot contain '|'",
-            "-4": "API account cannot contain Chinese characters",
-            "-5": "API password is empty",
-            "-6": "API password must contain 3-30 characters",
-            "-7": "the previous login from this IP failed; verify the credentials and retry after one minute",
-            "-8": "the account is disabled",
-            "-9": "the API account or password is incorrect",
-        },
         "myInfo": {
             "-1": "token is missing",
             "-2": "token is invalid",
@@ -118,30 +107,15 @@ class FireFoxSMSClient:
         },
     }
 
-    _TOKEN_ERRORS = {
-        "myInfo": {"-1", "-2"},
-        "getPhone": {"-2"},
-        "getPhoneCode": {"-1"},
-        "setRel": {"-1"},
-    }
-
     def __init__(self, config: dict[str, Any], proxies: dict[str, str] | None = None):
         self.base_url = _api_url(config.get("firefox_base_url"))
-        self.api_name = _clean(config.get("firefox_api_name"))
-        self.password = _clean(config.get("firefox_password"))
+        self.api_token = _clean(config.get("firefox_api_token") or config.get("firefox_password"))
         self.country = _clean(config.get("firefox_default_country"))
         self.service = _clean(config.get("firefox_default_service"), FIREFOX_DEFAULT_SERVICE)
         self.max_price = _as_float(config.get("firefox_max_price"), 0)
         self.proxies = proxies or None
-        self._token = ""
-        if not self.api_name or not self.password.strip():
-            raise RuntimeError("FireFox API account or password is not configured")
-        if not 3 <= len(self.api_name) <= 30:
-            raise RuntimeError("FireFox API account must contain 3-30 characters")
-        if "|" in self.api_name or re.search(r"[\u3400-\u9fff]", self.api_name):
-            raise RuntimeError("FireFox API account cannot contain '|' or Chinese characters")
-        if not 3 <= len(self.password) <= 30:
-            raise RuntimeError("FireFox API password must contain 3-30 characters (official login error -6)")
+        if not self.api_token:
+            raise RuntimeError("FireFox API Token is not configured")
         if not self.country:
             raise RuntimeError("FireFox country is not configured")
         if not self.service:
@@ -159,26 +133,11 @@ class FireFoxSMSClient:
         parts = [part.strip() for part in raw.split("|")]
         return parts[0] == "1", parts, raw
 
-    def _request(self, action: str, timeout: int = 30, **params: Any) -> list[str]:
-        ok, parts, raw = self._request_raw(action, timeout=timeout, **params)
-        if ok:
-            return parts
-        code = parts[1] if len(parts) > 1 else raw
-        message = self._error_message(action, code, raw)
-        raise FireFoxAPIError(action, code, f"FireFox {action} failed ({code}): {message}")
-
     def _error_message(self, action: str, code: str, raw: str) -> str:
         return self._ERRORS.get(action, {}).get(code, raw)
 
     def _authorized_raw(self, action: str, timeout: int = 30, **params: Any) -> tuple[bool, list[str], str]:
-        for attempt in range(2):
-            ok, parts, raw = self._request_raw(action, timeout=timeout, token=self.login(), **params)
-            code = parts[1] if len(parts) > 1 else raw
-            if not ok and code in self._TOKEN_ERRORS.get(action, set()) and attempt == 0:
-                self._token = ""
-                continue
-            return ok, parts, raw
-        raise RuntimeError(f"FireFox {action} authorization retry was exhausted")
+        return self._request_raw(action, timeout=timeout, token=self.api_token, **params)
 
     def _authorized(self, action: str, timeout: int = 30, **params: Any) -> list[str]:
         ok, parts, raw = self._authorized_raw(action, timeout=timeout, **params)
@@ -187,14 +146,6 @@ class FireFoxSMSClient:
         code = parts[1] if len(parts) > 1 else raw
         message = self._error_message(action, code, raw)
         raise FireFoxAPIError(action, code, f"FireFox {action} failed ({code}): {message}")
-
-    def login(self) -> str:
-        if not self._token:
-            parts = self._request("login", ApiName=self.api_name, PassWord=self.password)
-            if len(parts) < 2 or not parts[1]:
-                raise RuntimeError("FireFox login did not return a token")
-            self._token = parts[1]
-        return self._token
 
     def balance(self) -> str:
         parts = self._authorized("myInfo")

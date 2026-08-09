@@ -27,8 +27,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"golang.org/x/text/encoding/htmlindex"
 	"gorm.io/gorm"
@@ -1978,6 +1976,7 @@ func defaultPhoneConfig() map[string]any {
 		"smspool_max_price":        -1,
 		"firefox_enabled":          false,
 		"firefox_base_url":         fireFoxAPIURL,
+		"firefox_api_token":        "",
 		"firefox_api_name":         "",
 		"firefox_password":         "",
 		"firefox_default_country":  "usa",
@@ -1990,6 +1989,9 @@ func defaultMailboxConfig() map[string]any { return map[string]any{"pool_enabled
 func (s *Server) sunnyPhones(w http.ResponseWriter, r *http.Request, parts []string) {
 	if len(parts) == 1 && parts[0] == "config" && r.Method == http.MethodGet {
 		cfg := s.sunnyGetConfig(sunnyCfgPhone, defaultPhoneConfig())
+		cfg["firefox_api_token"] = fireFoxAPIToken(cfg)
+		cfg["firefox_api_name"] = ""
+		cfg["firefox_password"] = ""
 		cfg["usable_count"] = s.sunnyUsablePhoneCount()
 		cfg["total_count"] = s.sunnyPhoneTotalCount()
 		writeJSON(w, 200, cfg)
@@ -1997,7 +1999,11 @@ func (s *Server) sunnyPhones(w http.ResponseWriter, r *http.Request, parts []str
 	}
 	if len(parts) == 1 && parts[0] == "config" && r.Method == http.MethodPut {
 		body, _ := parseBody(r)
-		s.sunnySaveConfig(sunnyCfgPhone, mergeConfig(defaultPhoneConfig(), body))
+		cfg := mergeConfig(defaultPhoneConfig(), body)
+		cfg["firefox_api_token"] = fireFoxAPIToken(cfg)
+		cfg["firefox_api_name"] = ""
+		cfg["firefox_password"] = ""
+		s.sunnySaveConfig(sunnyCfgPhone, cfg)
 		writeJSON(w, 200, s.sunnyGetConfig(sunnyCfgPhone, defaultPhoneConfig()))
 		return
 	}
@@ -2251,33 +2257,18 @@ func (s *Server) sunnyCheckSMSPool(w http.ResponseWriter, r *http.Request) {
 func (s *Server) sunnyCheckFireFox(w http.ResponseWriter, r *http.Request) {
 	body, _ := parseBody(r)
 	cfg := mergeConfig(s.sunnyGetConfig(sunnyCfgPhone, defaultPhoneConfig()), body)
-	apiName := strings.TrimSpace(text(cfg["firefox_api_name"]))
-	password := text(cfg["firefox_password"])
-	if err := validateFireFoxCredentials(apiName, password); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	token := fireFoxAPIToken(cfg)
+	if token == "" {
+		writeError(w, http.StatusBadRequest, "FireFox API Token is required")
 		return
 	}
 	baseURL := strings.TrimSpace(text(cfg["firefox_base_url"]))
-	loginRaw, err := getFireFoxAPI(r.Context(), baseURL, url.Values{
-		"act":      {"login"},
-		"ApiName":  {apiName},
-		"PassWord": {password},
-	})
-	if err != nil {
-		writeError(w, 400, err.Error())
-		return
-	}
-	loginParts := strings.Split(loginRaw, "|")
-	if len(loginParts) < 2 || strings.TrimSpace(loginParts[0]) != "1" || strings.TrimSpace(loginParts[1]) == "" {
-		writeError(w, http.StatusBadRequest, fireFoxFailureMessage("login", loginRaw))
-		return
-	}
 	infoRaw, err := getFireFoxAPI(r.Context(), baseURL, url.Values{
 		"act":   {"myInfo"},
-		"token": {strings.TrimSpace(loginParts[1])},
+		"token": {token},
 	})
 	if err != nil {
-		writeError(w, 400, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	infoParts := strings.Split(infoRaw, "|")
@@ -2353,20 +2344,13 @@ func normalizeFireFoxAPIURL(raw string) (string, error) {
 	return target.String(), nil
 }
 
-func validateFireFoxCredentials(apiName, password string) error {
-	if apiName == "" || strings.TrimSpace(password) == "" {
-		return fmt.Errorf("FireFox API account and password are required")
+func fireFoxAPIToken(cfg map[string]any) string {
+	if token := strings.TrimSpace(text(cfg["firefox_api_token"])); token != "" {
+		return token
 	}
-	if n := utf8.RuneCountInString(apiName); n < 3 || n > 30 {
-		return fmt.Errorf("FireFox API account must contain 3-30 characters (official login error -2)")
-	}
-	if strings.Contains(apiName, "|") || strings.IndexFunc(apiName, func(r rune) bool { return unicode.Is(unicode.Han, r) }) >= 0 {
-		return fmt.Errorf("FireFox API account cannot contain '|' or Chinese characters (official login errors -3/-4)")
-	}
-	if n := utf8.RuneCountInString(password); n < 3 || n > 30 {
-		return fmt.Errorf("FireFox API password must contain 3-30 characters (official login error -6)")
-	}
-	return nil
+	// Versions before API Token authentication stored this value in the
+	// misleading firefox_password field.
+	return strings.TrimSpace(text(cfg["firefox_password"]))
 }
 
 func fireFoxFailureMessage(action, raw string) string {
@@ -2376,24 +2360,13 @@ func fireFoxFailureMessage(action, raw string) string {
 		code = strings.TrimSpace(parts[1])
 	}
 	messages := map[string]map[string]string{
-		"login": {
-			"-1": "API account is empty",
-			"-2": "API account must contain 3-30 characters",
-			"-3": "API account cannot contain '|'",
-			"-4": "API account cannot contain Chinese characters",
-			"-5": "API password is empty",
-			"-6": "API password must contain 3-30 characters",
-			"-7": "the previous login from this IP failed; verify the API account and password, then retry after one minute",
-			"-8": "the account is disabled",
-			"-9": "the API account or password is incorrect",
-		},
 		"myInfo": {
 			"-1": "token is missing",
-			"-2": "token is invalid; login again",
+			"-2": "token is invalid; update the API Token in FireFox settings",
 			"-3": "balance can only be checked once every 60 seconds",
 		},
 	}
-	label := map[string]string{"login": "login", "myInfo": "account check"}[action]
+	label := map[string]string{"myInfo": "account check"}[action]
 	if label == "" {
 		label = action
 	}
@@ -2615,12 +2588,16 @@ func (s *Server) sunnyWarmSMSProviderOptions() {
 	}{
 		{name: "smsbower", enabledKey: "smsbower_enabled", credentialKeys: []string{"smsbower_api_key"}, countryKey: "smsbower_default_country"},
 		{name: "smspool", enabledKey: "smspool_enabled", credentialKeys: []string{"smspool_api_key"}, countryKey: "smspool_default_country"},
-		{name: "firefox", enabledKey: "firefox_enabled", credentialKeys: []string{"firefox_api_name", "firefox_password"}, countryKey: "firefox_default_country"},
+		{name: "firefox", enabledKey: "firefox_enabled", countryKey: "firefox_default_country"},
 	}
 	for _, p := range providers {
 		ready := boolValue(cfg[p.enabledKey], false)
-		for _, key := range p.credentialKeys {
-			ready = ready && strings.TrimSpace(text(cfg[key])) != ""
+		if p.name == "firefox" {
+			ready = ready && fireFoxAPIToken(cfg) != ""
+		} else {
+			for _, key := range p.credentialKeys {
+				ready = ready && strings.TrimSpace(text(cfg[key])) != ""
+			}
 		}
 		if !ready {
 			continue
@@ -4639,8 +4616,7 @@ func (s *Server) sunnyHasUsableSMSConfig() bool {
 	}
 	maxPrice, _ := strconv.ParseFloat(strings.TrimSpace(text(cfg["firefox_max_price"])), 64)
 	return boolValue(cfg["firefox_enabled"], false) &&
-		strings.TrimSpace(text(cfg["firefox_api_name"])) != "" &&
-		strings.TrimSpace(text(cfg["firefox_password"])) != "" &&
+		fireFoxAPIToken(cfg) != "" &&
 		strings.TrimSpace(text(cfg["firefox_default_country"])) != "" &&
 		strings.TrimSpace(text(cfg["firefox_default_service"])) != "" &&
 		maxPrice > 0

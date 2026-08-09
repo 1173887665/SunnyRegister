@@ -175,31 +175,26 @@ func TestSunnyFireFoxCountriesEndpointUsesCountryMetadata(t *testing.T) {
 	}
 }
 
-func TestSunnyCheckFireFoxLogsInAndReadsBalance(t *testing.T) {
+func TestSunnyCheckFireFoxUsesAPITokenDirectly(t *testing.T) {
 	var calls atomic.Int32
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		switch r.URL.Query().Get("act") {
-		case "login":
-			if r.URL.Query().Get("ApiName") != "api-user" || r.URL.Query().Get("PassWord") != "secret" {
-				t.Fatalf("unexpected login query: %s", r.URL.RawQuery)
-			}
-			_, _ = w.Write([]byte("1|stable-token"))
-		case "myInfo":
-			if r.URL.Query().Get("token") != "stable-token" {
-				t.Fatalf("unexpected token: %s", r.URL.Query().Get("token"))
-			}
-			_, _ = w.Write([]byte("1|12.34|1|0"))
-		default:
-			http.Error(w, "unexpected action", http.StatusBadRequest)
+		if r.URL.Query().Get("act") != "myInfo" {
+			t.Fatalf("unexpected action: %s", r.URL.Query().Get("act"))
 		}
+		if r.URL.Query().Get("token") != "stable-token_3" {
+			t.Fatalf("unexpected token: %s", r.URL.Query().Get("token"))
+		}
+		if r.URL.Query().Has("ApiName") || r.URL.Query().Has("PassWord") {
+			t.Fatalf("login credentials must not be sent: %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte("1|12.34|1|0"))
 	}))
 	t.Cleanup(provider.Close)
 	s := newSunnySMSOptionsTestServer(t)
 	body, _ := json.Marshal(map[string]any{
-		"firefox_base_url": provider.URL,
-		"firefox_api_name": "api-user",
-		"firefox_password": "secret",
+		"firefox_base_url":  provider.URL,
+		"firefox_api_token": "stable-token_3",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/sunny/phones/firefox/check", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -214,22 +209,25 @@ func TestSunnyCheckFireFoxLogsInAndReadsBalance(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || response["balance"] != "12.34" {
 		t.Fatalf("unexpected response: %s, err = %v", rec.Body.String(), err)
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("calls = %d, want 2", calls.Load())
+	if calls.Load() != 1 {
+		t.Fatalf("calls = %d, want 1", calls.Load())
 	}
 }
 
-func TestSunnyCheckFireFoxRejectsPasswordOutsideOfficialLength(t *testing.T) {
+func TestSunnyCheckFireFoxAcceptsLegacyPasswordFieldAsToken(t *testing.T) {
 	var calls atomic.Int32
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
+		if r.URL.Query().Get("act") != "myInfo" || r.URL.Query().Get("token") != "legacy-token_3" {
+			t.Fatalf("unexpected legacy token request: %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte("1|5.67|1|0"))
 	}))
 	t.Cleanup(provider.Close)
 	s := newSunnySMSOptionsTestServer(t)
 	body, _ := json.Marshal(map[string]any{
 		"firefox_base_url": provider.URL,
-		"firefox_api_name": "api-user",
-		"firefox_password": "ab",
+		"firefox_password": "legacy-token_3",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/sunny/phones/firefox/check", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -237,24 +235,23 @@ func TestSunnyCheckFireFoxRejectsPasswordOutsideOfficialLength(t *testing.T) {
 
 	s.sunnyCheckFireFox(rec, req)
 
-	if rec.Code != http.StatusBadRequest || !bytes.Contains(rec.Body.Bytes(), []byte("3-30")) {
-		t.Fatalf("unexpected validation response: status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("5.67")) {
+		t.Fatalf("unexpected legacy token response: status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if calls.Load() != 0 {
-		t.Fatalf("invalid credentials reached FireFox API %d times", calls.Load())
+	if calls.Load() != 1 {
+		t.Fatalf("legacy token called FireFox API %d times", calls.Load())
 	}
 }
 
-func TestSunnyCheckFireFoxExplainsOfficialLoginError(t *testing.T) {
+func TestSunnyCheckFireFoxExplainsInvalidToken(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("0|-6"))
+		_, _ = w.Write([]byte("0|-2"))
 	}))
 	t.Cleanup(provider.Close)
 	s := newSunnySMSOptionsTestServer(t)
 	body, _ := json.Marshal(map[string]any{
-		"firefox_base_url": provider.URL + "/yhapi.ashx",
-		"firefox_api_name": "api-user",
-		"firefox_password": "secret",
+		"firefox_base_url":  provider.URL + "/yhapi.ashx",
+		"firefox_api_token": "invalid-token_3",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/sunny/phones/firefox/check", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -262,7 +259,33 @@ func TestSunnyCheckFireFoxExplainsOfficialLoginError(t *testing.T) {
 
 	s.sunnyCheckFireFox(rec, req)
 
-	if rec.Code != http.StatusBadRequest || !bytes.Contains(rec.Body.Bytes(), []byte("password must contain 3-30")) {
+	if rec.Code != http.StatusBadRequest || !bytes.Contains(rec.Body.Bytes(), []byte("update the API Token")) {
 		t.Fatalf("unexpected FireFox error response: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSunnyPhoneConfigMigratesLegacyFireFoxToken(t *testing.T) {
+	s := newSunnySMSOptionsTestServer(t)
+	s.sunnySaveConfig(sunnyCfgPhone, mergeConfig(defaultPhoneConfig(), map[string]any{
+		"firefox_api_name": "legacy-account",
+		"firefox_password": "legacy-token_3",
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sunny/phones/config", nil)
+	rec := httptest.NewRecorder()
+	s.sunnyPhones(rec, req, []string{"config"})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response["firefox_api_token"] != "legacy-token_3" {
+		t.Fatalf("legacy token was not migrated: %#v", response)
+	}
+	if response["firefox_api_name"] != "" || response["firefox_password"] != "" {
+		t.Fatalf("legacy login fields must not be returned: %#v", response)
 	}
 }

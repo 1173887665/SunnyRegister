@@ -2088,7 +2088,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 }
 .sr-firefox-provider-top-row {
   display: grid;
-  grid-template-columns: minmax(180px, .8fr) minmax(180px, .8fr) minmax(180px, 1fr) minmax(220px, 1.15fr) 132px;
+  grid-template-columns: minmax(260px, 1fr) minmax(180px, 1fr) minmax(220px, 1.15fr) 132px;
   gap: 12px;
   align-items: end;
 }

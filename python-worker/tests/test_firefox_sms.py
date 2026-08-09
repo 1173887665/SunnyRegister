@@ -10,8 +10,7 @@ from sunny_core.firefox_sms import FireFoxActivation, FireFoxSMSClient
 
 def firefox_config() -> dict:
     return {
-        "firefox_api_name": "api-user",
-        "firefox_password": "secret",
+        "firefox_api_token": "stable-token_3",
         "firefox_default_country": "usa",
         "firefox_default_service": "1096",
         "firefox_max_price": 0.65,
@@ -20,7 +19,6 @@ def firefox_config() -> dict:
 
 def test_get_number_enforces_country_service_max_price_and_one_number() -> None:
     client = FireFoxSMSClient(firefox_config())
-    client._token = "token"
     client._authorized = MagicMock(return_value=["1", "PKEY", "time", "usa", "1", "US", "", "2025550101", ""])
 
     activation = client.get_number()
@@ -35,30 +33,29 @@ def test_get_number_enforces_country_service_max_price_and_one_number() -> None:
     assert "quantity" not in kwargs
 
 
-def test_login_uses_official_parameter_names_and_normalizes_root_url() -> None:
+def test_configured_token_is_used_directly_and_root_url_is_normalized() -> None:
     client = FireFoxSMSClient({**firefox_config(), "firefox_base_url": "https://www.firefox.fun/"})
-    response = MagicMock()
-    response.text = "1|stable-token"
-    response.raise_for_status.return_value = None
-    with patch("sunny_core.firefox_sms.requests.get", return_value=response) as request:
-        assert client.login() == "stable-token"
+    with patch("sunny_core.firefox_sms.requests.get") as request:
+        assert client.api_token == "stable-token_3"
     assert client.base_url == "https://www.firefox.fun/yhapi.ashx"
-    assert request.call_args.kwargs["params"] == {"act": "login", "ApiName": "api-user", "PassWord": "secret"}
+    request.assert_not_called()
 
 
-def test_balance_reauthenticates_once_when_token_is_invalid() -> None:
+def test_balance_uses_token_once_and_reports_invalid_token() -> None:
     client = FireFoxSMSClient(firefox_config())
-    client._token = "expired-token"
-    client._request_raw = MagicMock(side_effect=[
-        (False, ["0", "-2"], "0|-2"),
-        (True, ["1", "12.34", "1", "0"], "1|12.34|1|0"),
-    ])
-    client._request = MagicMock(return_value=["1", "new-token"])
+    client._request_raw = MagicMock(return_value=(False, ["0", "-2"], "0|-2"))
 
-    assert client.balance() == "12.34"
-    assert client._token == "new-token"
-    client._request.assert_called_once_with("login", ApiName="api-user", PassWord="secret")
-    assert client._request_raw.call_args_list[1].kwargs["token"] == "new-token"
+    with pytest.raises(RuntimeError, match="token is invalid"):
+        client.balance()
+    client._request_raw.assert_called_once_with("myInfo", timeout=30, token="stable-token_3")
+
+
+def test_legacy_password_field_is_migrated_as_api_token() -> None:
+    config = firefox_config()
+    config.pop("firefox_api_token")
+    config["firefox_password"] = "legacy-token_3"
+
+    assert FireFoxSMSClient(config).api_token == "legacy-token_3"
 
 
 def test_get_code_accepts_only_independent_six_digits() -> None:

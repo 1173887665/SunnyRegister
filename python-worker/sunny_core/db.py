@@ -554,8 +554,7 @@ class SunnyDB:
             max_price = 0
         return bool(
             phone_cfg.get("firefox_enabled")
-            and str(phone_cfg.get("firefox_api_name") or "").strip()
-            and str(phone_cfg.get("firefox_password") or "").strip()
+            and str(phone_cfg.get("firefox_api_token") or phone_cfg.get("firefox_password") or "").strip()
             and str(phone_cfg.get("firefox_default_country") or "").strip()
             and str(phone_cfg.get("firefox_default_service") or "").strip()
             and max_price > 0
