@@ -2,7 +2,7 @@ import { Fragment, useDeferredValue, useEffect, useLayoutEffect, useRef, useStat
 import type { Dispatch, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
-import { Activity, ArrowLeft, ArrowRight, ChevronDown, CircleHelp, Crown, Download, Globe2, Inbox, Loader2, Pencil, Plus, RefreshCw, RotateCw, Save, Search, Settings2, Sparkles, Trash2, Upload, X } from "lucide-react";
+import { Activity, ArrowLeft, ArrowRight, ChevronDown, CircleHelp, Crown, Download, Globe2, Inbox, ListChecks, Loader2, Pencil, Plus, RefreshCw, RotateCw, Save, Search, Settings2, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -18,25 +18,25 @@ type DataTableColumn = { width: number; minWidth: number; maxWidth?: number };
 const DATA_TABLE_COLUMNS: Record<string, DataTableColumn[]> = {
   workbench: [
     { width: 44, minWidth: 44, maxWidth: 72 }, { width: 300, minWidth: 180 }, { width: 160, minWidth: 110 },
-    { width: 120, minWidth: 90 }, { width: 120, minWidth: 90 }, { width: 190, minWidth: 150 }, { width: 110, minWidth: 88, maxWidth: 180 },
+    { width: 120, minWidth: 90 }, { width: 120, minWidth: 90 }, { width: 190, minWidth: 150 }, { width: 110, minWidth: 88, maxWidth: 320 },
   ],
   mailboxes: [
     { width: 44, minWidth: 44, maxWidth: 72 }, { width: 300, minWidth: 180 }, { width: 160, minWidth: 110 },
     { width: 110, minWidth: 88 }, { width: 110, minWidth: 88 }, { width: 80, minWidth: 64 }, { width: 80, minWidth: 64 },
-    { width: 100, minWidth: 82 }, { width: 190, minWidth: 150 }, { width: 200, minWidth: 150, maxWidth: 320 },
+    { width: 100, minWidth: 82 }, { width: 190, minWidth: 150 }, { width: 200, minWidth: 150, maxWidth: 520 },
   ],
   phones: [
     { width: 44, minWidth: 44, maxWidth: 72 }, { width: 190, minWidth: 140 }, { width: 120, minWidth: 92 },
-    { width: 120, minWidth: 96 }, { width: 420, minWidth: 240 }, { width: 190, minWidth: 150 }, { width: 130, minWidth: 110, maxWidth: 220 },
+    { width: 120, minWidth: 96 }, { width: 420, minWidth: 240 }, { width: 190, minWidth: 150 }, { width: 130, minWidth: 110, maxWidth: 360 },
   ],
   proxies: [
     { width: 44, minWidth: 44, maxWidth: 72 }, { width: 520, minWidth: 280 }, { width: 140, minWidth: 100 },
-    { width: 140, minWidth: 110 }, { width: 190, minWidth: 150 }, { width: 170, minWidth: 130, maxWidth: 280 },
+    { width: 140, minWidth: 110 }, { width: 190, minWidth: 150 }, { width: 170, minWidth: 130, maxWidth: 420 },
   ],
   sessions: [
     { width: 44, minWidth: 44, maxWidth: 72 }, { width: 280, minWidth: 180 }, { width: 150, minWidth: 100 },
     { width: 110, minWidth: 88 }, { width: 110, minWidth: 88 }, { width: 130, minWidth: 110 }, { width: 72, minWidth: 60 }, { width: 72, minWidth: 60 },
-    { width: 96, minWidth: 72 }, { width: 190, minWidth: 150 }, { width: 190, minWidth: 150 }, { width: 320, minWidth: 260, maxWidth: 340 },
+    { width: 96, minWidth: 72 }, { width: 190, minWidth: 150 }, { width: 190, minWidth: 150 }, { width: 320, minWidth: 260, maxWidth: 640 },
   ],
 };
 
@@ -58,7 +58,7 @@ function fillDataTableViewport(widths: number[], columns: DataTableColumn[], vie
 
 function resizeDataTableColumn(widths: number[], columns: DataTableColumn[], index: number, targetWidth: number, viewportWidth: number) {
   const actionIndex = columns.length - 1;
-  if (index < 0 || index >= actionIndex) return widths;
+  if (index < 0 || index >= columns.length) return widths;
   const startWidth = widths[index];
   const leftWidth = clampDataTableWidth(columns[index], targetWidth);
   if (leftWidth === startWidth) return widths;
@@ -70,6 +70,9 @@ function resizeDataTableColumn(widths: number[], columns: DataTableColumn[], ind
   if (fillsViewport && index + 1 < actionIndex) {
     const rightIndex = index + 1;
     next[rightIndex] = clampDataTableWidth(columns[rightIndex], widths[rightIndex] - (leftWidth - startWidth));
+  } else if (fillsViewport && index === actionIndex) {
+    const donorIndex = Math.max(0, actionIndex - 1);
+    next[donorIndex] = clampDataTableWidth(columns[donorIndex], widths[donorIndex] - (leftWidth - startWidth));
   }
   return fillDataTableViewport(next, columns, viewportWidth, fillIndex);
 }
@@ -107,43 +110,6 @@ function ResizableDataTable({ tableKey, columns, headers, className="", children
     updateViewport();
     return ()=>observer.disconnect();
   },[columns]);
-  useLayoutEffect(()=>{
-    const frame=window.requestAnimationFrame(()=>{
-      const table=tableRef.current;
-      if(!table) return;
-      const actionIndex=columns.length-1;
-      const cells=Array.from(table.querySelectorAll<HTMLElement>("tr > :last-child:not([colspan])"));
-      let measured=columns[actionIndex].minWidth;
-      cells.forEach((cell)=>{
-        const style=getComputedStyle(cell);
-        const padding=parseFloat(style.paddingLeft||"0")+parseFloat(style.paddingRight||"0");
-        const content=cell.firstElementChild as HTMLElement|null;
-        if(!content) return;
-        let contentWidth=content.scrollWidth;
-        if(getComputedStyle(content).display.includes("flex")&&content.children.length>0){
-          const contentStyle=getComputedStyle(content);
-          const items=Array.from(content.children) as HTMLElement[];
-          const gap=parseFloat(contentStyle.columnGap||contentStyle.gap||"0")||0;
-          contentWidth=items.reduce((sum,item)=>sum+Math.ceil(item.getBoundingClientRect().width),0)+Math.max(0,items.length-1)*gap;
-        }
-        measured=Math.max(measured,Math.ceil(contentWidth+padding));
-      });
-      const actionWidth=clampDataTableWidth(columns[actionIndex],measured);
-      setWidths((current)=>{
-        if(current[actionIndex]===actionWidth) return current;
-        const next=[...current];
-        const previousTotal=current.reduce((sum,width)=>sum+width,0);
-        const difference=actionWidth-current[actionIndex];
-        next[actionIndex]=actionWidth;
-        if(viewportWidth>0&&previousTotal<=viewportWidth+2){
-          const donor=actionIndex-1;
-          next[donor]=Math.max(columns[donor].minWidth,next[donor]-difference);
-        }
-        return fillDataTableViewport(next,columns,viewportWidth);
-      });
-    });
-    return ()=>window.cancelAnimationFrame(frame);
-  },[children,columns,headers,viewportWidth]);
   const setColumnWidth=(index:number,width:number)=>setWidths((current)=>resizeDataTableColumn(current,columns,index,width,viewportWidth));
   const startResize=(event:ReactPointerEvent<HTMLSpanElement>,index:number)=>{
     event.preventDefault();
@@ -171,7 +137,7 @@ function ResizableDataTable({ tableKey, columns, headers, className="", children
   const actionIndex=columns.length-1;
   return <table ref={tableRef} className={cn("sr-account-table sr-resizable-table",className)} style={{width:tableWidth,minWidth:tableWidth,maxWidth:"none"}}>
     <colgroup>{widths.map((width,index)=><col key={index} style={{width}}/>)}</colgroup>
-    <thead><tr>{headers.map((header,index)=><th key={index}><span className="sr-table-header-content">{header}</span>{index<actionIndex?<span className="sr-column-resizer" role="separator" aria-orientation="vertical" tabIndex={0} title={resizeTitle} onPointerDown={(event)=>startResize(event,index)} onDoubleClick={()=>setColumnWidth(index,columns[index].width)} onKeyDown={(event)=>{if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();setColumnWidth(index,widths[index]+(event.key==="ArrowRight"?12:-12));}else if(event.key==="Home"){event.preventDefault();setColumnWidth(index,columns[index].width);}}}/>:null}</th>)}</tr></thead>
+    <thead><tr>{headers.map((header,index)=><th key={index}><span className="sr-table-header-content">{header}</span><span className={cn("sr-column-resizer",index===actionIndex&&"is-last")} role="separator" aria-orientation="vertical" tabIndex={0} title={resizeTitle} onPointerDown={(event)=>startResize(event,index)} onDoubleClick={()=>setColumnWidth(index,columns[index].width)} onKeyDown={(event)=>{if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();setColumnWidth(index,widths[index]+(event.key==="ArrowRight"?12:-12));}else if(event.key==="Home"){event.preventDefault();setColumnWidth(index,columns[index].width);}}}/></th>)}</tr></thead>
     {children}
   </table>;
 }
@@ -781,8 +747,8 @@ function SortTimeHeader({ label, order, onToggle }: { label: string; order: Sort
 }
 function SelectionSummary({ t, count, total, selectingAll, onSelectAll, onClear }: { t: typeof zh; count: number; total: number; selectingAll: boolean; onSelectAll: () => void; onClear: () => void }) {
   return <div className="sr-selection-summary" aria-live="polite">
-    <button type="button" className="sr-select-all" disabled={selectingAll || total <= 0} onClick={onSelectAll}>{selectingAll && <Loader2 className="h-3.5 w-3.5 animate-spin"/>}{t.selectAll}</button>
-    {count > 0 && <><span>{template(t.selectedItems, { count })}</span><button type="button" className="sr-clear-selection" onClick={onClear}>{t.clearSelection}</button></>}
+    <button type="button" className="sr-select-all" disabled={selectingAll || total <= 0} onClick={onSelectAll}>{selectingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin"/> : <ListChecks className="h-3.5 w-3.5"/>}<span>{t.selectAll}</span></button>
+    {count > 0 && <><span className="sr-selected-count">{template(t.selectedItems, { count })}</span><button type="button" className="sr-clear-selection" onClick={onClear}>{t.clearSelection}</button></>}
   </div>;
 }
 
