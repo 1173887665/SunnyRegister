@@ -118,6 +118,21 @@ func TestSunnyTrialInvalidTokenClearsEligibilityAndMarksATInvalid(t *testing.T) 
 	if account.TrialEligibility != sunnyTrialUnknown || session.AccessTokenStatus != "invalid" || !strings.Contains(session.AccessTokenError, "无效或已过期") {
 		t.Fatalf("invalid token state account=%#v session=%#v", account, session)
 	}
+	var renewal Task
+	if err := s.db.Where("type = ?", "sunny_refresh_session").First(&renewal).Error; err != nil {
+		t.Fatalf("renewal task was not queued: %v", err)
+	}
+	renewalPayload := jsonMap(renewal.PayloadJSON)
+	if ids := uintSlice(renewalPayload["account_ids"]); len(ids) != 1 || ids[0] != session.AccountID {
+		t.Fatalf("unexpected renewal payload: %#v", renewalPayload)
+	}
+	if text(renewalPayload["source"]) != "trial_check" || text(renewalPayload["source_task_id"]) != task.ID {
+		t.Fatalf("unexpected renewal source: %#v", renewalPayload)
+	}
+	result := jsonMap(task.ResultJSON)
+	if text(result["renewal_task_id"]) != renewal.ID || intValue(result["renewal_queued"], 0) != 1 {
+		t.Fatalf("renewal result missing: %#v", result)
+	}
 }
 
 func TestSunnyTrialEligibilityCanBeEditedFromSessionAndMailbox(t *testing.T) {

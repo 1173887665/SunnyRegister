@@ -3094,6 +3094,8 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
         task = await apiFetch(`/tasks/${task.id}`);
       }
       const result = task.result || {};
+      const renewalTaskId = String(result.renewal_task_id || "");
+      const invalidSessionIds = Array.isArray(result.invalid_session_ids) ? result.invalid_session_ids.map(Number).filter(Boolean) : [];
       if (row) {
         const item = (result.items || []).find((entry:AnyObj)=>Number(entry.session_id)===Number(row.id));
         if (item?.status === "eligible") notify("ok", template(t.trialEligibleResult,{email:row.email}));
@@ -3104,6 +3106,10 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
         notify(failed > 0 && failed === Number(result.requested || 0) ? "fail" : "ok", template(t.trialCheckSummary, {
           total:Number(result.requested || 0), eligible:Number(result.eligible || 0), ineligible:Number(result.ineligible || 0), skipped:Number(result.skipped || 0), failed,
         }));
+      }
+      if (renewalTaskId && invalidSessionIds.length) {
+        void runPersistentSessionTask("refresh-at", invalidSessionIds, row?.email, async()=>({id:renewalTaskId}))
+          .then(()=>load()).catch((e:any)=>notify("fail",e.message||String(e)));
       }
       await load();
     } catch(e:any) { notify("fail", e.message || String(e)); }

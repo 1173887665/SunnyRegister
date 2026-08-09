@@ -239,6 +239,9 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 	workers.Wait()
 	close(results)
 
+	invalidAccounts := []uint{}
+	invalidSessions := []uint{}
+	seenAccounts := map[uint]bool{}
 	items := make([]any, 0, len(candidates))
 	for outcome := range results {
 		item := map[string]any{"session_id": outcome.SessionID, "email": outcome.Email}
@@ -255,6 +258,11 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 			s.db.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).Updates(updates)
 			if outcome.InvalidToken {
 				s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "invalid", "access_token_error": outcome.Error, "access_token_checked_at": now})
+				invalidSessions = append(invalidSessions, outcome.SessionID)
+				if outcome.AccountID != 0 && !seenAccounts[outcome.AccountID] {
+					seenAccounts[outcome.AccountID] = true
+					invalidAccounts = append(invalidAccounts, outcome.AccountID)
+				}
 			}
 			s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 试用资格检测失败：%s", outcome.Email, outcome.Error), "log", "warning", nil)
 		default:
@@ -282,6 +290,12 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 		items = append(items, item)
 		task.ProgressCurrent++
 		s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": task.ProgressCurrent, "updated_at": now})
+	}
+	if len(invalidAccounts) > 0 {
+		renewalTask := s.createSunnyAccessTokenRenewalTask(task, "trial_check", invalidAccounts)
+		result["renewal_task_id"] = renewalTask.ID
+		result["renewal_queued"] = len(invalidAccounts)
+		result["invalid_session_ids"] = invalidSessions
 	}
 	result["items"] = items
 	s.completeSunnyTrialTask(task, result)

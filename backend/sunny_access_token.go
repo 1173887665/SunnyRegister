@@ -43,6 +43,16 @@ type sunnyAccessTokenResult struct {
 	Error     string
 }
 
+func (s *Server) createSunnyAccessTokenRenewalTask(sourceTask *Task, source string, accountIDs []uint) Task {
+	refreshPayload := s.sunnyTaskProxySnapshot(map[string]any{
+		"account_ids": accountIDs, "automatic": true, "source": source, "source_task_id": sourceTask.ID,
+		"execution_mode": "background", "registration_stage": "register_only", "concurrency": 1,
+	})
+	renewalTask := s.createTask("sunny_refresh_session", "sunny", refreshPayload, len(accountIDs))
+	s.appendTaskEvent(sourceTask.ID, fmt.Sprintf("检测到 %d 个无效 AT，已创建续期任务", len(accountIDs)), "log", "warning", map[string]any{"renewal_task_id": renewalTask.ID})
+	return renewalTask
+}
+
 func defaultSunnyMaintenanceConfig() map[string]any {
 	return map[string]any{
 		"health_enabled":         true,
@@ -455,15 +465,10 @@ func (s *Server) executeSunnyAccessTokenCheckTask(task *Task, payload map[string
 		s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": task.ProgressCurrent, "updated_at": now})
 	}
 	if len(invalidAccounts) > 0 {
-		refreshPayload := s.sunnyTaskProxySnapshot(map[string]any{
-			"account_ids": invalidAccounts, "automatic": true, "source": "access_token_check", "source_task_id": task.ID,
-			"execution_mode": "background", "registration_stage": "register_only", "concurrency": 1,
-		})
-		renewalTask := s.createTask("sunny_refresh_session", "sunny", refreshPayload, len(invalidAccounts))
+		renewalTask := s.createSunnyAccessTokenRenewalTask(task, "access_token_check", invalidAccounts)
 		result["renewal_task_id"] = renewalTask.ID
 		result["renewal_queued"] = len(invalidAccounts)
 		result["invalid_session_ids"] = invalidSessions
-		s.appendTaskEvent(task.ID, fmt.Sprintf("检测到 %d 个无效 AT，已创建续期任务", len(invalidAccounts)), "log", "warning", map[string]any{"renewal_task_id": renewalTask.ID})
 	}
 	result["items"] = items
 	s.completeSunnyAccessTokenCheckTask(task, result)
