@@ -234,42 +234,71 @@ func (s *Server) resolveSub2APIGroupID(ctx context.Context, baseURL, adminToken,
 }
 
 func callSub2API(ctx context.Context, baseURL, endpoint, token, authHeader string, payload any) (map[string]any, error) {
+	return callSub2APIWithHeaders(ctx, baseURL, endpoint, token, authHeader, payload, nil, false)
+}
+
+func callSub2APIWithHeaders(ctx context.Context, baseURL, endpoint, token, authHeader string, payload any, extraHeaders map[string]string, retryTransient bool) (map[string]any, error) {
 	method := http.MethodGet
-	var body io.Reader
+	var bodyBytes []byte
 	if payload != nil {
 		method = http.MethodPost
 		b, err := json.Marshal(payload)
 		if err != nil {
 			return nil, err
 		}
-		body = bytes.NewReader(b)
+		bodyBytes = b
 	}
 	fullURL := strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(endpoint, "/")
-	req, err := http.NewRequestWithContext(ctx, method, fullURL, body)
-	if err != nil {
-		return nil, err
-	}
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	applySub2APIAuth(req, token, authHeader)
-
 	client := &http.Client{Timeout: 90 * time.Second}
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, err
+	var raw []byte
+	var status int
+	for attempt := 0; attempt < 2; attempt++ {
+		var body io.Reader
+		if bodyBytes != nil {
+			body = bytes.NewReader(bodyBytes)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, fullURL, body)
+		if err != nil {
+			return nil, err
+		}
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		for key, value := range extraHeaders {
+			req.Header.Set(key, value)
+		}
+		applySub2APIAuth(req, token, authHeader)
+		res, err := client.Do(req)
+		if err != nil {
+			if retryTransient && attempt == 0 {
+				continue
+			}
+			return nil, err
+		}
+		raw, _ = io.ReadAll(io.LimitReader(res.Body, 4<<20))
+		status = res.StatusCode
+		_ = res.Body.Close()
+		if retryTransient && attempt == 0 && (status == http.StatusTooManyRequests || status >= 500) {
+			continue
+		}
+		break
 	}
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
-	var out map[string]any
+	var decoded any
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
-	_ = dec.Decode(&out)
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
+	_ = dec.Decode(&decoded)
+	var out map[string]any
+	switch value := decoded.(type) {
+	case map[string]any:
+		out = value
+	case []any:
+		out = map[string]any{"data": value}
+	}
+	if status < 200 || status >= 300 {
 		if msg := text(out["message"]); msg != "" {
-			return nil, fmt.Errorf("Sub2API %s %s 返回 %d: %s", method, endpoint, res.StatusCode, msg)
+			return nil, fmt.Errorf("Sub2API %s %s 返回 %d: %s", method, endpoint, status, msg)
 		}
-		return nil, fmt.Errorf("Sub2API %s %s 返回 %d: %s", method, endpoint, res.StatusCode, strings.TrimSpace(string(raw)))
+		return nil, fmt.Errorf("Sub2API %s %s 返回 %d: %s", method, endpoint, status, strings.TrimSpace(string(raw)))
 	}
 	if out == nil {
 		out = map[string]any{"raw": string(raw)}

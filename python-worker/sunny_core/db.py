@@ -107,6 +107,8 @@ class SunnyDB:
                 "mailbox_type": "text DEFAULT 'microsoft'",
                 "mailbox_channel": "text DEFAULT 'outlook'",
                 "access_key": "text DEFAULT ''",
+                "chat_gpt_password": "text DEFAULT ''",
+                "totp_secret": "text DEFAULT ''",
                 "openai_rt": "text DEFAULT ''",
                 "registered_at": "datetime",
                 "last_error": "text DEFAULT ''",
@@ -532,6 +534,14 @@ class SunnyDB:
         phone_cfg = self.get_config("phone")
         return bool(phone_cfg.get("smsbower_enabled") and str(phone_cfg.get("smsbower_api_key") or "").strip())
 
+    def luban_available(self) -> bool:
+        phone_cfg = self.get_config("phone")
+        return bool(
+            phone_cfg.get("luban_enabled")
+            and str(phone_cfg.get("luban_api_key") or "").strip()
+            and str(phone_cfg.get("luban_service_id") or "").strip()
+        )
+
     def smspool_available(self) -> bool:
         phone_cfg = self.get_config("phone")
         return bool(phone_cfg.get("smspool_enabled") and str(phone_cfg.get("smspool_api_key") or "").strip())
@@ -836,6 +846,15 @@ class SunnyDB:
         )
         self.conn.commit()
         return cursor.rowcount > 0
+
+    def save_chatgpt_password(self, mailbox_id: int, password: str) -> None:
+        if mailbox_id <= 0 or not password:
+            return
+        self.conn.execute(
+            "update sunny_mailboxes set chat_gpt_password=?, updated_at=? where id=?",
+            (password, now_sql(), mailbox_id),
+        )
+        self.conn.commit()
 
     def mark_mailbox_by_email(self, email: str, status: str, error: str = "", openai_rt: str = "") -> None:
         if not email:

@@ -23,6 +23,8 @@ type SunnyMailbox struct {
 	MailboxChannel      string       `gorm:"index;size:64;default:outlook" json:"mailbox_channel"`
 	AccessKey           string       `gorm:"type:text" json:"access_key"`
 	Password            string       `gorm:"type:text" json:"password"`
+	ChatGPTPassword     string       `gorm:"type:text" json:"chatgpt_password"`
+	TOTPSecret          string       `gorm:"type:text" json:"totp_secret"`
 	ClientID            string       `gorm:"type:text" json:"client_id"`
 	RefreshToken        string       `gorm:"type:text" json:"refresh_token"`
 	OpenAIRT            string       `gorm:"column:openai_rt;type:text" json:"openai_rt"`
@@ -92,8 +94,8 @@ type SunnyAccount struct {
 	OpenAIRT            string     `gorm:"column:openai_rt;type:text" json:"openai_rt"`
 	AccessToken         string     `gorm:"type:text" json:"access_token"`
 	PhoneNumber         string     `gorm:"index" json:"phone_number"`
-	Sub2APIStatus       string     `gorm:"index" json:"sub2api_status"`
-	Sub2APIID           string     `json:"sub2api_id"`
+	Sub2APIStatus       string     `gorm:"column:sub2api_status;index" json:"sub2api_status"`
+	Sub2APIID           string     `gorm:"column:sub2api_id" json:"sub2api_id"`
 	LastError           string     `gorm:"type:text" json:"last_error"`
 	MetadataJSON        string     `gorm:"type:text;default:'{}'" json:"metadata_json"`
 	LastHealthCheckedAt *time.Time `gorm:"index" json:"last_health_checked_at"`

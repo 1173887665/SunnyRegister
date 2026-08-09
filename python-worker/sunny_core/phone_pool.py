@@ -7,6 +7,8 @@ from typing import Callable
 
 import requests
 
+from .otp_candidates import extract_otp_candidates
+
 
 @dataclasses.dataclass
 class PhoneEntry:
@@ -27,26 +29,25 @@ def parse_phone_line(line: str) -> PhoneEntry:
     return PhoneEntry(m.group(1).strip(), m.group(2).strip())
 
 
-def extract_sms_code(text: str) -> str:
-    for pat in (r"(?<!\d)(\d{6})(?!\d)", r"(?<!\d)(\d{5})(?!\d)", r"(?<!\d)(\d{4})(?!\d)"):
-        m = re.search(pat, text or "")
-        if m:
-            return m.group(1)
-    return ""
+def read_sms_candidates(sms_url: str, timeout: int = 20) -> list[dict]:
+    response = requests.get(sms_url, timeout=timeout)
+    response.raise_for_status()
+    return extract_otp_candidates(response.text)
 
 
-def wait_sms_code(number: str, sms_url: str, timeout: int = 180, log: Callable[[str], None] | None = None) -> str:
+def wait_sms_code(number: str, sms_url: str, timeout: int = 180, log: Callable[[str], None] | None = None, seen_keys: set[str] | None = None) -> str:
     deadline = time.time() + timeout
     last = ""
+    baseline = set(seen_keys or ())
     while time.time() < deadline:
         try:
-            res = requests.get(sms_url, timeout=min(20, max(2, int(deadline - time.time()))))
-            last = res.text[:500]
-            code = extract_sms_code(res.text)
-            if code:
+            candidates = read_sms_candidates(sms_url, timeout=min(20, max(2, int(deadline - time.time()))))
+            fresh = next((item for item in candidates if item["key"] not in baseline), None)
+            baseline.update(item["key"] for item in candidates)
+            if fresh:
                 if log:
-                    log(f"手机号 {number} 已读取到验证码（{len(code)} 位，已脱敏）")
-                return code
+                    log(f"手机号 {number} 已读取到新验证码（6 位，已脱敏）")
+                return str(fresh["code"])
         except Exception as exc:
             last = str(exc)
         time.sleep(5)

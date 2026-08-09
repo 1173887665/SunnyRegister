@@ -235,7 +235,7 @@ class StageStatusTests(unittest.TestCase):
 
     def test_agent_identity_stage_skips_phone_and_imports_with_access_token(self):
         db = FakeDB()
-        payload = {"registration_stage": worker.AGENT_IDENTITY_REVERSE_PROXY, "execution_mode": "protocol"}
+        payload = {"registration_stage": worker.AGENT_IDENTITY_REVERSE_PROXY, "execution_mode": "protocol", "proxy_all_traffic": True}
         session = {"access_token": "protocol-access", "auth_action": "login", "plan_type": "plus"}
         with (
             patch.object(worker, "_prepare_register_proxy", return_value={"register": "http://proxy.example:8080", "mode": "pool"}),
@@ -948,6 +948,7 @@ class BrowserEmailOTPSubmitTests(unittest.TestCase):
 class Sub2APIImportPayloadTests(unittest.TestCase):
     def test_oauth_protocol_fields_are_forwarded_to_sub2api(self):
         db = Mock()
+        db.task_id = "test-task"
         db.get_config.return_value = {
             "enabled": True,
             "base_url": "https://sub2api.example",
@@ -957,8 +958,8 @@ class Sub2APIImportPayloadTests(unittest.TestCase):
             "concurrency": 5,
             "priority": 1,
         }
-        response = Mock(status_code=200, text='{"id":"remote-id"}')
-        response.json.return_value = {"id": "remote-id"}
+        response = Mock(status_code=200, text='{"success":1,"failed":0}')
+        response.json.return_value = {"success": 1, "failed": 0, "results": []}
         session = {
             "access_token": "access-token",
             "refresh_token": "refresh-token",
@@ -974,15 +975,64 @@ class Sub2APIImportPayloadTests(unittest.TestCase):
         with patch.object(worker.requests, "post", return_value=response) as post:
             result = worker._import_sub2api(db, "user@example.com", 7, session)
 
-        self.assertEqual(result["id"], "remote-id")
-        payload = post.call_args.kwargs["json"]
+        self.assertEqual(result["success"], 1)
+        request_body = post.call_args.kwargs["json"]
+        self.assertEqual(len(request_body["accounts"]), 1)
+        payload = request_body["accounts"][0]
         self.assertEqual(payload["credentials"]["client_id"], "client-id")
         self.assertEqual(payload["credentials"]["chatgpt_account_id"], "account-id")
         self.assertEqual(payload["credentials"]["chatgpt_user_id"], "user-id")
         self.assertEqual(payload["credentials"]["organization_id"], "org-id")
         self.assertEqual(payload["credentials"]["plan_type"], "plus")
         self.assertEqual(payload["credentials"]["expires_at"], 123456789)
+        self.assertIn("gpt-5.6-sol", payload["credentials"]["model_mapping"])
         self.assertEqual(payload["extra"]["import_source"], "sunnyregister_oauth_code")
+        self.assertTrue(post.call_args.kwargs["headers"]["Idempotency-Key"].startswith("sunny-test-task-7-"))
+
+    def test_batch_import_retries_transient_failure_and_requires_confirmation(self):
+        db = Mock()
+        db.task_id = "test-task"
+        db.get_config.return_value = {
+            "enabled": True,
+            "base_url": "https://sub2api.example",
+            "admin_token": "admin-key",
+            "proxy_id": 9,
+            "load_factor": 80,
+            "model_whitelist": ["gpt-5.6-sol"],
+        }
+        retry = Mock(status_code=503, text="temporary")
+        success = Mock(status_code=200, text='{"success":1,"failed":0}')
+        success.json.return_value = {"success": 1, "failed": 0, "results": []}
+        session = {"access_token": "at", "refresh_token": "rt"}
+
+        with patch.object(worker.requests, "post", side_effect=[retry, success]) as post:
+            worker._import_sub2api(db, "user@example.com", 7, session)
+
+        self.assertEqual(post.call_count, 2)
+        first = post.call_args_list[0].kwargs
+        second = post.call_args_list[1].kwargs
+        self.assertEqual(first["headers"]["Idempotency-Key"], second["headers"]["Idempotency-Key"])
+        account = second["json"]["accounts"][0]
+        self.assertEqual(account["proxy_id"], 9)
+        self.assertEqual(account["load_factor"], 80)
+        self.assertEqual(account["credentials"]["model_mapping"], {"gpt-5.6-sol": "gpt-5.6-sol"})
+
+        ambiguous = Mock(status_code=200, text='{"message":"accepted"}')
+        ambiguous.json.return_value = {"message": "accepted"}
+        with patch.object(worker.requests, "post", return_value=ambiguous):
+            with self.assertRaisesRegex(RuntimeError, "未确认成功"):
+                worker._import_sub2api(db, "user@example.com", 7, session)
+
+        nested = Mock(status_code=200, text='{"results":[]}')
+        nested.json.return_value = {
+            "results": [{"status": "created", "account": {"id": "remote-9", "email": "user@example.com"}}]
+        }
+        with patch.object(worker.requests, "post", return_value=nested):
+            worker._import_sub2api(db, "user@example.com", 7, session)
+        self.assertEqual(db.set_account_sub2api_status.call_args.args, ("user@example.com", "imported", "remote-9"))
+
+        with self.assertRaisesRegex(RuntimeError, "Access Token"):
+            worker._import_sub2api(db, "user@example.com", 7, {"refresh_token": "rt"})
 
 
 if __name__ == "__main__":

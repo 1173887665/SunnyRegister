@@ -227,6 +227,8 @@ func ensureSunnySchema(db *gorm.DB) {
 			"status_changed_at":      "datetime",
 		},
 		"sunny_mailboxes": {
+			"chat_gpt_password":      "text DEFAULT ''",
+			"totp_secret":            "text DEFAULT ''",
 			"openai_rt":              "text DEFAULT ''",
 			"trial_eligibility":      "text DEFAULT 'unknown'",
 			"trial_check_error":      "text DEFAULT ''",

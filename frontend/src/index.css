@@ -2142,6 +2142,12 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
     min-width: 0;
     flex-wrap: wrap;
   }
+  .sr-phone-inner-toolbar-row,
+  .sr-phone-inner-toolbar-filters,
+  .sr-phone-inner-toolbar-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
 }
 .sr-mailbox-provider-card {
   overflow: visible;

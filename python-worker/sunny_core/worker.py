@@ -6,6 +6,7 @@ import random
 import re
 import time
 import traceback
+import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -15,9 +16,10 @@ import requests
 from .agent_identity import AgentIdentityUnavailableError, create_agent_identity_auth
 from .db import SunnyDB, SunnyTaskCancelled, now_sql
 from .firefox_sms import FIREFOX_RELEASE_DELAY_SECONDS, FireFoxSMSClient
+from .luban_sms import LubanSMSClient
 from .mailbox import account_from_row, parse_account_line
 from .openai_auth import TaskCancelledError, login_or_register, refresh_openai_access_token
-from .phone_pool import wait_sms_code
+from .phone_pool import read_sms_candidates, wait_sms_code
 from .protocol_auth import ProtocolChallengeRequired, login_or_register_protocol
 from .proxy import build_proxy, proxy_target_tls_check, redact_proxy_url
 from .smsbower import SMSBowerClient
@@ -62,6 +64,11 @@ _MAILBOX_PROGRESS_RANK = {
     "已反代": 3,
     "reverse_proxied": 3,
 }
+
+_DEFAULT_SUB2API_MODELS = (
+    "codex-auto-review", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6",
+    "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-image-1.5", "gpt-image-2",
+)
 
 
 def _container_host_proxy(proxy_url: str) -> str:
@@ -282,6 +289,13 @@ def _proxy_snapshot(payload: dict[str, Any], slot: int = 0) -> dict[str, Any]:
     return {"register": register_proxy, "mode": "proxy_pool", "local_proxy": local_proxy, "proxy_id": proxy_id}
 
 
+def _auxiliary_proxy(payload: dict[str, Any], proxies: dict[str, Any]) -> str:
+    """Return the non-ChatGPT network route for this registration task."""
+    if payload.get("proxy_all_traffic") is True or proxies.get("mode") == "system_proxy":
+        return str(proxies.get("register") or "")
+    return str(proxies.get("local_proxy") or "")
+
+
 def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, slot: int = 0) -> dict[str, Any]:
     proxies = _proxy_snapshot(payload, slot)
     proxy = proxies.get("register", "")
@@ -396,6 +410,17 @@ def _phone_provider(db: SunnyDB, email: str):
             phone = db.reserve_phone()
             if not phone:
                 return None
+            try:
+                phone["seen_sms_keys"] = [item["key"] for item in read_sms_candidates(str(phone.get("sms_url") or ""))]
+            except Exception as exc:
+                if phone.get("id"):
+                    db.mark_phone_error(int(phone["id"]), f"无法建立短信基线: {exc}")
+                db.event(
+                    f"[{email}] [接码] 自建收码接口基线读取失败，已拒绝该号码：{exc}",
+                    "warning",
+                    detail={"email": email, "scope": "selected", "sms_provider": "local"},
+                )
+                raise RuntimeError(f"自建收码接口无法建立短信基线: {exc}") from exc
             active = phone
             db.event(f"[{email}] [接码] 已从接码配置分配手机号 {phone.get('number')}", detail={"email": email, "scope": "selected"})
             return phone
@@ -406,6 +431,7 @@ def _phone_provider(db: SunnyDB, email: str):
                 str(phone.get("sms_url") or ""),
                 timeout=180,
                 log=lambda m: db.event(f"[{email}] {m}", detail={"email": email, "scope": "selected"}),
+                seen_keys=set(phone.get("seen_sms_keys") or []),
             )
         if action == "success":
             phone = payload or active
@@ -462,6 +488,42 @@ def _smsbower_provider(db: SunnyDB, email: str, proxy_url: str = ""):
                 client.cancel(activation_id)
             finally:
                 db.event(f"[{email}] [接码] SMSBower 激活已取消", "warning", detail={"email": email, "scope": "selected", "sms_provider": "smsbower"})
+            return True
+        return None
+
+    return provider
+
+
+def _luban_provider(db: SunnyDB, email: str, proxy_url: str = ""):
+    active: dict[str, Any] = {}
+    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+    client = LubanSMSClient(db.get_config("phone"), proxies=proxies)
+
+    def provider(action: str, _email: str, payload: Any = None):
+        nonlocal active
+        if action == "next":
+            activation = client.get_number()
+            active = {"provider": "luban", "activation_id": activation.request_id, "number": activation.number}
+            db.event(
+                f"[{email}] [接码] 已从 LubanSMS 获取手机号 {activation.number}",
+                detail={"email": email, "scope": "selected", "sms_provider": "luban"},
+            )
+            return active
+        if action == "code":
+            phone = payload or active
+            return client.wait_code(
+                str(phone.get("activation_id") or ""),
+                timeout=180,
+                log=lambda message: db.event(f"[{email}] [接码] {message}", detail={"email": email, "scope": "selected", "sms_provider": "luban"}),
+            )
+        if action == "success":
+            db.event(f"[{email}] [接码] LubanSMS 接码完成", detail={"email": email, "scope": "selected", "sms_provider": "luban"})
+            return True
+        if action == "bad":
+            phone = payload or active
+            client.release(str(phone.get("activation_id") or ""))
+            active = {}
+            db.event(f"[{email}] [接码] LubanSMS 号码已拒绝释放", "warning", detail={"email": email, "scope": "selected", "sms_provider": "luban"})
             return True
         return None
 
@@ -711,11 +773,13 @@ def _firefox_provider(db: SunnyDB, email: str, proxy_url: str = ""):
 
 def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = ""):
     candidates: list[tuple[str, Any]] = []
-    if db.smsbower_available():
+    if _provider_is_available(db, "luban"):
+        candidates.append(("LubanSMS", lambda: _luban_provider(db, email, proxy_url)))
+    if _provider_is_available(db, "smsbower"):
         candidates.append(("SMSBower", lambda: _smsbower_provider(db, email, proxy_url)))
-    if db.smspool_available():
+    if _provider_is_available(db, "smspool"):
         candidates.append(("SMSPool", lambda: _smspool_provider(db, email, proxy_url)))
-    if db.firefox_available():
+    if _provider_is_available(db, "firefox"):
         candidates.append(("FireFox", lambda: _firefox_provider(db, email, proxy_url)))
     random.shuffle(candidates)
     if db.usable_phone_count() > 0:
@@ -828,16 +892,22 @@ def _sub2api_config(db: SunnyDB) -> tuple[dict[str, Any], str, str]:
     return cfg, base_url, token
 
 
-def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str, Any]) -> dict[str, Any]:
+def _provider_is_available(db: SunnyDB, provider: str) -> bool:
+    checker = getattr(db, f"{provider}_available", None)
+    return bool(checker()) if callable(checker) else False
+
+
+def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str, Any], proxy_url: str = "") -> dict[str, Any]:
     cfg, base_url, token = _sub2api_config(db)
+    access_token = str(session.get("access_token") or "").strip()
     refresh_token = str(session.get("refresh_token") or session.get("openai_rt") or "").strip()
-    if not refresh_token:
-        raise RuntimeError("当前账号没有 Refresh Token，无法导入 sub2api")
+    if not access_token or not refresh_token:
+        raise RuntimeError("当前账号缺少 Access Token 或 Refresh Token，无法导入 sub2api")
     token_record = session.get("token_record")
     if not isinstance(token_record, dict):
         token_record = {}
     credentials = {
-        "access_token": session.get("access_token", ""),
+        "access_token": access_token,
         "refresh_token": refresh_token,
         "id_token": session.get("id_token", ""),
         "email": email,
@@ -851,7 +921,15 @@ def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str,
         "expires_at": session.get("expires_at") or token_record.get("expires_at"),
     }
     credentials.update({key: value for key, value in optional_credentials.items() if value not in (None, "", 0)})
-    payload = {
+    model_mapping = session.get("model_mapping")
+    if not isinstance(model_mapping, dict) or not model_mapping:
+        configured_models = [model for model in (cfg.get("model_whitelist") or []) if isinstance(model, str) and model.strip()]
+        model_mapping = {model: model for model in (configured_models or _DEFAULT_SUB2API_MODELS)}
+    elif cfg.get("model_whitelist"):
+        model_mapping = {str(model): str(model) for model in cfg.get("model_whitelist") if str(model).strip()}
+    if model_mapping:
+        credentials["model_mapping"] = model_mapping
+    account_payload = {
         "name": f"{str(cfg.get('name_prefix') or '')}{email}",
         "platform": "openai",
         "type": "oauth",
@@ -860,15 +938,62 @@ def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str,
         "group_ids": _sub2api_group_ids(cfg.get("group_ids")),
         "concurrency": int(cfg.get("concurrency") or 3),
         "priority": int(cfg.get("priority") or 50),
+        "rate_multiplier": 1,
+        "auto_pause_on_expired": True,
     }
-    resp = requests.post(f"{base_url}/api/v1/admin/accounts", headers={"x-api-key": token}, json=payload, timeout=60)
+    if int(cfg.get("proxy_id") or 0) > 0:
+        account_payload["proxy_id"] = int(cfg["proxy_id"])
+    if int(cfg.get("load_factor") or 0) > 0:
+        account_payload["load_factor"] = int(cfg["load_factor"])
+    request_headers = {"x-api-key": token, "Idempotency-Key": f"sunny-{db.task_id}-{account_id}-{uuid.uuid4().hex[:8]}"}
+    resp = None
+    for attempt in range(2):
+        try:
+            resp = requests.post(
+                f"{base_url}/api/v1/admin/accounts/batch",
+                headers=request_headers,
+                json={"accounts": [account_payload]},
+                timeout=90,
+                proxies={"http": proxy_url, "https": proxy_url} if proxy_url else None,
+            )
+        except requests.RequestException:
+            if attempt == 0:
+                continue
+            raise
+        if attempt == 0 and (resp.status_code == 429 or resp.status_code >= 500):
+            continue
+        break
+    if resp is None:
+        raise RuntimeError("sub2api 导入请求未返回响应")
     if not (200 <= resp.status_code < 300):
         raise RuntimeError(f"sub2api 导入失败: HTTP {resp.status_code} {resp.text[:500]}")
     try:
         data = resp.json()
     except Exception:
         data = {"raw": resp.text}
-    db.set_account_sub2api_status(email, "imported", str(data.get("id") or data.get("data", {}).get("id") or ""))
+    response_data = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
+    if not isinstance(response_data, dict):
+        response_data = {}
+    succeeded = int(response_data.get("success") or response_data.get("succeeded") or response_data.get("created") or 0)
+    failed = int(response_data.get("failed") or 0)
+    remote_id = str(response_data.get("id") or "")
+    confirmed = succeeded == 1 and failed == 0
+    results = response_data.get("results")
+    if not confirmed and isinstance(results, list):
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            nested = item.get("account") if isinstance(item.get("account"), dict) else {}
+            item_email = str(item.get("email") or item.get("account_email") or item.get("name") or nested.get("email") or nested.get("account_email") or nested.get("name") or "").strip().lower()
+            item_status = str(item.get("status") or item.get("state") or "").strip().lower()
+            item_ok = item.get("success") is True or item_status in {"success", "succeeded", "created", "imported"}
+            if item_ok and item_email in {email.lower(), f"{str(cfg.get('name_prefix') or '')}{email}".lower()}:
+                confirmed = True
+                remote_id = str(item.get("id") or item.get("account_id") or item.get("remote_id") or nested.get("id") or nested.get("account_id") or nested.get("remote_id") or "")
+                break
+    if failed > 0 or not confirmed:
+        raise RuntimeError(f"sub2api 批量导入未确认成功: {json.dumps(data, ensure_ascii=False)[:500]}")
+    db.set_account_sub2api_status(email, "imported", remote_id)
     db.event(f"[{email}] [反代] 已根据反代配置导入 sub2api", detail={"email": email, "scope": "selected", "account_id": account_id})
     return data
 
@@ -901,7 +1026,7 @@ def _import_sub2api_agent_identity(
                 "warning",
                 detail={"email": email, "scope": "selected", "fallback": "oauth_refresh_token"},
             )
-            data = _import_sub2api(db, email, account_id, session)
+            data = _import_sub2api(db, email, account_id, session, proxy_url=proxy_url)
             if isinstance(data, dict):
                 data = {**data, "_sunny_import_mode": "oauth_refresh_token"}
             return data
@@ -926,13 +1051,13 @@ def _import_sub2api_agent_identity(
         "Content-Type": "application/json",
         "User-Agent": "SunnyRegister/1.0",
     }
-    resp = _post_sub2api_agent_identity(db, endpoint, headers, payload)
+    resp = _post_sub2api_agent_identity(db, endpoint, headers, payload, proxy_url=proxy_url)
     if resp.status_code in {400, 404, 422} and "content" in str(resp.text or "").lower():
         # Older Sub2API builds accepted a single content field. Only retry
         # schema-level rejections, so a successful import is never duplicated.
         legacy_payload = {**payload, "content": auth_content}
         legacy_payload.pop("contents", None)
-        resp = _post_sub2api_agent_identity(db, endpoint, headers, legacy_payload)
+        resp = _post_sub2api_agent_identity(db, endpoint, headers, legacy_payload, proxy_url=proxy_url)
     if not (200 <= resp.status_code < 300):
         raise RuntimeError(
             f"sub2api Agent Identity 导入失败: {_sub2api_response_diagnostic(resp, endpoint)}"
@@ -964,6 +1089,7 @@ def _post_sub2api_agent_identity(
     endpoint: str,
     headers: dict[str, str],
     payload: dict[str, Any],
+    proxy_url: str = "",
 ):
     """Post one import payload, retrying only transient gateway failures."""
     response = None
@@ -976,6 +1102,7 @@ def _post_sub2api_agent_identity(
                 json=payload,
                 timeout=90,
                 allow_redirects=False,
+                proxies={"http": proxy_url, "https": proxy_url} if proxy_url else None,
             )
         except requests.RequestException as exc:
             if attempt >= 2:
@@ -1128,6 +1255,13 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
         )
         _emit_registration_progress(db, str(email), stage, "failed", state="abnormal", error=err_text)
         return False, err
+    auxiliary_proxy = _auxiliary_proxy(payload, proxies)
+    chatgpt_proxy_label = redact_proxy_url(str(proxies.get("register") or ""))
+    auxiliary_proxy_label = redact_proxy_url(auxiliary_proxy)
+    db.event(
+        f"[{email}] [代理] ChatGPT 官方流量使用{chatgpt_proxy_label or '系统直连'}；其他流程使用{auxiliary_proxy_label or '系统直连'}",
+        detail={"email": email, "scope": "selected", "chatgpt_proxy": chatgpt_proxy_label, "auxiliary_proxy": auxiliary_proxy_label, "proxy_all_traffic": payload.get("proxy_all_traffic") is True},
+    )
     execution_mode = str(payload.get("execution_mode") or payload.get("mode") or "background").strip().lower()
     if execution_mode not in {"background", "visible", "protocol"}:
         execution_mode = "background"
@@ -1198,14 +1332,14 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     if wants_rt:
         sms_cfg = db.get_config("phone")
         db.event(
-            f"[{email}] [接码] 接码资源检查：自建号池可用 {db.usable_phone_count()} 个，SMSBower={'启用' if db.smsbower_available() else '不可用'}，SMSPool={'启用' if db.smspool_available() else '不可用'}，FireFox={'启用' if db.firefox_available() else '不可用'}",
-            detail={"email": email, "scope": "selected", "sms_provider": "resource_check", "phone_config": {"pool_enabled": sms_cfg.get("pool_enabled"), "smsbower_enabled": sms_cfg.get("smsbower_enabled"), "smspool_enabled": sms_cfg.get("smspool_enabled"), "firefox_enabled": sms_cfg.get("firefox_enabled")}},
+            f"[{email}] [接码] 接码资源检查：自建号池可用 {db.usable_phone_count()} 个，LubanSMS={'启用' if _provider_is_available(db, 'luban') else '不可用'}，SMSBower={'启用' if _provider_is_available(db, 'smsbower') else '不可用'}，SMSPool={'启用' if _provider_is_available(db, 'smspool') else '不可用'}，FireFox={'启用' if _provider_is_available(db, 'firefox') else '不可用'}",
+            detail={"email": email, "scope": "selected", "sms_provider": "resource_check", "phone_config": {"pool_enabled": sms_cfg.get("pool_enabled"), "luban_enabled": sms_cfg.get("luban_enabled"), "smsbower_enabled": sms_cfg.get("smsbower_enabled"), "smspool_enabled": sms_cfg.get("smspool_enabled"), "firefox_enabled": sms_cfg.get("firefox_enabled")}},
         )
         if account.openai_rt:
             require_refresh_token = True
             db.event(f"[{email}] [接码] 邮箱记录已有 OpenAI RT，将直接刷新 Session", detail={"email": email, "scope": "selected"})
         else:
-            phone_provider = _combined_phone_provider(db, email, proxies.get("register", ""))
+            phone_provider = _combined_phone_provider(db, email, auxiliary_proxy)
         if phone_provider:
             require_refresh_token = True
             db.event(f"[{email}] [接码] 已启用组合接码策略：外部供应商随机尝试，自建手机号池作为兜底", detail={"email": email, "scope": "selected", "sms_provider": "combined"})
@@ -1216,7 +1350,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                 detail={"email": email, "scope": "selected", "explicit_rt_acquire": True},
             )
         elif not account.openai_rt:
-            phone_skipped_reason = "无可用手机号：自建手机号池未开启/无可用号码，且 SMSBower/SMSPool 未启用或未配置 API Key。本账号只执行 ChatGPT 注册/登录，不进行接码，也不会获取 Refresh Token。"
+            phone_skipped_reason = "无可用手机号：自建手机号池无可用号码，且 LubanSMS/SMSBower/SMSPool/FireFox 均未启用或未完成配置。本账号只执行 ChatGPT 注册/登录，不进行接码，也不会获取 Refresh Token。"
             db.event(f"[{email}] [接码] {phone_skipped_reason}", "warning", detail={"email": email, "scope": "selected"})
     elif stage == AGENT_IDENTITY_REVERSE_PROXY:
         db.event(
@@ -1241,6 +1375,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                     should_cancel=db.cancel_requested,
                     on_progress=save_progress,
                     challenge_strategy=protocol_challenge_strategy,
+                    mailbox_proxy_url=auxiliary_proxy,
                 )
             except ProtocolChallengeRequired as challenge:
                 db.ensure_not_cancelled()
@@ -1280,6 +1415,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                     should_cancel=db.cancel_requested,
                     execution_mode="protocol_headless_fallback",
                     on_progress=save_progress,
+                    mailbox_proxy_url=auxiliary_proxy,
                 )
                 session["requested_execution_mode"] = "protocol"
                 session["execution_mode"] = "protocol_headless_fallback"
@@ -1313,6 +1449,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                             should_cancel=db.cancel_requested,
                             execution_mode="protocol_post_stage",
                             on_progress=save_progress,
+                            mailbox_proxy_url=auxiliary_proxy,
                         )
                         session["requested_execution_mode"] = "protocol"
                         session["execution_mode"] = "protocol_post_stage"
@@ -1340,8 +1477,17 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                 should_cancel=db.cancel_requested,
                 execution_mode=execution_mode,
                 on_progress=save_progress,
+                mailbox_proxy_url=auxiliary_proxy,
             )
         db.ensure_not_cancelled()
+        generated_password = str(session.pop("generated_chatgpt_password", "") or "")
+        if generated_password:
+            db.save_chatgpt_password(mailbox_id, generated_password)
+            account.chatgpt_password = generated_password
+            db.event(
+                f"[{email}] [认证] 已保存本次注册生成的 ChatGPT 密码",
+                detail={"email": email, "scope": "selected", "credential": "chatgpt_password"},
+            )
         if session.get("phone_binding_skipped_reason"):
             phone_skipped_reason = str(session.get("phone_binding_skipped_reason") or "")
         rt_value = session.get("refresh_token") or session.get("openai_rt") or account.openai_rt
@@ -1396,7 +1542,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             else:
                 try:
                     _emit_registration_progress(db, str(email), stage, "reverse_importing")
-                    result["sub2api"] = _import_sub2api(db, email, account_id, session)
+                    result["sub2api"] = _import_sub2api(db, email, account_id, session, proxy_url=auxiliary_proxy)
                     mailbox_status = _highest_mailbox_progress(mailbox_status, "已反代")
                     db.mark_mailbox(mailbox_id, mailbox_status, openai_rt=rt_value)
                     db.upsert_account(email, mailbox_id=mailbox_id, status="reverse_proxied", last_error="")
@@ -1419,7 +1565,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                     email,
                     account_id,
                     session,
-                    proxies.get("register", ""),
+                    auxiliary_proxy,
                 )
                 import_mode = str(import_result.pop("_sunny_import_mode", "agent_identity")) if isinstance(import_result, dict) else "agent_identity"
                 result["sub2api"] = import_result

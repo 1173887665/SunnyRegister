@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlencode, unquote, urlparse
 
 import requests
 
+from .auth_challenges import generate_totp
 from .browser_backend import open_registration_browser
 from .mailbox import MailAccount, create_mailbox_reader
 from .proxy import proxy_dict
@@ -292,9 +293,10 @@ def random_profile() -> tuple[str, str]:
 class OpenAIEmailRegisterFlow:
     """SunnyRegister in-project email register/login flow, following the original register-or-login implementation."""
 
-    def __init__(self, account: MailAccount, proxy_url: str, headless: bool, log: Callable[[str], None] | None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None):
+    def __init__(self, account: MailAccount, proxy_url: str, headless: bool, log: Callable[[str], None] | None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None, mailbox_proxy_url: str | None = None):
         self.account = account
         self.proxy_url = proxy_url
+        self.mailbox_proxy_url = proxy_url if mailbox_proxy_url is None else mailbox_proxy_url
         self.headless = headless
         self.execution_mode = (execution_mode or ("background" if headless else "visible")).strip().lower()
         self.log = log or (lambda _m: None)
@@ -309,6 +311,7 @@ class OpenAIEmailRegisterFlow:
         self.phone_verification_completed = False
         self.browser_backend = "camoufox" if headless else "chromium"
         self.device_id = ""
+        self.generated_password = ""
 
     def _check_cancelled(self) -> None:
         if self.should_cancel():
@@ -334,7 +337,8 @@ class OpenAIEmailRegisterFlow:
         self.log(f"[认证] 开始注册或登录: {self.account.email}")
         try:
             self._check_cancelled()
-            self._preconnect_otp_reader()
+            if not (self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key):
+                self._preconnect_otp_reader()
             self._check_cancelled()
             mode_label = "后台浏览器自动（Camoufox Headless，无窗口）" if self.headless else "可视浏览器自动（Chromium Visible，有窗口）"
             self.log(f"[认证] 执行方式：{mode_label}")
@@ -386,10 +390,14 @@ class OpenAIEmailRegisterFlow:
                         self.require_refresh_token = original_require_refresh_token
                     result["post_registration_error"] = error_text
                     result["auth_action"] = self.auth_action if self.auth_action != "unknown" else "login"
+                    if self.generated_password:
+                        result["generated_chatgpt_password"] = self.generated_password
                     self.log("[认证] ChatGPT 注册/登录已经完成，但手机号阶段无法继续；已保存 Session 并保留已注册状态")
                     return result
                 result = self._extract_session_info(context, page)
                 result["auth_action"] = self.auth_action if self.auth_action != "unknown" else "login"
+                if self.generated_password:
+                    result["generated_chatgpt_password"] = self.generated_password
                 self.log("[认证] 注册或登录完成，已读取 Session 信息")
                 return result
         finally:
@@ -436,7 +444,7 @@ class OpenAIEmailRegisterFlow:
             return
         provider = f"{self.account.mailbox_channel} iCloud API" if self.account.mailbox_type == "apple" else "Outlook Graph/IMAP"
         self.log(f"[邮箱] 提前连接 {provider}，准备接收 OpenAI 验证码")
-        self.otp_reader = create_mailbox_reader(self.account, self.log, self.proxy_url)
+        self.otp_reader = create_mailbox_reader(self.account, self.log, self.mailbox_proxy_url)
         self.otp_reader.connect()
 
     def _create_openai_signin_url(self, context, page=None) -> str:
@@ -605,7 +613,19 @@ class OpenAIEmailRegisterFlow:
                     about_you_submitted = False
                     continue
                 raise RuntimeError("Phone verification required, but no usable phone pool is configured")
+            if self._has_totp_challenge(page):
+                self._submit_totp_challenge(page)
+                continue
+            if self._has_workspace_selection(page):
+                self._select_first_workspace(page)
+                continue
             if "password" in url and self._has_visible_password(page):
+                if ("/log-in/password" in url or self.existing_account) and not self.account.chatgpt_password:
+                    if not self.account.access_key or not self._switch_password_to_email_code(page):
+                        raise RuntimeError("ChatGPT login requires a password or a configured email OTP endpoint")
+                    email_code_submitted = False
+                    about_you_submitted = False
+                    continue
                 self._fill_password_step(page)
                 email_code_submitted = False
                 about_you_submitted = False
@@ -774,7 +794,10 @@ class OpenAIEmailRegisterFlow:
 
     def _submit_email_code(self, page, min_timestamp: float) -> None:
         if not self.otp_reader:
-            self.otp_reader = create_mailbox_reader(self.account, self.log, self.proxy_url)
+            if self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key:
+                raise RuntimeError("Email OTP is required, but no url_api mail endpoint is configured")
+            self.otp_reader = create_mailbox_reader(self.account, self.log, self.mailbox_proxy_url)
+            self.otp_reader.connect()
         self.log("[邮箱] 等待 OpenAI 邮箱验证码")
         code = self.otp_reader.wait_for_code(min_timestamp, 180)
         journal, detach_journal = self._attach_email_otp_network_journal(page)
@@ -1363,11 +1386,16 @@ class OpenAIEmailRegisterFlow:
         return bool(self._visible_inputs(page, ['input[type="password"]', 'input[name="password"]']))
 
     def _fill_password_step(self, page) -> None:
-        password = self.account.password or self._generate_password()
-        if len(password) < 12:
-            password = password + password
-        self.account.password = password
-        self.log("[认证] 账号需要密码步骤，已填写密码")
+        login_page = "/log-in/password" in str(page.url or "") or self.existing_account
+        password = self.account.chatgpt_password
+        if not password and login_page:
+            raise RuntimeError("ChatGPT password login is required, but no ChatGPT password is configured")
+        if not password:
+            password = self._generate_password()
+            self.generated_password = password
+        self.account.chatgpt_password = password
+        self.auth_action = "login" if login_page else "register"
+        self.log("[认证] 账号需要密码步骤，已填写 ChatGPT 密码")
         inputs = self._visible_inputs(page, ['input[type="password"]', 'input[name="password"]'])
         if not inputs:
             raise RuntimeError("Entered password step but password input was not found")
@@ -1376,9 +1404,73 @@ class OpenAIEmailRegisterFlow:
         if not self._click_continue(page):
             raise RuntimeError("Password has been filled, but continue button was not found")
 
+    def _switch_password_to_email_code(self, page) -> bool:
+        selectors = [
+            'button:has-text("Email code")', 'button:has-text("verification code")',
+            '[role="button"]:has-text("Email code")', 'a:has-text("Email code")',
+            'button:has-text("邮箱验证码")', 'a:has-text("邮箱验证码")',
+        ]
+        for selector in selectors:
+            try:
+                target = page.locator(selector).first
+                if target.is_visible(timeout=700):
+                    target.click(timeout=5000)
+                    self.log("[认证] 已切换为邮箱验证码登录")
+                    return True
+            except Exception:
+                continue
+        return False
+
     def _generate_password(self) -> str:
         alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
         return "".join(random.choice(alphabet) for _ in range(13)) + "!A7"
+
+    def _has_totp_challenge(self, page) -> bool:
+        try:
+            value = f"{page.url} {page.locator('body').inner_text(timeout=700)}".lower()
+        except Exception:
+            value = str(getattr(page, "url", "") or "").lower()
+        return "mfa-challenge" in value or "authenticator app" in value or "two-factor" in value or "2fa" in value
+
+    def _submit_totp_challenge(self, page) -> None:
+        if not self.account.totp_secret:
+            raise RuntimeError("2FA is required, but no TOTP secret is configured")
+        inputs = self._visible_inputs(page, ['input[autocomplete="one-time-code"]', 'input[name="code"]', 'input[inputmode="numeric"]'])
+        if not inputs:
+            raise RuntimeError("2FA challenge is visible, but the TOTP input was not found")
+        inputs[0].fill(generate_totp(self.account.totp_secret))
+        if not self._click_continue(page):
+            raise RuntimeError("TOTP was filled, but the verify button was not found")
+        self.log("[认证] 已提交 2FA TOTP 验证码")
+
+    def _has_workspace_selection(self, page) -> bool:
+        try:
+            path = urlparse(str(page.url or "")).path.rstrip("/")
+            if path == "/workspace":
+                return True
+            text = page.locator("body").inner_text(timeout=700).lower()
+            return "choose a workspace" in text or "select a workspace" in text
+        except Exception:
+            return False
+
+    def _select_first_workspace(self, page) -> None:
+        selectors = ['input[type="radio"]', '[role="radio"]', '[data-testid*="workspace"]', 'button[data-workspace-id]']
+        for selector in selectors:
+            for item in self._visible_inputs(page, [selector]):
+                try:
+                    label = str(item.get_attribute("aria-label") or item.inner_text(timeout=500) or "")
+                    if re.search(r"back|cancel|sign out", label, flags=re.I):
+                        continue
+                    item.click()
+                    self._click_continue(page)
+                    self.log("[认证] 已选择首个可用 workspace")
+                    return
+                except Exception:
+                    continue
+        if self._click_continue(page):
+            self.log("[认证] workspace 页面无显式选项，已继续授权流程")
+            return
+        raise RuntimeError("Workspace selection is required, but no selectable workspace was found")
 
     def _has_about_you_form(self, page) -> bool:
         try:
@@ -1988,7 +2080,7 @@ class OpenAIEmailRegisterFlow:
             return str(page.url)
 
 
-def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool = True, log: Callable[[str], None] | None = None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None) -> dict[str, Any]:
+def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool = True, log: Callable[[str], None] | None = None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None, mailbox_proxy_url: str | None = None) -> dict[str, Any]:
     if should_cancel and should_cancel():
         raise TaskCancelledError("Task cancelled by user")
     if account.openai_rt and require_refresh_token:
@@ -2008,4 +2100,4 @@ def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool 
         if on_progress:
             on_progress("phone_bound", session)
         return session
-    return OpenAIEmailRegisterFlow(account, proxy_url, headless, log, phone_provider=phone_provider, existing_account=existing_account, require_refresh_token=require_refresh_token, should_cancel=should_cancel, execution_mode=execution_mode, on_progress=on_progress).run()
+    return OpenAIEmailRegisterFlow(account, proxy_url, headless, log, phone_provider=phone_provider, existing_account=existing_account, require_refresh_token=require_refresh_token, should_cancel=should_cancel, execution_mode=execution_mode, on_progress=on_progress, mailbox_proxy_url=mailbox_proxy_url).run()

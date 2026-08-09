@@ -18,10 +18,11 @@ from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
 from html import unescape
 from typing import Any, Callable
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 
+from .otp_candidates import extract_otp_candidates
 from .proxy import normalize_proxy_url
 
 
@@ -47,6 +48,8 @@ XBOVO_POOL_RETRIES = _int_env("XBOVO_ICLOUD_POOL_RETRIES", 4, 0, 10)
 XBOVO_QUEUE_TIMEOUT = _int_env("XBOVO_ICLOUD_QUEUE_TIMEOUT", 120, 30, 600)
 XBOVO_LONG_POLL_SECONDS = _int_env("XBOVO_ICLOUD_LONG_POLL_SECONDS", 10, 5, 20)
 URL_API_REQUEST_TIMEOUT = max(35, int(os.getenv("URL_API_ICLOUD_REQUEST_TIMEOUT", "40") or 40))
+URL_API_MAX_REDIRECTS = 3
+URL_API_MAX_RESPONSE_BYTES = 1 << 20
 _XBOVO_REQUEST_GATE = threading.BoundedSemaphore(XBOVO_MAX_CONCURRENT_REQUESTS)
 
 
@@ -131,6 +134,8 @@ class MailAccount:
     mailbox_type: str = "microsoft"
     mailbox_channel: str = "outlook"
     access_key: str = ""
+    chatgpt_password: str = ""
+    totp_secret: str = ""
 
 
 def parse_account_line(line: str) -> MailAccount:
@@ -162,23 +167,42 @@ def account_from_row(row: dict[str, Any]) -> MailAccount:
         email = str(row.get("email") or "").strip()
         access_key = str(row.get("access_key") or "").strip()
         raw = str(row.get("raw") or "").strip()
-        if (not email or not access_key) and raw:
+        mailbox_channel = str(row.get("mailbox_channel") or "xbovo").strip().lower()
+        chatgpt_password = str(row.get("chat_gpt_password") or row.get("chatgpt_password") or "")
+        totp_secret = str(row.get("totp_secret") or "").strip()
+        if raw:
             parts = [part.strip() for part in raw.split("----")]
-            if len(parts) == 2:
-                email, access_key = parts
-        if not email or "@" not in email or not access_key:
+            if mailbox_channel == "url_api" and 1 <= len(parts) <= 4:
+                email = email or parts[0]
+                remaining = parts[1:]
+                if remaining:
+                    if remaining[0].lower().startswith(("http://", "https://")):
+                        access_key = access_key or remaining[0]
+                    else:
+                        chatgpt_password = chatgpt_password or remaining[0]
+                for value in remaining[1:]:
+                    if value.lower().startswith(("http://", "https://")):
+                        access_key = access_key or value
+                    elif value:
+                        totp_secret = totp_secret or value
+            elif mailbox_channel != "url_api" and len(parts) == 2:
+                email = email or parts[0]
+                access_key = access_key or parts[1]
+        if not email or "@" not in email or (mailbox_channel != "url_api" and not access_key):
             raise ValueError("Invalid Apple mailbox line; expected icloud_email----key")
         return MailAccount(
             email=email,
             password="",
             client_id="",
             refresh_token="",
-            raw=f"{email}----{access_key}",
+            raw=raw or "----".join(part for part in (email, chatgpt_password, access_key, totp_secret) if part),
             account_type=str(row.get("account_type") or "free"),
             openai_rt=str(row.get("openai_rt") or ""),
             mailbox_type="apple",
-            mailbox_channel=str(row.get("mailbox_channel") or "xbovo").strip().lower(),
+            mailbox_channel=mailbox_channel,
             access_key=access_key,
+            chatgpt_password=chatgpt_password,
+            totp_secret=totp_secret,
         )
     raw = row.get("raw") or "----".join([
         row.get("email", ""),
@@ -191,6 +215,8 @@ def account_from_row(row: dict[str, Any]) -> MailAccount:
     account.account_type = row.get("account_type") or account.account_type
     account.mailbox_type = "microsoft"
     account.mailbox_channel = "outlook"
+    account.chatgpt_password = str(row.get("chat_gpt_password") or row.get("chatgpt_password") or "")
+    account.totp_secret = str(row.get("totp_secret") or "").strip()
     return account
 
 
@@ -907,24 +933,39 @@ class URLAPIICloudReader:
         self.proxy_url = proxy_url
         self.proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
         self.url = _validate_url_api_address(account.access_key)
-        self.seen_codes: set[str] = set()
+        self.seen_candidate_keys: set[str] = set()
 
     def _latest(self, timeout: int = URL_API_REQUEST_TIMEOUT) -> dict[str, Any]:
-        try:
-            response = requests.get(
-                self.url,
-                headers={"Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8", "User-Agent": "Mozilla/5.0"},
-                timeout=min(URL_API_REQUEST_TIMEOUT + 5, max(URL_API_REQUEST_TIMEOUT, int(timeout or 0))),
-                proxies=self.proxies,
-            )
-        except requests.RequestException as exc:
-            raise MailboxAccessError(
-                "mailbox_network_error",
-                "url_api 邮箱渠道连接超时或网络不可达，请检查取码 URL、服务器出网与代理配置",
-                str(exc),
-            ) from exc
-        _validate_url_api_address(str(getattr(response, "url", "") or self.url))
+        response = None
+        target = self.url
+        for redirect_count in range(URL_API_MAX_REDIRECTS + 1):
+            target = _validate_url_api_address(target)
+            try:
+                response = requests.get(
+                    target,
+                    headers={"Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8", "User-Agent": "Mozilla/5.0"},
+                    timeout=min(URL_API_REQUEST_TIMEOUT + 5, max(URL_API_REQUEST_TIMEOUT, int(timeout or 0))),
+                    proxies=self.proxies,
+                    allow_redirects=False,
+                    stream=True,
+                )
+            except requests.RequestException as exc:
+                raise MailboxAccessError(
+                    "mailbox_network_error",
+                    "url_api 邮箱渠道连接超时或网络不可达，请检查取码 URL、服务器出网与代理配置",
+                    str(exc),
+                ) from exc
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                break
+            location = str(response.headers.get("Location") or "").strip()
+            response.close()
+            if not location or redirect_count >= URL_API_MAX_REDIRECTS:
+                raise MailboxAccessError("mailbox_redirect_invalid", "url_api 取码 URL 跳转次数过多或目标无效", terminal=True)
+            target = urljoin(target, location)
+        if response is None:
+            raise MailboxAccessError("mailbox_network_error", "url_api 邮箱渠道未返回响应")
         if response.status_code in {401, 403, 404, 410}:
+            response.close()
             raise MailboxAccessError(
                 "mailbox_credential_invalid",
                 "url_api 取码 URL 无效、已过期或无权访问",
@@ -932,11 +973,40 @@ class URLAPIICloudReader:
                 terminal=True,
             )
         if not response.ok:
+            response.close()
             raise MailboxAccessError("mailbox_provider_failed", "url_api 邮箱渠道请求失败，请稍后重试", f"HTTP {response.status_code}")
-        raw_html = str(response.text or "")
+        try:
+            content_length = int(response.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            content_length = 0
+        if content_length > URL_API_MAX_RESPONSE_BYTES:
+            response.close()
+            raise MailboxAccessError("mailbox_response_too_large", "url_api 取码接口返回内容过大", terminal=True)
+        chunks: list[bytes] = []
+        size = 0
+        try:
+            iterator = response.iter_content(chunk_size=16 * 1024)
+            for chunk in iterator:
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > URL_API_MAX_RESPONSE_BYTES:
+                    raise MailboxAccessError("mailbox_response_too_large", "url_api 取码接口返回内容过大", terminal=True)
+                chunks.append(chunk)
+            encoding = response.encoding or "utf-8"
+            raw_html = b"".join(chunks).decode(encoding, errors="replace")
+        except TypeError:
+            # Lightweight test doubles may only expose .text; real requests responses use iter_content.
+            raw_html = str(response.text or "")
+            if len(raw_html.encode("utf-8")) > URL_API_MAX_RESPONSE_BYTES:
+                raise MailboxAccessError("mailbox_response_too_large", "url_api 取码接口返回内容过大", terminal=True)
+        finally:
+            response.close()
         plain = _html_to_text(raw_html)
         relevant = bool(re.search(r"openai|chatgpt", plain, flags=re.I))
-        otp = extract_otp(plain) if relevant else ""
+        candidates = extract_otp_candidates(raw_html)
+        candidate = candidates[0] if candidates else None
+        otp = str(candidate.get("code") or "") if candidate else ""
         heading = re.search(r"(?is)<h[1-4]\b[^>]*>(.*?)</h[1-4]>", raw_html)
         subject = _html_to_text(heading.group(1)) if heading else ""
         if not re.search(r"openai|chatgpt", subject, flags=re.I) or "@" in subject:
@@ -954,7 +1024,7 @@ class URLAPIICloudReader:
                 "",
             )
         return {
-            "id": f"url-api:{hash(raw_html)}",
+            "id": f"url-api:{candidate.get('key') if candidate else abs(hash(raw_html))}",
             "email": self.account.email,
             "folder": "iCloud",
             "subject": subject or ("ChatGPT" if relevant else "Latest iCloud mail"),
@@ -965,6 +1035,8 @@ class URLAPIICloudReader:
             "body_preview": plain[:500],
             "raw_html": raw_html,
             "otp": otp,
+            "otp_key": str(candidate.get("key") or "") if candidate else "",
+            "otp_candidates": candidates,
             "source": "url_api",
         }
 
@@ -973,8 +1045,7 @@ class URLAPIICloudReader:
             raise MailboxAccessError("mailbox_channel_unsupported", "暂不支持该 iCloud 邮箱渠道", self.account.mailbox_channel, terminal=True)
         self.log(f"[{self.account.email}] Connecting url_api iCloud mailbox URL for OTP")
         message = self._latest()
-        if message.get("otp"):
-            self.seen_codes.add(str(message["otp"]))
+        self.seen_candidate_keys.update(str(item.get("key") or "") for item in message.get("otp_candidates") or [] if item.get("key"))
         self.log(f"[{self.account.email}] url_api iCloud mailbox URL connected")
 
     def close(self) -> None:
@@ -989,9 +1060,10 @@ class URLAPIICloudReader:
         while time.monotonic() - started < timeout:
             remaining = max(1, int(timeout - (time.monotonic() - started)))
             message = self._latest(timeout=max(URL_API_REQUEST_TIMEOUT, remaining))
-            code = str(message.get("otp") or "").strip()
-            if re.fullmatch(r"\d{6}", code) and code not in self.seen_codes:
-                self.seen_codes.add(code)
+            fresh = next((item for item in message.get("otp_candidates") or [] if item.get("key") not in self.seen_candidate_keys), None)
+            self.seen_candidate_keys.update(str(item.get("key") or "") for item in message.get("otp_candidates") or [] if item.get("key"))
+            code = str((fresh or {}).get("code") or "").strip()
+            if re.fullmatch(r"\d{6}", code):
                 self.log(f"[{self.account.email}] Received OpenAI OTP from url_api iCloud URL ({len(code)} digits, redacted)")
                 return code
             if time.monotonic() - last_notice >= 20:

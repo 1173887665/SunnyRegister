@@ -301,8 +301,12 @@ def _terminate_process_tree(process: subprocess.Popen) -> None:
             pass
     try:
         process.wait(timeout=3)
-    except Exception:
-        pass
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+            process.wait(timeout=3)
+        except Exception:
+            pass
 
 
 def _run_task(task_id: str, task_type: str = "") -> None:
@@ -335,4 +339,3 @@ def _finish_sunny_task_failed(task_id: str, exc: Exception, tb: str) -> None:
             db.close()
     except Exception as inner:
         print(f"[worker] failed to write SunnyRegister failure to DB: {inner}", flush=True)
-

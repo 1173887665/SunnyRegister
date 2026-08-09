@@ -8,15 +8,38 @@ import (
 )
 
 func TestParseSunnyMailboxLineForURLAPI(t *testing.T) {
-	parsed, err := parseSunnyMailboxLineForProvider("alias@icloud.com----https://mail.example.test/latest", "apple", "url_api")
-	if err != nil {
-		t.Fatalf("parse url_api mailbox: %v", err)
+	const secret = "JBSWY3DPEHPK3PXP"
+	tests := []struct {
+		line, password, url, totp string
+	}{
+		{"alias@icloud.com", "", "", ""},
+		{"alias@icloud.com----chatgpt-password", "chatgpt-password", "", ""},
+		{"alias@icloud.com----https://mail.example.test/latest", "", "https://mail.example.test/latest", ""},
+		{"alias@icloud.com----chatgpt-password----" + secret, "chatgpt-password", "", secret},
+		{"alias@icloud.com----chatgpt-password----https://mail.example.test/latest", "chatgpt-password", "https://mail.example.test/latest", ""},
+		{"alias@icloud.com----chatgpt-password----https://mail.example.test/latest----" + secret, "chatgpt-password", "https://mail.example.test/latest", secret},
+		{"alias@icloud.com----https://mail.example.test/latest----" + secret, "", "https://mail.example.test/latest", secret},
 	}
-	if parsed["email"] != "alias@icloud.com" || parsed["access_key"] != "https://mail.example.test/latest" {
-		t.Fatalf("unexpected parsed mailbox: %#v", parsed)
+	for _, test := range tests {
+		parsed, err := parseSunnyMailboxLineForProvider(test.line, "apple", "url_api")
+		if err != nil {
+			t.Fatalf("parse %q: %v", test.line, err)
+		}
+		if parsed["email"] != "alias@icloud.com" || parsed["chatgpt_password"] != test.password || parsed["access_key"] != test.url || parsed["totp_secret"] != test.totp {
+			t.Fatalf("unexpected parsed mailbox for %q: %#v", test.line, parsed)
+		}
+		if got := sunnyURLAPIRaw(parsed["email"], parsed["chatgpt_password"], parsed["access_key"], parsed["totp_secret"]); got != test.line {
+			t.Fatalf("canonical form mismatch: got %q want %q", got, test.line)
+		}
 	}
-	if _, err := parseSunnyMailboxLineForProvider("alias@icloud.com----not-a-url", "apple", "url_api"); err == nil {
-		t.Fatal("expected invalid url_api URL to fail")
+	for _, invalid := range []string{
+		"alias@icloud.com----password----not-base32",
+		"alias@icloud.com----https://one.example.test----https://two.example.test",
+		"alias@icloud.com----password----https://mail.example.test--------" + secret,
+	} {
+		if _, err := parseSunnyMailboxLineForProvider(invalid, "apple", "url_api"); err == nil {
+			t.Fatalf("expected %q to fail", invalid)
+		}
 	}
 }
 

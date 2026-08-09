@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import unquote, urlencode, urlsplit
 
+from .auth_challenges import generate_totp
 from .mailbox import MailAccount, create_mailbox_reader
 from .proxy import normalize_proxy_url
 from .sentinel import (
@@ -157,9 +158,11 @@ class ProtocolRegistrationFlow:
         on_progress: Callable[[str, dict[str, Any]], None] | None = None,
         session: Any | None = None,
         challenge_strategy: str = "native_headless",
+        mailbox_proxy_url: str | None = None,
     ):
         self.account = account
         self.proxy_url = normalize_proxy_url(proxy_url)
+        self.mailbox_proxy_url = self.proxy_url if mailbox_proxy_url is None else normalize_proxy_url(mailbox_proxy_url)
         self.log = log or (lambda _message: None)
         self.existing_account = existing_account
         self.should_cancel = should_cancel or (lambda: False)
@@ -420,14 +423,15 @@ class ProtocolRegistrationFlow:
         return _json_response(response, "Submit registration email")
 
     def _password_value(self) -> str:
-        value = str(self.account.password or "").strip()
-        if len(value) >= 12 and re.search(r"[A-Za-z]", value) and re.search(r"\d", value):
+        value = str(self.account.chatgpt_password or "")
+        if value:
             return value
         alphabet = string.ascii_letters + string.digits + "._!@#"
         required = [secrets.choice(string.ascii_uppercase), secrets.choice(string.ascii_lowercase), secrets.choice(string.digits), secrets.choice("._!@#")]
         required.extend(secrets.choice(alphabet) for _ in range(12))
         random.SystemRandom().shuffle(required)
         self.generated_password = "".join(required)
+        self.account.chatgpt_password = self.generated_password
         return self.generated_password
 
     def _submit_password(self) -> dict[str, Any]:
@@ -461,7 +465,104 @@ class ProtocolRegistrationFlow:
         self.auth_action = "register"
         return _json_response(response, "Submit account password")
 
+    def _auth_json_post(self, path: str, payload: dict[str, Any], *, step: str, referer: str = "") -> dict[str, Any]:
+        response = self._request(
+            "POST",
+            f"{AUTH_BASE_URL}{path}",
+            step=step,
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "origin": AUTH_BASE_URL,
+                "referer": referer or self.auth_page_url or AUTH_BASE_URL,
+                "oai-device-id": self.device_id,
+                **generate_datadog_trace_headers(),
+            },
+            data=json.dumps(payload, separators=(",", ":")),
+        )
+        if response.status_code != 200:
+            raise _response_error(response, step)
+        return _json_response(response, step)
+
+    def _verify_login_password(self, referer: str) -> dict[str, Any]:
+        password = str(self.account.chatgpt_password or "")
+        if not password:
+            raise ProtocolRegistrationError("ChatGPT password login is required, but no ChatGPT password is configured")
+        result = self._auth_json_post(
+            "/api/accounts/password/verify",
+            {"password": password},
+            step="Verify ChatGPT password",
+            referer=referer,
+        )
+        self.log("[认证] ChatGPT 密码验证成功")
+        return result
+
+    @staticmethod
+    def _continue_url(payload: dict[str, Any]) -> str:
+        return str(payload.get("continue_url") or payload.get("continueUrl") or "")
+
+    @staticmethod
+    def _page_type(payload: dict[str, Any]) -> str:
+        page = payload.get("page") if isinstance(payload.get("page"), dict) else {}
+        return str(page.get("type") or "")
+
+    def _complete_mfa(self, payload: dict[str, Any]) -> dict[str, Any]:
+        page_type = self._page_type(payload)
+        continue_url = self._continue_url(payload)
+        if page_type != "mfa_challenge" and "/mfa-challenge/" not in continue_url:
+            return payload
+        session = payload.get("oai-client-auth-session") if isinstance(payload.get("oai-client-auth-session"), dict) else {}
+        factors = []
+        for key in ("mfa_challenge_factors", "mfa_factors"):
+            value = session.get(key)
+            if isinstance(value, list):
+                factors.extend(item for item in value if isinstance(item, dict))
+        factor = next((item for item in factors if item.get("factor_type") == "totp" and item.get("id")), None)
+        if not factor:
+            raise ProtocolRegistrationError("2FA is required, but no TOTP factor was returned")
+        if not self.account.totp_secret:
+            raise ProtocolRegistrationError("2FA is required, but no TOTP secret is configured")
+        self._auth_json_post(
+            "/api/accounts/mfa/issue_challenge",
+            {"type": "totp", "id": factor["id"], "force_fresh_challenge": False},
+            step="Issue TOTP challenge",
+            referer=continue_url,
+        )
+        result = self._auth_json_post(
+            "/api/accounts/mfa/verify",
+            {"type": "totp", "id": factor["id"], "code": generate_totp(self.account.totp_secret)},
+            step="Verify TOTP challenge",
+            referer=continue_url,
+        )
+        self.log("[认证] 2FA TOTP 验证成功")
+        return result
+
+    def _select_workspace(self, payload: dict[str, Any]) -> dict[str, Any]:
+        page_type = self._page_type(payload)
+        continue_url = self._continue_url(payload)
+        if page_type != "workspace" and not continue_url.endswith("/workspace"):
+            return payload
+        session = payload.get("oai-client-auth-session") if isinstance(payload.get("oai-client-auth-session"), dict) else {}
+        workspaces = session.get("workspaces") if isinstance(session.get("workspaces"), list) else []
+        workspace = next((item for item in workspaces if isinstance(item, dict) and item.get("id")), None)
+        if not workspace:
+            self.log("[认证] workspace 页面没有可选项，继续当前授权流程")
+            return payload
+        result = self._auth_json_post(
+            "/api/accounts/workspace/select",
+            {"workspace_id": workspace["id"]},
+            step="Select ChatGPT workspace",
+            referer=continue_url,
+        )
+        self.log("[认证] 已选择首个可用 workspace")
+        return result
+
     def _wait_for_email_code(self, min_timestamp: float) -> str:
+        if self.reader is None:
+            if self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key:
+                raise ProtocolRegistrationError("Email OTP is required, but no url_api mail endpoint is configured")
+            self.reader = create_mailbox_reader(self.account, self.log, self.mailbox_proxy_url)
+            self.reader.connect()
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline:
             self._check_cancelled()
@@ -647,8 +748,9 @@ class ProtocolRegistrationFlow:
             self.log("[认证] 协议模式使用本项目原生挑战接管策略")
         try:
             self._check_cancelled()
-            self.reader = create_mailbox_reader(self.account, self.log, self.proxy_url)
-            self.reader.connect()
+            if not (self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key):
+                self.reader = create_mailbox_reader(self.account, self.log, self.mailbox_proxy_url)
+                self.reader.connect()
             self.session = self.session or self._new_session()
             self._emit("protocol_started")
             auth_started_at = time.time() - 5
@@ -667,23 +769,43 @@ class ProtocolRegistrationFlow:
             continue_url = str(state.get("continue_url") or "")
             self.log(f"[认证] 协议认证状态：{page_type or 'unknown'}")
 
+            credential_complete = False
             if page_type in {"password", "create_account_password"}:
                 state = self._submit_password()
                 page_type = str((state.get("page") or {}).get("type") or page_type)
                 continue_url = str(state.get("continue_url") or continue_url)
             elif page_type in {"login_password"}:
                 self.auth_action = "login"
-                # Prefer the email OTP endpoint for existing accounts. This
-                # avoids treating the Outlook mailbox password as a GPT password.
+                if self.account.chatgpt_password:
+                    state = self._verify_login_password(continue_url or self.auth_page_url)
+                else:
+                    state = self._verify_email(continue_url, min_timestamp=auth_started_at)
+                credential_complete = True
             elif page_type in {"email_otp_verification", "email_otp_send"}:
                 self.auth_action = "login" if self.existing_account else self.auth_action
+                state = self._verify_email(
+                    continue_url,
+                    request_code=not initial_otp_redirect,
+                    load_page=not initial_otp_redirect,
+                    min_timestamp=auth_started_at,
+                )
+                credential_complete = True
 
-            state = self._verify_email(
-                continue_url,
-                request_code=not initial_otp_redirect,
-                load_page=not initial_otp_redirect,
-                min_timestamp=auth_started_at,
-            )
+            if not credential_complete:
+                state = self._verify_email(
+                    continue_url,
+                    request_code=not initial_otp_redirect,
+                    load_page=not initial_otp_redirect,
+                    min_timestamp=auth_started_at,
+                )
+
+            if self._page_type(state) in {"email_otp_verification", "email_otp_send"}:
+                state = self._verify_email(
+                    self._continue_url(state) or continue_url,
+                    min_timestamp=auth_started_at,
+                )
+
+            state = self._complete_mfa(state)
             page_type = str((state.get("page") or {}).get("type") or "")
             continue_url = str(state.get("continue_url") or continue_url)
             if page_type in {"about_you", "create_account", "name_and_birthdate"} or self.auth_action == "register":
@@ -691,7 +813,11 @@ class ProtocolRegistrationFlow:
                 continue_url = str(state.get("continue_url") or continue_url)
             else:
                 self.auth_action = "login"
+            state = self._select_workspace(state)
+            continue_url = str(state.get("continue_url") or continue_url)
             result = self._finish_session(continue_url)
+            if self.generated_password:
+                result["generated_chatgpt_password"] = self.generated_password
             self.log("[认证] 纯协议注册/登录完成，已读取 ChatGPT Session")
             traffic = result["protocol_traffic"]
             suffix = "；不含 Sentinel 窄浏览器运行时资源" if self._sentinel_runtime is not None else ""
@@ -730,6 +856,7 @@ def login_or_register_protocol(
     should_cancel: Callable[[], bool] | None = None,
     on_progress: Callable[[str, dict[str, Any]], None] | None = None,
     challenge_strategy: str = "native_headless",
+    mailbox_proxy_url: str | None = None,
 ) -> dict[str, Any]:
     return ProtocolRegistrationFlow(
         account,
@@ -739,4 +866,5 @@ def login_or_register_protocol(
         should_cancel=should_cancel,
         on_progress=on_progress,
         challenge_strategy=challenge_strategy,
+        mailbox_proxy_url=mailbox_proxy_url,
     ).run()

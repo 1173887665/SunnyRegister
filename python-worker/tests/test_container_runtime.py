@@ -231,6 +231,30 @@ class URLAPIICloudReaderTests(unittest.TestCase):
         self.assertEqual(message["source"], "url_api")
         self.assertIn("验证码 654321", message["body"])
 
+    def test_redirect_target_is_revalidated(self) -> None:
+        parsed = account_from_row({
+            "email": "alias@icloud.com",
+            "mailbox_type": "apple",
+            "mailbox_channel": "url_api",
+            "access_key": "https://mail.example.test/latest",
+        })
+        redirect = Mock(status_code=302, headers={"Location": "http://127.0.0.1/private"})
+        with patch("sunny_core.mailbox.requests.get", return_value=redirect):
+            with self.assertRaisesRegex(MailboxAccessError, "私有网络"):
+                URLAPIICloudReader(parsed, None).latest_message()
+
+    def test_response_size_is_limited(self) -> None:
+        parsed = account_from_row({
+            "email": "alias@icloud.com",
+            "mailbox_type": "apple",
+            "mailbox_channel": "url_api",
+            "access_key": "https://mail.example.test/latest",
+        })
+        response = Mock(ok=True, status_code=200, headers={"Content-Length": str((1 << 20) + 1)})
+        with patch("sunny_core.mailbox.requests.get", return_value=response):
+            with self.assertRaisesRegex(MailboxAccessError, "内容过大"):
+                URLAPIICloudReader(parsed, None).latest_message()
+
 
 class OutlookGraphCredentialTests(unittest.TestCase):
     def test_expired_refresh_token_is_classified_and_stops_routing(self) -> None:
