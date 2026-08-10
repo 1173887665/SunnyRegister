@@ -162,6 +162,28 @@ func TestSunnySessionListDoesNotReturnSecrets(t *testing.T) {
 	if item["plan_type"] != "plus" || item["email"] != "session@example.com" {
 		t.Fatalf("summary fields are incorrect: %#v", item)
 	}
+	if item["phone_bound"] != false {
+		t.Fatalf("unbound account was reported as phone bound: %#v", item)
+	}
+}
+
+func TestSunnySessionListReportsCompletedPhoneBinding(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	if err := s.db.Model(&SunnyAccount{}).Where("email = ?", "session@example.com").Update("phone_number", "+12025550101").Error; err != nil {
+		t.Fatalf("mark account phone binding complete: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/sunny/sessions?page=1&page_size=10", nil)
+	rec := httptest.NewRecorder()
+	s.sunnySessions(rec, req, nil)
+	var payload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil || len(payload.Items) != 1 {
+		t.Fatalf("decode session list: err=%v body=%s", err, rec.Body.String())
+	}
+	if payload.Items[0]["phone_bound"] != true {
+		t.Fatalf("completed phone binding was not reported: %#v", payload.Items[0])
+	}
 }
 
 func TestSunnySessionUpdateSynchronizesMailboxAndAccountMetadata(t *testing.T) {
@@ -581,6 +603,9 @@ func TestSunnyAcquireRTTaskResolvesSessionSelection(t *testing.T) {
 	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
 		t.Fatalf("load session: %v", err)
 	}
+	if err := s.db.Model(&SunnyAccount{}).Where("id = ?", session.AccountID).Update("phone_number", "+12025550101").Error; err != nil {
+		t.Fatalf("mark account phone binding complete: %v", err)
+	}
 	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/acquire-rt", strings.NewReader(`{"session_ids":[`+strconv.Itoa(int(session.ID))+`]}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -595,6 +620,31 @@ func TestSunnyAcquireRTTaskResolvesSessionSelection(t *testing.T) {
 	payload := jsonMap(task.PayloadJSON)
 	if task.Type != "sunny_acquire_rt" || len(uintSlice(payload["account_ids"])) != 1 {
 		t.Fatalf("unexpected acquire task: type=%s payload=%#v", task.Type, payload)
+	}
+}
+
+func TestSunnyAcquireRTTaskRejectsAccountWithoutPhoneBinding(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/acquire-rt", strings.NewReader(`{"session_ids":[`+strconv.Itoa(int(session.ID))+`]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.sunnyTasks(rec, req, []string{"acquire-rt"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unbound account status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "当前账户未接码，请先完成接码后再获取RT") {
+		t.Fatalf("unexpected unbound account error: %s", rec.Body.String())
+	}
+	var taskCount int64
+	if err := s.db.Model(&Task{}).Where("type = ?", "sunny_acquire_rt").Count(&taskCount).Error; err != nil {
+		t.Fatalf("count acquire RT tasks: %v", err)
+	}
+	if taskCount != 0 {
+		t.Fatalf("unbound account created %d acquire RT tasks", taskCount)
 	}
 }
 

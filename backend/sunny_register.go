@@ -3728,6 +3728,23 @@ func normalizeSunnyDisplayStatus(status string) string {
 	}
 }
 
+func sunnyPhoneBindingCompleted(phoneNumber string, statuses ...string) bool {
+	if strings.TrimSpace(phoneNumber) != "" {
+		return true
+	}
+	for _, status := range statuses {
+		raw := strings.TrimSpace(status)
+		switch strings.ToLower(raw) {
+		case "phone_bound", "phone-bound", "bound":
+			return true
+		}
+		if raw == "已接码" || raw == "PLUS试用中" {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]SunnyAccount, mailboxes map[string]SunnyMailbox) map[string]any {
 	key := sunnyEmailKey(sess.Email)
 	acc := accounts[key]
@@ -3778,6 +3795,7 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 	return map[string]any{
 		"id": sess.ID, "account_id": sess.AccountID, "mailbox_id": mb.ID, "email": sess.Email,
 		"status": status, "plan_type": plan, "group_id": mb.GroupID, "group_name": groupName,
+		"phone_bound":       sunnyPhoneBindingCompleted(acc.PhoneNumber, acc.Status, mb.Status),
 		"trial_eligibility": trialEligibility,
 		"access_token":      accessToken, "refresh_token": refreshToken, "id_token": sess.IDToken,
 		"session_json": sess.SessionJSON, "storage_state_json": sess.StorageStateJSON,
@@ -3822,6 +3840,7 @@ type sunnySessionAccountSummary struct {
 	TrialEligibility    string     `gorm:"column:trial_eligibility"`
 	TrialCheckedAt      *time.Time `gorm:"column:trial_checked_at"`
 	AccessToken         string     `gorm:"column:access_token"`
+	PhoneNumber         string     `gorm:"column:phone_number"`
 	HasAccessToken      int        `gorm:"column:has_access_token"`
 	HasRefreshToken     int        `gorm:"column:has_refresh_token"`
 	LastHealthCheckedAt *time.Time `gorm:"column:last_health_checked_at"`
@@ -3884,6 +3903,7 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 	return map[string]any{
 		"id": row.ID, "account_id": accountID, "mailbox_id": mailbox.ID, "email": row.Email,
 		"status": status, "plan_type": plan, "trial_eligibility": trialEligibility, "group_id": mailbox.GroupID, "group_name": mailbox.GroupName,
+		"phone_bound":       sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailbox.Status),
 		"has_access_token":  row.HasAccessToken != 0 || account.HasAccessToken != 0,
 		"has_refresh_token": row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
 		"has_secret_key":    row.HasSecretKey != 0 || mailbox.HasSecretKey != 0,
@@ -3935,7 +3955,7 @@ func (s *Server) sunnySessionListSidecars(rows []sunnySessionListRow) (map[strin
 		return accounts, mailboxes
 	}
 	var accRows []sunnySessionAccountSummary
-	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, trial_eligibility, trial_checked_at, access_token, last_health_checked_at,
+	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, trial_eligibility, trial_checked_at, access_token, phone_number, last_health_checked_at,
 		CASE WHEN access_token IS NOT NULL AND access_token <> '' THEN 1 ELSE 0 END AS has_access_token,
 		CASE WHEN openai_rt IS NOT NULL AND openai_rt <> '' THEN 1 ELSE 0 END AS has_refresh_token`).Where("email IN ?", emails).Find(&accRows)
 	for _, account := range accRows {
@@ -4410,6 +4430,36 @@ func sunnyAccountExportName(prefix string, count int, suffix string) string {
 	return fmt.Sprintf("%s-%s-%d.%s", prefix, stamp, count, suffix)
 }
 
+func (s *Server) sunnyValidateAcquireRTAccounts(accountIDs []uint) error {
+	var accounts []SunnyAccount
+	if err := s.db.Select("id", "email", "status", "phone_number").Where("id IN ?", accountIDs).Find(&accounts).Error; err != nil {
+		return err
+	}
+	accountByID := make(map[uint]SunnyAccount, len(accounts))
+	emails := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		accountByID[account.ID] = account
+		emails = append(emails, account.Email)
+	}
+	mailboxStatus := map[string]string{}
+	if len(emails) > 0 {
+		var mailboxes []SunnyMailbox
+		if err := s.db.Select("email", "status").Where("email IN ?", emails).Find(&mailboxes).Error; err != nil {
+			return err
+		}
+		for _, mailbox := range mailboxes {
+			mailboxStatus[sunnyEmailKey(mailbox.Email)] = mailbox.Status
+		}
+	}
+	for _, accountID := range accountIDs {
+		account, ok := accountByID[accountID]
+		if !ok || !sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailboxStatus[sunnyEmailKey(account.Email)]) {
+			return fmt.Errorf("当前账户未接码，请先完成接码后再获取RT")
+		}
+	}
+	return nil
+}
+
 func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []string) {
 	if len(parts) != 1 || r.Method != http.MethodPost {
 		writeError(w, 404, "not found")
@@ -4460,6 +4510,12 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 			}
 			writeError(w, http.StatusBadRequest, message)
 			return
+		}
+		if typ == "sunny_acquire_rt" {
+			if err := s.sunnyValidateAcquireRTAccounts(accountIDs); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 	}
 	total := len(uintSlice(body["mailbox_ids"])) + len(uintSlice(body["account_ids"]))
