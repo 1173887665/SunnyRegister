@@ -333,7 +333,7 @@ def test_phone_api_retries_without_channel_like_reference_project() -> None:
     assert json.loads(fetch.call_args_list[1].kwargs["body"]) == {"phone_number": "+601111314592"}
 
 
-def test_phone_api_failure_returns_to_country_picker_fallback() -> None:
+def test_phone_api_failure_returns_none_to_the_selected_mode_strategy() -> None:
     page = Mock()
     page.url = "https://auth.openai.com/add-phone"
     flow = make_flow()
@@ -349,6 +349,76 @@ def test_phone_api_failure_returns_to_country_picker_fallback() -> None:
         return_value={"ok": True, "status": 200, "text": "<html>route error</html>", "data": None},
     ):
         assert flow._send_phone_code_api(page, "+60106539484") is None
+
+
+@pytest.mark.parametrize("execution_mode", ["protocol", "protocol_post_stage", "protocol_headless_fallback"])
+def test_protocol_execution_uses_e164_submission_without_country_picker(execution_mode: str) -> None:
+    flow = make_flow()
+    flow.execution_mode = execution_mode
+    flow._send_phone_code_api = Mock(return_value="https://auth.openai.com/phone-verification")
+    flow._select_phone_country = Mock(side_effect=AssertionError("country picker must not run"))
+
+    verification_url, selected_dial = flow._prepare_phone_submission(
+        Mock(),
+        {"country": "mys", "country_code": "60"},
+        "+601137984883",
+    )
+
+    assert verification_url == "https://auth.openai.com/phone-verification"
+    assert selected_dial == ""
+    flow._send_phone_code_api.assert_called_once()
+    flow._select_phone_country.assert_not_called()
+
+
+def test_background_execution_uses_country_picker_before_protocol_fallback() -> None:
+    flow = make_flow()
+    flow.execution_mode = "background"
+    flow._select_phone_country = Mock(return_value="60")
+    flow._send_phone_code_api = Mock(side_effect=AssertionError("protocol fallback must not run"))
+
+    verification_url, selected_dial = flow._prepare_phone_submission(
+        Mock(),
+        {"country": "mys", "country_code": "60"},
+        "+601137984883",
+    )
+
+    assert verification_url is None
+    assert selected_dial == "60"
+    flow._select_phone_country.assert_called_once()
+    flow._send_phone_code_api.assert_not_called()
+
+
+def test_background_country_failure_degrades_to_e164_submission() -> None:
+    flow = make_flow()
+    flow.execution_mode = "background"
+    flow._select_phone_country = Mock(side_effect=RuntimeError("country control unavailable"))
+    flow._send_phone_code_api = Mock(return_value="https://auth.openai.com/phone-verification")
+
+    verification_url, selected_dial = flow._prepare_phone_submission(
+        Mock(),
+        {"country": "mys", "country_code": "60"},
+        "+601137984883",
+    )
+
+    assert verification_url == "https://auth.openai.com/phone-verification"
+    assert selected_dial == ""
+    flow._send_phone_code_api.assert_called_once()
+
+
+def test_visible_country_failure_does_not_silently_use_protocol_submission() -> None:
+    flow = make_flow()
+    flow.execution_mode = "visible"
+    flow._select_phone_country = Mock(side_effect=RuntimeError("country control unavailable"))
+    flow._send_phone_code_api = Mock()
+
+    with pytest.raises(RuntimeError, match="country control unavailable"):
+        flow._prepare_phone_submission(
+            Mock(),
+            {"country": "mys", "country_code": "60"},
+            "+601137984883",
+        )
+
+    flow._send_phone_code_api.assert_not_called()
 
 
 def test_non_us_country_fails_instead_of_submitting_under_us() -> None:

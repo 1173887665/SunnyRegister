@@ -2059,16 +2059,36 @@ class OpenAIEmailRegisterFlow:
                 self.log("[接码] OpenAI 手机号接口已在不携带 channel 字段时接受请求")
         if not result.get("ok"):
             detail = f"HTTP {result.get('status') or 0} {str(result.get('text') or '')[:500]}"
-            self.log(f"[接码] E.164 手机号接口提交未完成，将回退页面国家选择：{detail}")
+            self.log(f"[接码] 协议式 E.164 手机号接口提交未完成：{detail}")
             return None
         payload = result.get("data")
         if not isinstance(payload, dict):
-            self.log("[接码] E.164 手机号接口未返回 JSON，将回退页面国家选择")
+            self.log("[接码] 协议式 E.164 手机号接口未返回 JSON")
             return None
         page_payload = _nested(_nested(payload, "page"), "payload")
         continue_url = str(payload.get("continue_url") or page_payload.get("url") or "")
         self.log(f"[接码] 已按 E.164 国际格式直接提交手机号（区号 +{_phone_country_context({}, e164_number)['dial_code'] or '-'}）")
         return urljoin(AUTH_BASE_URL, continue_url or "/phone-verification")
+
+    def _prepare_phone_submission(self, page, phone: dict[str, Any], number: str) -> tuple[str | None, str]:
+        protocol_modes = {"protocol", "protocol_post_stage", "protocol_headless_fallback"}
+        if self.execution_mode in protocol_modes:
+            self.log("[接码] 当前为协议执行方式，直接通过 E.164 接口提交完整国际手机号")
+            verification_url = self._send_phone_code_api(page, number)
+            if not verification_url:
+                raise RuntimeError("协议执行方式无法通过 E.164 接口提交手机号")
+            return verification_url, ""
+
+        try:
+            return None, self._select_phone_country(page, phone, number)
+        except Exception as country_error:
+            if self.execution_mode != "background":
+                raise
+            self.log(f"[接码] 无头浏览器国家切换失败，降级采用协议式 E.164 接码：{country_error}")
+            verification_url = self._send_phone_code_api(page, number)
+            if not verification_url:
+                raise RuntimeError(f"无头浏览器国家切换失败，且协议式 E.164 接码降级未完成：{country_error}") from country_error
+            return verification_url, ""
 
     def _handle_phone_if_possible(self, page) -> bool:
         if not self.phone_provider:
@@ -2095,7 +2115,7 @@ class OpenAIEmailRegisterFlow:
                 self._emit_progress("phone_started", {"phone_number": number})
                 self.log(f"[接码] 第 {attempt} 次手机号绑定尝试，使用 {provider_name}：{number}")
                 _validate_phone_country_config(phone, number)
-                phone_verification_url = self._send_phone_code_api(page, number)
+                phone_verification_url, selected_dial = self._prepare_phone_submission(page, phone, number)
                 if phone_verification_url:
                     if str(page.url or "") != phone_verification_url:
                         page.goto(phone_verification_url, wait_until="domcontentloaded", timeout=90000)
@@ -2105,7 +2125,6 @@ class OpenAIEmailRegisterFlow:
                             return True
                         self._sleep_checked(0.5)
                 else:
-                    selected_dial = self._select_phone_country(page, phone, number)
                     candidates = _phone_number_candidates(number, selected_dial)
                     for idx, candidate in enumerate(candidates):
                         inputs[0].fill(candidate)
