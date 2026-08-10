@@ -44,6 +44,7 @@ REGISTER_DEVICE_PROFILES = [
 PHONE_COUNTRIES_BY_DIAL = {
     "1": {"iso": "US", "name": "United States", "aliases": ("us", "usa", "united states", "america")},
     "60": {"iso": "MY", "name": "Malaysia", "aliases": ("my", "mys", "malaysia")},
+    "81": {"iso": "JP", "name": "Japan", "aliases": ("jp", "jpn", "japan")},
     "86": {"iso": "CN", "name": "China", "aliases": ("cn", "chn", "china")},
 }
 
@@ -308,7 +309,7 @@ def _phone_country_context(phone: dict[str, Any], number: str) -> dict[str, Any]
             (dial for dial in sorted(PHONE_COUNTRIES_BY_DIAL, key=len, reverse=True) if number_digits.startswith(dial)),
             "",
         )
-    dial_code = number_dial or provider_dial
+    dial_code = provider_dial or number_dial
     country = PHONE_COUNTRIES_BY_DIAL.get(dial_code, {})
     country_iso = str(country.get("iso") or "").upper()
     raw_hints = [phone.get("country_iso"), phone.get("country"), phone.get("country_name")]
@@ -325,11 +326,27 @@ def _phone_country_context(phone: dict[str, Any], number: str) -> dict[str, Any]
     should_select = explicit_non_us or (dial_code != "1" if dial_code else bool(number_digits and not number_digits.startswith("1")))
     return {
         "dial_code": dial_code,
+        "configured_dial_code": provider_dial,
+        "number_dial_code": number_dial,
+        "country_source": "provider" if provider_dial else "number",
         "country_iso": country_iso,
         "hints": hints,
         "number_digits": number_digits,
         "should_select": should_select,
     }
+
+
+def _validate_phone_country_config(phone: dict[str, Any], number: str) -> dict[str, Any]:
+    context = _phone_country_context(phone, number)
+    configured_dial = str(context.get("configured_dial_code") or "")
+    number_digits = str(context.get("number_digits") or "")
+    raw_number = str(number or "").strip()
+    if configured_dial and raw_number.startswith("+") and not number_digits.startswith(configured_dial):
+        detected_dial = str(context.get("number_dial_code") or "未知")
+        raise RuntimeError(
+            f"接码供应商返回号码的国际区号 +{detected_dial} 与接码配置 +{configured_dial} 不一致"
+        )
+    return context
 
 
 def _country_option_score(text: str, values: list[str], context: dict[str, Any]) -> tuple[int, str]:
@@ -1932,6 +1949,8 @@ class OpenAIEmailRegisterFlow:
     def _select_phone_country(self, page, phone: dict[str, Any], number: str) -> str:
         context = _phone_country_context(phone, number)
         selected_dial = str(context["dial_code"] or "1")
+        if not context["should_select"]:
+            return selected_dial
         for select in self._country_selects(page):
             wanted_iso = str(context.get("country_iso") or "")
             if wanted_iso:
@@ -1939,7 +1958,7 @@ class OpenAIEmailRegisterFlow:
                     select.select_option(value=wanted_iso, timeout=5000)
                     self._sleep_checked(0.2)
                     if self._native_country_matches(select, context):
-                        self.log(f"[接码] 已根据号码前缀 +{selected_dial} 将手机号国家切换为 {wanted_iso}")
+                        self.log(f"[接码] 已根据接码配置 +{selected_dial} 将手机号国家切换为 {wanted_iso}")
                         return selected_dial
                 except Exception:
                     pass
@@ -1960,7 +1979,7 @@ class OpenAIEmailRegisterFlow:
                 self._sleep_checked(0.2)
                 if self._native_country_matches(select, context):
                     selected_dial = matched_dial or selected_dial
-                    self.log(f"[接码] 已根据号码前缀 +{selected_dial} 将手机号国家切换为 {label or selected_dial}")
+                    self.log(f"[接码] 已根据接码配置 +{selected_dial} 将手机号国家切换为 {label or selected_dial}")
                     return selected_dial
             except Exception:
                 continue
@@ -1997,12 +2016,10 @@ class OpenAIEmailRegisterFlow:
                     self._sleep_checked(0.2)
                     if self._custom_country_matches(trigger, option, context):
                         selected_dial = matched_dial or selected_dial
-                        self.log(f"[接码] 已根据号码前缀 +{selected_dial} 将手机号国家切换为 {label or selected_dial}")
+                        self.log(f"[接码] 已根据接码配置 +{selected_dial} 将手机号国家切换为 {label or selected_dial}")
                         return selected_dial
             except Exception:
                 pass
-        if not context["should_select"]:
-            return selected_dial
         hints = "/".join(context["hints"]) or "未知国家"
         dial = f"+{context['dial_code']}" if context["dial_code"] else number
         raise RuntimeError(f"无法在手机号页面选择国家：{hints} ({dial})")
@@ -2077,6 +2094,7 @@ class OpenAIEmailRegisterFlow:
             try:
                 self._emit_progress("phone_started", {"phone_number": number})
                 self.log(f"[接码] 第 {attempt} 次手机号绑定尝试，使用 {provider_name}：{number}")
+                _validate_phone_country_config(phone, number)
                 phone_verification_url = self._send_phone_code_api(page, number)
                 if phone_verification_url:
                     if str(page.url or "") != phone_verification_url:

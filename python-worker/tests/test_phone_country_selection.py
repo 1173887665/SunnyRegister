@@ -14,6 +14,7 @@ from sunny_core.openai_auth import (
     _phone_country_context,
     _phone_number_candidates,
     _should_retry_phone_send_without_channel,
+    _validate_phone_country_config,
 )
 from sunny_core.worker import _sms_country_metadata
 
@@ -102,15 +103,30 @@ def test_non_us_country_context_and_local_number_candidates() -> None:
     assert _phone_number_candidates("+601159137308", "60") == ["1159137308", "+601159137308", "601159137308"]
 
 
-def test_number_prefix_overrides_conflicting_provider_country() -> None:
+def test_configured_provider_country_overrides_conflicting_number_prefix() -> None:
     context = _phone_country_context(
         {"country": "usa", "country_name": "United States", "country_code": "1"},
         "+601159285992",
     )
 
-    assert context["dial_code"] == "60"
-    assert context["country_iso"] == "MY"
-    assert context["should_select"] is True
+    assert context["dial_code"] == "1"
+    assert context["country_iso"] == "US"
+    assert context["country_source"] == "provider"
+    assert context["should_select"] is False
+
+
+def test_provider_number_must_match_configured_country_code() -> None:
+    with pytest.raises(RuntimeError, match=r"配置 \+1 不一致"):
+        _validate_phone_country_config(
+            {"country": "usa", "country_name": "United States", "country_code": "1"},
+            "+819012345678",
+        )
+
+    context = _validate_phone_country_config(
+        {"country": "jpn", "country_name": "Japan", "country_code": "81"},
+        "+819012345678",
+    )
+    assert context["country_iso"] == "JP"
 
 
 def test_china_prefix_resolves_standard_country_identity() -> None:
@@ -140,6 +156,21 @@ def test_us_country_keeps_default_selection() -> None:
 
     assert context["should_select"] is False
     assert _phone_number_candidates("+12025550101", "1")[0] == "2025550101"
+
+
+def test_us_config_never_opens_country_picker() -> None:
+    trigger = FakeNode("Japan +81", {"aria-label": "Country code"})
+    page = FakePage({'button[role="combobox"]': [trigger]})
+    flow = make_flow()
+
+    dial = flow._select_phone_country(
+        page,
+        {"country": "usa", "country_name": "United States", "country_code": "1"},
+        "+12025550101",
+    )
+
+    assert dial == "1"
+    assert trigger.clicked is False
 
 
 def test_numeric_provider_country_id_is_not_treated_as_country_code() -> None:
@@ -218,6 +249,25 @@ def test_native_country_select_falls_back_to_dial_code_for_nonstandard_value() -
 
     assert dial == "60"
     assert native_select.selected == "mys"
+
+
+def test_japan_config_selects_japan_instead_of_us() -> None:
+    native_select = FakeNode(
+        attrs={"aria-label": "Phone number country"},
+        options=[FakeNode("United States (+1)", {"value": "US"}), FakeNode("Japan (+81)", {"value": "JP"})],
+        visible=False,
+    )
+    page = FakePage({'select[aria-label*="country" i]': [native_select]})
+    flow = make_flow()
+
+    dial = flow._select_phone_country(
+        page,
+        {"country": "jpn", "country_name": "Japan", "country_code": "81"},
+        "+819012345678",
+    )
+
+    assert dial == "81"
+    assert native_select.selected == "JP"
 
 
 def test_country_picker_uses_aria_controlled_listbox() -> None:
