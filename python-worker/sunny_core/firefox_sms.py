@@ -67,6 +67,7 @@ class FireFoxActivation:
     country_code: str = ""
     location: str = ""
     port: str = ""
+    dock: str = ""
 
 
 class FireFoxSMSClient:
@@ -162,7 +163,9 @@ class FireFoxSMSClient:
             maxPrice=f"{self.max_price:g}",
             otpmode="sms",
         )
-        if len(parts) < 9:
+        # The documented base response has eight fields. The trailing dock
+        # field is optional and is omitted when no docking code is returned.
+        if len(parts) < 8:
             raise RuntimeError("FireFox getPhone returned an incomplete response: " + "|".join(parts))
         number = _normal_phone(parts[4], parts[7])
         if not parts[1] or not number:
@@ -174,6 +177,7 @@ class FireFoxSMSClient:
             country_code=parts[4],
             location=parts[5],
             port=parts[6],
+            dock=parts[8] if len(parts) > 8 else "",
         )
 
     def get_code(self, pkey: str) -> str | None:
@@ -181,7 +185,7 @@ class FireFoxSMSClient:
         if ok:
             code = parts[1] if len(parts) > 1 else ""
             if not re.fullmatch(r"\d{6}", code) and len(parts) > 2:
-                match = re.search(r"(?<!\d)(\d{6})(?!\d)", parts[2])
+                match = re.search(r"(?<!\d)(\d{6})(?!\d)", "|".join(parts[2:]))
                 code = match.group(1) if match else ""
             if not re.fullmatch(r"\d{6}", code):
                 raise RuntimeError("FireFox getPhoneCode did not return an independent 6-digit code")

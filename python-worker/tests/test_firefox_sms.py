@@ -19,11 +19,11 @@ def firefox_config() -> dict:
 
 def test_get_number_enforces_country_service_max_price_and_one_number() -> None:
     client = FireFoxSMSClient(firefox_config())
-    client._authorized = MagicMock(return_value=["1", "PKEY", "time", "usa", "1", "US", "", "2025550101", ""])
+    client._authorized = MagicMock(return_value=["1", "PKEY", "time", "usa", "1", "US", "", "2025550101", "DOCK"])
 
     activation = client.get_number()
 
-    assert activation == FireFoxActivation("PKEY", "+12025550101", "usa", "1", "US", "")
+    assert activation == FireFoxActivation("PKEY", "+12025550101", "usa", "1", "US", "", "DOCK")
     _, kwargs = client._authorized.call_args
     assert kwargs["iid"] == "1096"
     assert kwargs["country"] == "usa"
@@ -31,6 +31,56 @@ def test_get_number_enforces_country_service_max_price_and_one_number() -> None:
     assert kwargs["otpmode"] == "sms"
     assert "mobile" not in kwargs
     assert "quantity" not in kwargs
+
+
+def test_get_number_accepts_documented_eight_field_response() -> None:
+    client = FireFoxSMSClient({**firefox_config(), "firefox_default_country": "mys"})
+    client._authorized = MagicMock(return_value=[
+        "1",
+        "99A05D8A2BA7850731A981D82E9E968493115CB67959B65A",
+        "2026-08-10T08:28:21",
+        "mys",
+        "60",
+        "8960153022305590842f-502153000300069",
+        "COM31",
+        "1159137308",
+    ])
+
+    activation = client.get_number()
+
+    assert activation == FireFoxActivation(
+        pkey="99A05D8A2BA7850731A981D82E9E968493115CB67959B65A",
+        number="+601159137308",
+        country="mys",
+        country_code="60",
+        location="8960153022305590842f-502153000300069",
+        port="COM31",
+        dock="",
+    )
+
+
+def test_documented_get_phone_code_and_release_requests_use_pkey() -> None:
+    client = FireFoxSMSClient(firefox_config())
+    responses = ["0|-3", "1|123456|Your OpenAI code is 123456", "1|"]
+    requests_seen: list[dict] = []
+
+    def fake_get(_url, **kwargs):
+        requests_seen.append(kwargs["params"])
+        response = MagicMock()
+        response.text = responses.pop(0)
+        response.raise_for_status.return_value = None
+        return response
+
+    with patch("sunny_core.firefox_sms.requests.get", side_effect=fake_get):
+        assert client.get_code("PKEY") is None
+        assert client.get_code("PKEY") == "123456"
+        client.release("PKEY")
+
+    assert requests_seen == [
+        {"act": "getPhoneCode", "token": "stable-token_3", "pkey": "PKEY"},
+        {"act": "getPhoneCode", "token": "stable-token_3", "pkey": "PKEY"},
+        {"act": "setRel", "token": "stable-token_3", "pkey": "PKEY"},
+    ]
 
 
 def test_configured_token_is_used_directly_and_root_url_is_normalized() -> None:
