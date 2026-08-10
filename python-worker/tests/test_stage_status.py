@@ -233,6 +233,29 @@ class StageStatusTests(unittest.TestCase):
         self.assertTrue(browser_executor.call_args.kwargs["require_refresh_token"])
         self.assertEqual(browser_executor.call_args.kwargs["execution_mode"], "protocol_post_stage")
 
+    def test_manual_rt_acquire_persists_token_to_account_mailbox_and_session(self):
+        db = FakeDB()
+        payload = {"registration_stage": worker.CODEX_PHONE_BIND, "execution_mode": "background"}
+        session = {
+            "access_token": "access-token",
+            "refresh_token": "rt_manual",
+            "phone_bound": True,
+            "auth_action": "login",
+        }
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
+            patch.object(worker, "_combined_phone_provider", return_value=None),
+            patch.object(worker, "login_or_register", return_value=session) as browser_executor,
+        ):
+            ok, result = worker._run_one(db, "sunny_acquire_rt", payload, mailbox(status="已接码"), 1, 1)
+
+        self.assertTrue(ok)
+        self.assertTrue(result["has_refresh_token"])
+        self.assertEqual(db.sessions[-1]["session"]["refresh_token"], "rt_manual")
+        self.assertTrue(any(update.get("openai_rt") == "rt_manual" for update in db.account_updates))
+        self.assertTrue(any(update.get("openai_rt") == "rt_manual" for update in db.mailbox_updates))
+        self.assertTrue(browser_executor.call_args.kwargs["require_refresh_token"])
+
     def test_agent_identity_stage_skips_phone_and_imports_with_access_token(self):
         db = FakeDB()
         payload = {"registration_stage": worker.AGENT_IDENTITY_REVERSE_PROXY, "execution_mode": "protocol", "proxy_all_traffic": True}
@@ -686,6 +709,33 @@ class BrowserOAuthCallbackTests(unittest.TestCase):
         self.assertEqual(result["code"], "auth-code")
         with self.assertRaisesRegex(RuntimeError, "state mismatch"):
             flow._extract_oauth_callback_from_url(callback_url, "other-state")
+
+    def test_token_exchange_uses_urlencoded_form_payload(self):
+        flow = self.make_flow()
+        response = Mock(ok=True, status=200)
+        response.json.return_value = {
+            "access_token": "access-token",
+            "refresh_token": "rt_test",
+            "id_token": "id-token",
+        }
+        context = Mock()
+        context.request.post.return_value = response
+
+        result = flow._exchange_browser_code_for_token(context, "auth-code", "code-verifier")
+
+        self.assertEqual(result["refresh_token"], "rt_test")
+        request = context.request.post.call_args
+        self.assertNotIn("data", request.kwargs)
+        self.assertEqual(
+            request.kwargs["form"],
+            {
+                "grant_type": "authorization_code",
+                "client_id": ANY,
+                "code": "auth-code",
+                "redirect_uri": DEFAULT_REDIRECT_URI,
+                "code_verifier": "code-verifier",
+            },
+        )
 
     def test_attribute_based_consent_submit_captures_callback_before_chrome_error(self):
         logs: list[str] = []

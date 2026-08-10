@@ -1983,7 +1983,7 @@ class OpenAIEmailRegisterFlow:
             response = context.request.post(
                 token_url,
                 headers=openai_browser_headers({"accept": "application/json", "content-type": "application/x-www-form-urlencoded", "user-agent": "codex-cli/0.91.0"}),
-                data={"grant_type": "authorization_code", "client_id": DEFAULT_CLIENT_ID, "code": code, "redirect_uri": DEFAULT_REDIRECT_URI, "code_verifier": code_verifier},
+                form={"grant_type": "authorization_code", "client_id": DEFAULT_CLIENT_ID, "code": code, "redirect_uri": DEFAULT_REDIRECT_URI, "code_verifier": code_verifier},
                 timeout=30000,
             )
             if response.ok:

@@ -1538,7 +1538,11 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                 result.setdefault("stage_error", post_registration_error or result["sub2api_skipped_reason"])
                 db.upsert_account(email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(mailbox_status), last_error=result["stage_error"])
                 db.mark_mailbox(mailbox_id, mailbox_status, result["stage_error"], openai_rt=rt_value)
-                db.event(f"[{email}] [反代] 没有 Refresh Token，已停止导入 sub2api", "warning", detail={"email": email, "scope": "selected"})
+                db.event(
+                    f"[{email}] [反代] 没有 Refresh Token，已停止导入 sub2api；OAuth 原因：{result['stage_error']}",
+                    "warning",
+                    detail={"email": email, "scope": "selected", "oauth_error": result["stage_error"]},
+                )
             else:
                 try:
                     _emit_registration_progress(db, str(email), stage, "reverse_importing")
