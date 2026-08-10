@@ -64,11 +64,14 @@ func normalizeSunnyTrialEligibility(value string) string {
 }
 
 func normalizeSunnyTrialFilter(value string) string {
-	if strings.TrimSpace(value) == "" {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
 		return ""
 	}
-	value = normalizeSunnyTrialEligibility(value)
-	if value == sunnyTrialEligible || value == sunnyTrialIneligible {
+	if value == sunnyTrialUnknown {
+		return sunnyTrialUnknown
+	}
+	if value = normalizeSunnyTrialEligibility(value); value == sunnyTrialEligible || value == sunnyTrialIneligible {
 		return value
 	}
 	return ""

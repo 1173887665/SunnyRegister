@@ -74,6 +74,16 @@ func prepareSunnyTrialAccount(t *testing.T, s *Server) SunnySession {
 func TestSunnyTrialTaskPersistsAndFiltersEligibility(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	session := prepareSunnyTrialAccount(t, s)
+	if filter := normalizeSunnyTrialFilter("unsupported"); filter != "" {
+		t.Fatalf("unsupported trial filter = %q", filter)
+	}
+	unknownRecorder := httptest.NewRecorder()
+	unknownRequest := httptest.NewRequest(http.MethodGet, "/api/sunny/sessions?trial_eligibility=unknown", nil)
+	s.sunnySessions(unknownRecorder, unknownRequest, nil)
+	if unknownRecorder.Code != http.StatusOK || !strings.Contains(unknownRecorder.Body.String(), `"trial_eligibility":"unknown"`) {
+		t.Fatalf("unknown filter status=%d body=%s", unknownRecorder.Code, unknownRecorder.Body.String())
+	}
+
 	previousCheck := sunnyCheckTrialEligibility
 	sunnyCheckTrialEligibility = func(context.Context, string) (bool, string, bool, error) {
 		return true, "该账号有 ChatGPT Plus 0 元试用资格", false, nil
