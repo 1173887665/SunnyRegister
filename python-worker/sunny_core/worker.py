@@ -448,10 +448,53 @@ def _phone_provider(db: SunnyDB, email: str):
     return provider
 
 
+def _sms_country_metadata(db: SunnyDB, option: dict[str, Any] | None, country: str = "", dial_code: str = "") -> dict[str, str]:
+    loader = getattr(db, "sms_provider_option_extra", None)
+    extra = loader(option) if callable(loader) else {}
+    extra = extra if isinstance(extra, dict) else {}
+    title = str(extra.get("Country_Title") or "").strip()
+    title_parts = [part.strip() for part in title.split("/") if part.strip()]
+    country_name = str(
+        extra.get("name")
+        or extra.get("eng")
+        or extra.get("country_name")
+        or (title_parts[-1] if len(title_parts) > 1 else "")
+        or (option or {}).get("label")
+        or ""
+    ).strip()
+    country_iso = str(
+        extra.get("short_name")
+        or extra.get("iso2")
+        or extra.get("iso")
+        or extra.get("Country_ID")
+        or country
+    ).strip()
+    country_code = str(
+        dial_code
+        or extra.get("cc")
+        or extra.get("country_code")
+        or extra.get("dial_code")
+        or extra.get("Country_Area")
+        or ""
+    ).strip().lstrip("+")
+    return {
+        "country": str(country or "").strip(),
+        "country_iso": country_iso,
+        "country_name": country_name,
+        "country_code": country_code,
+    }
+
+
 def _smsbower_provider(db: SunnyDB, email: str, proxy_url: str = ""):
     active: dict[str, Any] = {}
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
-    client = SMSBowerClient(db.get_config("phone"), proxies=proxies)
+    phone_cfg = db.get_config("phone")
+    country_value = str(phone_cfg.get("smsbower_default_country") or "187").strip()
+    country_option = db.resolve_sms_provider_option("smsbower", "country", country_value)
+    resolved_country = str((country_option or {}).get("value") or country_value)
+    phone_cfg = {**phone_cfg, "smsbower_default_country": resolved_country}
+    country_metadata = _sms_country_metadata(db, country_option, resolved_country)
+    client = SMSBowerClient(phone_cfg, proxies=proxies)
 
     def provider(action: str, _email: str, payload: Any = None):
         nonlocal active
@@ -461,6 +504,7 @@ def _smsbower_provider(db: SunnyDB, email: str, proxy_url: str = ""):
                 "provider": "smsbower",
                 "activation_id": activation.activation_id,
                 "number": activation.number,
+                **country_metadata,
             }
             db.event(
                 f"[{email}] [接码] 已从 SMSBower 获取手机号 {activation.number}，激活 ID {activation.activation_id}",
@@ -553,7 +597,7 @@ def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
             f"[{email}] [接码] 本次任务已将 SMSPool 配置解析为接口 ID：country={resolved_country}，service={resolved_service}",
             detail={"email": email, "scope": "selected", "sms_provider": "smspool", "country": resolved_country, "service": resolved_service},
         )
-    country_extra = db.sms_provider_option_extra(country_option)
+    country_metadata = _sms_country_metadata(db, country_option, resolved_country)
     client = SMSPoolClient(phone_cfg, proxies=proxies)
 
     def provider(action: str, _email: str, payload: Any = None):
@@ -615,10 +659,7 @@ def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
                 "activation_id": activation.order_id,
                 "number": activation.number,
                 "token": activation.token,
-                "country": client.country,
-                "country_iso": str(country_extra.get("short_name") or ""),
-                "country_name": str(country_extra.get("name") or (country_option or {}).get("label") or ""),
-                "country_code": str(country_extra.get("cc") or ""),
+                **country_metadata,
                 "reused": reused,
                 "new_number_attempt": 0 if reused else new_number_attempts,
             }
@@ -694,6 +735,7 @@ def _firefox_provider(db: SunnyDB, email: str, proxy_url: str = ""):
     country_value = str(phone_cfg.get("firefox_default_country") or "").strip()
     country_option = db.resolve_sms_provider_option("firefox", "country", country_value)
     resolved_country = str((country_option or {}).get("value") or country_value)
+    country_metadata = _sms_country_metadata(db, country_option, resolved_country)
     service_value = str(phone_cfg.get("firefox_default_service") or "1096").strip()
     service_option = db.resolve_sms_provider_option("firefox", "service", service_value, resolved_country)
     resolved_service = str((service_option or {}).get("value") or service_value)
@@ -720,8 +762,11 @@ def _firefox_provider(db: SunnyDB, email: str, proxy_url: str = ""):
                 "pkey": activation.pkey,
                 "activation_id": activation.pkey,
                 "number": activation.number,
-                "country": activation.country or client.country,
-                "country_code": activation.country_code,
+                **{
+                    **country_metadata,
+                    "country": activation.country or country_metadata["country"] or client.country,
+                    "country_code": activation.country_code or country_metadata["country_code"],
+                },
                 "new_number_attempt": number_attempts,
             }
             db.record_sms_provider_number(
