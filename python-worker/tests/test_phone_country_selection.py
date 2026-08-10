@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import Mock
+from unittest.mock import patch
 
 import pytest
 
@@ -8,8 +10,10 @@ from sunny_core.mailbox import MailAccount
 from sunny_core.openai_auth import (
     OpenAIEmailRegisterFlow,
     _country_option_score,
+    _e164_phone_number,
     _phone_country_context,
     _phone_number_candidates,
+    _should_retry_phone_send_without_channel,
 )
 from sunny_core.worker import _sms_country_metadata
 
@@ -117,6 +121,20 @@ def test_china_prefix_resolves_standard_country_identity() -> None:
     assert context["should_select"] is True
 
 
+def test_e164_normalization_keeps_full_international_number() -> None:
+    assert _e164_phone_number("+60 11-3798-4883") == "+601137984883"
+    assert _e164_phone_number("0060137984883") == "+60137984883"
+
+    with pytest.raises(RuntimeError, match="E.164"):
+        _e164_phone_number("123")
+
+
+def test_phone_send_retry_matches_reference_project_conditions() -> None:
+    assert _should_retry_phone_send_without_channel({"status": 400, "text": "unexpected channel field"}) is True
+    assert _should_retry_phone_send_without_channel({"status": 409, "text": "invalid_state session"}) is True
+    assert _should_retry_phone_send_without_channel({"status": 500, "text": "session"}) is False
+
+
 def test_us_country_keeps_default_selection() -> None:
     context = _phone_country_context({"country": "usa", "country_code": "1"}, "+12025550101")
 
@@ -220,6 +238,67 @@ def test_country_picker_uses_aria_controlled_listbox() -> None:
 
     assert dial == "60"
     assert malaysia_option.clicked is True
+
+
+def test_phone_api_submits_full_e164_number_and_returns_verification_url() -> None:
+    page = Mock()
+    page.url = "https://auth.openai.com/add-phone"
+    flow = make_flow()
+    response = {
+        "ok": True,
+        "status": 200,
+        "text": '{"continue_url":"/phone-verification"}',
+        "data": {"continue_url": "/phone-verification"},
+    }
+
+    with patch("sunny_core.openai_auth.browser_fetch", return_value=response) as fetch:
+        continue_url = flow._send_phone_code_api(page, "+601137984883")
+
+    assert continue_url == "https://auth.openai.com/phone-verification"
+    request = fetch.call_args
+    assert request.args[1] == "https://auth.openai.com/api/accounts/add-phone/send"
+    assert json.loads(request.kwargs["body"]) == {"phone_number": "+601137984883", "channel": "sms"}
+    assert request.kwargs["headers"]["x-access-flow-invocation-id"]
+    assert request.kwargs["headers"]["oai-device-id"]
+
+
+def test_phone_api_retries_without_channel_like_reference_project() -> None:
+    page = Mock()
+    page.url = "https://auth.openai.com/add-phone"
+    flow = make_flow()
+    rejected = {"ok": False, "status": 400, "text": '{"error":{"message":"unexpected channel field"}}'}
+    accepted = {
+        "ok": True,
+        "status": 200,
+        "text": "{}",
+        "data": {"page": {"payload": {"url": "https://auth.openai.com/phone-verification"}}},
+    }
+
+    with patch("sunny_core.openai_auth.browser_fetch", side_effect=[rejected, accepted]) as fetch:
+        continue_url = flow._send_phone_code_api(page, "+601111314592")
+
+    assert continue_url == "https://auth.openai.com/phone-verification"
+    assert fetch.call_count == 2
+    assert json.loads(fetch.call_args_list[0].kwargs["body"])["channel"] == "sms"
+    assert json.loads(fetch.call_args_list[1].kwargs["body"]) == {"phone_number": "+601111314592"}
+
+
+def test_phone_api_failure_returns_to_country_picker_fallback() -> None:
+    page = Mock()
+    page.url = "https://auth.openai.com/add-phone"
+    flow = make_flow()
+
+    with patch(
+        "sunny_core.openai_auth.browser_fetch",
+        return_value={"ok": False, "status": 403, "text": "request rejected"},
+    ):
+        assert flow._send_phone_code_api(page, "+60106539484") is None
+
+    with patch(
+        "sunny_core.openai_auth.browser_fetch",
+        return_value={"ok": True, "status": 200, "text": "<html>route error</html>", "data": None},
+    ):
+        assert flow._send_phone_code_api(page, "+60106539484") is None
 
 
 def test_non_us_country_fails_instead_of_submitting_under_us() -> None:

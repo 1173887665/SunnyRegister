@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import unescape
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlencode, unquote, urlparse
+from urllib.parse import parse_qs, urlencode, unquote, urljoin, urlparse
 
 import requests
 
@@ -382,6 +382,25 @@ def _phone_number_candidates(number: str, dial_code: str = "") -> list[str]:
         if value and value not in candidates:
             candidates.append(value)
     return candidates
+
+
+def _e164_phone_number(number: str) -> str:
+    raw = str(number or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if raw.startswith("00") and digits.startswith("00"):
+        digits = digits[2:]
+    normalized = f"+{digits}"
+    if not re.fullmatch(r"\+[1-9]\d{6,14}", normalized):
+        raise RuntimeError("接码供应商返回的手机号不是有效的 E.164 国际格式")
+    return normalized
+
+
+def _should_retry_phone_send_without_channel(result: dict[str, Any]) -> bool:
+    status = int(result.get("status") or 0)
+    text = str(result.get("text") or "").lower()
+    return status in {400, 409} and any(
+        marker in text for marker in ("channel", "invalid_state", "no longer valid", "session")
+    )
 
 
 class OpenAIEmailRegisterFlow:
@@ -1988,6 +2007,52 @@ class OpenAIEmailRegisterFlow:
         dial = f"+{context['dial_code']}" if context["dial_code"] else number
         raise RuntimeError(f"无法在手机号页面选择国家：{hints} ({dial})")
 
+    def _send_phone_code_api(self, page, number: str) -> str | None:
+        e164_number = _e164_phone_number(number)
+        device_id = self.device_id or str(uuid.uuid4())
+        self.device_id = device_id
+        headers = {
+            "accept": "application/json",
+            "accept-language": self.fingerprint.accept_language,
+            "content-type": "application/json",
+            "origin": AUTH_BASE_URL,
+            "referer": str(page.url or f"{AUTH_BASE_URL}/add-phone"),
+            "oai-device-id": device_id,
+            "x-access-flow-invocation-id": str(uuid.uuid4()),
+            **generate_datadog_trace_headers(),
+        }
+        endpoint = f"{AUTH_BASE_URL}/api/accounts/add-phone/send"
+        result = browser_fetch(
+            page,
+            endpoint,
+            method="POST",
+            headers=headers,
+            body=json.dumps({"phone_number": e164_number, "channel": "sms"}),
+        )
+        if not result.get("ok") and _should_retry_phone_send_without_channel(result):
+            headers["x-access-flow-invocation-id"] = str(uuid.uuid4())
+            result = browser_fetch(
+                page,
+                endpoint,
+                method="POST",
+                headers=headers,
+                body=json.dumps({"phone_number": e164_number}),
+            )
+            if result.get("ok"):
+                self.log("[接码] OpenAI 手机号接口已在不携带 channel 字段时接受请求")
+        if not result.get("ok"):
+            detail = f"HTTP {result.get('status') or 0} {str(result.get('text') or '')[:500]}"
+            self.log(f"[接码] E.164 手机号接口提交未完成，将回退页面国家选择：{detail}")
+            return None
+        payload = result.get("data")
+        if not isinstance(payload, dict):
+            self.log("[接码] E.164 手机号接口未返回 JSON，将回退页面国家选择")
+            return None
+        page_payload = _nested(_nested(payload, "page"), "payload")
+        continue_url = str(payload.get("continue_url") or page_payload.get("url") or "")
+        self.log(f"[接码] 已按 E.164 国际格式直接提交手机号（区号 +{_phone_country_context({}, e164_number)['dial_code'] or '-'}）")
+        return urljoin(AUTH_BASE_URL, continue_url or "/phone-verification")
+
     def _handle_phone_if_possible(self, page) -> bool:
         if not self.phone_provider:
             return False
@@ -2012,22 +2077,32 @@ class OpenAIEmailRegisterFlow:
             try:
                 self._emit_progress("phone_started", {"phone_number": number})
                 self.log(f"[接码] 第 {attempt} 次手机号绑定尝试，使用 {provider_name}：{number}")
-                selected_dial = self._select_phone_country(page, phone, number)
-                candidates = _phone_number_candidates(number, selected_dial)
-                for idx, candidate in enumerate(candidates):
-                    inputs[0].fill(candidate)
-                    self._click_continue(page)
-                    probe_deadline = time.time() + (18 if idx < len(candidates) - 1 else 60)
+                phone_verification_url = self._send_phone_code_api(page, number)
+                if phone_verification_url:
+                    if str(page.url or "") != phone_verification_url:
+                        page.goto(phone_verification_url, wait_until="domcontentloaded", timeout=90000)
+                    probe_deadline = time.time() + 30
                     while time.time() < probe_deadline and not self._looks_like_phone_code_page(page):
                         if self._has_chatgpt_session(page):
                             return True
-                        if self._phone_number_was_rejected(page):
-                            if idx >= len(candidates) - 1:
-                                raise RuntimeError(f"手机号被页面拒绝：{self._page_text_summary(page, 200)}")
+                        self._sleep_checked(0.5)
+                else:
+                    selected_dial = self._select_phone_country(page, phone, number)
+                    candidates = _phone_number_candidates(number, selected_dial)
+                    for idx, candidate in enumerate(candidates):
+                        inputs[0].fill(candidate)
+                        self._click_continue(page)
+                        probe_deadline = time.time() + (18 if idx < len(candidates) - 1 else 60)
+                        while time.time() < probe_deadline and not self._looks_like_phone_code_page(page):
+                            if self._has_chatgpt_session(page):
+                                return True
+                            if self._phone_number_was_rejected(page):
+                                if idx >= len(candidates) - 1:
+                                    raise RuntimeError(f"手机号被页面拒绝：{self._page_text_summary(page, 200)}")
+                                break
+                            self._sleep_checked(1)
+                        if self._looks_like_phone_code_page(page):
                             break
-                        self._sleep_checked(1)
-                    if self._looks_like_phone_code_page(page):
-                        break
                 if not self._looks_like_phone_code_page(page):
                     raise RuntimeError(f"手机号提交后未进入验证码页面：{self._page_text_summary(page, 200)}")
                 code = self.phone_provider("code", self.account.email, phone)
