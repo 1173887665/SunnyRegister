@@ -4,6 +4,8 @@ import unittest
 from unittest.mock import ANY, MagicMock, Mock, patch
 from urllib.parse import parse_qs, urlparse
 
+import requests
+
 from sunny_core import worker
 from sunny_core.agent_identity import AgentIdentityUnavailableError
 from sunny_core.browser_backend import open_registration_browser
@@ -710,24 +712,29 @@ class BrowserOAuthCallbackTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "state mismatch"):
             flow._extract_oauth_callback_from_url(callback_url, "other-state")
 
-    def test_token_exchange_uses_urlencoded_form_payload(self):
+    def test_token_exchange_uses_independent_proxied_form_request(self):
         flow = self.make_flow()
-        response = Mock(ok=True, status=200)
+        flow.proxy_url = "http://user:pass@proxy.example:8080"
+        response = Mock(ok=True, status_code=200)
         response.json.return_value = {
             "access_token": "access-token",
             "refresh_token": "rt_test",
             "id_token": "id-token",
         }
-        context = Mock()
-        context.request.post.return_value = response
+        session = Mock()
+        session.post.return_value = response
 
-        result = flow._exchange_browser_code_for_token(context, "auth-code", "code-verifier")
+        with patch.object(requests, "Session", return_value=session):
+            result = flow._exchange_browser_code_for_token(Mock(), "auth-code", "code-verifier")
 
         self.assertEqual(result["refresh_token"], "rt_test")
-        request = context.request.post.call_args
-        self.assertNotIn("data", request.kwargs)
+        session.proxies.update.assert_called_once_with({
+            "http": "http://user:pass@proxy.example:8080",
+            "https": "http://user:pass@proxy.example:8080",
+        })
+        request = session.post.call_args
         self.assertEqual(
-            request.kwargs["form"],
+            request.kwargs["data"],
             {
                 "grant_type": "authorization_code",
                 "client_id": ANY,
@@ -736,6 +743,28 @@ class BrowserOAuthCallbackTests(unittest.TestCase):
                 "code_verifier": "code-verifier",
             },
         )
+
+    def test_token_exchange_retries_network_error_and_falls_back_endpoint(self):
+        flow = self.make_flow()
+        response = Mock(ok=True, status_code=200)
+        response.json.return_value = {"access_token": "access-token", "refresh_token": "rt_test"}
+        session = Mock()
+        session.post.side_effect = [
+            requests.exceptions.SSLError("wrong version number"),
+            requests.exceptions.SSLError("wrong version number"),
+            requests.exceptions.SSLError("wrong version number"),
+            response,
+        ]
+
+        with (
+            patch.object(requests, "Session", return_value=session),
+            patch.object(flow, "_sleep_checked", return_value=None),
+        ):
+            result = flow._exchange_browser_code_for_token(Mock(), "auth-code", "code-verifier")
+
+        self.assertEqual(result["refresh_token"], "rt_test")
+        self.assertEqual(session.post.call_count, 4)
+        self.assertNotEqual(session.post.call_args_list[0].args[0], session.post.call_args_list[-1].args[0])
 
     def test_attribute_based_consent_submit_captures_callback_before_chrome_error(self):
         logs: list[str] = []

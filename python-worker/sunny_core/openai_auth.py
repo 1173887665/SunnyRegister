@@ -1978,17 +1978,40 @@ class OpenAIEmailRegisterFlow:
             return False
 
     def _exchange_browser_code_for_token(self, context, code: str, code_verifier: str) -> dict[str, Any]:
+        session = requests.Session()
+        session.proxies.update(proxy_dict(self.proxy_url))
+        form = {
+            "grant_type": "authorization_code",
+            "client_id": DEFAULT_CLIENT_ID,
+            "code": code,
+            "redirect_uri": DEFAULT_REDIRECT_URI,
+            "code_verifier": code_verifier,
+        }
         last_error = ""
         for token_url in AUTH_OAUTH_TOKEN_URLS:
-            response = context.request.post(
-                token_url,
-                headers=openai_browser_headers({"accept": "application/json", "content-type": "application/x-www-form-urlencoded", "user-agent": "codex-cli/0.91.0"}),
-                form={"grant_type": "authorization_code", "client_id": DEFAULT_CLIENT_ID, "code": code, "redirect_uri": DEFAULT_REDIRECT_URI, "code_verifier": code_verifier},
-                timeout=30000,
-            )
-            if response.ok:
-                return normalize_auth_record(self.account.email, response.json())
-            last_error = f"endpoint={token_url} HTTP {response.status} {response.text()[:300]}"
+            for attempt in range(1, 4):
+                try:
+                    response = session.post(
+                        token_url,
+                        headers=openai_browser_headers({"accept": "application/json", "content-type": "application/x-www-form-urlencoded", "user-agent": "codex-cli/0.91.0"}),
+                        data=form,
+                        timeout=45,
+                    )
+                except requests.RequestException as exc:
+                    last_error = f"endpoint={token_url} attempt={attempt}/3 network_error={exc}"
+                    self.log(f"[Session] Code 换 Token 网络异常，准备重试：{last_error}")
+                    if attempt < 3:
+                        self._sleep_checked(attempt)
+                    continue
+                if response.ok:
+                    return normalize_auth_record(self.account.email, response.json())
+                last_error = f"endpoint={token_url} HTTP {response.status_code} {response.text[:300]}"
+                if response.status_code == 429 or response.status_code >= 500:
+                    self.log(f"[Session] Code 换 Token 遇到临时响应，准备重试：{last_error}")
+                    if attempt < 3:
+                        self._sleep_checked(attempt)
+                    continue
+                break
         raise RuntimeError(f"Code 换 Token 失败: {last_error}")
 
     def _authorize_rt_from_browser(self, context, page) -> dict[str, Any]:
