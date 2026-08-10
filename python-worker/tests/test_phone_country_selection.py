@@ -24,17 +24,26 @@ class FakeCollection:
     def nth(self, index):
         return self.nodes[index]
 
+    def locator(self, selector):
+        nodes = []
+        for node in self.nodes:
+            nodes.extend(node.locator(selector).nodes)
+        return FakeCollection(nodes)
+
 
 class FakeNode:
-    def __init__(self, text="", attrs=None, options=None):
+    def __init__(self, text="", attrs=None, options=None, children=None, visible=True, on_click=None):
         self.text = text
         self.attrs = dict(attrs or {})
         self.options = list(options or [])
+        self.children = dict(children or {})
+        self.visible = visible
+        self.on_click = on_click
         self.clicked = False
         self.selected = ""
 
     def is_visible(self):
-        return True
+        return self.visible
 
     def inner_text(self, **_kwargs):
         return self.text
@@ -44,12 +53,23 @@ class FakeNode:
 
     def click(self, **_kwargs):
         self.clicked = True
+        if self.on_click:
+            self.on_click()
 
     def locator(self, selector):
-        return FakeCollection(self.options if selector == "option" else [])
+        if selector == "option":
+            return FakeCollection(self.options)
+        if selector == "option:checked":
+            return FakeCollection([option for option in self.options if option.attrs.get("value") == self.selected])
+        return FakeCollection(self.children.get(selector, []))
 
     def select_option(self, *, value=None, label=None, **_kwargs):
+        if value is not None and self.options and not any(option.attrs.get("value") == value for option in self.options):
+            raise ValueError(f"unknown option: {value}")
         self.selected = str(value if value is not None else label)
+
+    def input_value(self, **_kwargs):
+        return self.selected
 
 
 class FakePage:
@@ -74,7 +94,27 @@ def test_non_us_country_context_and_local_number_candidates() -> None:
 
     assert context["should_select"] is True
     assert context["dial_code"] == "60"
+    assert context["country_iso"] == "MY"
     assert _phone_number_candidates("+601159137308", "60") == ["1159137308", "+601159137308", "601159137308"]
+
+
+def test_number_prefix_overrides_conflicting_provider_country() -> None:
+    context = _phone_country_context(
+        {"country": "usa", "country_name": "United States", "country_code": "1"},
+        "+601159285992",
+    )
+
+    assert context["dial_code"] == "60"
+    assert context["country_iso"] == "MY"
+    assert context["should_select"] is True
+
+
+def test_china_prefix_resolves_standard_country_identity() -> None:
+    context = _phone_country_context({}, "+8613812345678")
+
+    assert context["dial_code"] == "86"
+    assert context["country_iso"] == "CN"
+    assert context["should_select"] is True
 
 
 def test_us_country_keeps_default_selection() -> None:
@@ -87,7 +127,8 @@ def test_us_country_keeps_default_selection() -> None:
 def test_numeric_provider_country_id_is_not_treated_as_country_code() -> None:
     context = _phone_country_context({"country": "1"}, "+12025550101")
 
-    assert context["hints"] == []
+    assert "1" not in context["hints"]
+    assert context["country_iso"] == "US"
     assert context["should_select"] is False
 
 
@@ -103,7 +144,11 @@ def test_country_option_matches_dial_code_even_with_localized_name() -> None:
 def test_custom_country_picker_selects_matching_non_us_option() -> None:
     trigger = FakeNode("United States +1", {"aria-label": "Country code"})
     us_option = FakeNode("United States +1", {"data-value": "US"})
-    malaysia_option = FakeNode("Malaysia +60", {"data-value": "MY"})
+    malaysia_option = FakeNode(
+        "Malaysia +60",
+        {"data-value": "MY"},
+        on_click=lambda: trigger.attrs.update({"data-value": "MY", "aria-label": "Malaysia +60"}),
+    )
     page = FakePage({
         'button[role="combobox"]': [trigger],
         '[role="option"]': [us_option, malaysia_option],
@@ -124,8 +169,12 @@ def test_custom_country_picker_selects_matching_non_us_option() -> None:
 
 def test_native_country_select_uses_configured_country() -> None:
     malaysia_option = FakeNode("Malaysia (+60)", {"value": "MY"})
-    native_select = FakeNode(options=[FakeNode("United States (+1)", {"value": "US"}), malaysia_option])
-    page = FakePage({'select[name*="country" i]': [native_select]})
+    native_select = FakeNode(
+        attrs={"aria-label": "Phone number country"},
+        options=[FakeNode("United States (+1)", {"value": "US"}), malaysia_option],
+        visible=False,
+    )
+    page = FakePage({'select[aria-label*="country" i]': [native_select]})
     flow = make_flow()
 
     dial = flow._select_phone_country(
@@ -136,6 +185,41 @@ def test_native_country_select_uses_configured_country() -> None:
 
     assert dial == "60"
     assert native_select.selected == "MY"
+
+
+def test_native_country_select_falls_back_to_dial_code_for_nonstandard_value() -> None:
+    native_select = FakeNode(
+        attrs={"aria-label": "Phone number country"},
+        options=[FakeNode("United States (+1)", {"value": "usa"}), FakeNode("Malaysia (+60)", {"value": "mys"})],
+        visible=False,
+    )
+    page = FakePage({'select[aria-label*="country" i]': [native_select]})
+    flow = make_flow()
+
+    dial = flow._select_phone_country(page, {}, "+601159285992")
+
+    assert dial == "60"
+    assert native_select.selected == "mys"
+
+
+def test_country_picker_uses_aria_controlled_listbox() -> None:
+    trigger = FakeNode("+1", {"aria-label": "Country code", "aria-controls": "phone-country-list"})
+    malaysia_option = FakeNode(
+        "Malaysia +60",
+        {"data-value": "MY"},
+        on_click=lambda: trigger.attrs.update({"data-value": "MY", "aria-label": "Malaysia +60"}),
+    )
+    listbox = FakeNode(children={'[role="option"]': [malaysia_option]})
+    page = FakePage({
+        'button[role="combobox"]': [trigger],
+        '[id="phone-country-list"]': [listbox],
+    })
+    flow = make_flow()
+
+    dial = flow._select_phone_country(page, {}, "+601159285992")
+
+    assert dial == "60"
+    assert malaysia_option.clicked is True
 
 
 def test_non_us_country_fails_instead_of_submitting_under_us() -> None:

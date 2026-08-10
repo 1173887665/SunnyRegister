@@ -39,6 +39,14 @@ REGISTER_DEVICE_PROFILES = [
     {"locale": "ja-JP", "languages": ["ja-JP", "ja"], "timezone": "Asia/Tokyo"},
 ]
 
+# Phone binding must follow the number itself. Provider country identifiers are
+# not consistent (for example FireFox uses "mys"), while the E.164 prefix is.
+PHONE_COUNTRIES_BY_DIAL = {
+    "1": {"iso": "US", "name": "United States", "aliases": ("us", "usa", "united states", "america")},
+    "60": {"iso": "MY", "name": "Malaysia", "aliases": ("my", "mys", "malaysia")},
+    "86": {"iso": "CN", "name": "China", "aliases": ("cn", "chn", "china")},
+}
+
 class TaskCancelledError(RuntimeError):
     pass
 
@@ -291,20 +299,33 @@ def random_profile() -> tuple[str, str]:
 
 
 def _phone_country_context(phone: dict[str, Any], number: str) -> dict[str, Any]:
-    number_digits = re.sub(r"\D", "", str(number or ""))
-    dial_code = re.sub(r"\D", "", str(phone.get("country_code") or phone.get("dial_code") or ""))
+    raw_number = str(number or "").strip()
+    number_digits = re.sub(r"\D", "", raw_number)
+    provider_dial = re.sub(r"\D", "", str(phone.get("country_code") or phone.get("dial_code") or ""))
+    number_dial = ""
+    if raw_number.startswith("+"):
+        number_dial = next(
+            (dial for dial in sorted(PHONE_COUNTRIES_BY_DIAL, key=len, reverse=True) if number_digits.startswith(dial)),
+            "",
+        )
+    dial_code = number_dial or provider_dial
+    country = PHONE_COUNTRIES_BY_DIAL.get(dial_code, {})
+    country_iso = str(country.get("iso") or "").upper()
     raw_hints = [phone.get("country_iso"), phone.get("country"), phone.get("country_name")]
     hints: list[str] = []
+    for value in [country_iso, country.get("name"), *(country.get("aliases") or ())]:
+        normalized = re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+        if normalized and normalized not in hints:
+            hints.append(normalized)
     for value in raw_hints:
         normalized = re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
         if normalized and not normalized.isdigit() and normalized not in hints:
             hints.append(normalized)
-    us_aliases = {"us", "usa", "united states", "united states of america", "america"}
-    explicit_us = any(hint in us_aliases for hint in hints)
-    explicit_non_us = bool(hints) and not explicit_us
+    explicit_non_us = bool(country_iso and country_iso != "US")
     should_select = explicit_non_us or (dial_code != "1" if dial_code else bool(number_digits and not number_digits.startswith("1")))
     return {
         "dial_code": dial_code,
+        "country_iso": country_iso,
         "hints": hints,
         "number_digits": number_digits,
         "should_select": should_select,
@@ -315,6 +336,10 @@ def _country_option_score(text: str, values: list[str], context: dict[str, Any])
     combined = " ".join([str(text or ""), *[str(value or "") for value in values]])
     normalized = re.sub(r"[^a-z0-9+]+", " ", combined.casefold()).strip()
     score = 0
+    wanted_iso = str(context.get("country_iso") or "").casefold()
+    normalized_values = [re.sub(r"[^a-z0-9]+", "", str(value or "").casefold()) for value in values]
+    if wanted_iso and wanted_iso in normalized_values:
+        score = 200
     for hint in context.get("hints") or []:
         if normalized == hint:
             score = max(score, 140)
@@ -336,7 +361,7 @@ def _country_option_score(text: str, values: list[str], context: dict[str, Any])
     wanted_dial = str(context.get("dial_code") or "")
     matched_dial = ""
     if wanted_dial and wanted_dial in option_dials:
-        score = max(score, 130)
+        score = max(score, 180)
         matched_dial = wanted_dial
     elif not wanted_dial:
         number_digits = str(context.get("number_digits") or "")
@@ -1721,18 +1746,67 @@ class OpenAIEmailRegisterFlow:
         except Exception:
             text_value = ""
         values: list[str] = []
-        for attribute in ("value", "data-value", "aria-label", "title", "data-country-code"):
+        for attribute in (
+            "value",
+            "data-value",
+            "aria-label",
+            "aria-valuetext",
+            "title",
+            "data-country",
+            "data-country-code",
+            "data-country-iso",
+        ):
             try:
                 value = str(locator.get_attribute(attribute, timeout=500) or "").strip()
             except Exception:
                 value = ""
             if value and value not in values:
                 values.append(value)
+        try:
+            images = locator.locator("img")
+            for index in range(min(images.count(), 3)):
+                alt = str(images.nth(index).get_attribute("alt", timeout=500) or "").strip()
+                if alt and alt not in values:
+                    values.append(alt)
+        except Exception:
+            pass
         return text_value, values
 
     @staticmethod
-    def _visible_country_options(page) -> list[Any]:
+    def _country_selects(page) -> list[Any]:
+        selects: list[Any] = []
+        for selector in (
+            'select[aria-label*="country" i]',
+            'select[name*="country" i]',
+            'select[id*="country" i]',
+            'select[class*="country" i]',
+            'select[name*="dial" i]',
+            'select[aria-label*="phone" i]',
+        ):
+            try:
+                locator = page.locator(selector)
+                for index in range(min(locator.count(), 20)):
+                    selects.append(locator.nth(index))
+            except Exception:
+                continue
+        return selects
+
+    @staticmethod
+    def _visible_country_options(page, trigger=None) -> list[Any]:
         options: list[Any] = []
+        scopes: list[Any] = []
+        if trigger is not None:
+            try:
+                controls = str(trigger.get_attribute("aria-controls", timeout=500) or "").strip()
+            except Exception:
+                controls = ""
+            if controls:
+                escaped = controls.replace("\\", "\\\\").replace('"', '\\"')
+                try:
+                    scopes.append(page.locator(f'[id="{escaped}"]'))
+                except Exception:
+                    pass
+        scopes.append(page)
         for selector in (
             '[role="option"]',
             '[role="listbox"] button',
@@ -1741,19 +1815,85 @@ class OpenAIEmailRegisterFlow:
             '[data-radix-collection-item]',
             '[data-value]',
         ):
-            try:
-                locator = page.locator(selector)
-                count = min(locator.count(), 300)
-            except Exception:
-                continue
-            for index in range(count):
+            for scope in scopes:
                 try:
-                    item = locator.nth(index)
-                    if item.is_visible():
-                        options.append(item)
+                    locator = scope.locator(selector)
+                    count = min(locator.count(), 300)
                 except Exception:
                     continue
+                for index in range(count):
+                    try:
+                        item = locator.nth(index)
+                        if item.is_visible():
+                            options.append(item)
+                    except Exception:
+                        continue
         return options
+
+    @staticmethod
+    def _native_country_matches(select, context: dict[str, Any]) -> bool:
+        values: list[str] = []
+        try:
+            value = str(select.input_value(timeout=1000) or "").strip()
+            if value:
+                values.append(value)
+        except Exception:
+            pass
+        text = ""
+        try:
+            selected = select.locator("option:checked")
+            if selected.count():
+                text, selected_values = OpenAIEmailRegisterFlow._country_locator_details(selected.nth(0))
+                values.extend(selected_values)
+        except Exception:
+            pass
+        score, matched_dial = _country_option_score(text, values, context)
+        return score >= 100 or matched_dial == str(context.get("dial_code") or "")
+
+    @staticmethod
+    def _custom_country_matches(trigger, option, context: dict[str, Any]) -> bool:
+        text, values = OpenAIEmailRegisterFlow._country_locator_details(trigger)
+        score, matched_dial = _country_option_score(text, values, context)
+        if score >= 100 or matched_dial == str(context.get("dial_code") or ""):
+            return True
+        try:
+            selected = str(option.get_attribute("aria-selected", timeout=500) or "").lower()
+            checked = str(option.get_attribute("data-state", timeout=500) or "").lower()
+            return selected == "true" or checked in {"checked", "selected"}
+        except Exception:
+            return False
+
+    def _phone_country_triggers(self, page) -> list[Any]:
+        triggers = self._visible_inputs(page, [
+            'button[role="combobox"]',
+            '[role="combobox"]',
+            'button[aria-haspopup="listbox"]',
+            'button[aria-haspopup="menu"]',
+            '[data-testid*="country" i]',
+            '[data-slot="select-trigger"]',
+            'button[aria-label*="country" i]',
+            'button[aria-label*="dial" i]',
+            'button[class*="country" i]',
+            'button:has-text("+1")',
+        ])
+        phone_inputs = self._visible_inputs(
+            page,
+            ['input[type="tel"]', 'input[inputmode="tel"]', 'input[name*="phone" i]', 'input[autocomplete*="tel" i]'],
+        )
+        for phone_input in phone_inputs:
+            for selector in (
+                'xpath=preceding::*[self::button or @role="combobox" or @aria-haspopup="listbox" or @aria-haspopup="menu"][1]',
+                'xpath=ancestor::*[.//*[self::button or @role="combobox" or @aria-haspopup="listbox" or @aria-haspopup="menu"]][1]//*[self::button or @role="combobox" or @aria-haspopup="listbox" or @aria-haspopup="menu"]',
+            ):
+                try:
+                    nearby = phone_input.locator(selector)
+                    for index in range(min(nearby.count(), 10)):
+                        item = nearby.nth(index)
+                        if item.is_visible() and item not in triggers:
+                            triggers.append(item)
+                except Exception:
+                    continue
+        return triggers
 
     def _best_country_locator(self, locators: list[Any], context: dict[str, Any]) -> tuple[Any | None, str, str]:
         best = None
@@ -1772,16 +1912,18 @@ class OpenAIEmailRegisterFlow:
 
     def _select_phone_country(self, page, phone: dict[str, Any], number: str) -> str:
         context = _phone_country_context(phone, number)
-        if not context["should_select"]:
-            return str(context["dial_code"] or "1")
-
-        native_selects = self._visible_inputs(page, [
-            'select[name*="country" i]',
-            'select[id*="country" i]',
-            'select[aria-label*="country" i]',
-            'select[name*="dial" i]',
-        ])
-        for select in native_selects:
+        selected_dial = str(context["dial_code"] or "1")
+        for select in self._country_selects(page):
+            wanted_iso = str(context.get("country_iso") or "")
+            if wanted_iso:
+                try:
+                    select.select_option(value=wanted_iso, timeout=5000)
+                    self._sleep_checked(0.2)
+                    if self._native_country_matches(select, context):
+                        self.log(f"[接码] 已根据号码前缀 +{selected_dial} 将手机号国家切换为 {wanted_iso}")
+                        return selected_dial
+                except Exception:
+                    pass
             try:
                 option_group = select.locator("option")
                 options = [option_group.nth(index) for index in range(min(option_group.count(), 300))]
@@ -1796,21 +1938,15 @@ class OpenAIEmailRegisterFlow:
                     select.select_option(value=value, timeout=5000)
                 else:
                     select.select_option(label=option.inner_text(timeout=500), timeout=5000)
-                selected_dial = matched_dial or str(context["dial_code"] or "")
-                self.log(f"[接码] 已将手机号国家切换为 {label or selected_dial}")
-                return selected_dial
+                self._sleep_checked(0.2)
+                if self._native_country_matches(select, context):
+                    selected_dial = matched_dial or selected_dial
+                    self.log(f"[接码] 已根据号码前缀 +{selected_dial} 将手机号国家切换为 {label or selected_dial}")
+                    return selected_dial
             except Exception:
                 continue
 
-        triggers = self._visible_inputs(page, [
-            'button[role="combobox"]',
-            '[role="combobox"]',
-            'button[aria-haspopup="listbox"]',
-            '[data-testid*="country" i]',
-            'button[aria-label*="country" i]',
-            'button[aria-label*="dial" i]',
-            'button:has-text("+1")',
-        ])
+        triggers = self._phone_country_triggers(page)
         country_triggers: list[Any] = []
         for trigger in triggers:
             text_value, values = self._country_locator_details(trigger)
@@ -1822,7 +1958,7 @@ class OpenAIEmailRegisterFlow:
             try:
                 trigger.click(timeout=5000, force=True)
                 self._sleep_checked(0.3)
-                options = self._visible_country_options(page)
+                options = self._visible_country_options(page, trigger)
                 option, matched_dial, label = self._best_country_locator(options, context)
                 if option is None:
                     search_inputs = self._visible_inputs(page, [
@@ -1836,14 +1972,18 @@ class OpenAIEmailRegisterFlow:
                         if query:
                             search_inputs[0].fill(query, timeout=3000)
                             self._sleep_checked(0.3)
-                            option, matched_dial, label = self._best_country_locator(self._visible_country_options(page), context)
+                            option, matched_dial, label = self._best_country_locator(self._visible_country_options(page, trigger), context)
                 if option is not None:
                     option.click(timeout=5000, force=True)
-                    selected_dial = matched_dial or str(context["dial_code"] or "")
-                    self.log(f"[接码] 已将手机号国家切换为 {label or selected_dial}")
-                    return selected_dial
+                    self._sleep_checked(0.2)
+                    if self._custom_country_matches(trigger, option, context):
+                        selected_dial = matched_dial or selected_dial
+                        self.log(f"[接码] 已根据号码前缀 +{selected_dial} 将手机号国家切换为 {label or selected_dial}")
+                        return selected_dial
             except Exception:
                 pass
+        if not context["should_select"]:
+            return selected_dial
         hints = "/".join(context["hints"]) or "未知国家"
         dial = f"+{context['dial_code']}" if context["dial_code"] else number
         raise RuntimeError(f"无法在手机号页面选择国家：{hints} ({dial})")
