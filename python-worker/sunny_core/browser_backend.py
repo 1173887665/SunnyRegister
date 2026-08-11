@@ -43,6 +43,7 @@ def open_registration_browser(
     proxy_url: str,
     fingerprint: Any,
     log: Callable[[str], None],
+    storage_state: dict[str, Any] | None = None,
 ) -> Iterator[RegistrationBrowserSession]:
     """Open one isolated registration context.
 
@@ -83,10 +84,15 @@ def open_registration_browser(
         except Exception as exc:
             raise RuntimeError(f"Camoufox browser startup failed: {str(exc)[:500]}") from exc
         try:
+            context_options: dict[str, Any] = {
+                "no_viewport": True,
+                "locale": fingerprint.locale,
+                "timezone_id": fingerprint.timezone,
+            }
+            if storage_state:
+                context_options["storage_state"] = storage_state
             context = browser.new_context(
-                no_viewport=True,
-                locale=fingerprint.locale,
-                timezone_id=fingerprint.timezone,
+                **context_options,
             )
             log("[认证] 已启动 Camoufox 后台浏览器与隔离无痕上下文")
             yield RegistrationBrowserSession("camoufox", browser, context)
@@ -129,16 +135,19 @@ def open_registration_browser(
                 "--disable-features=IsolateOrigins,site-per-process",
             ],
         )
-        context = browser.new_context(
-            user_agent=fingerprint.user_agent,
-            locale=fingerprint.locale,
-            timezone_id=fingerprint.timezone,
-            viewport={"width": fingerprint.viewport_width, "height": fingerprint.viewport_height},
-            screen={"width": fingerprint.screen_width, "height": fingerprint.screen_height},
-            device_scale_factor=fingerprint.device_scale_factor,
-            is_mobile=False,
-            has_touch=False,
-        )
+        context_options: dict[str, Any] = {
+            "user_agent": fingerprint.user_agent,
+            "locale": fingerprint.locale,
+            "timezone_id": fingerprint.timezone,
+            "viewport": {"width": fingerprint.viewport_width, "height": fingerprint.viewport_height},
+            "screen": {"width": fingerprint.screen_width, "height": fingerprint.screen_height},
+            "device_scale_factor": fingerprint.device_scale_factor,
+            "is_mobile": False,
+            "has_touch": False,
+        }
+        if storage_state:
+            context_options["storage_state"] = storage_state
+        context = browser.new_context(**context_options)
         try:
             yield RegistrationBrowserSession("chromium", browser, context)
         finally:

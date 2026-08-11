@@ -60,6 +60,10 @@ class PhoneBindingUnavailableError(RuntimeError):
     pass
 
 
+class SessionReauthenticationRequired(RuntimeError):
+    pass
+
+
 _DRIVER_DISCONNECTED_MARKERS = (
     "connection closed while reading from the driver",
     "target page, context or browser has been closed",
@@ -423,7 +427,7 @@ def _should_retry_phone_send_without_channel(result: dict[str, Any]) -> bool:
 class OpenAIEmailRegisterFlow:
     """SunnyRegister in-project email register/login flow, following the original register-or-login implementation."""
 
-    def __init__(self, account: MailAccount, proxy_url: str, headless: bool, log: Callable[[str], None] | None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None, mailbox_proxy_url: str | None = None):
+    def __init__(self, account: MailAccount, proxy_url: str, headless: bool, log: Callable[[str], None] | None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None, mailbox_proxy_url: str | None = None, existing_session: dict[str, Any] | None = None):
         self.account = account
         self.proxy_url = proxy_url
         self.mailbox_proxy_url = proxy_url if mailbox_proxy_url is None else mailbox_proxy_url
@@ -442,6 +446,7 @@ class OpenAIEmailRegisterFlow:
         self.browser_backend = "camoufox" if headless else "chromium"
         self.device_id = ""
         self.generated_password = ""
+        self.existing_session = dict(existing_session or {})
 
     def _check_cancelled(self) -> None:
         if self.should_cancel():
@@ -463,11 +468,26 @@ class OpenAIEmailRegisterFlow:
         except Exception as exc:
             self.log(f"[系统] 保存任务阶段检查点失败：{stage}: {exc}")
 
+    def _existing_storage_state(self) -> dict[str, Any] | None:
+        state = self.existing_session.get("storage_state_json")
+        if not isinstance(state, dict):
+            return None
+        cookies = state.get("cookies")
+        if not isinstance(cookies, list) or not any(
+            isinstance(item, dict)
+            and item.get("name") == "__Secure-next-auth.session-token"
+            and item.get("value")
+            for item in cookies
+        ):
+            return None
+        return state
+
     def run(self) -> dict[str, Any]:
         self.log(f"[认证] 开始注册或登录: {self.account.email}")
         try:
             self._check_cancelled()
-            if not (self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key):
+            reusable_storage_state = self._existing_storage_state() if self.require_refresh_token else None
+            if reusable_storage_state is None and not (self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key):
                 self._preconnect_otp_reader()
             self._check_cancelled()
             mode_label = "后台浏览器自动（Camoufox Headless，无窗口）" if self.headless else "可视浏览器自动（Chromium Visible，有窗口）"
@@ -477,6 +497,7 @@ class OpenAIEmailRegisterFlow:
                 proxy_url=self.proxy_url,
                 fingerprint=self.fingerprint,
                 log=self.log,
+                storage_state=reusable_storage_state,
             ) as browser_session:
                 context = browser_session.context
                 self.browser_backend = browser_session.backend
@@ -484,7 +505,8 @@ class OpenAIEmailRegisterFlow:
                     self._install_stealth(context)
                 else:
                     context.set_extra_http_headers({"Accept-Language": self.fingerprint.accept_language})
-                context.clear_cookies()
+                if reusable_storage_state is None:
+                    context.clear_cookies()
                 self.log(
                     f"[认证] 已启动隔离无痕浏览器上下文，后端 {self.browser_backend}，"
                     f"语言环境 {self.fingerprint.locale} / {self.fingerprint.timezone}"
@@ -496,6 +518,22 @@ class OpenAIEmailRegisterFlow:
                 if landing_response and landing_response.status >= 400:
                     self.log(f"[认证] ChatGPT 首页返回 HTTP {landing_response.status}，继续尝试通过浏览器会话初始化认证")
                 self._check_cancelled()
+                if reusable_storage_state is not None:
+                    try:
+                        result = self._extract_session_info(context, page, emit_registered=False)
+                    except (TaskCancelledError, BrowserDriverDisconnectedError):
+                        raise
+                    except Exception as exc:
+                        self.log(f"[认证] 协议登录态无法继续 OAuth，降级为完整登录验证：{str(exc)[:300]}")
+                        context.clear_cookies()
+                        self._preconnect_otp_reader()
+                    else:
+                        for key in ("protocol_traffic", "plan_type", "session_token", "account_id"):
+                            if key in self.existing_session and key not in result:
+                                result[key] = self.existing_session[key]
+                        result["auth_action"] = str(self.existing_session.get("auth_action") or "login")
+                        self.log("[认证] 已复用协议登录态完成 OAuth 续段，未重复执行邮箱登录验证")
+                        return result
                 signin_url = self._create_openai_signin_url(context, page)
                 otp_min_timestamp = time.time() - 10
                 _goto_auth_page(page, signin_url, self.log, timeout=90000)
@@ -869,8 +907,8 @@ class OpenAIEmailRegisterFlow:
     def _visible_inputs(self, page, selectors: list[str]):
         out = []
         for selector in selectors:
-            loc = page.locator(selector)
             try:
+                loc = page.locator(selector)
                 count = min(loc.count(), 20)
             except Exception:
                 continue
@@ -2233,7 +2271,7 @@ class OpenAIEmailRegisterFlow:
         except Exception:
             return False
 
-    def _extract_session_info(self, context, page) -> dict[str, Any]:
+    def _extract_session_info(self, context, page, *, emit_registered: bool = True) -> dict[str, Any]:
         # Session and OAuth continue in the task's single primary page. Creating
         # a fallback page here can surface as an unexpected second window.
         session_json = self._read_chatgpt_session_json(context, page)
@@ -2248,7 +2286,8 @@ class OpenAIEmailRegisterFlow:
             "phone_bound": self.phone_verification_completed,
             "auth_action": self.auth_action if self.auth_action != "unknown" else "login",
         }
-        self._emit_progress("registered", result)
+        if emit_registered:
+            self._emit_progress("registered", result)
         if not self.require_refresh_token:
             self.log("[Session] 仅注册阶段：已读取 ChatGPT Session，不执行 Codex OAuth / 不获取 Refresh Token")
             return result
@@ -2268,6 +2307,8 @@ class OpenAIEmailRegisterFlow:
                 "token_record": record,
             })
             self.log("[Session] 已获取 Access Token 和 Refresh Token")
+        except SessionReauthenticationRequired:
+            raise
         except PhoneBindingUnavailableError as exc:
             result["phone_binding_unavailable"] = True
             result["phone_binding_skipped_reason"] = str(exc)
@@ -2524,6 +2565,24 @@ class OpenAIEmailRegisterFlow:
                         self._sleep_checked(2)
                         continue
                     raise RuntimeError("OAuth phone verification required, but no usable SMS provider is configured")
+                if self._has_totp_challenge(page):
+                    self._submit_totp_challenge(page)
+                    self._sleep_checked(1)
+                    continue
+                if self._has_workspace_selection(page):
+                    self._select_first_workspace(page)
+                    self._sleep_checked(1)
+                    continue
+                auth_path = urlparse(current_url).path.lower()
+                needs_login = (
+                    "email-verification" in auth_path
+                    or "/log-in" in auth_path
+                    or "/create-account" in auth_path
+                    or self._has_visible_password(page)
+                    or bool(self._visible_inputs(page, ['input[type="email"]', 'input[name="email"]', 'input[name="username"]']))
+                )
+                if needs_login:
+                    raise SessionReauthenticationRequired("OAuth requires a fresh account login")
                 if self._click_codex_consent_if_visible(page):
                     self.log("[Session] 已自动点击 Codex 授权继续按钮")
                     self._sleep_checked(2)
@@ -2553,7 +2612,7 @@ class OpenAIEmailRegisterFlow:
             return str(page.url)
 
 
-def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool = True, log: Callable[[str], None] | None = None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None, mailbox_proxy_url: str | None = None) -> dict[str, Any]:
+def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool = True, log: Callable[[str], None] | None = None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None, mailbox_proxy_url: str | None = None, existing_session: dict[str, Any] | None = None) -> dict[str, Any]:
     if should_cancel and should_cancel():
         raise TaskCancelledError("Task cancelled by user")
     if account.openai_rt and require_refresh_token:
@@ -2573,4 +2632,4 @@ def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool 
         if on_progress:
             on_progress("phone_bound", session)
         return session
-    return OpenAIEmailRegisterFlow(account, proxy_url, headless, log, phone_provider=phone_provider, existing_account=existing_account, require_refresh_token=require_refresh_token, should_cancel=should_cancel, execution_mode=execution_mode, on_progress=on_progress, mailbox_proxy_url=mailbox_proxy_url).run()
+    return OpenAIEmailRegisterFlow(account, proxy_url, headless, log, phone_provider=phone_provider, existing_account=existing_account, require_refresh_token=require_refresh_token, should_cancel=should_cancel, execution_mode=execution_mode, on_progress=on_progress, mailbox_proxy_url=mailbox_proxy_url, existing_session=existing_session).run()

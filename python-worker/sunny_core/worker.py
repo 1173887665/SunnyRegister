@@ -1479,7 +1479,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                 protocol_session = session
                 if wants_rt and require_refresh_token:
                     db.event(
-                        f"[{email}] [认证] 协议注册/登录已完成，转入后台 OAuth 续段以完成接码和 Refresh Token 获取",
+                        f"[{email}] [认证] 协议注册/登录已完成，复用当前登录态进入后台 OAuth 续段以完成接码和 Refresh Token 获取",
                         detail={"email": email, "scope": "selected", "execution_mode": "protocol_post_stage"},
                     )
                     try:
@@ -1495,6 +1495,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                             execution_mode="protocol_post_stage",
                             on_progress=save_progress,
                             mailbox_proxy_url=auxiliary_proxy,
+                            existing_session=protocol_session,
                         )
                         session["requested_execution_mode"] = "protocol"
                         session["execution_mode"] = "protocol_post_stage"

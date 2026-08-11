@@ -234,6 +234,7 @@ class StageStatusTests(unittest.TestCase):
         self.assertIs(browser_executor.call_args.kwargs["phone_provider"], phone_provider)
         self.assertTrue(browser_executor.call_args.kwargs["require_refresh_token"])
         self.assertEqual(browser_executor.call_args.kwargs["execution_mode"], "protocol_post_stage")
+        self.assertIs(browser_executor.call_args.kwargs["existing_session"], protocol_session)
 
     def test_manual_rt_acquire_persists_token_to_account_mailbox_and_session(self):
         db = FakeDB()
@@ -541,6 +542,53 @@ class StageStatusTests(unittest.TestCase):
         self.assertEqual(len(db.sessions), 1)
 
 class SessionFallbackTests(unittest.TestCase):
+    def test_protocol_session_continues_oauth_without_repeating_email_login(self):
+        account = MailAccount("user@example.com", "password", "client-id", "mail-rt", "raw")
+        existing_session = {
+            "access_token": "protocol-access",
+            "auth_action": "login",
+            "storage_state_json": {
+                "cookies": [{
+                    "name": "__Secure-next-auth.session-token",
+                    "value": "session-token",
+                    "domain": ".chatgpt.com",
+                    "path": "/",
+                }],
+                "origins": [],
+            },
+        }
+        flow = OpenAIEmailRegisterFlow(
+            account,
+            "",
+            True,
+            lambda _message: None,
+            existing_account=True,
+            require_refresh_token=True,
+            existing_session=existing_session,
+        )
+        page = Mock()
+        page.goto.return_value = Mock(status=200)
+        context = Mock()
+        context.new_page.return_value = page
+        browser_session = Mock(context=context, backend="camoufox")
+        manager = MagicMock()
+        manager.__enter__.return_value = browser_session
+        expected = {"access_token": "oauth-access", "refresh_token": "rt_test"}
+
+        with (
+            patch("sunny_core.openai_auth.open_registration_browser", return_value=manager) as open_browser,
+            patch.object(flow, "_log_runtime_fingerprint"),
+            patch.object(flow, "_preconnect_otp_reader") as preconnect,
+            patch.object(flow, "_extract_session_info", return_value=expected) as extract,
+        ):
+            result = flow.run()
+
+        self.assertEqual(result["refresh_token"], "rt_test")
+        preconnect.assert_not_called()
+        context.clear_cookies.assert_not_called()
+        extract.assert_called_once_with(context, page, emit_registered=False)
+        self.assertEqual(open_browser.call_args.kwargs["storage_state"], existing_session["storage_state_json"])
+
     def test_refresh_token_failure_keeps_chatgpt_session(self):
         account = MailAccount(
             email="user@example.com",
@@ -666,6 +714,40 @@ class BrowserBackendTests(unittest.TestCase):
         )
         context.close.assert_called_once()
         manager.__exit__.assert_called_once()
+
+    def test_background_mode_loads_existing_protocol_storage_state(self):
+        fingerprint = Mock(locale="ja-JP", languages=["ja-JP", "ja"], timezone="Asia/Tokyo")
+        manager = MagicMock()
+        browser = Mock()
+        context = Mock()
+        browser.new_context.return_value = context
+        manager.__enter__.return_value = browser
+        storage_state = {
+            "cookies": [{
+                "name": "__Secure-next-auth.session-token",
+                "value": "session-token",
+                "domain": ".chatgpt.com",
+                "path": "/",
+            }],
+            "origins": [],
+        }
+
+        with patch("camoufox.sync_api.Camoufox", return_value=manager):
+            with open_registration_browser(
+                headless=True,
+                proxy_url="",
+                fingerprint=fingerprint,
+                log=lambda _message: None,
+                storage_state=storage_state,
+            ):
+                pass
+
+        browser.new_context.assert_called_once_with(
+            no_viewport=True,
+            locale="ja-JP",
+            timezone_id="Asia/Tokyo",
+            storage_state=storage_state,
+        )
 
     def test_disconnected_camoufox_skips_duplicate_browser_close(self):
         fingerprint = Mock(locale="ja-JP", languages=["ja-JP", "ja"], timezone="Asia/Tokyo")

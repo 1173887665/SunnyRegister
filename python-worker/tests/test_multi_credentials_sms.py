@@ -26,6 +26,9 @@ def test_totp_matches_rfc_vector_and_rejects_invalid_base32() -> None:
     [
         ('{"data":{"verification_code":123456}}', "123456"),
         ("<html><body>ChatGPT verification code: <b>234567</b></body></html>", "234567"),
+        ("<html><body>OpenAI code <span>2</span><span>4</span><span>6</span><span>8</span><span>0</span><span>2</span></body></html>", "246802"),
+        ('<script type="application/json">{"mail":{"body":"OpenAI verification code: 5 6 7 8 9 0"}}</script>', "567890"),
+        ('<script>window.__MAIL__={"body":"ChatGPT code: \\u0031\\u0033\\u0035\\u0037\\u0039\\u0031"}</script>', "135791"),
         ("Your OpenAI one-time code is 345678", "345678"),
         (base64.b64encode(b"ChatGPT OTP: 456789").decode(), "456789"),
     ],
