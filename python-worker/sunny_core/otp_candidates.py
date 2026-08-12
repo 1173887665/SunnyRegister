@@ -23,9 +23,15 @@ _DIRECT_CONTEXT = re.compile(
 _CODE_KEY = re.compile(r"code|otp|verification|verify|验证码", re.I)
 _CONTENT_KEY = re.compile(r"body|content|text|html|message|subject|snippet|preview|payload|data|mail", re.I)
 _EMAIL_OR_URL = re.compile(r"[\w.+-]*\d{6}[\w.+-]*@|https?://\S*\d{6}|(?:^|\s)(?:from|sender|发件人|差出人)\s*[:：]", re.I)
-_DATE_CONTEXT = re.compile(r"20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}[T\s]\d{1,2}:\d{2}", re.I)
+_DATE_CONTEXT = re.compile(
+    r"(?:20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}(?:日)?[T\s]+\d{1,2}:\d{2}"
+    r"|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+20\d{2}\s+\d{1,2}:\d{2}"
+    r"|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+20\d{2}\s+\d{1,2}:\d{2})",
+    re.I,
+)
 _HTML_CONTENT_MARKER = re.compile(r"(?:^|[-_\s])(body|content|message|mail[-_]?body|email[-_]?body|letter)(?:$|[-_\s])", re.I)
 _HTML_META_MARKER = re.compile(r"(?:^|[-_\s])(meta|sender|from|date|time|header)(?:$|[-_\s])", re.I)
+_HTML_VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 
 
 class _MailHTMLParser(HTMLParser):
@@ -33,6 +39,7 @@ class _MailHTMLParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.stack: list[dict[str, Any]] = []
         self.contents: list[dict[str, str]] = []
+        self.text_nodes: list[dict[str, str]] = []
         self.subjects: list[str] = []
         self.dates: list[str] = []
 
@@ -49,11 +56,13 @@ class _MailHTMLParser(HTMLParser):
         elif _HTML_META_MARKER.search(marker):
             kind = "meta"
         node = {"tag": tag.lower(), "kind": kind, "text": ""}
-        self.stack.append(node)
+        if node["tag"] not in _HTML_VOID_TAGS:
+            self.stack.append(node)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.handle_starttag(tag, attrs)
-        self.handle_endtag(tag)
+        if tag.lower() not in _HTML_VOID_TAGS:
+            self.handle_endtag(tag)
 
     def handle_endtag(self, tag: str) -> None:
         target = tag.lower()
@@ -76,6 +85,12 @@ class _MailHTMLParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if not data:
             return
+        if any(node["tag"] in {"script", "style"} for node in self.stack):
+            return
+        text = re.sub(r"\s+", " ", data).strip()
+        if text:
+            tag_path = ".".join(node["tag"] for node in self.stack[-4:]) or "root"
+            self.text_nodes.append({"text": text, "path": tag_path})
         for node in self.stack:
             node["text"] += f" {data}"
 
@@ -89,12 +104,19 @@ def _html_content_sources(value: str) -> list[tuple[str, str]]:
         parser.close()
     except Exception:
         return []
-    identity = "|".join([*(parser.subjects[:1]), *(parser.dates[:1])])
+    document_text = " ".join(item["text"] for item in parser.text_nodes)
+    detected_date = next((match.group(0) for match in _DATE_CONTEXT.finditer(document_text)), "")
+    identity = "|".join([*(parser.subjects[:1]), *(parser.dates[:1]), detected_date])
     identity_key = _fingerprint(identity) if identity else "unknown"
-    return [
+    sources = [
         (f"$.html.message_body[{index}].{identity_key}", item["text"])
         for index, item in enumerate(parser.contents)
     ]
+    sources.extend(
+        (f"$.html.text[{index}].{item['path']}.{identity_key}", item["text"])
+        for index, item in enumerate(parser.text_nodes)
+    )
+    return sources
 
 
 def _fingerprint(value: str) -> str:
@@ -135,6 +157,10 @@ def _collect(value: Any, path: str, output: list[tuple[str, str]]) -> None:
             _collect(item, f"{path}.{key}", output)
 
 
+def _overlaps_date(value: str, start: int, end: int) -> bool:
+    return any(match.start() < end and match.end() > start for match in _DATE_CONTEXT.finditer(value))
+
+
 def extract_otp_candidates(raw: str) -> list[dict[str, Any]]:
     value = str(raw or "")
     sources: list[tuple[str, str]] = [("$raw", value)]
@@ -158,6 +184,8 @@ def extract_otp_candidates(raw: str) -> list[dict[str, Any]]:
             normalized = re.sub(r"(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)>", " ", normalized)
             normalized = re.sub(r"(?s)<[^>]+>", " ", normalized)
             for match in _CODE.finditer(normalized):
+                if _overlaps_date(normalized, match.start(), match.end()):
+                    continue
                 code = "".join(str(unicodedata.digit(char)) if char.isdigit() else char for char in match.group(1))
                 start, end = max(0, match.start() - 120), min(len(normalized), match.end() + 120)
                 context = re.sub(r"\s+", " ", normalized[start:end]).strip()
@@ -166,7 +194,6 @@ def extract_otp_candidates(raw: str) -> list[dict[str, Any]]:
                 prefix = re.sub(r"\s+", " ", normalized[max(0, match.start() - 80):match.start()])
                 score += 80 if _DIRECT_CONTEXT.search(prefix) else 0
                 score -= 120 if _EMAIL_OR_URL.search(context) else 0
-                score -= 80 if _DATE_CONTEXT.search(context) and not _DIRECT_CONTEXT.search(prefix) else 0
                 score += 30 if normalized.strip() == match.group(1) else 0
                 score -= min(source_index, 20) * 0.01
                 key = _fingerprint(f"{code}|{path}|{context}")
@@ -175,6 +202,8 @@ def extract_otp_candidates(raw: str) -> list[dict[str, Any]]:
                     found[key] = candidate
             for match in _SEPARATED_CODE.finditer(normalized):
                 if _CODE.fullmatch(match.group(1)):
+                    continue
+                if _overlaps_date(normalized, match.start(), match.end()):
                     continue
                 digits = "".join(str(unicodedata.digit(char)) for char in match.group(1) if char.isdigit())
                 if len(digits) != 6:
@@ -186,7 +215,6 @@ def extract_otp_candidates(raw: str) -> list[dict[str, Any]]:
                 prefix = re.sub(r"\s+", " ", normalized[max(0, match.start() - 80):match.start()])
                 score += 80 if _DIRECT_CONTEXT.search(prefix) else 0
                 score -= 120 if _EMAIL_OR_URL.search(context) else 0
-                score -= 80 if _DATE_CONTEXT.search(context) and not _DIRECT_CONTEXT.search(prefix) else 0
                 score -= min(source_index, 20) * 0.01
                 key = _fingerprint(f"{digits}|{path}|{context}")
                 candidate = {"code": digits, "key": key, "score": score}

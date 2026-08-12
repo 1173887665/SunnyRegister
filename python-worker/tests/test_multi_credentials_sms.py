@@ -57,7 +57,56 @@ def test_url_api_html_prefers_mail_body_code_over_sender_suffix_and_date() -> No
     assert candidates[0]["score"] >= 80
     scores = {item["code"]: item["score"] for item in candidates}
     assert scores["721508"] < 0
-    assert scores["202608"] < 0
+    assert "202608" not in scores
+
+
+def test_url_api_html_extracts_standalone_code_and_rejects_rfc_mail_date() -> None:
+    payload = """
+    <html><body>
+      <main>
+        <div>邮件 1 封</div>
+        <div>ChatGPT 用の一時ログインコード</div>
+        <div>Wed, 12 Aug 2026 15:52:26 +0000 (UTC)</div>
+        <table><tr><td>
+          <p style="font-size: 24px"><span>126399</span></p>
+        </td></tr></table>
+      </main>
+    </body></html>
+    """
+
+    candidates = extract_otp_candidates(payload)
+
+    assert candidates[0]["code"] == "126399"
+    assert candidates[0]["score"] >= 60
+    assert "202615" not in {item["code"] for item in candidates}
+
+
+def test_url_api_html_ignores_script_and_style_numbers_inside_mail_body() -> None:
+    payload = """
+    <div class="mail-body">
+      <script>window.messageId = 654321;</script>
+      <style>.mail-123456 { color: red; }</style>
+      <p><span>126399</span></p>
+    </div>
+    """
+
+    candidates = extract_otp_candidates(payload)
+
+    assert candidates[0]["code"] == "126399"
+    scores = {item["code"]: item["score"] for item in candidates}
+    assert scores["654321"] < 12
+    assert "123456" not in scores
+
+
+def test_url_api_generic_html_uses_rfc_date_as_message_identity() -> None:
+    first = "<html><body><div>Wed, 12 Aug 2026 15:52:26 +0000</div><p><span>126399</span></p></body></html>"
+    second = "<html><body><div>Wed, 12 Aug 2026 16:05:10 +0000</div><p><span>126399</span></p></body></html>"
+
+    first_candidate = extract_otp_candidates(first)[0]
+    second_candidate = extract_otp_candidates(second)[0]
+
+    assert first_candidate["code"] == second_candidate["code"] == "126399"
+    assert first_candidate["key"] != second_candidate["key"]
 
 
 def test_url_api_candidate_key_changes_for_same_code_in_new_mail() -> None:
