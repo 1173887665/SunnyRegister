@@ -138,11 +138,35 @@ class MailAccount:
     totp_secret: str = ""
 
 
+_MICROSOFT_CLIENT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def _looks_like_microsoft_refresh_token(value: str) -> bool:
+    token = str(value or "").strip()
+    lowered = token.lower()
+    if lowered.startswith(("m.c", "m.r", "0.a", "1.a")):
+        return True
+    return len(token) >= 80 and (any(char in token for char in "!*$") or token.count(".") >= 2)
+
+
+def _normalize_microsoft_credentials(values: list[str]) -> tuple[str, str, str]:
+    password, client_id, refresh_token = values[:3]
+    client_index = next((index for index, value in enumerate(values[:3]) if _MICROSOFT_CLIENT_ID.fullmatch(value)), -1)
+    refresh_index = next((index for index, value in enumerate(values[:3]) if _looks_like_microsoft_refresh_token(value)), -1)
+    if client_index >= 0 and refresh_index >= 0 and client_index != refresh_index:
+        password_index = next(index for index in range(3) if index not in {client_index, refresh_index})
+        password = values[password_index]
+        client_id = values[client_index]
+        refresh_token = values[refresh_index]
+    return password, client_id, refresh_token
+
+
 def parse_account_line(line: str) -> MailAccount:
     parts = [p.strip() for p in str(line or "").strip().split("----")]
     if len(parts) < 4:
         raise ValueError("Invalid mailbox line; expected email----password----client_id----refresh_token")
-    email, password, client_id, refresh_token = parts[:4]
+    email = parts[0]
+    password, client_id, refresh_token = _normalize_microsoft_credentials(parts[1:4])
     if not email or "@" not in email or not client_id or not refresh_token:
         raise ValueError("email / client_id / refresh_token must not be empty")
     openai_rt = ""
@@ -155,7 +179,7 @@ def parse_account_line(line: str) -> MailAccount:
         password=password,
         client_id=client_id,
         refresh_token=refresh_token,
-        raw="----".join(parts[:4]),
+        raw="----".join((email, password, client_id, refresh_token)),
         account_type="plus" if openai_rt else "free",
         openai_rt=openai_rt,
     )

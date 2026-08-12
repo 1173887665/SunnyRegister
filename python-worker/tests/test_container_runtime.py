@@ -321,6 +321,17 @@ class HotmailCredentialCompatibilityTests(unittest.TestCase):
         self.assertEqual(parsed.client_id, "client-id")
         self.assertEqual(parsed.refresh_token, "refresh-token")
 
+    def test_hotmail_swapped_oauth_fields_are_normalized(self) -> None:
+        client_id = "11111111-2222-4333-8444-555555555555"
+        refresh_token = "M.C502_BL2.0.U.MsaArtifacts.-example-refresh-token-with-enough-length-for-field-detection!0123456789$"
+
+        parsed = parse_account_line(f"reader@hotmail.com----password----{refresh_token}----{client_id}")
+
+        self.assertEqual(parsed.password, "password")
+        self.assertEqual(parsed.client_id, client_id)
+        self.assertEqual(parsed.refresh_token, refresh_token)
+        self.assertEqual(parsed.raw, f"reader@hotmail.com----password----{client_id}----{refresh_token}")
+
     def test_hotmail_dual_token_prefers_graph(self) -> None:
         response = Mock()
         response.ok = True

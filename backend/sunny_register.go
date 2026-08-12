@@ -763,7 +763,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			} else {
 				m.AccessKey = ""
 				m.ChatGPTPassword, m.TOTPSecret = "", ""
-				m.Raw = strings.Join([]string{strings.TrimSpace(m.Email), strings.TrimSpace(m.Password), strings.TrimSpace(m.ClientID), strings.TrimSpace(m.RefreshToken)}, "----")
+				m.Raw = sunnyMicrosoftRaw(m.Email, m.Password, m.ClientID, m.RefreshToken)
 			}
 			if gid := uint(intValue(body["group_id"], 0)); gid > 0 {
 				m.GroupID = gid
@@ -869,6 +869,9 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 			return SunnyMailbox{}, err
 		}
 		email, password, chatgptPassword, totpSecret, clientID, refreshToken, accessKey, openaiRT = p["email"], p["password"], p["chatgpt_password"], p["totp_secret"], p["client_id"], p["refresh_token"], p["access_key"], p["openai_rt"]
+		if mailboxType == "microsoft" {
+			raw = sunnyMicrosoftRaw(email, password, clientID, refreshToken)
+		}
 	} else {
 		email, password, chatgptPassword, totpSecret, clientID, refreshToken, accessKey, openaiRT = text(body["email"]), text(body["password"]), text(body["chatgpt_password"]), text(body["totp_secret"]), text(body["client_id"]), text(body["refresh_token"]), text(body["access_key"]), text(body["openai_rt"])
 		if mailboxType == "apple" {
@@ -878,7 +881,7 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 				raw = strings.Join([]string{email, accessKey}, "----")
 			}
 		} else {
-			raw = strings.Join([]string{email, password, clientID, refreshToken}, "----")
+			raw = sunnyMicrosoftRaw(email, password, clientID, refreshToken)
 		}
 	}
 	if email == "" || !strings.Contains(email, "@") || (mailboxType == "apple" && mailboxChannel != "url_api" && accessKey == "") || (mailboxType == "microsoft" && (clientID == "" || refreshToken == "")) {
@@ -1028,7 +1031,11 @@ func parseSunnyMailboxLine(raw string) (map[string]string, error) {
 	if len(parts) < 4 {
 		return nil, fmt.Errorf("格式错误，应为 email----password----client_id----refresh_token")
 	}
-	email, password, clientID, rt := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2]), strings.TrimSpace(parts[3])
+	for index := range parts {
+		parts[index] = strings.TrimSpace(parts[index])
+	}
+	email := parts[0]
+	password, clientID, rt := normalizeSunnyMicrosoftCredentials(parts[1], parts[2], parts[3])
 	if email == "" || !strings.Contains(email, "@") || clientID == "" || rt == "" {
 		return nil, fmt.Errorf("email / client_id / refresh_token 不能为空")
 	}
@@ -1042,6 +1049,54 @@ func parseSunnyMailboxLine(raw string) (map[string]string, error) {
 		}
 	}
 	return out, nil
+}
+
+var sunnyMicrosoftClientIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func isSunnyMicrosoftClientID(value string) bool {
+	return sunnyMicrosoftClientIDPattern.MatchString(strings.TrimSpace(value))
+}
+
+func isSunnyMicrosoftRefreshToken(value string) bool {
+	value = strings.TrimSpace(value)
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "m.c") || strings.HasPrefix(lower, "m.r") || strings.HasPrefix(lower, "0.a") || strings.HasPrefix(lower, "1.a") {
+		return true
+	}
+	return len(value) >= 80 && (strings.ContainsAny(value, "!*$") || strings.Count(value, ".") >= 2)
+}
+
+func normalizeSunnyMicrosoftCredentials(first, second, third string) (password, clientID, refreshToken string) {
+	values := []string{strings.TrimSpace(first), strings.TrimSpace(second), strings.TrimSpace(third)}
+	clientIndex, refreshIndex := -1, -1
+	for index, value := range values {
+		if clientIndex < 0 && isSunnyMicrosoftClientID(value) {
+			clientIndex = index
+		}
+		if refreshIndex < 0 && isSunnyMicrosoftRefreshToken(value) {
+			refreshIndex = index
+		}
+	}
+	if clientIndex >= 0 && refreshIndex >= 0 && clientIndex != refreshIndex {
+		for index, value := range values {
+			switch index {
+			case clientIndex:
+				clientID = value
+			case refreshIndex:
+				refreshToken = value
+			default:
+				password = value
+			}
+		}
+		return password, clientID, refreshToken
+	}
+	return values[0], values[1], values[2]
+}
+
+func sunnyMicrosoftRaw(email, password, clientID, refreshToken string) string {
+	return strings.Join([]string{
+		strings.TrimSpace(email), strings.TrimSpace(password), strings.TrimSpace(clientID), strings.TrimSpace(refreshToken),
+	}, "----")
 }
 
 func normalizeSunnyTOTPSecret(value string) (string, error) {
@@ -1136,7 +1191,7 @@ func sunnyMailboxCredentialLine(mailbox SunnyMailbox) string {
 			return strings.Join([]string{strings.TrimSpace(mailbox.Email), strings.TrimSpace(mailbox.AccessKey)}, "----")
 		}
 	} else if strings.TrimSpace(mailbox.Email) != "" && strings.TrimSpace(mailbox.Password) != "" && strings.TrimSpace(mailbox.ClientID) != "" && strings.TrimSpace(mailbox.RefreshToken) != "" {
-		return strings.Join([]string{strings.TrimSpace(mailbox.Email), strings.TrimSpace(mailbox.Password), strings.TrimSpace(mailbox.ClientID), strings.TrimSpace(mailbox.RefreshToken)}, "----")
+		return sunnyMicrosoftRaw(mailbox.Email, mailbox.Password, mailbox.ClientID, mailbox.RefreshToken)
 	}
 	return strings.TrimSpace(mailbox.Raw)
 }
@@ -1193,7 +1248,11 @@ func (s *Server) sunnyImportMailboxes(w http.ResponseWriter, r *http.Request) {
 		if _, exists := parsed[key]; !exists {
 			order = append(order, key)
 		}
-		p["raw"] = strings.TrimSpace(line)
+		if mailboxType == "microsoft" {
+			p["raw"] = sunnyMicrosoftRaw(p["email"], p["password"], p["client_id"], p["refresh_token"])
+		} else {
+			p["raw"] = strings.TrimSpace(line)
+		}
 		parsed[key] = p
 	}
 	for _, key := range order {
@@ -4764,7 +4823,8 @@ func (s *Server) sunnyImportState(w http.ResponseWriter, r *http.Request) {
 					line = strings.Join([]string{text(m["email"]), text(m["password"]), text(m["client_id"]), text(m["refresh_token"])}, "----")
 				}
 				if p, err := parseSunnyMailboxLine(line); err == nil {
-					mb := SunnyMailbox{GroupID: gid, Email: p["email"], Password: p["password"], ClientID: p["client_id"], RefreshToken: p["refresh_token"], OpenAIRT: fallback(text(m["openai_rt"]), p["openai_rt"]), Raw: line, AccountType: fallback(text(m["account_type"]), "free"), Status: fallback(text(m["status"]), "unused"), Enabled: true, LatestMailJSON: "{}"}
+					canonicalRaw := sunnyMicrosoftRaw(p["email"], p["password"], p["client_id"], p["refresh_token"])
+					mb := SunnyMailbox{GroupID: gid, Email: p["email"], Password: p["password"], ClientID: p["client_id"], RefreshToken: p["refresh_token"], OpenAIRT: fallback(text(m["openai_rt"]), p["openai_rt"]), Raw: canonicalRaw, AccountType: fallback(text(m["account_type"]), "free"), Status: fallback(text(m["status"]), "unused"), Enabled: true, LatestMailJSON: "{}"}
 					s.db.FirstOrCreate(&mb, SunnyMailbox{Email: mb.Email})
 					imported++
 				}
