@@ -934,6 +934,7 @@ class URLAPIICloudReader:
         self.proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
         self.url = _validate_url_api_address(account.access_key)
         self.seen_candidate_keys: set[str] = set()
+        self.candidate_counts: dict[str, int] = {}
 
     def _latest(self, timeout: int = URL_API_REQUEST_TIMEOUT) -> dict[str, Any]:
         response = None
@@ -1060,10 +1061,27 @@ class URLAPIICloudReader:
         while time.monotonic() - started < timeout:
             remaining = max(1, int(timeout - (time.monotonic() - started)))
             message = self._latest(timeout=max(URL_API_REQUEST_TIMEOUT, remaining))
-            fresh = next((item for item in message.get("otp_candidates") or [] if item.get("key") not in self.seen_candidate_keys), None)
-            self.seen_candidate_keys.update(str(item.get("key") or "") for item in message.get("otp_candidates") or [] if item.get("key"))
+            unseen = [item for item in message.get("otp_candidates") or [] if item.get("key") not in self.seen_candidate_keys]
+            fresh = next((item for item in unseen if float(item.get("score") or 0) >= 40), None)
+            if fresh is None:
+                for item in unseen:
+                    key = str(item.get("key") or "")
+                    if key and float(item.get("score") or 0) >= 12:
+                        self.candidate_counts[key] = self.candidate_counts.get(key, 0) + 1
+                fresh = next(
+                    (
+                        item for item in unseen
+                        if float(item.get("score") or 0) >= 12
+                        and self.candidate_counts.get(str(item.get("key") or ""), 0) >= 2
+                    ),
+                    None,
+                )
             code = str((fresh or {}).get("code") or "").strip()
             if re.fullmatch(r"\d{6}", code):
+                key = str((fresh or {}).get("key") or "")
+                if key:
+                    self.seen_candidate_keys.add(key)
+                    self.candidate_counts.pop(key, None)
                 self.log(f"[{self.account.email}] Received OpenAI OTP from url_api iCloud URL ({len(code)} digits, redacted)")
                 return code
             if time.monotonic() - last_notice >= 20:

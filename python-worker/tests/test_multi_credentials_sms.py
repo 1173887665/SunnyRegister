@@ -39,6 +39,38 @@ def test_extract_otp_candidates_supports_common_payloads(payload: str, expected:
     assert not extract_otp_candidates("ChatGPT reference 1234567 and order 12345")
 
 
+def test_url_api_html_prefers_mail_body_code_over_sender_suffix_and_date() -> None:
+    payload = """
+    <section>
+      <summary>
+        <span class="subject">ChatGPT 用の一時ログインコード</span>
+        <span class="date">2026-08-12 20:02:39</span>
+      </summary>
+      <div class="meta">发件人：noreply_at_tm_openai_com_xd721508@icloud.com</div>
+      <div class="body body-rich">この一時検証コードを入力して続行してください:\n536587\n検証コードをリクエストしていない場合、このメールは無視してください。</div>
+    </section>
+    """
+
+    candidates = extract_otp_candidates(payload)
+
+    assert candidates[0]["code"] == "536587"
+    assert candidates[0]["score"] >= 80
+    scores = {item["code"]: item["score"] for item in candidates}
+    assert scores["721508"] < 0
+    assert scores["202608"] < 0
+
+
+def test_url_api_candidate_key_changes_for_same_code_in_new_mail() -> None:
+    first = '<span class="subject">ChatGPT code</span><span class="date">2026-08-12 20:02:39</span><div class="body">Verification code: 536587</div>'
+    second = '<span class="subject">ChatGPT code</span><span class="date">2026-08-12 20:05:10</span><div class="body">Verification code: 536587</div>'
+
+    first_candidate = extract_otp_candidates(first)[0]
+    second_candidate = extract_otp_candidates(second)[0]
+
+    assert first_candidate["code"] == second_candidate["code"] == "536587"
+    assert first_candidate["key"] != second_candidate["key"]
+
+
 def test_url_api_reader_ignores_baseline_and_returns_new_code() -> None:
     account = MailAccount(
         email="user@icloud.com",
@@ -54,6 +86,7 @@ def test_url_api_reader_ignores_baseline_and_returns_new_code() -> None:
     reader.account = account
     reader.log = lambda _message: None
     reader.seen_candidate_keys = set()
+    reader.candidate_counts = {}
     old = extract_otp_candidates("ChatGPT verification code 111111")
     new = extract_otp_candidates("ChatGPT verification code 222222")
     responses = [
@@ -66,6 +99,30 @@ def test_url_api_reader_ignores_baseline_and_returns_new_code() -> None:
     reader.connect()
     with patch("sunny_core.mailbox.time.sleep", return_value=None):
         assert reader.wait_for_code(0, timeout=5) == "222222"
+
+
+def test_url_api_reader_never_returns_low_confidence_sender_number() -> None:
+    account = MailAccount(
+        email="user@icloud.com",
+        password="",
+        client_id="",
+        refresh_token="",
+        raw="user@icloud.com----https://mail.example.test/latest",
+        mailbox_type="apple",
+        mailbox_channel="url_api",
+        access_key="https://mail.example.test/latest",
+    )
+    reader = URLAPIICloudReader.__new__(URLAPIICloudReader)
+    reader.account = account
+    reader.log = lambda _message: None
+    reader.seen_candidate_keys = set()
+    reader.candidate_counts = {}
+    noise = {"code": "721508", "key": "sender-key", "score": -160}
+    reader._latest = Mock(return_value={"otp_candidates": [noise]})
+
+    with patch("sunny_core.mailbox.time.sleep", return_value=None):
+        with pytest.raises(TimeoutError):
+            reader.wait_for_code(0, timeout=0.01)
 
 
 def test_url_api_account_row_distinguishes_password_from_mail_url() -> None:
