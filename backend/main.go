@@ -47,6 +47,8 @@ type Server struct {
 	sessionTTL    time.Duration
 	secureCookies bool
 	production    bool
+	checkoutMu    sync.Mutex
+	checkoutCreds map[string]checkoutSecret
 }
 
 type loginFailure struct {
@@ -70,6 +72,10 @@ func main() {
 		return
 	}
 	db := openDB()
+	if len(os.Args) > 1 && os.Args[1] == "--migrate-only" {
+		log.Printf("PostgreSQL schema migration completed")
+		return
+	}
 	seedProviderDefinitions(db)
 	markInterrupted(db)
 	staticFS := resolveStaticFS()
@@ -87,7 +93,8 @@ func main() {
 		db: db, adminUser: adminUser, adminPass: adminPass, staticFS: staticFS,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), running: map[string]bool{},
 		sessions: map[string]time.Time{}, loginFailures: map[string]*loginFailure{},
-		sessionTTL: 12 * time.Hour, secureCookies: secureCookies, production: production,
+		checkoutCreds: map[string]checkoutSecret{},
+		sessionTTL:    12 * time.Hour, secureCookies: secureCookies, production: production,
 	}
 	s.maintenance = s.loadSunnyMaintenanceConfig()
 	s.recordAudit(AuditLog{LogType: "system", Category: "system", Action: "startup", Status: "success", Summary: "SunnyRegister 后端服务启动", DetailsJSON: dumpJSON(map[string]any{"environment": fallback(os.Getenv("SUNNY_ENV"), "development"), "timezone": time.Local.String()})})
@@ -337,10 +344,6 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 func adminPasswordFile() string {
 	if p := strings.TrimSpace(os.Getenv("ADMIN_PASSWORD_FILE")); p != "" {
 		return p
-	}
-	dbPath := normalizeDatabasePath(os.Getenv("ACCOUNT_MANAGER_DATABASE_URL"))
-	if dbPath != "" {
-		return filepath.Join(filepath.Dir(dbPath), "admin_password.txt")
 	}
 	return filepath.Join("data", "admin_password.txt")
 }

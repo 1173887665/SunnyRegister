@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -552,6 +551,10 @@ func (s *Server) executeTask(taskID string) {
 		s.executeSunnyTrialTask(&task, jsonMap(task.PayloadJSON))
 		return
 	}
+	if task.Type == sunnyCheckoutTaskType {
+		s.executeSunnyCheckoutTask(&task, jsonMap(task.PayloadJSON))
+		return
+	}
 	if s.tryDispatchPythonWorker(&task) {
 		return
 	}
@@ -664,22 +667,20 @@ func (s *Server) checkSunnyWorkerDatabase(workerURL string) error {
 	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
 		return fmt.Errorf("Python Worker 健康检查响应解析失败: %w", err)
 	}
-	workerDB := strings.TrimSpace(fmt.Sprint(health["sunny_db_path"]))
+	workerDB := strings.TrimSpace(fmt.Sprint(health["sunny_db_identity"]))
 	if workerDB == "" {
 		workerDBError := strings.TrimSpace(fmt.Sprint(health["sunny_db_error"]))
 		if workerDBError != "" {
-			return fmt.Errorf("Python Worker 数据库路径读取失败: %s", workerDBError)
+			return fmt.Errorf("Python Worker 数据库配置读取失败: %s", workerDBError)
 		}
-		return fmt.Errorf("Python Worker 版本过旧或尚未重启，健康检查未返回 sunny_db_path；请停止当前 8765 Worker 后重新运行 scripts\\start-python-worker.ps1")
+		return fmt.Errorf("Python Worker 版本过旧或尚未重启，健康检查未返回 sunny_db_identity；请重启 Worker")
 	}
-	backendDB, err := filepath.Abs(normalizeDatabasePath(os.Getenv("ACCOUNT_MANAGER_DATABASE_URL")))
+	backendDB, err := databaseIdentity(configuredDatabaseURL())
 	if err != nil {
-		return fmt.Errorf("Go 后端数据库路径解析失败: %w", err)
+		return fmt.Errorf("Go 后端 PostgreSQL 配置解析失败: %w", err)
 	}
-	backendDB = filepath.Clean(backendDB)
-	workerDB = filepath.Clean(workerDB)
-	if !strings.EqualFold(backendDB, workerDB) {
-		return fmt.Errorf("Python Worker 数据库路径与 Go 后端不一致：后端=%s，Worker=%s。请使用 scripts\\start-python-worker.ps1 启动 Worker，或把两边的 ACCOUNT_MANAGER_DATABASE_URL 设置为同一个 sqlite 数据库后重启", backendDB, workerDB)
+	if backendDB != workerDB {
+		return fmt.Errorf("Python Worker PostgreSQL 配置与 Go 后端不一致：后端=%s，Worker=%s；请让两个服务使用同一个 DATABASE_URL 后重启", backendDB, workerDB)
 	}
 	return nil
 }

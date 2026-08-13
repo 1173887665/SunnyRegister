@@ -83,6 +83,9 @@ func (s *Server) handleSunny(w http.ResponseWriter, r *http.Request, rest string
 	case "tasks":
 		s.sunnyTasks(w, r, parts[1:])
 		return
+	case "checkout":
+		s.sunnyCheckout(w, r, parts[1:])
+		return
 	case "import-state":
 		if r.Method == http.MethodPost {
 			s.sunnyImportState(w, r)
@@ -3124,9 +3127,9 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 		}
 		s.db.Model(&SunnyProxy{}).Select(`
 			COUNT(*) AS total,
-			COALESCE(SUM(CASE WHEN status = 'enabled' AND enabled = 1 THEN 1 ELSE 0 END), 0) AS enabled,
+			COALESCE(SUM(CASE WHEN status = 'enabled' AND enabled = true THEN 1 ELSE 0 END), 0) AS enabled,
 			COALESCE(SUM(CASE WHEN status = 'disabled' THEN 1 ELSE 0 END), 0) AS disabled,
-			COALESCE(SUM(CASE WHEN status = 'invalid' OR (last_check_ok = 0 AND last_checked_at IS NOT NULL) THEN 1 ELSE 0 END), 0) AS invalid`).Scan(&proxyStats)
+			COALESCE(SUM(CASE WHEN status = 'invalid' OR (last_check_ok = false AND last_checked_at IS NOT NULL) THEN 1 ELSE 0 END), 0) AS invalid`).Scan(&proxyStats)
 		var countries []string
 		s.db.Model(&SunnyProxy{}).Where("country <> ''").Distinct().Order("country asc").Pluck("country", &countries)
 		items := make([]map[string]any, 0, len(proxies))
@@ -3980,7 +3983,7 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 		"access_token_status": fallback(row.AccessTokenStatus, "unknown"), "access_token_error": row.AccessTokenError,
 		"access_token_checked_at": nullableTime(row.AccessTokenCheckedAt != nil, sunnyTimePointerValue(row.AccessTokenCheckedAt)),
 		"health_check_status":     fallback(row.HealthCheckStatus, "unknown"), "health_check_error": row.HealthCheckError,
-		"trial_checked_at": nullableTime(trialCheckedAt != nil, pointerTime(trialCheckedAt)),
+		"trial_checked_at":    nullableTime(trialCheckedAt != nil, pointerTime(trialCheckedAt)),
 		"commerce_checked_at": nullableTime(account.CommerceCheckedAt != nil, pointerTime(account.CommerceCheckedAt)),
 	}
 }
@@ -4725,7 +4728,7 @@ func (s *Server) sunnyUsablePhoneCount() int64 {
 		Where("enabled = ?", true).
 		Where("coalesce(status,'available') NOT IN ?", []string{"disabled", "full", "in_use"}).
 		Where("coalesce(success_count,0) < coalesce(max_success,3)").
-		Where("(cooldown_until IS NULL OR cooldown_until = '' OR datetime(cooldown_until) <= datetime('now'))").
+		Where("(cooldown_until IS NULL OR cooldown_until <= ?)", time.Now()).
 		Count(&n)
 	return n
 }

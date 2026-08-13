@@ -14,22 +14,6 @@ from pydantic import BaseModel
 
 os.environ.setdefault("PYTHONUTF8", "1")
 
-
-def _default_account_manager_db_url() -> str:
-    """Return a safe local default DB path.
-
-    Docker images provide ACCOUNT_MANAGER_DATABASE_URL explicitly as /app/data.
-    In local development this file lives under <repo>/python-worker/worker.py, so
-    the matching Go backend database is <repo>/data/account_manager.db.
-    """
-    worker_file = Path(__file__).resolve()
-    if worker_file.parent.name == "python-worker":
-        return "sqlite:///" + str((worker_file.parent.parent / "data" / "account_manager.db")).replace("\\", "/")
-    return "sqlite:////app/data/account_manager.db"
-
-
-os.environ.setdefault("ACCOUNT_MANAGER_DATABASE_URL", _default_account_manager_db_url())
-
 def _secret_value(env_key: str, file_key: str) -> str:
     file_name = os.getenv(file_key, "").strip()
     if file_name:
@@ -82,6 +66,29 @@ class ProbeAccessTokenRequest(BaseModel):
     proxy_url: str = ""
 
 
+class CheckoutRequest(BaseModel):
+    token: str
+    checkout_proxies: list[str]
+    promotion_proxies: list[str]
+    plan: str = "plus"
+    link_type: str = "hosted"
+    country: str = "US"
+    currency: str = "USD"
+    retry_count: int = 3
+    use_promo: bool = True
+    promo_campaign: str = ""
+    promo_country: str = ""
+    promo_code: str = ""
+    workspace_name: str = ""
+    workspace_id: str = ""
+    seat_quantity: int = 5
+    price_interval: str = "month"
+    credit_quantity: int = 13
+    ideal_bank: str = ""
+    pix_tax_id: str = ""
+    pix_auto_kind: str = "cpf"
+
+
 @app.get("/health")
 def health() -> dict:
     with _state_lock:
@@ -90,12 +97,12 @@ def health() -> dict:
                 _processes.pop(task_id, None)
                 _running.discard(task_id)
         running = sorted(_running)
-    sunny_db_path = ""
+    sunny_db_identity = ""
     sunny_db_error = ""
     try:
-        from sunny_core.db import db_path
+        from sunny_core.db import database_identity
 
-        sunny_db_path = str(Path(db_path()).resolve())
+        sunny_db_identity = database_identity()
     except Exception as exc:
         sunny_db_error = str(exc)
     return {
@@ -103,7 +110,7 @@ def health() -> dict:
         "running": running,
         "cwd": os.getcwd(),
         "python": sys.executable,
-        "sunny_db_path": sunny_db_path,
+        "sunny_db_identity": sunny_db_identity,
         "sunny_db_error": sunny_db_error,
         "task_isolation": "subprocess",
         "task_idle_timeout_seconds": TASK_IDLE_TIMEOUT_SECONDS,
@@ -163,6 +170,33 @@ def probe_access_token(req: ProbeAccessTokenRequest, authorization: str | None =
     from sunny_core.access_token_probe import probe_access_token as run_probe
 
     return run_probe(req.access_token, req.proxy_url)
+
+
+@app.post("/checkout/jobs")
+def start_checkout(req: CheckoutRequest, authorization: str | None = Header(default=None)) -> dict:
+    _check_token(authorization)
+    from tools.pay153_checkout.sunny_adapter import start_checkout as run_checkout
+
+    return {"ok": True, "job_id": run_checkout(req.model_dump())}
+
+
+@app.get("/checkout/jobs/{job_id}")
+def checkout_job(job_id: str, authorization: str | None = Header(default=None)) -> dict:
+    _check_token(authorization)
+    from tools.pay153_checkout.sunny_adapter import checkout_status
+
+    result = checkout_status(job_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="checkout job not found")
+    return result
+
+
+@app.post("/checkout/jobs/{job_id}/cancel")
+def cancel_checkout_job(job_id: str, authorization: str | None = Header(default=None)) -> dict:
+    _check_token(authorization)
+    from tools.pay153_checkout.sunny_adapter import cancel_checkout
+
+    return {"ok": cancel_checkout(job_id), "job_id": job_id}
 
 
 @app.on_event("shutdown")
@@ -327,12 +361,12 @@ def _run_task(task_id: str, task_type: str = "") -> None:
 
 def _finish_sunny_task_failed(task_id: str, exc: Exception, tb: str) -> None:
     try:
-        from sunny_core.db import SunnyDB, db_path, now_sql
+        from sunny_core.db import SunnyDB, database_identity, now_sql
 
         db = SunnyDB(task_id)
         try:
             message = f"SunnyRegister Worker 启动任务失败: {exc}"
-            detail = {"traceback": tb[-4000:], "worker_db_path": str(Path(db_path()).resolve())}
+            detail = {"traceback": tb[-4000:], "worker_db_identity": database_identity()}
             db.update_task(status="failed", error=message, result_json='{"error":"worker failed before startup"}', finished_at=now_sql())
             db.event(message, "error", detail=detail)
         finally:

@@ -1,0 +1,688 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+const sunnyCheckoutTaskType = "sunny_checkout_link"
+
+var checkoutProviders = []map[string]string{
+	{"value": "hosted", "label": "Hosted", "hint": "官方支付长链", "country": "US", "currency": "USD"},
+	{"value": "ph_short", "label": "菲律宾短链", "hint": "US Checkout / TR 优惠", "country": "PH", "currency": "PHP"},
+	{"value": "paypal", "label": "PayPal", "hint": "Approve 跳转", "country": "US", "currency": "USD"},
+	{"value": "ideal", "label": "iDEAL", "hint": "荷兰银行支付", "country": "NL", "currency": "EUR"},
+	{"value": "twint", "label": "TWINT", "hint": "瑞士移动支付", "country": "CH", "currency": "CHF"},
+	{"value": "upi", "label": "UPI", "hint": "印度二维码", "country": "IN", "currency": "INR"},
+	{"value": "pix", "label": "PIX", "hint": "巴西即时支付", "country": "BR", "currency": "BRL"},
+	{"value": "momo", "label": "MoMo", "hint": "越南电子钱包", "country": "VN", "currency": "VND"},
+	{"value": "gcash", "label": "GCash", "hint": "菲律宾电子钱包", "country": "PH", "currency": "PHP"},
+	{"value": "kakao", "label": "Kakao Pay", "hint": "韩国 Nicepay 跳转", "country": "KR", "currency": "KRW"},
+}
+
+var checkoutProviderSet = func() map[string]bool {
+	out := map[string]bool{}
+	for _, item := range checkoutProviders {
+		out[item["value"]] = true
+	}
+	return out
+}()
+
+var checkoutCountryCurrency = map[string]string{"US": "USD", "DE": "EUR", "FR": "EUR", "NL": "EUR", "IN": "INR", "BR": "BRL", "VN": "VND", "GB": "GBP", "JP": "JPY", "KR": "KRW", "PH": "PHP", "AU": "AUD", "CA": "CAD", "CH": "CHF"}
+
+type sunnyCheckoutRequest struct {
+	SystemAT         bool     `json:"system_at"`
+	SessionIDs       []uint   `json:"session_ids"`
+	ExternalATs      []string `json:"external_ats"`
+	CheckoutProxies  string   `json:"checkout_proxies"`
+	PromotionProxies string   `json:"promotion_proxies"`
+	Plan             string   `json:"plan"`
+	LinkType         string   `json:"link_type"`
+	Country          string   `json:"country"`
+	Currency         string   `json:"currency"`
+	RetryCount       int      `json:"retry_count"`
+	Concurrency      int      `json:"concurrency"`
+	UsePromo         bool     `json:"use_promo"`
+	PromoCampaign    string   `json:"promo_campaign"`
+	PromoCode        string   `json:"promo_code"`
+	WorkspaceName    string   `json:"workspace_name"`
+	WorkspaceID      string   `json:"workspace_id"`
+	SeatQuantity     int      `json:"seat_quantity"`
+	PriceInterval    string   `json:"price_interval"`
+	CreditQuantity   int      `json:"credit_quantity"`
+	PixTaxID         string   `json:"pix_tax_id"`
+	PixAutoKind      string   `json:"pix_auto_kind"`
+	IdealBank        string   `json:"ideal_bank"`
+	PromoCountry     string   `json:"promo_country"`
+}
+
+type sunnyCheckoutPrecheckRequest struct {
+	SystemAT         bool     `json:"system_at"`
+	SessionIDs       []uint   `json:"session_ids"`
+	ExternalATs      []string `json:"external_ats"`
+	CheckoutProxies  string   `json:"checkout_proxies"`
+	PromotionProxies string   `json:"promotion_proxies"`
+}
+
+type sunnyCheckoutCredential struct {
+	Token     string
+	Email     string
+	SessionID uint
+	External  bool
+}
+
+type checkoutSecret struct {
+	Tokens    map[string]string
+	Checkout  []string
+	Promotion []string
+}
+
+func splitCheckoutPool(raw string) ([]string, error) {
+	lines := strings.FieldsFunc(raw, func(r rune) bool { return r == '\r' || r == '\n' })
+	seen := map[string]bool{}
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || seen[line] {
+			continue
+		}
+		normalized, err := normalizeCheckoutProxy(line)
+		if err != nil {
+			return nil, fmt.Errorf("代理格式无效: %s", line)
+		}
+		if seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		out = append(out, normalized)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("代理池不能为空")
+	}
+	if len(out) > 500 {
+		return nil, fmt.Errorf("代理池最多填写 500 条")
+	}
+	return out, nil
+}
+
+func normalizeCheckoutProxy(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", fmt.Errorf("empty proxy")
+	}
+	if !strings.Contains(value, "://") {
+		parts := strings.Split(value, ":")
+		if len(parts) >= 4 {
+			if _, err := strconv.Atoi(parts[1]); err == nil {
+				value = fmt.Sprintf("http://%s:%s@%s:%s", url.QueryEscape(parts[2]), url.QueryEscape(strings.Join(parts[3:], ":")), parts[0], parts[1])
+			} else if _, err := strconv.Atoi(parts[len(parts)-1]); err == nil {
+				value = fmt.Sprintf("http://%s:%s@%s:%s", url.QueryEscape(parts[0]), url.QueryEscape(strings.Join(parts[1:len(parts)-2], ":")), parts[len(parts)-2], parts[len(parts)-1])
+			} else {
+				return "", fmt.Errorf("invalid proxy")
+			}
+		} else {
+			value = "http://" + value
+		}
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Hostname() == "" || u.Port() == "" {
+		return "", fmt.Errorf("invalid proxy")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "socks5", "socks5h":
+	default:
+		return "", fmt.Errorf("unsupported proxy scheme")
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || port < 1 || port > 65535 {
+		return "", fmt.Errorf("invalid proxy port")
+	}
+	return u.String(), nil
+}
+
+func checkoutProviderDefaults(value string) (string, string) {
+	for _, item := range checkoutProviders {
+		if item["value"] == value {
+			return item["country"], item["currency"]
+		}
+	}
+	return "US", "USD"
+}
+
+func normalizeCheckoutRequest(in sunnyCheckoutRequest) (sunnyCheckoutRequest, []string, []string, error) {
+	in.Plan = strings.ToLower(strings.TrimSpace(in.Plan))
+	if in.Plan == "" {
+		in.Plan = "plus"
+	}
+	if !map[string]bool{"plus": true, "pro": true, "team": true, "codex_low": true}[in.Plan] {
+		return in, nil, nil, fmt.Errorf("不支持的套餐")
+	}
+	in.LinkType = strings.ToLower(strings.TrimSpace(in.LinkType))
+	if !checkoutProviderSet[in.LinkType] {
+		return in, nil, nil, fmt.Errorf("不支持的支付路径")
+	}
+	in.Country = strings.ToUpper(strings.TrimSpace(in.Country))
+	in.Currency = strings.ToUpper(strings.TrimSpace(in.Currency))
+	if in.Country == "" || in.Currency == "" {
+		in.Country, in.Currency = checkoutProviderDefaults(in.LinkType)
+	}
+	if checkoutCountryCurrency[in.Country] == "" {
+		return in, nil, nil, fmt.Errorf("不支持的国家/地区")
+	}
+	if in.RetryCount < 1 {
+		in.RetryCount = 10
+	}
+	if in.RetryCount > 50 {
+		in.RetryCount = 50
+	}
+	if in.Concurrency < 1 {
+		in.Concurrency = 3
+	}
+	if in.Concurrency > 20 {
+		in.Concurrency = 20
+	}
+	if in.SeatQuantity < 2 {
+		in.SeatQuantity = 5
+	}
+	if in.CreditQuantity < 1 {
+		in.CreditQuantity = 13
+	}
+	in.PromoCountry = strings.ToUpper(strings.TrimSpace(in.PromoCountry))
+	if in.PromoCountry != "" && checkoutCountryCurrency[in.PromoCountry] == "" && in.PromoCountry != "TR" {
+		return in, nil, nil, fmt.Errorf("不支持的 Promotion 国家/地区")
+	}
+	if in.LinkType == "ph_short" && in.Plan != "plus" {
+		return in, nil, nil, fmt.Errorf("菲律宾短链仅支持 Plus")
+	}
+	if in.LinkType == "pix" {
+		digits := regexp.MustCompile(`\D`).ReplaceAllString(in.PixTaxID, "")
+		if digits != "" && len(digits) != 11 && len(digits) != 14 {
+			return in, nil, nil, fmt.Errorf("PIX 需要填写 11 位 CPF 或 14 位 CNPJ")
+		}
+		in.PixTaxID = digits
+	}
+	checkout, err := splitCheckoutPool(in.CheckoutProxies)
+	if err != nil {
+		return in, nil, nil, fmt.Errorf("Checkout 代理池: %w", err)
+	}
+	promotion, err := splitCheckoutPool(in.PromotionProxies)
+	if err != nil {
+		return in, nil, nil, fmt.Errorf("Promotion 代理池: %w", err)
+	}
+	return in, checkout, promotion, nil
+}
+
+func checkoutCredentialID() string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d-%d", time.Now().UnixNano(), len(checkoutProviders))))
+	return base64.RawURLEncoding.EncodeToString(sum[:])[:24]
+}
+
+func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []string) {
+	if len(parts) == 1 && parts[0] == "providers" && r.Method == http.MethodGet {
+		writeJSON(w, 200, map[string]any{"items": checkoutProviders, "countries": checkoutCountryCurrency})
+		return
+	}
+	if len(parts) == 1 && parts[0] == "precheck" && r.Method == http.MethodPost {
+		var body sunnyCheckoutPrecheckRequest
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "请求格式无效")
+			return
+		}
+		checkout, err := splitCheckoutPool(body.CheckoutProxies)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "Checkout 代理池: "+err.Error())
+			return
+		}
+		promotion, err := splitCheckoutPool(body.PromotionProxies)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "Promotion 代理池: "+err.Error())
+			return
+		}
+		type candidate struct {
+			Email, Token string
+			SessionID    uint
+		}
+		candidates := []candidate{}
+		if body.SystemAT {
+			var sessions []SunnySession
+			s.db.Where("id IN ?", body.SessionIDs).Find(&sessions)
+			var accounts []SunnyAccount
+			s.db.Select("email", "access_token").Where("email IN ?", func() []string {
+				out := make([]string, 0, len(sessions))
+				for _, row := range sessions {
+					out = append(out, row.Email)
+				}
+				return out
+			}()).Find(&accounts)
+			accountTokens := map[string]string{}
+			for _, account := range accounts {
+				accountTokens[sunnyEmailKey(account.Email)] = account.AccessToken
+			}
+			for _, row := range sessions {
+				candidates = append(candidates, candidate{Email: row.Email, SessionID: row.ID, Token: firstText(row.AccessToken, sunnyAccessTokenFromSessionJSON(row.SessionJSON), accountTokens[sunnyEmailKey(row.Email)])})
+			}
+		} else {
+			for _, raw := range body.ExternalATs {
+				token, email := parseCheckoutExternalAT(raw)
+				candidates = append(candidates, candidate{Email: email, Token: token})
+			}
+		}
+		items := make([]any, 0, len(candidates))
+		for _, item := range candidates {
+			if item.Token == "" {
+				items = append(items, map[string]any{"email": item.Email, "session_id": item.SessionID, "status": "invalid", "error": "AT 为空、格式无效或已过期"})
+				continue
+			}
+			probeCtx := context.WithValue(context.Background(), sunnyTrialProxyContextKey{}, checkout[0])
+			_ = promotion
+			commerce := sunnyCheckCommerce(probeCtx, item.Token)
+			eligibility, message, invalid, trialErr := checkSunnyTrialEligibility(probeCtx, item.Token)
+			if trialErr != nil {
+				message = trialErr.Error()
+			}
+			status := "checked"
+			if invalid {
+				status = "invalid"
+			}
+			trial := sunnyTrialUnknown
+			if eligibility {
+				trial = sunnyTrialEligible
+			} else if message != "" {
+				trial = sunnyTrialIneligible
+			}
+			items = append(items, map[string]any{"email": item.Email, "session_id": item.SessionID, "status": status, "trial_eligibility": trial, "trial_message": message, "checkout_kind": commerce.CheckoutKind, "payment_methods": commerce.PaymentMethods, "checkout_error": commerce.CheckoutError})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+		return
+	}
+	if len(parts) == 0 && r.Method == http.MethodPost {
+		var body sunnyCheckoutRequest
+		if err := json.NewDecoder(io.LimitReader(r.Body, 2<<20)).Decode(&body); err != nil {
+			writeError(w, 400, "请求格式无效")
+			return
+		}
+		body, checkout, promotion, err := normalizeCheckoutRequest(body)
+		if err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		creds := []sunnyCheckoutCredential{}
+		if body.SystemAT {
+			if len(body.SessionIDs) == 0 {
+				writeError(w, 400, "请选择至少一个账户")
+				return
+			}
+			var sessions []SunnySession
+			s.db.Where("id IN ?", body.SessionIDs).Find(&sessions)
+			accounts := map[string]string{}
+			var accountRows []SunnyAccount
+			emails := make([]string, 0, len(sessions))
+			for _, sess := range sessions {
+				emails = append(emails, sess.Email)
+			}
+			if len(emails) > 0 {
+				s.db.Select("email", "access_token").Where("email IN ?", emails).Find(&accountRows)
+				for _, account := range accountRows {
+					accounts[sunnyEmailKey(account.Email)] = account.AccessToken
+				}
+			}
+			for _, sess := range sessions {
+				token := firstText(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON), accounts[sunnyEmailKey(sess.Email)])
+				if token != "" {
+					creds = append(creds, sunnyCheckoutCredential{Token: token, Email: sess.Email, SessionID: sess.ID})
+				}
+			}
+		} else {
+			for _, raw := range body.ExternalATs {
+				token, email := parseCheckoutExternalAT(raw)
+				if token != "" {
+					creds = append(creds, sunnyCheckoutCredential{Token: token, Email: email, External: true})
+				}
+			}
+			if len(creds) == 0 {
+				writeError(w, 400, "请导入至少一个有效 AT")
+				return
+			}
+		}
+		if len(creds) == 0 {
+			writeError(w, 400, "所选账户没有可用 AT")
+			return
+		}
+		id := checkoutCredentialID()
+		values := map[string]string{}
+		for i, c := range creds {
+			values[fmt.Sprintf("%d", i)] = c.Token
+		}
+		s.checkoutMu.Lock()
+		s.checkoutCreds[id] = checkoutSecret{Tokens: values, Checkout: checkout, Promotion: promotion}
+		s.checkoutMu.Unlock()
+		payload := map[string]any{"credential_id": id, "credentials": make([]map[string]any, len(creds)), "plan": body.Plan, "link_type": body.LinkType, "country": body.Country, "currency": body.Currency, "retry_count": body.RetryCount, "concurrency": body.Concurrency, "use_promo": body.UsePromo, "promo_campaign": body.PromoCampaign, "promo_country": body.PromoCountry, "promo_code": body.PromoCode, "workspace_name": body.WorkspaceName, "workspace_id": body.WorkspaceID, "seat_quantity": body.SeatQuantity, "price_interval": body.PriceInterval, "credit_quantity": body.CreditQuantity, "pix_tax_id": body.PixTaxID, "pix_auto_kind": body.PixAutoKind, "ideal_bank": body.IdealBank}
+		items := payload["credentials"].([]map[string]any)
+		for i, c := range creds {
+			items[i] = map[string]any{"index": i, "email": c.Email, "session_id": c.SessionID, "external": c.External}
+		}
+		task := s.createTask(sunnyCheckoutTaskType, "chatgpt", payload, len(creds))
+		writeJSON(w, http.StatusAccepted, serializeTask(task))
+		return
+	}
+	writeError(w, 404, "not found")
+}
+
+var checkoutATEmail = regexp.MustCompile(`(?i)[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}`)
+
+func parseCheckoutExternalAT(raw string) (string, string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	if strings.HasPrefix(raw, "{") {
+		var v map[string]any
+		if json.Unmarshal([]byte(raw), &v) == nil {
+			for _, k := range []string{"access_token", "accessToken", "token"} {
+				if t := strings.TrimSpace(text(v[k])); t != "" {
+					return t, text(v["email"])
+				}
+			}
+		}
+	}
+	parts := strings.Fields(raw)
+	token := parts[0]
+	email := ""
+	if m := checkoutATEmail.FindString(raw); m != "" {
+		email = m
+	}
+	if !strings.Contains(token, ".") && !strings.HasPrefix(token, "eyJ") {
+		return "", ""
+	}
+	claims := decodeJWTPayload(token)
+	if exp := intValue(claims["exp"], 0); exp > 0 && time.Unix(int64(exp), 0).Before(time.Now()) {
+		return "", email
+	}
+	if email == "" {
+		email = firstText(claims["email"], claims["https://api.openai.com/profile"])
+		if profile, ok := claims["https://api.openai.com/profile"].(map[string]any); ok {
+			email = firstText(email, profile["email"])
+		}
+	}
+	return token, email
+}
+
+func (s *Server) checkoutCredential(taskID string, index int) string {
+	s.checkoutMu.Lock()
+	defer s.checkoutMu.Unlock()
+	values := s.checkoutCreds[taskID]
+	return values.Tokens[fmt.Sprintf("%d", index)]
+}
+
+func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
+	now := time.Now()
+	task.Status = TaskRunning
+	task.StartedAt.Valid = true
+	task.StartedAt.Time = now
+	s.db.Save(task)
+	credentialID := text(payload["credential_id"])
+	defer func() {
+		s.checkoutMu.Lock()
+		delete(s.checkoutCreds, credentialID)
+		s.checkoutMu.Unlock()
+	}()
+	var rows []map[string]any
+	if raw, ok := payload["credentials"].([]any); ok {
+		for _, v := range raw {
+			if m, ok := v.(map[string]any); ok {
+				rows = append(rows, m)
+			}
+		}
+	}
+	s.checkoutMu.Lock()
+	secret := s.checkoutCreds[credentialID]
+	s.checkoutMu.Unlock()
+	if len(secret.Tokens) == 0 || len(secret.Checkout) == 0 || len(secret.Promotion) == 0 {
+		s.finishTask(task, TaskFailed, "临时提链凭据已不存在；服务重启后的临时任务不能恢复，请重新提交", map[string]any{"requested": len(rows), "success": 0, "failed": len(rows), "items": []any{}})
+		return
+	}
+	result := map[string]any{"requested": len(rows), "success": 0, "failed": 0, "items": []any{}, "errors": []any{}}
+	var mu sync.Mutex
+	sem := make(chan struct{}, intValue(payload["concurrency"], 3))
+	var wg sync.WaitGroup
+	for idx, row := range rows {
+		idx, row := idx, row
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-time.After(500 * time.Millisecond):
+				if s.taskCancelled(task) {
+					return
+				}
+				sem <- struct{}{}
+			}
+			defer func() { <-sem }()
+			token := s.checkoutCredential(credentialID, intValue(row["index"], idx))
+			item := s.runSunnyCheckoutAttempt(task, payload, row, token, secret)
+			mu.Lock()
+			result["items"] = append(result["items"].([]any), item)
+			if text(item["status"]) == "succeeded" {
+				result["success"] = intValue(result["success"], 0) + 1
+			} else {
+				result["failed"] = intValue(result["failed"], 0) + 1
+			}
+			task.ProgressCurrent++
+			task.SuccessCount = intValue(result["success"], 0)
+			task.ErrorCount = intValue(result["failed"], 0)
+			s.db.Save(task)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if s.taskCancelled(task) {
+		task.Status = TaskCancelled
+		task.Error = "用户已停止提链任务"
+		task.FinishedAt.Valid = true
+		task.FinishedAt.Time = time.Now()
+		s.db.Save(task)
+		s.appendTaskEvent(task.ID, task.Error, "log", "warning", nil)
+		return
+	}
+	task.ResultJSON = dumpJSON(result)
+	task.Status = TaskSucceeded
+	if intValue(result["success"], 0) == 0 {
+		task.Status = TaskFailed
+	}
+	task.FinishedAt.Valid = true
+	task.FinishedAt.Time = time.Now()
+	s.db.Save(task)
+}
+
+func (s *Server) runSunnyCheckoutAttempt(task *Task, payload, row map[string]any, token string, secret checkoutSecret) map[string]any {
+	email := text(row["email"])
+	if token == "" {
+		return map[string]any{"email": email, "status": "failed", "error": "AT 为空或已失效"}
+	}
+	item, err := s.requestSunnyCheckout(context.Background(), task, token, payload, secret.Checkout, secret.Promotion)
+	if err != nil {
+		message := sanitizeCheckoutError(err.Error())
+		s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 提链失败", email), "log", "warning", map[string]any{"email": email, "error": message})
+		return map[string]any{"email": email, "status": "failed", "error": message}
+	}
+	item["email"] = email
+	item["status"] = "succeeded"
+	s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 提链成功", email), "checkout_result", "info", map[string]any{"email": email, "link_type": payload["link_type"]})
+	return item
+}
+
+func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token string, payload map[string]any, checkoutProxies, promotionProxies []string) (map[string]any, error) {
+	body := map[string]any{
+		"token": token, "checkout_proxies": checkoutProxies, "promotion_proxies": promotionProxies,
+		"plan": payload["plan"], "link_type": payload["link_type"], "country": payload["country"], "currency": payload["currency"],
+		"retry_count": payload["retry_count"], "use_promo": payload["use_promo"], "promo_campaign": payload["promo_campaign"], "promo_country": payload["promo_country"],
+		"promo_code": payload["promo_code"], "workspace_name": payload["workspace_name"], "workspace_id": payload["workspace_id"], "seat_quantity": payload["seat_quantity"],
+		"price_interval": payload["price_interval"], "credit_quantity": payload["credit_quantity"], "ideal_bank": payload["ideal_bank"], "pix_tax_id": payload["pix_tax_id"], "pix_auto_kind": payload["pix_auto_kind"],
+	}
+	data, _ := json.Marshal(body)
+	workerURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PYTHON_WORKER_URL")), "/")
+	if workerURL == "" {
+		workerURL = "http://127.0.0.1:8765"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, workerURL+"/checkout/jobs", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if workerToken := secretValue("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE"); workerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+workerToken)
+	}
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("无法连接提链引擎: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("提链引擎 HTTP %d", resp.StatusCode)
+	}
+	var started map[string]any
+	if json.Unmarshal(raw, &started) != nil || text(started["job_id"]) == "" {
+		return nil, fmt.Errorf("提链引擎返回格式无效")
+	}
+	jobID := text(started["job_id"])
+	for poll := 0; poll < 800; poll++ {
+		if sCancelled := task != nil && task.ID != "" && task.Status == TaskCancelled; sCancelled || (task != nil && s.taskCancelled(task)) {
+			_ = cancelSunnyCheckoutWorkerJob(ctx, workerURL, jobID)
+			return nil, fmt.Errorf("任务已取消")
+		}
+		timer := time.NewTimer(1500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			_ = cancelSunnyCheckoutWorkerJob(context.Background(), workerURL, jobID)
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		status, err := sunnyCheckoutWorkerStatus(ctx, client, workerURL, jobID)
+		if err != nil {
+			continue
+		}
+		switch text(status["status"]) {
+		case "done":
+			if result, ok := status["result"].(map[string]any); ok {
+				return result, nil
+			}
+			return nil, fmt.Errorf("提链引擎未返回结果")
+		case "error":
+			return nil, fmt.Errorf("%s", fallback(text(status["error"]), "提链引擎执行失败"))
+		case "cancelled":
+			return nil, fmt.Errorf("任务已取消")
+		}
+	}
+	_ = cancelSunnyCheckoutWorkerJob(context.Background(), workerURL, jobID)
+	return nil, fmt.Errorf("提链引擎执行超时")
+}
+
+func sunnyCheckoutWorkerStatus(ctx context.Context, client *http.Client, workerURL, jobID string) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, workerURL+"/checkout/jobs/"+url.PathEscape(jobID), nil)
+	if err != nil {
+		return nil, err
+	}
+	if token := secretValue("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var result map[string]any
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&result) != nil {
+		return nil, fmt.Errorf("提链引擎状态读取失败")
+	}
+	return result, nil
+}
+
+func cancelSunnyCheckoutWorkerJob(ctx context.Context, workerURL, jobID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, workerURL+"/checkout/jobs/"+url.PathEscape(jobID)+"/cancel", nil)
+	if err != nil {
+		return err
+	}
+	if token := secretValue("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
+var checkoutSecretPattern = regexp.MustCompile(`(?i)(https?://)[^\s/@:]+:[^\s/@]+@|eyJ[A-Za-z0-9_.-]{40,}`)
+
+func sanitizeCheckoutError(value string) string {
+	clean := checkoutSecretPattern.ReplaceAllStringFunc(value, func(match string) string {
+		if strings.HasPrefix(strings.ToLower(match), "http") {
+			return strings.Split(match, "://")[0] + "://[PROXY]@"
+		}
+		return "[TOKEN]"
+	})
+	if len(clean) > 600 {
+		clean = clean[:600]
+	}
+	return clean
+}
+
+func extractSunnyCheckoutResult(v map[string]any, provider string) map[string]any {
+	out := map[string]any{"link_type": provider, "checkout_session_id": "", "payment_link": "", "qr_data": "", "qr_image": "", "raw_provider": ""}
+	var walk func(any)
+	walk = func(x any) {
+		switch n := x.(type) {
+		case map[string]any:
+			for k, val := range n {
+				lk := strings.ToLower(k)
+				if s, ok := val.(string); ok {
+					if strings.Contains(lk, "checkout_session") || lk == "session_id" {
+						out["checkout_session_id"] = s
+					}
+					if strings.Contains(lk, "qr") && strings.TrimSpace(s) != "" {
+						out["qr_data"] = s
+					}
+					if strings.Contains(lk, "url") || strings.Contains(lk, "link") || strings.Contains(lk, "redirect") {
+						if strings.HasPrefix(s, "http") {
+							out["payment_link"] = s
+						}
+					}
+				}
+				walk(val)
+			}
+		case []any:
+			for _, v := range n {
+				walk(v)
+			}
+		}
+	}
+	walk(v)
+	if text(out["payment_link"]) == "" {
+		sid := text(out["checkout_session_id"])
+		if sid != "" {
+			out["payment_link"] = "https://chatgpt.com/checkout/openai_llc/" + sid
+		}
+	}
+	if provider == "ph_short" && text(out["payment_link"]) != "" {
+		out["payment_link"] = strings.Replace(text(out["payment_link"]), "/checkout/openai_llc/", "/checkout/", 1)
+	}
+	return out
+}
