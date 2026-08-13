@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -145,6 +146,81 @@ _SENSITIVE_EVENT_KEYS = {
     "password", "secret", "api_key", "admin_token", "authorization", "otp", "code",
 }
 
+_EVENT_BRACKET_EMAIL_RE = re.compile(r"^\s*\[([^\]\s]+@[^\]\s]+)\]")
+_EVENT_INLINE_EMAIL_RE = re.compile(r"\b[\w.%+\-]+@[\w.\-]+\.[A-Za-z]{2,}\b", re.IGNORECASE)
+_EVENT_MODULE_RE = re.compile(r"^\s*(?:\[[^\]\s]+@[^\]\s]+\]\s*)?\[([^\]]+)\]")
+_EVENT_BEARER_RE = re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/\-]{12,}")
+_EVENT_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+_EVENT_OTP_RE = re.compile(r"(?i)(OTP|verification code|received code|验证码)(\s*[:=]?\s*)\d{4,8}")
+_EVENT_URL_CREDENTIAL_RE = re.compile(r"(?i)\b(https?|socks5h?)://[^/@\s]+@")
+
+
+def _normalize_event_module(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    aliases = {
+        "认证": "auth", "登录": "auth", "注册": "auth", "oauth": "auth", "auth": "auth",
+        "邮箱": "mailbox", "邮件": "mailbox", "mail": "mailbox", "email": "mailbox", "mailbox": "mailbox",
+        "接码": "sms", "phone": "sms", "mobile": "sms", "sms": "sms",
+        "session": "session", "token": "session", "at": "session", "rt": "session",
+        "代理": "proxy", "proxy": "proxy", "反代": "sub2api", "sub2api": "sub2api",
+        "试用": "trial", "trial": "trial", "checkout": "checkout", "提链": "checkout",
+        "订阅": "subscription", "subscription": "subscription", "测活": "health", "health": "health",
+        "系统": "system", "system": "system", "": "system",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _sanitize_event_message(value: Any) -> str:
+    message = str(value or "")
+    message = _EVENT_BEARER_RE.sub(r"\1[REDACTED]", message)
+    message = _EVENT_JWT_RE.sub("[REDACTED_JWT]", message)
+    message = _EVENT_OTP_RE.sub(r"\1\2[REDACTED]", message)
+    return _EVENT_URL_CREDENTIAL_RE.sub(r"\1://[REDACTED]@", message)
+
+
+def _event_metadata(message: str, typ: str, detail: dict[str, Any], context: dict[str, Any] | None = None) -> dict[str, Any]:
+    metadata = dict(context or {})
+    email = str(metadata.get("email") or detail.get("email") or "").strip()
+    if not email:
+        match = _EVENT_BRACKET_EMAIL_RE.search(message) or _EVENT_INLINE_EMAIL_RE.search(message)
+        email = str(match.group(1) if match and match.lastindex else match.group(0) if match else "").strip()
+    module = str(metadata.get("module") or detail.get("module") or "").strip()
+    if not module:
+        match = _EVENT_MODULE_RE.search(message)
+        module = str(match.group(1) if match else "")
+    module = _normalize_event_module(module)
+    if module == "system":
+        lowered = message.lower()
+        for candidate, words in (
+            ("sub2api", ("sub2api", "反代")), ("trial", ("试用", "trial")),
+            ("checkout", ("checkout", "支付方式", "提链")), ("health", ("测活", "封禁")),
+            ("mailbox", ("邮箱", "邮件", "mail", "otp")), ("sms", ("接码", "手机号", "phone", "sms")),
+            ("session", ("session", "access token", "refresh token")), ("proxy", ("代理", "proxy")),
+            ("auth", ("登录", "注册", "认证", "oauth", "login", "register")),
+        ):
+            if any(word in lowered for word in words):
+                module = candidate
+                break
+    scope = str(metadata.get("scope") or detail.get("scope") or "").strip().lower()
+    if email:
+        scope = "account"
+    elif scope == "selected":
+        scope = "account"
+    else:
+        scope = scope or "global"
+    subject_type = str(metadata.get("subject_type") or ("account" if email else "system"))
+    return {
+        "scope": scope,
+        "subject_type": subject_type,
+        "subject_key": email.lower(),
+        "email": email,
+        "account_id": int(metadata.get("account_id") or detail.get("account_id") or 0),
+        "mailbox_id": int(metadata.get("mailbox_id") or detail.get("mailbox_id") or 0),
+        "module": module,
+        "action": str(metadata.get("action") or detail.get("action") or f"{module}.event"),
+        "operation_id": str(metadata.get("operation_id") or detail.get("operation_id") or ""),
+    }
+
 
 def _sanitize_event_detail(value: Any, key: str = "") -> Any:
     normalized = key.lower().strip()
@@ -185,6 +261,17 @@ class SunnyDB:
                     raise RuntimeError(f"PostgreSQL schema is not initialized: missing table {table}; start the Go backend first")
             return
         wanted = {
+            "task_events": {
+                "scope": "text DEFAULT 'global'",
+                "subject_type": "text DEFAULT 'system'",
+                "subject_key": "text DEFAULT ''",
+                "email": "text DEFAULT ''",
+                "account_id": "integer DEFAULT 0",
+                "mailbox_id": "integer DEFAULT 0",
+                "module": "text DEFAULT ''",
+                "action": "text DEFAULT ''",
+                "operation_id": "text DEFAULT ''",
+            },
             "sunny_accounts": {
                 "mailbox_id": "integer DEFAULT 0",
                 "group_name": "text DEFAULT ''",
@@ -346,15 +433,76 @@ class SunnyDB:
             raise RuntimeError(f"task not found: {self.task_id}")
         return dict(row)
 
-    def event(self, message: str, level: str = "info", typ: str = "log", detail: dict[str, Any] | None = None) -> None:
+    def event(
+        self,
+        message: str,
+        level: str = "info",
+        typ: str = "log",
+        detail: dict[str, Any] | None = None,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> None:
         created_at = now_sql()
+        raw_message = str(message)
+        sanitized_message = _sanitize_event_message(raw_message)
         event_detail = _sanitize_event_detail(dict(detail or {}))
         event_detail.setdefault("local_created_at", created_at)
-        self.conn.execute(
-            "insert into task_events(task_id,type,level,message,detail_json,created_at) values(?,?,?,?,?,?)",
-            (self.task_id, typ, level, str(message), json.dumps(event_detail, ensure_ascii=False), created_at),
+        metadata = _event_metadata(raw_message, typ, event_detail, context)
+        if not metadata["operation_id"] and metadata["email"]:
+            metadata["operation_id"] = f"{self.task_id}:{metadata['subject_key']}:{metadata['module']}"
+        event_detail.update({key: value for key, value in metadata.items() if key in {"scope", "email", "module", "action", "operation_id"} and value not in (None, "")})
+        event_detail = _sanitize_event_detail(event_detail)
+        values = (
+            self.task_id, typ, level, sanitized_message, metadata["scope"], metadata["subject_type"],
+            metadata["subject_key"], metadata["email"], metadata["account_id"], metadata["mailbox_id"],
+            metadata["module"], metadata["action"], metadata["operation_id"],
+            json.dumps(event_detail, ensure_ascii=False), created_at,
         )
+        if self.postgres or self._task_event_structured_columns_available():
+            self.conn.execute(
+                "insert into task_events(task_id,type,level,message,scope,subject_type,subject_key,email,account_id,mailbox_id,module,action,operation_id,detail_json,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                values,
+            )
+        else:
+            self.conn.execute(
+                "insert into task_events(task_id,type,level,message,detail_json,created_at) values(?,?,?,?,?,?)",
+                (self.task_id, typ, level, sanitized_message, json.dumps(event_detail, ensure_ascii=False), created_at),
+            )
         self.conn.commit()
+
+    def _task_event_structured_columns_available(self) -> bool:
+        cached = getattr(self, "_structured_task_events", None)
+        if cached is None:
+            columns = {str(row["name"]) for row in self.conn.execute("pragma table_info(task_events)").fetchall()}
+            cached = {"email", "module", "action", "scope", "subject_key"}.issubset(columns)
+            self._structured_task_events = cached
+        return bool(cached)
+
+    def account_event(
+        self,
+        email: str,
+        module: str,
+        action: str,
+        message: str,
+        level: str = "info",
+        detail: dict[str, Any] | None = None,
+        *,
+        account_id: int = 0,
+        mailbox_id: int = 0,
+        operation_id: str = "",
+        typ: str = "log",
+    ) -> None:
+        self.event(
+            message,
+            level,
+            typ,
+            detail,
+            context={
+                "email": email, "module": module, "action": action, "scope": "account",
+                "subject_type": "account", "account_id": account_id, "mailbox_id": mailbox_id,
+                "operation_id": operation_id,
+            },
+        )
 
     def update_task(self, **fields: Any) -> None:
         if not fields:

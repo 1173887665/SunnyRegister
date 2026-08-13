@@ -445,7 +445,7 @@ func (s *Server) executeSunnyAccessTokenCheckTask(task *Task, payload map[string
 		case "valid":
 			result["valid"] = result["valid"].(int) + 1
 			s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "valid", "access_token_error": "", "access_token_checked_at": now})
-			s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s：Access Token 有效", outcome.Email), "log", "info", item)
+			s.appendAccountTaskEvent(task.ID, outcome.Email, "session", "access_token.valid", fmt.Sprintf("账户 %s：Access Token 有效", outcome.Email), "info", item)
 		case "invalid":
 			result["invalid"] = result["invalid"].(int) + 1
 			s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "invalid", "access_token_error": outcome.Error, "access_token_checked_at": now})
@@ -454,11 +454,11 @@ func (s *Server) executeSunnyAccessTokenCheckTask(task *Task, payload map[string
 				seenAccounts[outcome.AccountID] = true
 				invalidAccounts = append(invalidAccounts, outcome.AccountID)
 			}
-			s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s：Access Token 无效，%s", outcome.Email, outcome.Error), "log", "warning", item)
+			s.appendAccountTaskEvent(task.ID, outcome.Email, "session", "access_token.invalid", fmt.Sprintf("账户 %s：Access Token 无效，%s", outcome.Email, outcome.Error), "warning", item)
 		default:
 			result["failed"] = result["failed"].(int) + 1
 			s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "probe_failed", "access_token_error": outcome.Error, "access_token_checked_at": now})
-			s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s：AT 检测失败，%s", outcome.Email, outcome.Error), "log", "warning", item)
+			s.appendAccountTaskEvent(task.ID, outcome.Email, "session", "access_token.check_failed", fmt.Sprintf("账户 %s：AT 检测失败，%s", outcome.Email, outcome.Error), "warning", item)
 		}
 		items = append(items, item)
 		task.ProgressCurrent++

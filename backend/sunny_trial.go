@@ -645,9 +645,9 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 				result["failed"] = result["failed"].(int) + 1
 				item["status"], item["error"] = "failed", updateErr.Error()
 			} else if commerceError != "" {
-				s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 商业状态检测部分完成：%s", outcome.Email, commerceError), "log", "warning", nil)
+				s.appendAccountTaskEvent(task.ID, outcome.Email, "trial", "commerce.check_partial", fmt.Sprintf("账户 %s 商业状态检测部分完成：%s", outcome.Email, commerceError), "warning", map[string]any{"error": commerceError})
 			} else {
-				s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 商业状态检测完成：试用=%s，Checkout=%s，支付方式=%s", outcome.Email, eligibility, checkoutKind, strings.Join(outcome.PaymentMethods, ",")), "log", "info", nil)
+				s.appendAccountTaskEvent(task.ID, outcome.Email, "trial", "commerce.checked", fmt.Sprintf("账户 %s 商业状态检测完成：试用=%s，Checkout=%s，支付方式=%s", outcome.Email, eligibility, checkoutKind, strings.Join(outcome.PaymentMethods, ",")), "info", map[string]any{"trial_eligibility": eligibility, "checkout_kind": checkoutKind, "payment_methods": outcome.PaymentMethods})
 			}
 			if outcome.InvalidToken {
 				errorMessage := fallback(strings.Join(compactStrings(outcome.TrialError, outcome.CheckoutError), "; "), "Access Token 无效或已过期")

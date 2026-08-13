@@ -168,13 +168,22 @@ type Task struct {
 func (Task) TableName() string { return "tasks" }
 
 type TaskEvent struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`
-	TaskID     string    `gorm:"index" json:"task_id"`
-	Type       string    `gorm:"index;default:log" json:"type"`
-	Level      string    `json:"level"`
-	Message    string    `gorm:"type:text" json:"message"`
-	DetailJSON string    `gorm:"type:text;default:'{}'" json:"detail_json"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	TaskID      string    `gorm:"index" json:"task_id"`
+	Type        string    `gorm:"index;default:log" json:"type"`
+	Level       string    `gorm:"index" json:"level"`
+	Message     string    `gorm:"type:text" json:"message"`
+	Scope       string    `gorm:"index;default:global" json:"scope"`
+	SubjectType string    `gorm:"index;default:system" json:"subject_type"`
+	SubjectKey  string    `gorm:"index" json:"subject_key"`
+	Email       string    `gorm:"index" json:"email"`
+	AccountID   uint      `gorm:"index" json:"account_id"`
+	MailboxID   uint      `gorm:"index" json:"mailbox_id"`
+	Module      string    `gorm:"index" json:"module"`
+	Action      string    `gorm:"index" json:"action"`
+	OperationID string    `gorm:"index" json:"operation_id"`
+	DetailJSON  string    `gorm:"type:text;default:'{}'" json:"detail_json"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 func (TaskEvent) TableName() string { return "task_events" }

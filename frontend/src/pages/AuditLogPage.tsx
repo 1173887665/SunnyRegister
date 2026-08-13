@@ -75,7 +75,7 @@ function initialAuditColumnWidths() {
 }
 
 const emptyFilters: AuditFilters = {
-  search: "", log_type: "", category: "", action: "", actor: "", ip: "", level: "", status: "",
+  search: "", email: "", log_type: "", category: "", action: "", actor: "", ip: "", level: "", status: "",
   source: "", entity_type: "", task_id: "", request_id: "", date_from: "", date_to: "",
 };
 
@@ -95,7 +95,7 @@ const copy = {
   "en-US": {
     title: "Audit Logs", desc: "Audit sign-ins, configuration changes, resource mutations, tasks, schedules, and runtime metrics. Read-only queries are not recorded.",
     total: "Total Logs", today: "Today", failed: "Failed / Error", system: "System Events", search: "Search summary, target, path, task, or request ID...",
-    all: "All", type: "Log Type", category: "Category", action: "Action", actor: "Actor", ip: "IP Address", level: "Level", status: "Result",
+    all: "All", email: "Account Email", type: "Log Type", category: "Category", action: "Action", actor: "Actor", ip: "IP Address", level: "Level", status: "Result",
     source: "Source", entity: "Entity Type", task: "Task ID", request: "Request ID", from: "From", to: "To", reset: "Reset Filters",
     refresh: "Refresh", retention: "Retention", save: "Save Policy", selected: "{count} selected", selectAll: "Select All", selectAllDone: "Selected {count} records from the current filters", clear: "Clear", delete: "Delete Logs",
     deleteSelected: "Delete selected logs?", deleteFiltered: "Delete all filtered logs?", deleteHint: "This action cannot be undone.",
@@ -290,6 +290,7 @@ export default function AuditLogPage() {
     <div className="audit-stats">{[[c.total,stats.total],[c.today,stats.today],[c.failed,stats.failed],[c.system,stats.system]].map(([label,value])=><div key={String(label)}><span>{label}</span><strong>{Number(value||0).toLocaleString()}</strong></div>)}</div>
     <div className="audit-toolbar">
       <div className="audit-search"><Search/><input value={filters.search} onChange={(e)=>updateFilter("search",e.target.value)} placeholder={c.search}/></div>
+	  <label className="audit-filter-field"><span>{language === "zh-CN" ? "邮箱账户" : "Account Email"}</span><input type="email" value={filters.email} onChange={(e)=>updateFilter("email",e.target.value)} placeholder="name@example.com"/></label>
       <AuditSelect label={c.type} value={filters.log_type} values={selectOptions("log_type")} all={c.all} onChange={(v)=>updateFilter("log_type",v)}/>
       <AuditSelect label={c.category} value={filters.category} values={selectOptions("category")} all={c.all} onChange={(v)=>updateFilter("category",v)}/>
       <AuditSelect label={c.action} value={filters.action} values={selectOptions("action")} all={c.all} onChange={(v)=>updateFilter("action",v)}/>

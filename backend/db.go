@@ -192,11 +192,17 @@ func ensureSunnyIndexes(db *gorm.DB) {
 		"CREATE INDEX IF NOT EXISTS idx_sunny_proxies_status_enabled_checked ON sunny_proxies(status, enabled, last_checked_at)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_proxies_country_status ON sunny_proxies(country, status)",
 		"CREATE INDEX IF NOT EXISTS idx_task_events_task_id_id ON task_events(task_id, id)",
+		"CREATE INDEX IF NOT EXISTS idx_task_events_task_subject_id ON task_events(task_id, subject_key, id)",
+		"CREATE INDEX IF NOT EXISTS idx_task_events_email_created ON task_events(email, created_at DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_task_events_operation_id ON task_events(operation_id, id)",
+		"CREATE INDEX IF NOT EXISTS idx_task_events_module_created ON task_events(module, created_at DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_task_events_level_created ON task_events(level, created_at DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at)",
 		"CREATE INDEX IF NOT EXISTS idx_audit_logs_time_type ON audit_logs(occurred_at DESC, log_type)",
 		"CREATE INDEX IF NOT EXISTS idx_audit_logs_category_action ON audit_logs(category, action, occurred_at DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_ip ON audit_logs(actor, ip, occurred_at DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_audit_logs_task_entity ON audit_logs(task_id, entity_type, entity_id)",
+		"CREATE INDEX IF NOT EXISTS idx_audit_logs_subject_key ON audit_logs(subject_key)",
 		"CREATE INDEX IF NOT EXISTS idx_audit_export_jobs_status_created ON audit_export_jobs(status, created_at DESC)",
 	}
 	for _, statement := range indexes {
@@ -208,12 +214,27 @@ func ensureSunnyIndexes(db *gorm.DB) {
 
 func sanitizeHistoricalTaskData(db *gorm.DB) {
 	var events []TaskEvent
-	if db.Select("id", "message", "detail_json").Find(&events).Error == nil {
+	if db.Select("id", "type", "message", "detail_json", "scope", "subject_type", "subject_key", "email", "account_id", "mailbox_id", "module", "action", "operation_id").Find(&events).Error == nil {
 		for _, event := range events {
 			message := sanitizePersistedString(event.Message)
-			detail := sanitizePersistedJSON(event.DetailJSON)
-			if message != event.Message || detail != event.DetailJSON {
-				db.Model(&TaskEvent{}).Where("id = ?", event.ID).Updates(map[string]any{"message": message, "detail_json": detail})
+			detailJSON := sanitizePersistedJSON(event.DetailJSON)
+			detail := jsonMap(detailJSON)
+			metadata := taskEventMetadata(message, event.Type, detail, TaskEventContext{
+				Email: event.Email, AccountID: event.AccountID, MailboxID: event.MailboxID,
+				Module: event.Module, Action: event.Action, Scope: event.Scope,
+				SubjectType: event.SubjectType, OperationID: event.OperationID,
+			})
+			updates := map[string]any{
+				"message": message, "detail_json": detailJSON, "scope": metadata.Scope,
+				"subject_type": metadata.SubjectType, "subject_key": metadata.SubjectKey,
+				"email": metadata.Email, "account_id": metadata.AccountID, "mailbox_id": metadata.MailboxID,
+				"module": metadata.Module, "action": metadata.Action, "operation_id": metadata.OperationID,
+			}
+			if message != event.Message || detailJSON != event.DetailJSON ||
+				event.Scope != metadata.Scope || event.SubjectType != metadata.SubjectType || event.SubjectKey != metadata.SubjectKey ||
+				event.Email != metadata.Email || event.AccountID != metadata.AccountID || event.MailboxID != metadata.MailboxID ||
+				event.Module != metadata.Module || event.Action != metadata.Action || event.OperationID != metadata.OperationID {
+				db.Model(&TaskEvent{}).Where("id = ?", event.ID).Updates(updates)
 			}
 		}
 	}

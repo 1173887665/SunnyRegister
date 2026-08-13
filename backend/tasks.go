@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +38,143 @@ type Runtime struct {
 }
 
 type gormDB = interface {
+}
+
+type TaskEventContext struct {
+	Email       string
+	AccountID   uint
+	MailboxID   uint
+	Module      string
+	Action      string
+	Scope       string
+	SubjectType string
+	OperationID string
+	SubjectKey  string
+}
+
+var (
+	taskEventBracketEmailPattern = regexp.MustCompile(`^\s*\[([^\]\s]+@[^\]\s]+)\]`)
+	taskEventInlineEmailPattern  = regexp.MustCompile(`(?i)\b[[:alnum:]._%+\-]+@[[:alnum:].\-]+\.[[:alpha:]]{2,}\b`)
+	taskEventModulePattern       = regexp.MustCompile(`^\s*(?:\[[^\]\s]+@[^\]\s]+\]\s*)?\[([^\]]+)\]`)
+)
+
+func normalizeTaskEventModule(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "认证", "auth", "oauth", "登录", "注册":
+		return "auth"
+	case "邮箱", "邮件", "mail", "mailbox", "email":
+		return "mailbox"
+	case "接码", "phone", "sms", "mobile":
+		return "sms"
+	case "session", "token", "at", "rt":
+		return "session"
+	case "代理", "proxy":
+		return "proxy"
+	case "反代", "sub2api":
+		return "sub2api"
+	case "试用", "trial":
+		return "trial"
+	case "checkout", "提链":
+		return "checkout"
+	case "订阅", "subscription":
+		return "subscription"
+	case "测活", "health":
+		return "health"
+	case "system", "系统", "":
+		return "system"
+	default:
+		return value
+	}
+}
+
+func inferTaskEventEmail(message string, detail map[string]any) string {
+	if email := text(detail["email"]); email != "" {
+		return email
+	}
+	if match := taskEventBracketEmailPattern.FindStringSubmatch(message); len(match) > 1 {
+		return strings.TrimSpace(match[1])
+	}
+	if match := taskEventInlineEmailPattern.FindString(message); match != "" {
+		return strings.TrimSpace(match)
+	}
+	return ""
+}
+
+func inferTaskEventModule(message, typ string, detail map[string]any) string {
+	if module := text(detail["module"]); module != "" {
+		return normalizeTaskEventModule(module)
+	}
+	if match := taskEventModulePattern.FindStringSubmatch(message); len(match) > 1 {
+		return normalizeTaskEventModule(match[1])
+	}
+	lower := strings.ToLower(message)
+	checks := []struct {
+		module string
+		words  []string
+	}{
+		{"sub2api", []string{"sub2api", "反代"}}, {"trial", []string{"试用", "trial"}},
+		{"checkout", []string{"checkout", "支付方式", "提链"}}, {"health", []string{"测活", "封禁"}},
+		{"subscription", []string{"订阅", "subscription"}}, {"mailbox", []string{"邮箱", "邮件", "mail", "otp"}},
+		{"sms", []string{"接码", "手机号", "phone", "sms"}}, {"session", []string{"session", "access token", "refresh token", " rt", " at"}},
+		{"proxy", []string{"代理", "proxy"}}, {"auth", []string{"登录", "注册", "认证", "oauth", "login", "register"}},
+	}
+	for _, check := range checks {
+		for _, word := range check.words {
+			if strings.Contains(lower, word) {
+				return check.module
+			}
+		}
+	}
+	if normalized := normalizeTaskEventModule(typ); normalized != "system" && normalized != "log" && normalized != "state" {
+		return normalized
+	}
+	return "system"
+}
+
+func uintDetail(detail map[string]any, key string) uint {
+	value, _ := strconv.ParseUint(text(detail[key]), 10, 64)
+	return uint(value)
+}
+
+func taskEventMetadata(message, typ string, detail map[string]any, ctx TaskEventContext) TaskEventContext {
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	if ctx.Email == "" {
+		ctx.Email = inferTaskEventEmail(message, detail)
+	}
+	ctx.Email = strings.TrimSpace(ctx.Email)
+	if ctx.AccountID == 0 {
+		ctx.AccountID = uintDetail(detail, "account_id")
+	}
+	if ctx.MailboxID == 0 {
+		ctx.MailboxID = uintDetail(detail, "mailbox_id")
+	}
+	if ctx.Module == "" {
+		ctx.Module = inferTaskEventModule(message, typ, detail)
+	} else {
+		ctx.Module = normalizeTaskEventModule(ctx.Module)
+	}
+	if ctx.Action == "" {
+		ctx.Action = fallback(text(detail["action"]), ctx.Module+".event")
+	}
+	if ctx.OperationID == "" {
+		ctx.OperationID = text(detail["operation_id"])
+	}
+	if ctx.Email != "" {
+		ctx.Scope = "account"
+		ctx.SubjectType = fallback(ctx.SubjectType, "account")
+		ctx.SubjectKey = strings.ToLower(ctx.Email)
+	} else {
+		ctx.Scope = fallback(ctx.Scope, text(detail["scope"]))
+		if ctx.Scope == "selected" {
+			ctx.Scope = "account"
+		}
+		ctx.Scope = fallback(ctx.Scope, "global")
+		ctx.SubjectType = fallback(ctx.SubjectType, "system")
+	}
+	return ctx
 }
 
 func (s *Server) createTask(taskType, platform string, payload map[string]any, total int) Task {
@@ -86,13 +225,47 @@ func serializeTask(t Task) map[string]any {
 }
 
 func (s *Server) appendTaskEvent(taskID, message, typ, level string, detail map[string]any) TaskEvent {
+	return s.appendTaskEventWithContext(taskID, message, typ, level, detail, TaskEventContext{})
+}
+
+func (s *Server) appendAccountTaskEvent(taskID, email, module, action, message, level string, detail map[string]any) TaskEvent {
+	return s.appendTaskEventWithContext(taskID, message, "log", level, detail, TaskEventContext{
+		Email: email, Module: module, Action: action, Scope: "account", SubjectType: "account",
+	})
+}
+
+func (s *Server) appendTaskEventWithContext(taskID, message, typ, level string, detail map[string]any, ctx TaskEventContext) TaskEvent {
 	if typ == "" {
 		typ = "log"
 	}
 	if level == "" {
 		level = "info"
 	}
-	ev := TaskEvent{TaskID: taskID, Type: typ, Level: level, Message: message, DetailJSON: dumpJSON(detail)}
+	clonedDetail := make(map[string]any, len(detail)+5)
+	for key, value := range detail {
+		clonedDetail[key] = value
+	}
+	detail = clonedDetail
+	ctx = taskEventMetadata(message, typ, detail, ctx)
+	if ctx.OperationID == "" && ctx.Email != "" {
+		ctx.OperationID = taskID + ":" + ctx.SubjectKey + ":" + ctx.Module
+	}
+	detail["scope"] = ctx.Scope
+	detail["module"] = ctx.Module
+	detail["action"] = ctx.Action
+	if ctx.Email != "" {
+		detail["email"] = ctx.Email
+	}
+	if ctx.OperationID != "" {
+		detail["operation_id"] = ctx.OperationID
+	}
+	sanitizedDetail, _ := sanitizePersistedValue(detail, "").(map[string]any)
+	ev := TaskEvent{
+		TaskID: taskID, Type: typ, Level: level, Message: sanitizePersistedString(message),
+		Scope: ctx.Scope, SubjectType: ctx.SubjectType, SubjectKey: ctx.SubjectKey, Email: ctx.Email,
+		AccountID: ctx.AccountID, MailboxID: ctx.MailboxID, Module: ctx.Module, Action: ctx.Action,
+		OperationID: ctx.OperationID, DetailJSON: dumpJSON(sanitizedDetail),
+	}
 	s.db.Create(&ev)
 	return ev
 }
@@ -100,7 +273,10 @@ func (s *Server) appendTaskEvent(taskID, message, typ, level string, detail map[
 func serializeEvent(ev TaskEvent) map[string]any {
 	return map[string]any{
 		"id": ev.ID, "task_id": ev.TaskID, "type": ev.Type, "level": ev.Level,
-		"message": ev.Message, "line": ev.Message, "detail": jsonMap(ev.DetailJSON), "created_at": formatTime(ev.CreatedAt),
+		"message": ev.Message, "line": ev.Message, "scope": ev.Scope, "subject_type": ev.SubjectType,
+		"subject_key": ev.SubjectKey, "email": ev.Email, "account_id": ev.AccountID, "mailbox_id": ev.MailboxID,
+		"module": ev.Module, "action": ev.Action, "operation_id": ev.OperationID,
+		"detail": jsonMap(ev.DetailJSON), "created_at": formatTime(ev.CreatedAt),
 	}
 }
 
@@ -262,8 +438,23 @@ func (s *Server) createSimpleTask(w http.ResponseWriter, r *http.Request, typ, p
 func (s *Server) handleTaskEvents(w http.ResponseWriter, r *http.Request, taskID string) {
 	since := intValue(r.URL.Query().Get("since"), 0)
 	limit := intValue(r.URL.Query().Get("limit"), 200)
+	if limit < 1 || limit > 1000 {
+		limit = 200
+	}
+	query := s.db.Where("task_id = ? AND id > ?", taskID, since)
+	for _, filter := range []struct{ query, column string }{
+		{"email", "email"}, {"module", "module"}, {"action", "action"}, {"level", "level"}, {"scope", "scope"}, {"operation_id", "operation_id"},
+	} {
+		if value := strings.TrimSpace(r.URL.Query().Get(filter.query)); value != "" {
+			if filter.column == "email" {
+				query = query.Where("LOWER(email) = ?", strings.ToLower(value))
+			} else {
+				query = query.Where(filter.column+" = ?", value)
+			}
+		}
+	}
 	var evs []TaskEvent
-	s.db.Where("task_id = ? AND id > ?", taskID, since).Order("id ASC").Limit(limit).Find(&evs)
+	query.Order("id ASC").Limit(limit).Find(&evs)
 	items := []map[string]any{}
 	for _, ev := range evs {
 		items = append(items, serializeEvent(ev))

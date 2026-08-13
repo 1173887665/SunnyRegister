@@ -122,6 +122,11 @@ func (s *Server) auditMiddleware(next http.Handler) http.Handler {
 			}
 			response := wrapped.responseJSON()
 			meta := auditMetaForRequest(r, body, response, status)
+			emails := s.auditEmailsForRequest(body, response, meta)
+			emailText := strings.Join(emails, ", ")
+			if meta.EntityName == "" && emailText != "" {
+				meta.EntityName = emailText
+			}
 			if strings.HasSuffix(r.URL.Path, "/auth/login") && status < 400 {
 				actorType = "user"
 			}
@@ -129,11 +134,15 @@ func (s *Server) auditMiddleware(next http.Handler) http.Handler {
 			for key, value := range auditResponseMetadata(response) {
 				details[key] = value
 			}
+			if len(emails) > 0 {
+				details["emails"] = emails
+			}
 			s.recordAudit(AuditLog{
 				OccurredAt: started, ActorType: actorType, Actor: actor, IP: s.loginClientKey(r),
 				UserAgent: truncateAuditText(r.UserAgent(), 512), LogType: meta.LogType, Category: meta.Category,
 				Action: meta.Action, Level: meta.Level, Status: meta.Status, Source: "http-api", Method: r.Method,
 				Path: truncateAuditText(r.URL.Path, 512), RequestID: requestID, TaskID: meta.TaskID,
+				Email: emailText, SubjectKey: strings.ToLower(emailText),
 				EntityType: meta.EntityType, EntityID: meta.EntityID, EntityName: meta.EntityName,
 				Summary: meta.Summary, DetailsJSON: dumpJSON(details), HTTPStatus: status,
 				DurationMS: time.Since(started).Milliseconds(), Count: meta.Count,
@@ -225,6 +234,78 @@ type auditRequestMeta struct {
 	LogType, Category, Action, Level, Status, TaskID string
 	EntityType, EntityID, EntityName, Summary        string
 	Count                                            int
+}
+
+func auditEmailValues(value any) []string {
+	values := []string{}
+	appendEmail := func(raw any) {
+		email := strings.TrimSpace(text(raw))
+		if strings.Contains(email, "@") {
+			values = append(values, email)
+		}
+	}
+	switch item := value.(type) {
+	case []any:
+		for _, raw := range item {
+			appendEmail(raw)
+		}
+	case []string:
+		for _, raw := range item {
+			appendEmail(raw)
+		}
+	default:
+		appendEmail(item)
+	}
+	return values
+}
+
+func dedupeAuditEmails(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, email := range values {
+		key := strings.ToLower(strings.TrimSpace(email))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, strings.TrimSpace(email))
+	}
+	return result
+}
+
+func (s *Server) auditEmailsForRequest(body, response map[string]any, meta auditRequestMeta) []string {
+	emails := append(auditEmailValues(body["email"]), auditEmailValues(body["emails"])...)
+	emails = append(emails, auditEmailValues(response["email"])...)
+	if lines := text(body["lines"]); lines != "" {
+		for _, line := range strings.Split(strings.ReplaceAll(lines, "\r\n", "\n"), "\n") {
+			identity := strings.TrimSpace(strings.SplitN(line, "----", 2)[0])
+			if strings.Contains(identity, "@") {
+				emails = append(emails, identity)
+			}
+		}
+	}
+	lookup := func(model any, ids []uint) {
+		if len(ids) == 0 {
+			return
+		}
+		var values []string
+		if s.db.Model(model).Where("id IN ?", ids).Pluck("email", &values).Error == nil {
+			emails = append(emails, values...)
+		}
+	}
+	lookup(&SunnyAccount{}, uintSlice(body["account_ids"]))
+	lookup(&SunnySession{}, uintSlice(body["session_ids"]))
+	lookup(&SunnyMailbox{}, uintSlice(body["mailbox_ids"]))
+	ids := uintSlice(body["ids"])
+	if len(ids) > 0 {
+		switch meta.EntityType {
+		case "account", "account_health", "account_subscription", "account_trial", "account_token":
+			lookup(&SunnyAccount{}, ids)
+		case "mailbox":
+			lookup(&SunnyMailbox{}, ids)
+		}
+	}
+	return dedupeAuditEmails(emails)
 }
 
 func auditMetaForRequest(r *http.Request, body, response map[string]any, status int) auditRequestMeta {
@@ -402,6 +483,11 @@ func (s *Server) recordAudit(item AuditLog) {
 	}
 	item.DetailsJSON = sanitizePersistedJSON(item.DetailsJSON)
 	item.Summary = sanitizePersistedString(item.Summary)
+	item.Email = strings.TrimSpace(item.Email)
+	item.SubjectKey = strings.ToLower(strings.TrimSpace(item.SubjectKey))
+	if item.SubjectKey == "" && item.Email != "" {
+		item.SubjectKey = strings.ToLower(item.Email)
+	}
 	item.UserAgent = truncateAuditText(item.UserAgent, 512)
 	if item.Actor == "" {
 		item.Actor = "System"
@@ -436,6 +522,7 @@ func serializeAuditLog(item AuditLog) map[string]any {
 		"ip": item.IP, "user_agent": item.UserAgent, "log_type": item.LogType, "category": item.Category,
 		"action": item.Action, "level": item.Level, "status": item.Status, "source": item.Source,
 		"method": item.Method, "path": item.Path, "request_id": item.RequestID, "task_id": item.TaskID,
+		"email": item.Email, "subject_key": item.SubjectKey,
 		"entity_type": item.EntityType, "entity_id": item.EntityID, "entity_name": item.EntityName,
 		"summary": item.Summary, "details": jsonMap(item.DetailsJSON), "http_status": item.HTTPStatus,
 		"duration_ms": item.DurationMS, "count": item.Count,
@@ -467,7 +554,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request, rest string
 
 func auditQueryValues(r *http.Request) map[string]string {
 	values := map[string]string{}
-	for _, key := range []string{"search", "log_type", "category", "action", "actor", "ip", "level", "status", "source", "entity_type", "task_id", "request_id", "date_from", "date_to"} {
+	for _, key := range []string{"search", "email", "log_type", "category", "action", "actor", "ip", "level", "status", "source", "entity_type", "task_id", "request_id", "date_from", "date_to"} {
 		values[key] = strings.TrimSpace(r.URL.Query().Get(key))
 	}
 	return values
@@ -479,7 +566,10 @@ func applyAuditFilters(query *gorm.DB, filters map[string]string, ids []uint) *g
 	}
 	if search := filters["search"]; search != "" {
 		like := "%" + search + "%"
-		query = query.Where("summary LIKE ? OR entity_name LIKE ? OR details_json LIKE ? OR path LIKE ? OR task_id LIKE ? OR request_id LIKE ?", like, like, like, like, like, like)
+		query = query.Where("summary LIKE ? OR email LIKE ? OR entity_name LIKE ? OR details_json LIKE ? OR path LIKE ? OR task_id LIKE ? OR request_id LIKE ?", like, like, like, like, like, like, like)
+	}
+	if value := strings.ToLower(filters["email"]); value != "" {
+		query = query.Where("LOWER(email) LIKE ?", "%"+value+"%")
 	}
 	for _, key := range []string{"log_type", "category", "action", "actor", "ip", "level", "status", "source", "entity_type", "task_id", "request_id"} {
 		if value := filters[key]; value != "" {
@@ -706,7 +796,7 @@ func (s *Server) runAuditExport(jobID string) {
 		s.failAuditExport(&job, err)
 		return
 	}
-	headers := []string{"id", "time", "type", "category", "action", "level", "status", "actor", "ip", "source", "entity_type", "entity_id", "entity_name", "task_id", "request_id", "method", "path", "http_status", "duration_ms", "count", "summary", "details"}
+	headers := []string{"id", "time", "type", "category", "action", "level", "status", "actor", "ip", "source", "email", "entity_type", "entity_id", "entity_name", "task_id", "request_id", "method", "path", "http_status", "duration_ms", "count", "summary", "details"}
 	count := 0
 	if job.Format == "csv" {
 		writer := csv.NewWriter(file)
@@ -755,7 +845,7 @@ func (s *Server) runAuditExport(jobID string) {
 }
 
 func auditExportRecord(item AuditLog) []string {
-	return []string{strconv.FormatUint(uint64(item.ID), 10), formatTime(item.OccurredAt), item.LogType, item.Category, item.Action, item.Level, item.Status, item.Actor, item.IP, item.Source, item.EntityType, item.EntityID, item.EntityName, item.TaskID, item.RequestID, item.Method, item.Path, strconv.Itoa(item.HTTPStatus), strconv.FormatInt(item.DurationMS, 10), strconv.Itoa(item.Count), item.Summary, item.DetailsJSON}
+	return []string{strconv.FormatUint(uint64(item.ID), 10), formatTime(item.OccurredAt), item.LogType, item.Category, item.Action, item.Level, item.Status, item.Actor, item.IP, item.Source, item.Email, item.EntityType, item.EntityID, item.EntityName, item.TaskID, item.RequestID, item.Method, item.Path, strconv.Itoa(item.HTTPStatus), strconv.FormatInt(item.DurationMS, 10), strconv.Itoa(item.Count), item.Summary, item.DetailsJSON}
 }
 
 func zipAuditExport(source, destination string) error {

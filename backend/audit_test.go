@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,7 +39,7 @@ func newAuditTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("open audit database: %v", err)
 	}
-	if err := db.AutoMigrate(&AuditLog{}, &AuditSetting{}, &AuditExportJob{}, &Task{}); err != nil {
+	if err := db.AutoMigrate(&AuditLog{}, &AuditSetting{}, &AuditExportJob{}, &Task{}, &SunnyAccount{}, &SunnySession{}, &SunnyMailbox{}); err != nil {
 		t.Fatalf("migrate audit database: %v", err)
 	}
 	if sqlDB, err := db.DB(); err == nil {
@@ -65,7 +66,10 @@ func TestAuditMiddlewareRecordsMutationsAndRedactsSecrets(t *testing.T) {
 	if item.Category != "mailbox" || item.Action != "import" || item.Count != 2 {
 		t.Fatalf("unexpected audit classification: %#v", item)
 	}
-	if strings.Contains(item.DetailsJSON, "secret") || strings.Contains(item.DetailsJSON, "first@example.com") {
+	if item.Email != "first@example.com, second@outlook.com" {
+		t.Fatalf("mailbox import emails missing from audit record: %q", item.Email)
+	}
+	if strings.Contains(item.DetailsJSON, "secret") || strings.Contains(item.DetailsJSON, "eyJsecret") {
 		t.Fatalf("audit details leaked secrets: %s", item.DetailsJSON)
 	}
 	var details map[string]any
@@ -84,13 +88,17 @@ func TestAuditMiddlewareRecordsMutationsAndRedactsSecrets(t *testing.T) {
 
 func TestAuditMiddlewareClassifiesNewAccountTasksAndLinksTaskID(t *testing.T) {
 	s := newAuditTestServer(t)
+	accounts := []SunnyAccount{{Email: "First@Example.com"}, {Email: "second@example.com"}}
+	if err := s.db.Create(&accounts).Error; err != nil {
+		t.Fatalf("create accounts: %v", err)
+	}
 	handler := s.auditMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"id": "task_acquire_rt", "task_id": "task_acquire_rt", "type": "sunny_acquire_rt", "status": TaskPending,
 			"progress_detail": map[string]any{"current": 0, "total": 2},
 		})
 	}))
-	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/acquire-rt", strings.NewReader(`{"account_ids":[11,12]}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/acquire-rt", strings.NewReader(fmt.Sprintf(`{"account_ids":[%d,%d]}`, accounts[0].ID, accounts[1].ID)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -106,6 +114,14 @@ func TestAuditMiddlewareClassifiesNewAccountTasksAndLinksTaskID(t *testing.T) {
 	}
 	if item.TaskID != "task_acquire_rt" || item.Count != 2 {
 		t.Fatalf("task response metadata missing: %#v", item)
+	}
+	if item.Email != "First@Example.com, second@example.com" || item.SubjectKey != "first@example.com, second@example.com" {
+		t.Fatalf("account emails missing from audit record: %#v", item)
+	}
+	var matched int64
+	applyAuditFilters(s.db.Model(&AuditLog{}), map[string]string{"email": "SECOND@EXAMPLE.COM"}, nil).Count(&matched)
+	if matched != 1 {
+		t.Fatalf("email filter matched %d rows, want 1", matched)
 	}
 	if !strings.Contains(item.DetailsJSON, `"response_task_id":"task_acquire_rt"`) {
 		t.Fatalf("task id missing from details: %s", item.DetailsJSON)

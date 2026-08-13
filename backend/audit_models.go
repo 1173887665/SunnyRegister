@@ -19,6 +19,8 @@ type AuditLog struct {
 	Path        string    `gorm:"index;size:512" json:"path"`
 	RequestID   string    `gorm:"index;size:96" json:"request_id"`
 	TaskID      string    `gorm:"index;size:96" json:"task_id"`
+	Email       string    `gorm:"type:text" json:"email"`
+	SubjectKey  string    `gorm:"type:text" json:"subject_key"`
 	EntityType  string    `gorm:"index;size:64" json:"entity_type"`
 	EntityID    string    `gorm:"index;size:128" json:"entity_id"`
 	EntityName  string    `gorm:"size:512" json:"entity_name"`

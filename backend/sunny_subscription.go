@@ -284,7 +284,7 @@ func (s *Server) executeSunnySubscriptionTask(task *Task, payload map[string]any
 			result["failed"] = result["failed"].(int) + 1
 			item["status"] = "failed"
 			item["error"] = outcome.Error
-			s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 订阅检测失败：%s", outcome.Email, outcome.Error), "log", "warning", nil)
+			s.appendAccountTaskEvent(task.ID, outcome.Email, "subscription", "subscription.check_failed", fmt.Sprintf("账户 %s 订阅检测失败：%s", outcome.Email, outcome.Error), "warning", map[string]any{"error": outcome.Error})
 		} else if outcome.Subscribed {
 			result["subscribed"] = result["subscribed"].(int) + 1
 			item["status"] = "subscribed"
@@ -306,11 +306,11 @@ func (s *Server) executeSunnySubscriptionTask(task *Task, payload map[string]any
 				item["status"] = "failed"
 				item["error"] = updateErr.Error()
 			} else {
-				s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 已确认订阅成功，套餐已更新为 Plus", outcome.Email), "log", "info", map[string]any{"subject": outcome.Subject})
+				s.appendAccountTaskEvent(task.ID, outcome.Email, "subscription", "subscription.confirmed", fmt.Sprintf("账户 %s 已确认订阅成功，套餐已更新为 Plus", outcome.Email), "info", map[string]any{"subject": outcome.Subject})
 			}
 		} else {
 			result["not_subscribed"] = result["not_subscribed"].(int) + 1
-			s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 未检测到订阅成功邮件", outcome.Email), "log", "info", nil)
+			s.appendAccountTaskEvent(task.ID, outcome.Email, "subscription", "subscription.not_found", fmt.Sprintf("账户 %s 未检测到订阅成功邮件", outcome.Email), "info", nil)
 		}
 		items = append(items, item)
 		task.ProgressCurrent++

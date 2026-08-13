@@ -194,6 +194,37 @@ def _emit_renewal_progress(
     )
 
 
+def _account_event(
+    db: SunnyDB,
+    email: str,
+    module: str,
+    action: str,
+    message: str,
+    level: str = "info",
+    detail: dict[str, Any] | None = None,
+    *,
+    account_id: int = 0,
+    mailbox_id: int = 0,
+    operation_id: str = "",
+) -> None:
+    writer = getattr(db, "account_event", None)
+    if callable(writer):
+        writer(
+            email, module, action, message, level, detail,
+            account_id=account_id, mailbox_id=mailbox_id, operation_id=operation_id,
+        )
+        return
+    event_detail = dict(detail or {})
+    event_detail.update({"email": email, "scope": "account", "module": module, "action": action})
+    if account_id:
+        event_detail["account_id"] = account_id
+    if mailbox_id:
+        event_detail["mailbox_id"] = mailbox_id
+    if operation_id:
+        event_detail["operation_id"] = operation_id
+    db.event(message, level, detail=event_detail)
+
+
 def _is_cancel_exception(exc: BaseException) -> bool:
     return isinstance(exc, (SunnyTaskCancelled, TaskCancelledError)) or "Task cancelled by user" in str(exc)
 
@@ -1778,7 +1809,7 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                     _emit_renewal_progress(db, email, renewal_current, renewal_total, "session_saved")
                     items.append({"email": email, "has_access_token": bool(payload2["access_token"]), "has_refresh_token": bool(payload2["refresh_token"]), "refresh_method": "refresh_token"})
                     ok += 1
-                    db.event(f"[{email}] [Session] 已通过 Refresh Token 完成 AT 续期")
+                    _account_event(db, email, "session", "access_token.renewed", f"[{email}] [Session] 已通过 Refresh Token 完成 AT 续期", account_id=account_id)
                     renewal_current = 7
                     _emit_renewal_progress(db, email, renewal_current, renewal_total, "completed", state="succeeded")
                     db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
@@ -1792,12 +1823,12 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                     renewal_total = 9
                     renewal_current = 3
                     _emit_renewal_progress(db, email, renewal_current, renewal_total, "refresh_token_unavailable")
-                    db.event(f"[{email}] [Session] Refresh Token 续期不可用，改用后台无头登录更新 AT：{refresh_error}", "warning")
+                    _account_event(db, email, "session", "refresh_token.unavailable", f"[{email}] [Session] Refresh Token 续期不可用，改用后台无头登录更新 AT：{refresh_error}", "warning", account_id=int(acc.get("id") or 0))
             else:
                 renewal_total = 9
                 renewal_current = 3
                 _emit_renewal_progress(db, email, renewal_current, renewal_total, "refresh_token_missing")
-                db.event(f"[{email}] [Session] 账户没有可用 Refresh Token，改用后台无头登录更新 AT", "warning")
+                _account_event(db, email, "session", "refresh_token.missing", f"[{email}] [Session] 账户没有可用 Refresh Token，改用后台无头登录更新 AT", "warning", account_id=int(acc.get("id") or 0))
 
             if not mailbox:
                 raise RuntimeError("找不到该账户对应的邮箱凭证，无法回退登录更新 AT")
@@ -1866,7 +1897,7 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
             _emit_renewal_progress(db, email, renewal_current, renewal_total, "session_refreshed")
             items.append({"email": email, "has_access_token": bool(isinstance(result, dict) and result.get("has_access_token")), "has_refresh_token": bool(isinstance(result, dict) and result.get("has_refresh_token")), "refresh_method": "headless_login", "refresh_token_error": refresh_error})
             ok += 1
-            db.event(f"[{email}] [Session] 已通过后台无头登录完成 AT 续期")
+            _account_event(db, email, "session", "access_token.renewed", f"[{email}] [Session] 已通过后台无头登录完成 AT 续期", account_id=int(acc.get("id") or 0))
             renewal_current = 9
             _emit_renewal_progress(db, email, renewal_current, renewal_total, "completed", state="succeeded")
         except Exception as exc:
@@ -1883,7 +1914,7 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                 _emit_renewal_progress(db, email, renewal_current, renewal_total, "account_deactivated", state="failed", error=str(exc))
             else:
                 db.mark_access_token_renewal_failed(email, str(exc))
-                db.event(errors[-1], "error")
+                _account_event(db, email, "session", "access_token.renewal_failed", errors[-1], "error", account_id=int(acc.get("id") or 0), detail={"error": str(exc)})
                 _emit_renewal_progress(db, email, renewal_current, renewal_total, "failed", state="failed", error=str(exc))
         db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
     return ok, errors, items
@@ -1905,7 +1936,7 @@ def _acquire_refresh_tokens(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, 
             if existing_rt:
                 ok += 1
                 items.append({"email": email, "has_refresh_token": True, "acquire_method": "existing"})
-                db.event(f"[{email}] [Session] 账户已有 Refresh Token，无需重复授权")
+                _account_event(db, email, "session", "refresh_token.present", f"[{email}] [Session] 账户已有 Refresh Token，无需重复授权", account_id=int(acc.get("id") or 0))
                 db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
                 continue
 
@@ -1925,12 +1956,12 @@ def _acquire_refresh_tokens(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, 
                 raise RuntimeError(detail if detail and detail != "{}" else "无法获取该账户RT")
             ok += 1
             items.append({"email": email, "has_refresh_token": True, "acquire_method": "codex_oauth"})
-            db.event(f"[{email}] [Session] 已通过 Codex OAuth 授权获取 Refresh Token")
+            _account_event(db, email, "session", "refresh_token.acquired", f"[{email}] [Session] 已通过 Codex OAuth 授权获取 Refresh Token", account_id=int(acc.get("id") or 0))
         except Exception as exc:
             message = str(exc).strip()
             error = f"[{email}] 无法获取该账户RT" + (f"：{message}" if message else "")
             errors.append(error)
-            db.event(error, "error")
+            _account_event(db, email, "session", "refresh_token.acquire_failed", error, "error", account_id=int(acc.get("id") or 0), detail={"error": message})
         db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
     return ok, errors, items
 

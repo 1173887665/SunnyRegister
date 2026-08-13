@@ -233,6 +233,12 @@ select.control-surface {
 .sr-log-clear-btn:hover:not(:disabled) { background:#10b981; color:#fff; border-color:#10b981; }
 .sr-log-clear-btn:disabled { cursor:not-allowed; opacity:.45; }
 .dark .sr-log-clear-btn { background:rgba(15,118,110,.22); color:#a7f3d0; border-color:rgba(94,234,212,.22); }
+.sr-log-filters { display:grid; grid-template-columns:minmax(180px,1fr) minmax(120px,180px) auto; gap:8px; margin-bottom:10px; }
+.sr-log-search { display:flex; min-width:0; align-items:center; gap:7px; height:34px; padding:0 10px; border:1px solid rgba(20,184,166,.2); border-radius:9px; background:rgba(255,255,255,.7); color:#0f766e; }
+.sr-log-search input { min-width:0; width:100%; border:0; outline:0; background:transparent; color:inherit; font-size:12px; }
+.sr-log-filters select { min-width:0; height:34px; padding:0 9px; border:1px solid rgba(20,184,166,.2); border-radius:9px; background:rgba(255,255,255,.7); color:#0f766e; font-size:12px; font-weight:700; }
+.sr-log-errors-only { display:flex; align-items:center; gap:6px; height:34px; padding:0 10px; border:1px solid rgba(220,38,38,.16); border-radius:9px; color:#b91c1c; font-size:12px; font-weight:800; white-space:nowrap; }
+.dark .sr-log-search, .dark .sr-log-filters select { background:rgba(2,44,34,.34); color:#d1fae5; }
 .sr-log-tabs { display:flex; min-width:0; align-items:center; gap:4px; padding:3px; border:1px solid rgba(20,184,166,.16); border-radius:12px; background:rgba(255,255,255,.48); }
 .sr-log-tabs button { min-width:0; border:0; border-radius:9px; padding:7px 11px; color:#78958f; font-size:13px; font-weight:800; white-space:nowrap; }
 .sr-log-tabs button.active { background:#fff; color:#067c69; box-shadow:0 4px 14px rgba(15,118,110,.12); }
@@ -271,6 +277,8 @@ select.control-surface {
 @media (max-width:520px) {
   .sr-log-card { padding:14px; }
   .sr-log-tabs button { padding:7px 8px; font-size:11px; }
+	.sr-log-filters { grid-template-columns:1fr 1fr; }
+	.sr-log-search { grid-column:1 / -1; }
   .sr-progress-panel,.sr-account-progress-list,.sr-progress-empty { height:178px; border-radius:18px; }
 }
 
