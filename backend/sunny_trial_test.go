@@ -190,3 +190,45 @@ func TestSunnyTrialRouteCreatesLocalTask(t *testing.T) {
 		t.Fatalf("trial task missing: task=%#v err=%v", task, err)
 	}
 }
+
+func TestSunnyCommerceWorkerResponse(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/probe-commerce" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected worker request: %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer worker-secret" {
+			t.Fatalf("authorization = %q", got)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"trial":    map[string]any{"state": "eligible", "http": 200, "error": ""},
+			"checkout": map[string]any{"kind": "oaics", "payment_methods": []string{"card", "paypal"}, "http": 200, "error": ""},
+		})
+	}))
+	defer worker.Close()
+	t.Setenv("PYTHON_WORKER_URL", worker.URL)
+	t.Setenv("PYTHON_WORKER_TOKEN", "worker-secret")
+
+	result, ok := probeSunnyCommerceViaWorker(context.Background(), "secret-at", "")
+	if !ok || result.Eligibility != sunnyTrialEligible || result.CheckoutKind != "oaics" {
+		t.Fatalf("unexpected result: ok=%v result=%#v", ok, result)
+	}
+	if got := strings.Join(result.PaymentMethods, ","); got != "card,paypal" {
+		t.Fatalf("payment methods = %q", got)
+	}
+}
+
+func TestSunnyCommerceWorkerPreservesNonJSONChallengeDetail(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"trial":    map[string]any{"state": "", "http": 403, "error": "HTTP 403 returned text/html content"},
+			"checkout": map[string]any{"kind": "", "payment_methods": []string{}, "http": 403, "error": "HTTP 403 returned text/html content"},
+		})
+	}))
+	defer worker.Close()
+	t.Setenv("PYTHON_WORKER_URL", worker.URL)
+
+	result, ok := probeSunnyCommerceViaWorker(context.Background(), "secret-at", "")
+	if !ok || !strings.Contains(result.TrialError, "HTTP 403") || !strings.Contains(result.CheckoutError, "text/html") {
+		t.Fatalf("unexpected result: ok=%v result=%#v", ok, result)
+	}
+}

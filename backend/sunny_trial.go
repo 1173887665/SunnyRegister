@@ -33,6 +33,9 @@ var (
 	sunnyCheckCommerce = func(ctx context.Context, accessToken string) sunnyCommerceProbeResult {
 		proxyURL, _ := ctx.Value(sunnyTrialProxyContextKey{}).(string)
 		result := checkSunnyCommerce(ctx, accessToken, proxyURL)
+		if result.Eligibility != sunnyTrialUnknown || result.TrialError != "" {
+			return result
+		}
 		eligible, message, invalid, err := sunnyCheckTrialEligibility(ctx, accessToken)
 		if err == nil {
 			if eligible {
@@ -382,6 +385,13 @@ func checkSunnyCommerce(ctx context.Context, accessToken string, proxyURLs ...st
 		result.CheckoutError = result.TrialError
 		return result
 	}
+	proxyURL := ""
+	if len(proxyURLs) > 0 {
+		proxyURL = strings.TrimSpace(proxyURLs[0])
+	}
+	if workerResult, ok := probeSunnyCommerceViaWorker(ctx, token, proxyURL); ok {
+		return workerResult
+	}
 	client := sunnyCommerceHTTPClient(proxyURLs...)
 	checkoutKind, methods, checkoutInvalid, checkoutErr := probeSunnyCheckout(ctx, client, token)
 	result.CheckoutKind, result.PaymentMethods = checkoutKind, methods
@@ -390,6 +400,65 @@ func checkSunnyCommerce(ctx context.Context, accessToken string, proxyURLs ...st
 		result.CheckoutError = checkoutErr.Error()
 	}
 	return result
+}
+
+func probeSunnyCommerceViaWorker(ctx context.Context, accessToken, proxyURL string) (sunnyCommerceProbeResult, bool) {
+	result := sunnyCommerceProbeResult{Eligibility: sunnyTrialUnknown, CheckoutKind: sunnyCheckoutUnknown, PaymentMethods: []string{}}
+	workerURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PYTHON_WORKER_URL")), "/")
+	if workerURL == "" {
+		workerURL = "http://127.0.0.1:8765"
+	}
+	country, currency := sunnyCheckoutBilling()
+	body, _ := json.Marshal(map[string]string{"access_token": accessToken, "proxy_url": proxyURL, "country": country, "currency": currency})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, workerURL+"/probe-commerce", bytes.NewReader(body))
+	if err != nil {
+		return result, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token := secretValue("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := (&http.Client{Timeout: 90 * time.Second}).Do(req)
+	if err != nil {
+		return result, false
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	if err != nil || resp.StatusCode == http.StatusNotFound || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return result, false
+	}
+	var payload struct {
+		Trial struct {
+			State string `json:"state"`
+			HTTP  int    `json:"http"`
+			Error string `json:"error"`
+		} `json:"trial"`
+		Checkout struct {
+			Kind           string   `json:"kind"`
+			PaymentMethods []string `json:"payment_methods"`
+			HTTP           int      `json:"http"`
+			Error          string   `json:"error"`
+		} `json:"checkout"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return result, false
+	}
+	result.TrialState = strings.ToLower(strings.TrimSpace(payload.Trial.State))
+	switch result.TrialState {
+	case "eligible":
+		result.Eligibility = sunnyTrialEligible
+	case "not_eligible", "ineligible":
+		result.Eligibility = sunnyTrialIneligible
+	default:
+		result.TrialError = fallback(strings.TrimSpace(payload.Trial.Error), fmt.Sprintf("ChatGPT 试用接口返回 HTTP %d，未提供有效状态", payload.Trial.HTTP))
+	}
+	result.CheckoutKind = normalizeSunnyCheckoutKind(payload.Checkout.Kind)
+	result.PaymentMethods = payload.Checkout.PaymentMethods
+	if result.CheckoutKind == sunnyCheckoutUnknown {
+		result.CheckoutError = fallback(strings.TrimSpace(payload.Checkout.Error), fmt.Sprintf("ChatGPT Checkout 接口返回 HTTP %d，未提供可识别类型", payload.Checkout.HTTP))
+	}
+	result.InvalidToken = payload.Trial.HTTP == http.StatusUnauthorized || payload.Checkout.HTTP == http.StatusUnauthorized
+	return result, true
 }
 
 func checkSunnyTrialEligibility(ctx context.Context, accessToken string, proxyURLs ...string) (bool, string, bool, error) {

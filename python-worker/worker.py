@@ -66,6 +66,13 @@ class ProbeAccessTokenRequest(BaseModel):
     proxy_url: str = ""
 
 
+class ProbeCommerceRequest(BaseModel):
+    access_token: str
+    proxy_url: str = ""
+    country: str = "DE"
+    currency: str = "EUR"
+
+
 class CheckoutRequest(BaseModel):
     token: str
     checkout_proxies: list[str]
@@ -170,6 +177,14 @@ def probe_access_token(req: ProbeAccessTokenRequest, authorization: str | None =
     from sunny_core.access_token_probe import probe_access_token as run_probe
 
     return run_probe(req.access_token, req.proxy_url)
+
+
+@app.post("/probe-commerce")
+def probe_commerce(req: ProbeCommerceRequest, authorization: str | None = Header(default=None)) -> dict:
+    _check_token(authorization)
+    from sunny_core.commerce_probe import probe_commerce as run_probe
+
+    return run_probe(req.access_token, req.proxy_url, req.country, req.currency)
 
 
 @app.post("/checkout/jobs")
