@@ -118,3 +118,59 @@ def test_combined_provider_keeps_smspool_until_its_retry_budget_is_exhausted() -
     assert first["number"] == "+12025550101"
     assert second["number"] == "+12025550102"
     assert [call.args[0] for call in smspool_provider.call_args_list] == ["next", "bad", "next"]
+
+
+def test_background_combined_provider_temporarily_forces_us_country() -> None:
+    db = MagicMock()
+    db.smsbower_available.return_value = False
+    db.smspool_available.return_value = True
+    db.firefox_available.return_value = False
+    db.luban_available.return_value = False
+    db.usable_phone_count.return_value = 0
+    smspool_provider = MagicMock(return_value={"provider": "smspool", "number": "+12025550101", "country_code": "1"})
+
+    with patch.object(worker, "_smspool_provider", return_value=smspool_provider) as factory:
+        provider = worker._combined_phone_provider(db, "user@example.com", execution_mode="background")
+        phone = provider("next", "user@example.com")
+
+    assert phone["number"].startswith("+1")
+    factory.assert_called_once_with(db, "user@example.com", "", "1")
+
+
+def test_protocol_combined_provider_keeps_saved_provider_country() -> None:
+    db = MagicMock()
+    db.smsbower_available.return_value = False
+    db.smspool_available.return_value = False
+    db.firefox_available.return_value = True
+    db.luban_available.return_value = False
+    db.usable_phone_count.return_value = 0
+    firefox_provider = MagicMock(return_value={"provider": "firefox", "number": "+601137984883", "country": "mys", "country_code": "60"})
+
+    with patch.object(worker, "_firefox_provider", return_value=firefox_provider) as factory:
+        provider = worker._combined_phone_provider(db, "user@example.com", execution_mode="protocol")
+        phone = provider("next", "user@example.com")
+
+    assert phone["country"] == "mys"
+    assert phone["country_code"] == "60"
+    factory.assert_called_once_with(db, "user@example.com", "", "")
+
+
+def test_background_combined_provider_releases_non_us_number() -> None:
+    db = MagicMock()
+    db.smsbower_available.return_value = False
+    db.smspool_available.return_value = True
+    db.firefox_available.return_value = False
+    db.luban_available.return_value = False
+    db.usable_phone_count.return_value = 0
+    smspool_provider = MagicMock()
+    smspool_provider.side_effect = [
+        {"provider": "smspool", "number": "+601137984883", "country_code": "60"},
+        {"retry_same_provider": False},
+    ]
+
+    with patch.object(worker, "_smspool_provider", return_value=smspool_provider):
+        provider = worker._combined_phone_provider(db, "user@example.com", execution_mode="background")
+        assert provider("next", "user@example.com") is None
+        assert provider("next", "user@example.com") is None
+
+    assert [call.args[0] for call in smspool_provider.call_args_list] == ["next", "bad"]

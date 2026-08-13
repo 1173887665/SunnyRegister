@@ -485,11 +485,11 @@ def _sms_country_metadata(db: SunnyDB, option: dict[str, Any] | None, country: s
     }
 
 
-def _smsbower_provider(db: SunnyDB, email: str, proxy_url: str = ""):
+def _smsbower_provider(db: SunnyDB, email: str, proxy_url: str = "", country_override: str = ""):
     active: dict[str, Any] = {}
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
     phone_cfg = db.get_config("phone")
-    country_value = str(phone_cfg.get("smsbower_default_country") or "187").strip()
+    country_value = str(country_override or phone_cfg.get("smsbower_default_country") or "187").strip()
     country_option = db.resolve_sms_provider_option("smsbower", "country", country_value)
     resolved_country = str((country_option or {}).get("value") or country_value)
     phone_cfg = {**phone_cfg, "smsbower_default_country": resolved_country}
@@ -574,14 +574,14 @@ def _luban_provider(db: SunnyDB, email: str, proxy_url: str = ""):
     return provider
 
 
-def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
+def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = "", country_override: str = ""):
     active: dict[str, Any] = {}
     reuse_checked = False
     new_number_attempts = 0
     max_new_number_attempts = 3
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
     phone_cfg = db.get_config("phone")
-    country_value = str(phone_cfg.get("smspool_default_country") or "1").strip()
+    country_value = str(country_override or phone_cfg.get("smspool_default_country") or "1").strip()
     country_option = db.resolve_sms_provider_option("smspool", "country", country_value)
     resolved_country = str((country_option or {}).get("value") or country_value or "1")
     service_value = str(phone_cfg.get("smspool_default_service") or "OpenAI").strip()
@@ -726,13 +726,13 @@ def _smspool_provider(db: SunnyDB, email: str, proxy_url: str = ""):
     return provider
 
 
-def _firefox_provider(db: SunnyDB, email: str, proxy_url: str = ""):
+def _firefox_provider(db: SunnyDB, email: str, proxy_url: str = "", country_override: str = ""):
     active: dict[str, Any] = {}
     number_attempts = 0
     max_number_attempts = 3
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
     phone_cfg = db.get_config("phone")
-    country_value = str(phone_cfg.get("firefox_default_country") or "").strip()
+    country_value = str(country_override or phone_cfg.get("firefox_default_country") or "").strip()
     country_option = db.resolve_sms_provider_option("firefox", "country", country_value)
     resolved_country = str((country_option or {}).get("value") or country_value)
     country_metadata = _sms_country_metadata(db, country_option, resolved_country)
@@ -816,16 +816,17 @@ def _firefox_provider(db: SunnyDB, email: str, proxy_url: str = ""):
     return provider
 
 
-def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = ""):
+def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = "", execution_mode: str = "protocol"):
+    background_us_only = str(execution_mode or "").strip().lower() == "background"
     candidates: list[tuple[str, Any]] = []
     if _provider_is_available(db, "luban"):
         candidates.append(("LubanSMS", lambda: _luban_provider(db, email, proxy_url)))
     if _provider_is_available(db, "smsbower"):
-        candidates.append(("SMSBower", lambda: _smsbower_provider(db, email, proxy_url)))
+        candidates.append(("SMSBower", lambda: _smsbower_provider(db, email, proxy_url, "187" if background_us_only else "")))
     if _provider_is_available(db, "smspool"):
-        candidates.append(("SMSPool", lambda: _smspool_provider(db, email, proxy_url)))
+        candidates.append(("SMSPool", lambda: _smspool_provider(db, email, proxy_url, "1" if background_us_only else "")))
     if _provider_is_available(db, "firefox"):
-        candidates.append(("FireFox", lambda: _firefox_provider(db, email, proxy_url)))
+        candidates.append(("FireFox", lambda: _firefox_provider(db, email, proxy_url, "usa" if background_us_only else "")))
     random.shuffle(candidates)
     if db.usable_phone_count() > 0:
         candidates.append(("自建手机号池", lambda: _phone_provider(db, email)))
@@ -841,6 +842,11 @@ def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = ""):
         f"[{email}] [接码] 本次接码候选顺序：{' → '.join(name for name, _ in remaining)}（外部供应商随机，自建手机号池兜底）",
         detail={"email": email, "scope": "selected", "sms_provider": "combined", "candidate_order": [name for name, _ in remaining]},
     )
+    if background_us_only:
+        db.event(
+            f"[{email}] [接码] 后台无头浏览器模式仅使用美国 +1 手机号；本次任务将外部供应商国家临时设为美国，不修改已保存配置",
+            detail={"email": email, "scope": "selected", "sms_provider": "combined", "execution_mode": "background", "country_code": "1"},
+        )
 
     def provider(action: str, _email: str, payload: Any = None):
         nonlocal active_provider, active_name, active_phone
@@ -851,6 +857,9 @@ def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = ""):
                     if phone:
                         active_phone = dict(phone)
                         active_phone["provider_name"] = active_name
+                        if background_us_only and not str(active_phone.get("number") or "").strip().startswith("+1"):
+                            active_provider("bad", _email, {**active_phone, "error": "后台无头浏览器模式只允许美国 +1 手机号"})
+                            raise RuntimeError("后台无头浏览器模式只允许美国 +1 手机号")
                         return active_phone
                 except Exception as exc:
                     db.event(
@@ -863,6 +872,7 @@ def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = ""):
                 active_phone = {}
             while remaining:
                 name, factory = remaining.pop(0)
+                candidate_provider = None
                 db.event(
                     f"[{email}] [接码] 正在尝试接码资源：{name}",
                     detail={"email": email, "scope": "selected", "sms_provider": name},
@@ -876,8 +886,15 @@ def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = ""):
                     active_name = name
                     active_phone = dict(phone)
                     active_phone["provider_name"] = name
+                    if background_us_only and not str(active_phone.get("number") or "").strip().startswith("+1"):
+                        candidate_provider("bad", _email, {**active_phone, "error": "后台无头浏览器模式只允许美国 +1 手机号"})
+                        raise RuntimeError("后台无头浏览器模式只允许美国 +1 手机号")
                     return active_phone
                 except Exception as exc:
+                    if candidate_provider is not None and active_provider is candidate_provider:
+                        active_provider = None
+                        active_name = ""
+                        active_phone = {}
                     db.event(
                         f"[{email}] [接码] {name} 无法获取手机号，继续尝试下一个接码资源：{exc}",
                         "warning",
@@ -1384,7 +1401,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             require_refresh_token = True
             db.event(f"[{email}] [接码] 邮箱记录已有 OpenAI RT，将直接刷新 Session", detail={"email": email, "scope": "selected"})
         else:
-            phone_provider = _combined_phone_provider(db, email, auxiliary_proxy)
+            phone_provider = _combined_phone_provider(db, email, auxiliary_proxy, execution_mode)
         if phone_provider:
             require_refresh_token = True
             db.event(f"[{email}] [接码] 已启用组合接码策略：外部供应商随机尝试，自建手机号池作为兜底", detail={"email": email, "scope": "selected", "sms_provider": "combined"})

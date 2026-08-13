@@ -370,6 +370,21 @@ def test_protocol_execution_uses_e164_submission_without_country_picker(executio
     flow._select_phone_country.assert_not_called()
 
 
+def test_protocol_execution_rejects_number_that_conflicts_with_provider_country() -> None:
+    flow = make_flow()
+    flow.execution_mode = "protocol_post_stage"
+    flow._send_phone_code_api = Mock()
+
+    with pytest.raises(RuntimeError, match=r"国际区号 \+1 与接码配置 \+60 不一致"):
+        flow._prepare_phone_submission(
+            Mock(),
+            {"provider": "firefox", "country": "mys", "country_code": "60"},
+            "+12025550123",
+        )
+
+    flow._send_phone_code_api.assert_not_called()
+
+
 def test_background_execution_uses_country_picker_before_protocol_fallback() -> None:
     flow = make_flow()
     flow.execution_mode = "background"

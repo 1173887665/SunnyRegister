@@ -2111,7 +2111,10 @@ class OpenAIEmailRegisterFlow:
     def _prepare_phone_submission(self, page, phone: dict[str, Any], number: str) -> tuple[str | None, str]:
         protocol_modes = {"protocol", "protocol_post_stage", "protocol_headless_fallback"}
         if self.execution_mode in protocol_modes:
-            self.log("[接码] 当前为协议执行方式，直接通过 E.164 接口提交完整国际手机号")
+            context = _validate_phone_country_config(phone, number)
+            configured = str(context.get("configured_dial_code") or context.get("dial_code") or "-")
+            provider = str(phone.get("provider_name") or phone.get("provider") or "接码供应商")
+            self.log(f"[接码] 当前为协议执行方式，使用 {provider} 配置的国家区号 +{configured}，通过 E.164 接口提交完整国际手机号")
             verification_url = self._send_phone_code_api(page, number)
             if not verification_url:
                 raise RuntimeError("协议执行方式无法通过 E.164 接口提交手机号")
