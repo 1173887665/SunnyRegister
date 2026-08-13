@@ -12,6 +12,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,6 +22,23 @@ import (
 	_ "time/tzdata"
 	"unicode"
 )
+
+func databaseIdentity(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("database URL is empty")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Scheme != "postgres" && parsed.Scheme != "postgresql" {
+		return "", fmt.Errorf("database URL must use postgres:// or postgresql://")
+	}
+	parsed.User = url.User(parsed.User.Username())
+	parsed.Fragment = ""
+	return parsed.String(), nil
+}
 
 var (
 	bearerSecretPattern  = regexp.MustCompile(`(?i)(Bearer\s+)[A-Za-z0-9._~+/-]{12,}`)

@@ -95,6 +95,10 @@ $workerToken = Get-EnvValue "PYTHON_WORKER_TOKEN"
 if ([string]::IsNullOrWhiteSpace($workerToken) -or $workerToken -like "change-me-*") {
   Set-EnvValue "PYTHON_WORKER_TOKEN" (New-Secret 24)
 }
+$postgresPassword = Get-EnvValue "POSTGRES_PASSWORD"
+if ([string]::IsNullOrWhiteSpace($postgresPassword) -or $postgresPassword -like "change-me-*" -or $postgresPassword -eq "sunnyregister") {
+  Set-EnvValue "POSTGRES_PASSWORD" (New-Secret 24)
+}
 
 $arguments = @("up", "-d", "--remove-orphans")
 if (-not $NoBuild) { $arguments += "--build" }

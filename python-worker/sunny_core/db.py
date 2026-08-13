@@ -9,14 +9,101 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 
+def database_url() -> str:
+    file_name = os.getenv("DATABASE_URL_FILE", "").strip()
+    if file_name:
+        try:
+            value = open(file_name, encoding="utf-8").read().strip()
+            if value:
+                return value
+        except OSError:
+            pass
+    raw = os.getenv("DATABASE_URL") or os.getenv("ACCOUNT_MANAGER_DATABASE_URL") or os.getenv("ACCOUNT_MANAGER_DB") or ""
+    return raw.strip()
+
+
+def is_postgres_url(value: str | None = None) -> bool:
+    raw = (value if value is not None else database_url()).lower()
+    return raw.startswith("postgres://") or raw.startswith("postgresql://")
+
+
 def db_path() -> str:
-    raw = os.getenv("ACCOUNT_MANAGER_DATABASE_URL") or os.getenv("ACCOUNT_MANAGER_DB") or "sqlite:///data/account_manager.db"
-    raw = raw.strip()
+    raw = database_url()
     if raw.startswith("sqlite:///"):
         return raw[10:]
     if raw.startswith("sqlite://"):
         return raw[9:]
     return raw
+
+
+def database_identity() -> str:
+    raw = database_url()
+    if is_postgres_url(raw):
+        from urllib.parse import urlsplit, urlunsplit
+
+        parts = urlsplit(raw)
+        host = parts.hostname or ""
+        if parts.port:
+            host += f":{parts.port}"
+        if parts.username:
+            host = f"{parts.username}@{host}"
+        return urlunsplit((parts.scheme, host, parts.path, parts.query, ""))
+    return str(os.path.abspath(db_path())) if raw else ""
+
+
+class _PostgresConnection:
+    def __init__(self, url: str):
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+        except ImportError as exc:
+            raise RuntimeError("PostgreSQL support requires psycopg[binary]; reinstall python-worker requirements") from exc
+        self._conn = psycopg.connect(url, row_factory=dict_row, connect_timeout=10, autocommit=True)
+        self._transaction = None
+
+    @staticmethod
+    def _sql(statement: str) -> str:
+        sql = statement.replace("?", "%s")
+        sql = sql.replace("BEGIN IMMEDIATE", "BEGIN")
+        sql = sql.replace("enabled=1", "enabled=true").replace("enabled = 1", "enabled = true")
+        sql = sql.replace("enabled=0", "enabled=false").replace("enabled = 0", "enabled = false")
+        sql = sql.replace("last_check_ok=1", "last_check_ok=true").replace("last_check_ok = 1", "last_check_ok = true")
+        sql = sql.replace("last_check_ok=0", "last_check_ok=false").replace("last_check_ok = 0", "last_check_ok = false")
+        sql = sql.replace(
+            "cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now')",
+            "cooldown_until is null or cooldown_until <= current_timestamp",
+        )
+        sql = sql.replace("cooldown_until='' or datetime(cooldown_until) <= datetime('now')", "cooldown_until <= current_timestamp")
+        return sql
+
+    def execute(self, statement: str, params: Any = None):
+        sql = self._sql(statement)
+        if sql.strip().upper() == "BEGIN":
+            self._conn.autocommit = False
+            return self._conn.cursor()
+        return self._conn.execute(sql, params or ())
+
+    def commit(self) -> None:
+        self._conn.commit()
+        self._conn.autocommit = True
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+        self._conn.autocommit = True
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self):
+        self._transaction = self._conn.transaction()
+        self._transaction.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return self._transaction.__exit__(exc_type, exc_value, traceback)
+        finally:
+            self._transaction = None
 
 
 def app_timezone() -> ZoneInfo:
@@ -73,10 +160,15 @@ def _sanitize_event_detail(value: Any, key: str = "") -> Any:
 class SunnyDB:
     def __init__(self, task_id: str, *, ensure_schema: bool = True):
         self.task_id = task_id
-        self.conn = sqlite3.connect(db_path(), timeout=30)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("pragma busy_timeout=30000")
-        self.conn.execute("pragma foreign_keys=on")
+        target = db_path()
+        self.postgres = is_postgres_url(target)
+        if self.postgres:
+            self.conn = _PostgresConnection(target)
+        else:
+            self.conn = sqlite3.connect(target, timeout=30)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("pragma busy_timeout=30000")
+            self.conn.execute("pragma foreign_keys=on")
         if ensure_schema:
             self.ensure_schema()
 
@@ -85,6 +177,13 @@ class SunnyDB:
 
     def ensure_schema(self) -> None:
         """Keep the Python worker compatible with databases created by older builds."""
+        if self.postgres:
+            required = ("tasks", "task_events", "sunny_accounts", "sunny_mailboxes", "sunny_sessions")
+            for table in required:
+                row = self.conn.execute("select to_regclass(?) as name", (f"public.{table}",)).fetchone()
+                if not row or not row["name"]:
+                    raise RuntimeError(f"PostgreSQL schema is not initialized: missing table {table}; start the Go backend first")
+            return
         wanted = {
             "sunny_accounts": {
                 "mailbox_id": "integer DEFAULT 0",
@@ -481,6 +580,7 @@ class SunnyDB:
             return None
         try:
             self.conn.execute("BEGIN IMMEDIATE")
+            lock_clause = " for update skip locked" if self.postgres else ""
             row = self.conn.execute(
                 """
                 select * from sunny_phones
@@ -488,7 +588,7 @@ class SunnyDB:
                   and coalesce(success_count,0) < coalesce(max_success,3)
                   and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now'))
                 order by success_count asc, id asc limit 1
-                """
+                """ + lock_clause
             ).fetchone()
             if not row:
                 self.conn.rollback()
@@ -598,6 +698,7 @@ class SunnyDB:
     def reserve_sms_provider_number(self, provider: str, country: str = "", service: str = "") -> dict[str, Any] | None:
         try:
             self.conn.execute("BEGIN IMMEDIATE")
+            lock_clause = " for update skip locked" if self.postgres else ""
             row = self.conn.execute(
                 """
                 select * from sunny_sms_provider_numbers
@@ -609,7 +710,7 @@ class SunnyDB:
                   and (cooldown_until is null or cooldown_until='' or datetime(cooldown_until) <= datetime('now'))
                 order by success_count asc, last_used_at asc, id asc
                 limit 1
-                """,
+                """ + lock_clause,
                 (provider, country, country, service, service),
             ).fetchone()
             if not row:
@@ -713,8 +814,12 @@ class SunnyDB:
             base.setdefault("created_at", now_sql())
             cols = ",".join(base)
             marks = ",".join("?" for _ in base)
-            cur = self.conn.execute(f"insert into sunny_accounts({cols}) values({marks})", list(base.values()))
-            account_id = int(cur.lastrowid)
+            if getattr(self, "postgres", False):
+                cur = self.conn.execute(f"insert into sunny_accounts({cols}) values({marks}) returning id", list(base.values()))
+                account_id = int(cur.fetchone()["id"])
+            else:
+                cur = self.conn.execute(f"insert into sunny_accounts({cols}) values({marks})", list(base.values()))
+                account_id = int(cur.lastrowid)
         self.conn.commit()
         return account_id
 

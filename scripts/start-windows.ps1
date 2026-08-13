@@ -97,9 +97,10 @@ if (Test-RunningPid $workerPidFile -or Test-RunningPid $backendPidFile) {
   throw "SunnyRegister already appears to be running. Run scripts\stop-windows.ps1 first."
 }
 
-$dbPath = (Join-Path $DataDir "account_manager.db").Replace('\','/')
 $env:PYTHONUTF8 = "1"
-$env:ACCOUNT_MANAGER_DATABASE_URL = "sqlite:///$dbPath"
+if (-not $env:DATABASE_URL) {
+  throw "DATABASE_URL is required. Configure PostgreSQL in .env before starting SunnyRegister."
+}
 $env:PYTHON_WORKER_URL = "http://127.0.0.1:8765"
 $env:PYTHON_TASK_TYPES = "sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt"
 $env:TZ = if ($env:TZ) { $env:TZ } else { "Asia/Shanghai" }
@@ -150,7 +151,7 @@ if (-not $ready) {
   throw "SunnyRegister failed to become ready. Check logs\backend.err.log and logs\python-worker.err.log."
 }
 
-$passwordFile = Join-Path $DataDir "admin_password.txt"
+$passwordFile = if ($env:ADMIN_PASSWORD_FILE) { $env:ADMIN_PASSWORD_FILE } else { Join-Path $DataDir "admin_password.txt" }
 Write-Host "SunnyRegister is ready: http://127.0.0.1:$($env:PORT)" -ForegroundColor Green
 $username = if ($env:ADMIN_USERNAME) { $env:ADMIN_USERNAME } else { "admin" }
 Write-Host "Username: $username"

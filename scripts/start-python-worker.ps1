@@ -26,7 +26,9 @@ try {
 $env:PYTHONUTF8 = "1"
 $env:TZ = if ($env:TZ) { $env:TZ } else { "Asia/Shanghai" }
 $env:SUNNY_TIMEZONE = $env:TZ
-$env:ACCOUNT_MANAGER_DATABASE_URL = "sqlite:///$((Join-Path $Root 'data\account_manager.db').Replace('\','/'))"
+if (-not $env:DATABASE_URL) {
+  throw "DATABASE_URL is required. Configure PostgreSQL before starting the Worker."
+}
 
 Set-Location $WorkerDir
 & $VenvPython -m uvicorn worker:app --host $HostName --port $Port

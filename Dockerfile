@@ -27,7 +27,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=backend-builder /out/sunnyregister-go /app/sunnyregister-go
 ENV PORT=8000 \
-    ACCOUNT_MANAGER_DATABASE_URL=/app/data/account_manager.db \
     TZ=Asia/Shanghai
 VOLUME ["/app/data"]
 EXPOSE 8000

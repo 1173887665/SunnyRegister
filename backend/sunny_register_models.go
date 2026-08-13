@@ -155,3 +155,24 @@ type SunnySMSProviderOption struct {
 }
 
 func (SunnySMSProviderOption) TableName() string { return "sunny_sms_provider_options" }
+
+type SunnySMSProviderNumber struct {
+	ID            uint       `gorm:"primaryKey" json:"id"`
+	Provider      string     `gorm:"uniqueIndex:idx_sunny_sms_provider_number;size:40;index" json:"provider"`
+	PhoneNumber   string     `gorm:"uniqueIndex:idx_sunny_sms_provider_number;size:64;index" json:"phone_number"`
+	Country       string     `gorm:"uniqueIndex:idx_sunny_sms_provider_number;size:80;default:''" json:"country"`
+	Service       string     `gorm:"uniqueIndex:idx_sunny_sms_provider_number;size:120;default:''" json:"service"`
+	Pool          string     `gorm:"size:120;default:''" json:"pool"`
+	LastOrderID   string     `gorm:"type:text" json:"last_order_id"`
+	Token         string     `gorm:"type:text" json:"token"`
+	Status        string     `gorm:"index;size:32;default:available" json:"status"`
+	SuccessCount  int        `gorm:"default:0" json:"success_count"`
+	MaxSuccess    int        `gorm:"default:3" json:"max_success"`
+	CooldownUntil *time.Time `gorm:"index" json:"cooldown_until"`
+	LastError     string     `gorm:"type:text" json:"last_error"`
+	LastUsedAt    *time.Time `gorm:"index" json:"last_used_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+func (SunnySMSProviderNumber) TableName() string { return "sunny_sms_provider_numbers" }

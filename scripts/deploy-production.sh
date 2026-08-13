@@ -38,6 +38,16 @@ generate_secret() {
 }
 generate_secret secrets/admin_password 24
 generate_secret secrets/python_worker_token 32
+generate_secret secrets/postgres_password 32
+postgres_user="$(env_value POSTGRES_USER)"
+postgres_db="$(env_value POSTGRES_DB)"
+postgres_user="${postgres_user:-sunnyregister}"
+postgres_db="${postgres_db:-sunnyregister}"
+postgres_password="$(tr -d '\r\n' < secrets/postgres_password)"
+umask 077
+printf 'postgresql://%s:%s@postgres:5432/%s?sslmode=disable\n' \
+  "$postgres_user" "$postgres_password" "$postgres_db" > secrets/database_url
+chmod 600 secrets/database_url
 
 "${COMPOSE[@]}" config --quiet
 

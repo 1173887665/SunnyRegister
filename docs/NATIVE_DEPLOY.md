@@ -11,6 +11,7 @@ Docker 是推荐方案。原生部署用于无法使用 Docker，或者 Windows 
 - Python 3.12+。
 - Node.js 22+。
 - Go 1.23+。
+- PostgreSQL 14+（推荐 16），或可访问的托管 PostgreSQL。
 
 首次安装并启动：
 
@@ -19,6 +20,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
 ```
 
 脚本会在缺少构建产物时自动执行 `setup-windows.ps1`。服务在后台运行，日志写入 `logs/`。
+启动前必须在 `.env` 配置 `DATABASE_URL`。示例和建库命令见 [PostgreSQL 说明](POSTGRESQL_MIGRATION.md)。
 
 停止：
 
@@ -41,6 +43,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
 - Python 3.12+。
 - Node.js 22+。
 - Go 1.23+。
+- PostgreSQL 14+（推荐 16），或可访问的托管 PostgreSQL。
 - Debian/Ubuntu 推荐。
 - 可执行 `playwright install --with-deps chromium` 所需的 sudo/root 权限。
 - 可下载 Camoufox 运行时；安装脚本会自动执行 `python -m camoufox fetch`。
@@ -50,6 +53,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
 ```bash
 bash scripts/start-linux.sh
 ```
+
+启动前必须在 `.env` 配置 `DATABASE_URL`。
 
 停止：
 
@@ -69,8 +74,10 @@ http://127.0.0.1:6080/vnc.html
 
 - `bin/`：Go 构建产物。
 - `python-worker/.venv/`：Python 虚拟环境。
-- `data/`：SQLite 与管理员密码。
+- `data/`：管理员密码与审计导出。
 - `logs/`：后端、Worker、Xvfb 和 noVNC 日志。
 - `.runtime/`：PID 文件。
 
 这些目录均已加入 `.gitignore`。
+
+旧 SQLite 数据迁移流程见 [PostgreSQL 部署与 SQLite 数据迁移](POSTGRESQL_MIGRATION.md)。

@@ -33,7 +33,10 @@ export SUNNY_HEALTHCHECK_ENABLED="${SUNNY_HEALTHCHECK_ENABLED:-true}"
 export SUNNY_HEALTHCHECK_TIME="${SUNNY_HEALTHCHECK_TIME:-06:00}"
 export SUNNY_HEALTHCHECK_CONCURRENCY="${SUNNY_HEALTHCHECK_CONCURRENCY:-2}"
 export PYTHONUTF8=1
-export ACCOUNT_MANAGER_DATABASE_URL="$DATA/account_manager.db"
+if [[ -z "${DATABASE_URL:-}" ]]; then
+  echo "DATABASE_URL is required. Configure PostgreSQL in .env before starting SunnyRegister." >&2
+  exit 1
+fi
 export PYTHON_WORKER_URL="http://127.0.0.1:8765"
 export PYTHON_TASK_TYPES="sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt"
 export PORT="${SUNNYREGISTER_PORT:-8000}"

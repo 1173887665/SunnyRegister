@@ -671,11 +671,10 @@ func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request, rest 
 }
 
 func (s *Server) auditExportDir() string {
-	dbPath := normalizeDatabasePath(os.Getenv("ACCOUNT_MANAGER_DATABASE_URL"))
-	if dbPath == "" {
-		dbPath = filepath.Join("data", "sunnyregister.db")
+	if dir := strings.TrimSpace(os.Getenv("SUNNY_AUDIT_EXPORT_DIR")); dir != "" {
+		return dir
 	}
-	return filepath.Join(filepath.Dir(dbPath), "audit_exports")
+	return filepath.Join("data", "audit_exports")
 }
 
 func (s *Server) runAuditExport(jobID string) {

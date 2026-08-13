@@ -9,7 +9,7 @@
 [![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111111)](https://react.dev/)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![Playwright](https://img.shields.io/badge/Playwright-1.61%2B-2EAD33?logo=playwright&logoColor=white)](https://playwright.dev/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -28,7 +28,7 @@ SunnyRegister 通过统一的 Web 控制台管理邮箱、手机号、代理、�
 ## 技术栈
 
 - **前端**：React、TypeScript、Vite、GSAP
-- **后端**：Go、GORM、SQLite
+- **后端**：Go、GORM、PostgreSQL
 - **自动化 Worker**：Python、FastAPI、curl_cffi、Playwright、Camoufox
 - **部署运行**：Docker Compose、Xvfb、noVNC
 
@@ -101,11 +101,12 @@ bash scripts/start-linux.sh
 - [Docker 部署](./docs/DOCKER_DEPLOY.md)
 - [Windows / Linux 原生部署](./docs/NATIVE_DEPLOY.md)
 - [Linux 生产部署](./docs/PRODUCTION_DEPLOY.md)
+- [PostgreSQL 部署与 SQLite 数据迁移](./docs/POSTGRESQL_MIGRATION.md)
 
 ## 注意事项
 
 - `.env`、`secrets/`、`data/`、数据库、导出文件、日志和备份不得提交到 Git。
-- SQLite 中可能包含邮箱凭据、OAuth Token 和 Session，生产磁盘及异地备份应加密。
+- PostgreSQL 中可能包含邮箱凭据、OAuth Token 和 Session，生产磁盘及异地备份应加密。
 - 公网部署必须启用 HTTPS、强管理员密码和访问控制，不要直接开放 `8000`、`8765`、`5900`、`6080` 等端口。
 - 代理、邮箱和接码平台凭据应在部署后配置，不要写入源码、Issue 或公开日志。
 - 2 核 4 GB 服务器建议浏览器任务并发设为 1，实际容量取决于浏览器、代理和邮箱服务质量。

@@ -1,6 +1,31 @@
 name: sunnyregister
 
 services:
+  postgres:
+    image: postgres:16-bookworm
+    container_name: sunnyregister-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sunnyregister}
+      POSTGRES_USER: ${POSTGRES_USER:-sunnyregister}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sunnyregister}
+      TZ: ${TZ:-Asia/Shanghai}
+      PGTZ: ${SUNNY_TIMEZONE:-Asia/Shanghai}
+    volumes:
+      - sunnyregister-postgres:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
   sunnyregister:
     build:
       context: .
@@ -10,6 +35,8 @@ services:
     init: true
     restart: unless-stopped
     depends_on:
+      postgres:
+        condition: service_healthy
       python-worker:
         condition: service_healthy
     ports:
@@ -19,7 +46,7 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       APP_PASSWORD: ${APP_PASSWORD:-}
       ADMIN_PASSWORD_FILE: /app/data/admin_password.txt
-      ACCOUNT_MANAGER_DATABASE_URL: /app/data/account_manager.db
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sunnyregister}:${POSTGRES_PASSWORD:-sunnyregister}@postgres:5432/${POSTGRES_DB:-sunnyregister}?sslmode=disable
       PYTHON_WORKER_URL: http://python-worker:8765
       PYTHON_WORKER_TOKEN: ${PYTHON_WORKER_TOKEN:-}
       PYTHON_TASK_TYPES: ${PYTHON_TASK_TYPES:-sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt}
@@ -53,8 +80,11 @@ services:
     container_name: sunnyregister-python-worker
     init: true
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
-      ACCOUNT_MANAGER_DATABASE_URL: /app/data/account_manager.db
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sunnyregister}:${POSTGRES_PASSWORD:-sunnyregister}@postgres:5432/${POSTGRES_DB:-sunnyregister}?sslmode=disable
       PYTHON_WORKER_TOKEN: ${PYTHON_WORKER_TOKEN:-}
       PYTHONUTF8: "1"
       TZ: ${TZ:-Asia/Shanghai}
@@ -94,3 +124,5 @@ services:
 volumes:
   sunnyregister-data:
     name: sunnyregister-data
+  sunnyregister-postgres:
+    name: sunnyregister-postgres

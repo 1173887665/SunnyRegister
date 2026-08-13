@@ -30,6 +30,8 @@ SUNNYREGISTER_BIND=127.0.0.1
 SUNNYREGISTER_PORT=8000
 SUNNYREGISTER_PUBLIC_CHECK=false
 ADMIN_USERNAME=admin
+POSTGRES_DB=sunnyregister
+POSTGRES_USER=sunnyregister
 ```
 
 The registration task proxy is used for Outlook IMAP before trying a direct
@@ -59,9 +61,11 @@ preferred.
 ```text
 secrets/admin_password
 secrets/python_worker_token
+secrets/postgres_password
+secrets/database_url
 ```
 
-这两个文件权限为 `0600`，且已被 Git 和 Docker 构建上下文忽略。
+这些文件权限为 `0600`，且已被 Git 和 Docker 构建上下文忽略。
 
 ## Cloudflare 接入
 
@@ -88,11 +92,13 @@ Service:         http://127.0.0.1:8000
 ./scripts/update-production.sh origin/main
 ```
 
-更新前会执行 SQLite 在线备份。部署后会检查容器健康和本机端口；当 `SUNNYREGISTER_PUBLIC_CHECK=true` 时，还会检查 Cloudflare 公网域名。失败时自动回退到更新前提交。
+更新前会执行 PostgreSQL `pg_dump`。部署后会检查容器健康和本机端口；当 `SUNNYREGISTER_PUBLIC_CHECK=true` 时，还会检查 Cloudflare 公网域名。失败时自动回退到更新前提交。
 
 ## 备份
 
-SQLite 与配置保存在 `sunnyregister-data` volume。更新脚本生成的 `backup_*.db` 也位于该 volume 中。生产环境还必须配置加密异地备份，并定期进行恢复演练。
+PostgreSQL 数据保存在 `sunnyregister-postgres` volume，配置和审计导出保存在 `sunnyregister-data` volume。更新脚本将 dump 写入宿主机 `backups/`。生产环境还必须配置加密异地备份，并定期进行恢复演练。
+
+旧 SQLite 数据迁移见 [PostgreSQL 部署与 SQLite 数据迁移](POSTGRESQL_MIGRATION.md)。
 
 ## 上线检查
 

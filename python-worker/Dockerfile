@@ -5,7 +5,6 @@ FROM python:3.12-slim-bookworm
 ENV PYTHONUNBUFFERED=1 \
     PYTHONUTF8=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    ACCOUNT_MANAGER_DATABASE_URL=sqlite:////app/data/account_manager.db \
     DISPLAY=:99 \
     ENABLE_XVFB=false \
     ENABLE_NOVNC=false \
@@ -19,7 +18,7 @@ RUN for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
     done \
     && apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true update \
     && apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true install -y --no-install-recommends \
-      ca-certificates curl tzdata \
+      ca-certificates curl golang-go tzdata \
       xvfb x11vnc novnc websockify \
       x11-utils \
       fonts-liberation fonts-noto-cjk \
@@ -46,6 +45,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY python-worker/worker.py /app/worker.py
 COPY python-worker/sunny_runner.py /app/sunny_runner.py
 COPY python-worker/sunny_core/ /app/sunny_core/
+COPY python-worker/tools/ /app/tools/
+RUN cd /app/tools/pay153_checkout/tools/upi_go \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o pix_extract_slot . \
+    && chmod 700 pix_extract_slot
 COPY python-worker/docker-entrypoint.sh /usr/local/bin/sunny-worker-entrypoint
 RUN chmod +x /usr/local/bin/sunny-worker-entrypoint
 

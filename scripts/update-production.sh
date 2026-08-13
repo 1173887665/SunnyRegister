@@ -20,9 +20,14 @@ git fetch --tags --prune origin
 git rev-parse --verify "${TARGET}^{commit}" >/dev/null
 
 timestamp="$(date +%Y%m%d_%H%M%S)"
-if docker inspect sunnyregister-python-worker >/dev/null 2>&1; then
-  docker compose -f docker-compose.production.yml --env-file .env exec -T python-worker \
-    python -c "import os,sqlite3; p='/app/data/account_manager.db'; b=f'/app/data/backup_${timestamp}.db'; s=sqlite3.connect(p); d=sqlite3.connect(b); s.backup(d); d.close(); s.close(); print(b)"
+if docker inspect sunnyregister-postgres >/dev/null 2>&1; then
+  mkdir -p backups
+  postgres_user="$(sed -n 's/^POSTGRES_USER=//p' .env | tail -n 1 | tr -d '\r')"
+  postgres_db="$(sed -n 's/^POSTGRES_DB=//p' .env | tail -n 1 | tr -d '\r')"
+  postgres_user="${postgres_user:-sunnyregister}"
+  postgres_db="${postgres_db:-sunnyregister}"
+  docker compose -f docker-compose.production.yml --env-file .env exec -T postgres \
+    pg_dump -U "$postgres_user" -d "$postgres_db" -Fc > "backups/sunnyregister_${timestamp}.dump"
 fi
 
 git checkout --detach "$TARGET"

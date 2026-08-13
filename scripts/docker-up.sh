@@ -52,6 +52,10 @@ worker_token="$(env_value PYTHON_WORKER_TOKEN)"
 if [[ -z "$worker_token" || "$worker_token" == change-me-* ]]; then
   set_env PYTHON_WORKER_TOKEN "$(random_secret 24)"
 fi
+postgres_password="$(env_value POSTGRES_PASSWORD)"
+if [[ -z "$postgres_password" || "$postgres_password" == change-me-* || "$postgres_password" == sunnyregister ]]; then
+  set_env POSTGRES_PASSWORD "$(random_secret 24)"
+fi
 
 build_args=(up -d --remove-orphans --build)
 if [[ "${1:-}" == "--no-build" ]]; then

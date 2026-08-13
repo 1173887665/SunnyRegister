@@ -7,91 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/glebarez/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
-
-func openDB() *gorm.DB {
-	raw := os.Getenv("ACCOUNT_MANAGER_DATABASE_URL")
-	if raw == "" {
-		raw = os.Getenv("ACCOUNT_MANAGER_DB")
-	}
-	path := normalizeDatabasePath(raw)
-	if err := ensureDir(path); err != nil {
-		log.Fatalf("create database dir failed: %v", err)
-	}
-	gormLogger := logger.New(
-		log.New(os.Stdout, "", log.LstdFlags),
-		logger.Config{
-			SlowThreshold:             200 * time.Millisecond,
-			LogLevel:                  logger.Warn,
-			IgnoreRecordNotFoundError: true,
-			Colorful:                  true,
-		},
-	)
-	db, err := gorm.Open(sqlite.Open(path), &gorm.Config{Logger: gormLogger})
-	if err != nil {
-		log.Fatalf("open sqlite failed: %v", err)
-	}
-	sqlDB, _ := db.DB()
-	if sqlDB != nil {
-		maxOpen := intValue(os.Getenv("SUNNY_DB_MAX_OPEN_CONNS"), 4)
-		if maxOpen < 1 {
-			maxOpen = 1
-		}
-		sqlDB.SetMaxOpenConns(maxOpen)
-		sqlDB.SetMaxIdleConns(maxOpen)
-		sqlDB.SetConnMaxIdleTime(5 * time.Minute)
-	}
-	db.Exec("PRAGMA busy_timeout=5000")
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA synchronous=NORMAL")
-	db.Exec("PRAGMA temp_store=MEMORY")
-	db.Exec("PRAGMA cache_size=-32768")
-	db.Exec("PRAGMA wal_autocheckpoint=1000")
-	db.Exec("PRAGMA foreign_keys=ON")
-	if err := db.AutoMigrate(
-		&ConfigItem{}, &Account{}, &AccountOverview{}, &AccountCredential{},
-		&ProviderAccount{}, &ProviderResource{}, &ProviderDefinition{}, &ProviderSetting{},
-		&PlatformCapabilityOverride{}, &TaskLog{}, &Task{}, &TaskEvent{}, &Proxy{}, &SmsPoolBlacklist{},
-		&SunnyMailboxGroup{}, &SunnyMailbox{}, &SunnyPhone{}, &SunnyProxy{}, &SunnyAccount{},
-		&SunnySession{}, &SunnyKVConfig{}, &SunnySMSProviderOption{},
-		&AuditLog{}, &AuditSetting{}, &AuditExportJob{},
-	); err != nil {
-		log.Fatalf("migrate sqlite failed: %v", err)
-	}
-	ensureSunnySchema(db)
-	ensureShanghaiTimestampStorage(db)
-	ensureSunnyStatusTriggers(db)
-	ensureSunnyIndexes(db)
-	sanitizeHistoricalTaskData(db)
-	return db
-}
-
-func ensureSunnyStatusTriggers(db *gorm.DB) {
-	for _, table := range []string{"sunny_mailboxes", "sunny_accounts"} {
-		updateTrigger := "trg_" + table + "_status_changed"
-		db.Exec("DROP TRIGGER IF EXISTS " + updateTrigger)
-		updateStatement := "CREATE TRIGGER IF NOT EXISTS " + updateTrigger +
-			" AFTER UPDATE OF status ON " + table +
-			" WHEN OLD.status IS NOT NEW.status BEGIN UPDATE " + table +
-			" SET status_changed_at = CASE WHEN NEW.updated_at IS NOT OLD.updated_at THEN NEW.updated_at ELSE strftime('%Y-%m-%d %H:%M:%S','now','+8 hours') || '+08:00' END" +
-			" WHERE id = NEW.id; END"
-		if err := db.Exec(updateStatement).Error; err != nil {
-			log.Printf("create status timestamp trigger failed: %v", err)
-		}
-		insertTrigger := "trg_" + table + "_status_created"
-		db.Exec("DROP TRIGGER IF EXISTS " + insertTrigger)
-		insertStatement := "CREATE TRIGGER IF NOT EXISTS " + insertTrigger +
-			" AFTER INSERT ON " + table +
-			" WHEN NEW.status_changed_at IS NULL BEGIN UPDATE " + table +
-			" SET status_changed_at = COALESCE(NEW.created_at, NEW.updated_at, strftime('%Y-%m-%d %H:%M:%S','now','+8 hours') || '+08:00') WHERE id = NEW.id; END"
-		if err := db.Exec(insertStatement).Error; err != nil {
-			log.Printf("create initial status timestamp trigger failed: %v", err)
-		}
-	}
-}
 
 type sqliteTableName struct {
 	Name string `gorm:"column:name"`
@@ -106,9 +25,9 @@ func quoteSQLiteIdentifier(value string) string {
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
-// Older worker builds wrote Shanghai wall-clock values without an offset. The
-// SQLite driver parses those values as UTC, so make the intended timezone
-// explicit before values are read by GORM.
+// ensureShanghaiTimestampStorage is retained for SQLite source compatibility
+// in tests and the one-time migration path. PostgreSQL stores time.Time values
+// as timestamptz and does not call this function during normal startup.
 func ensureShanghaiTimestampStorage(db *gorm.DB) {
 	const migrationKey = "timezone_storage_asia_shanghai_v1"
 	var migrated int64
@@ -117,13 +36,11 @@ func ensureShanghaiTimestampStorage(db *gorm.DB) {
 	}
 	var tables []sqliteTableName
 	if err := db.Raw("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&tables).Error; err != nil {
-		log.Printf("list timestamp tables failed: %v", err)
 		return
 	}
 	for _, table := range tables {
 		var columns []sqliteColumnInfo
 		if err := db.Raw("PRAGMA table_info(" + quoteSQLiteIdentifier(table.Name) + ")").Scan(&columns).Error; err != nil {
-			log.Printf("list timestamp columns for %s failed: %v", table.Name, err)
 			continue
 		}
 		for _, column := range columns {
@@ -141,15 +58,121 @@ func ensureShanghaiTimestampStorage(db *gorm.DB) {
 				AND instr(substr(trim(%s), 11), '-') = 0`,
 				tableName, columnName, columnName, columnName, columnName,
 				columnName, columnName, columnName, columnName, columnName)
-			if err := db.Exec(statement).Error; err != nil {
-				log.Printf("normalize Shanghai timestamps for %s.%s failed: %v", table.Name, column.Name, err)
-			}
+			_ = db.Exec(statement).Error
 		}
 	}
 	now := time.Now().In(applicationLocation())
 	marker := SunnyKVConfig{Key: migrationKey, ValueJSON: `{"timezone":"Asia/Shanghai"}`, CreatedAt: now, UpdatedAt: now}
-	if err := db.Create(&marker).Error; err != nil && !strings.Contains(strings.ToLower(err.Error()), "unique") {
-		log.Printf("save Shanghai timestamp migration marker failed: %v", err)
+	_ = db.Create(&marker).Error
+}
+
+func configuredDatabaseURL() string {
+	if file := strings.TrimSpace(os.Getenv("DATABASE_URL_FILE")); file != "" {
+		if data, err := os.ReadFile(file); err == nil && strings.TrimSpace(string(data)) != "" {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return strings.TrimSpace(firstText(os.Getenv("DATABASE_URL"), os.Getenv("ACCOUNT_MANAGER_DATABASE_URL"), os.Getenv("ACCOUNT_MANAGER_DB")))
+}
+
+func databaseURL() string {
+	raw := configuredDatabaseURL()
+	if raw == "" {
+		log.Fatal("PostgreSQL is required: set DATABASE_URL or ACCOUNT_MANAGER_DATABASE_URL")
+	}
+	lower := strings.ToLower(raw)
+	if !strings.HasPrefix(lower, "postgres://") && !strings.HasPrefix(lower, "postgresql://") {
+		log.Fatal("PostgreSQL is required: database URL must start with postgres:// or postgresql://")
+	}
+	return raw
+}
+
+func databaseModels() []any {
+	return []any{
+		&ConfigItem{}, &Account{}, &AccountOverview{}, &AccountCredential{},
+		&ProviderAccount{}, &ProviderResource{}, &ProviderDefinition{}, &ProviderSetting{},
+		&PlatformCapabilityOverride{}, &TaskLog{}, &Task{}, &TaskEvent{}, &Proxy{}, &SmsPoolBlacklist{},
+		&SunnyMailboxGroup{}, &SunnyMailbox{}, &SunnyPhone{}, &SunnyProxy{}, &SunnyAccount{},
+		&SunnySession{}, &SunnyKVConfig{}, &SunnySMSProviderOption{}, &SunnySMSProviderNumber{},
+		&AuditLog{}, &AuditSetting{}, &AuditExportJob{},
+	}
+}
+
+func openDB() *gorm.DB {
+	gormLogger := logger.New(
+		log.New(os.Stdout, "", log.LstdFlags),
+		logger.Config{
+			SlowThreshold:             200 * time.Millisecond,
+			LogLevel:                  logger.Warn,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  true,
+		},
+	)
+	db, err := gorm.Open(postgres.Open(databaseURL()), &gorm.Config{Logger: gormLogger})
+	if err != nil {
+		log.Fatalf("open PostgreSQL failed: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatalf("read PostgreSQL connection pool failed: %v", err)
+	}
+	if sqlDB != nil {
+		maxOpen := intValue(os.Getenv("SUNNY_DB_MAX_OPEN_CONNS"), 20)
+		if maxOpen < 1 {
+			maxOpen = 1
+		}
+		maxIdle := intValue(os.Getenv("SUNNY_DB_MAX_IDLE_CONNS"), 5)
+		if maxIdle < 1 {
+			maxIdle = 1
+		}
+		if maxIdle > maxOpen {
+			maxIdle = maxOpen
+		}
+		sqlDB.SetMaxOpenConns(maxOpen)
+		sqlDB.SetMaxIdleConns(maxIdle)
+		sqlDB.SetConnMaxIdleTime(10 * time.Minute)
+		sqlDB.SetConnMaxLifetime(30 * time.Minute)
+		if err := sqlDB.Ping(); err != nil {
+			log.Fatalf("connect PostgreSQL failed: %v", err)
+		}
+	}
+	if err := db.AutoMigrate(databaseModels()...); err != nil {
+		log.Fatalf("migrate PostgreSQL failed: %v", err)
+	}
+	ensureSunnySchema(db)
+	ensureSunnyStatusTriggers(db)
+	ensureSunnyIndexes(db)
+	sanitizeHistoricalTaskData(db)
+	return db
+}
+
+func ensureSunnyStatusTriggers(db *gorm.DB) {
+	functionStatement := `CREATE OR REPLACE FUNCTION sunny_set_status_changed_at()
+		RETURNS trigger AS $$
+		BEGIN
+			IF TG_OP = 'INSERT' THEN
+				NEW.status_changed_at := COALESCE(NEW.status_changed_at, NEW.created_at, NEW.updated_at, CURRENT_TIMESTAMP);
+			ELSIF NEW.status IS DISTINCT FROM OLD.status THEN
+				NEW.status_changed_at := CASE
+					WHEN NEW.updated_at IS DISTINCT FROM OLD.updated_at THEN NEW.updated_at
+					ELSE CURRENT_TIMESTAMP
+				END;
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql`
+	if err := db.Exec(functionStatement).Error; err != nil {
+		log.Printf("create status timestamp function failed: %v", err)
+		return
+	}
+	for _, table := range []string{"sunny_mailboxes", "sunny_accounts"} {
+		trigger := "trg_" + table + "_status_changed"
+		db.Exec("DROP TRIGGER IF EXISTS " + trigger + " ON " + table)
+		statement := "CREATE TRIGGER " + trigger + " BEFORE INSERT OR UPDATE OF status ON " + table +
+			" FOR EACH ROW EXECUTE FUNCTION sunny_set_status_changed_at()"
+		if err := db.Exec(statement).Error; err != nil {
+			log.Printf("create status timestamp trigger for %s failed: %v", table, err)
+		}
 	}
 }
 
@@ -217,7 +240,7 @@ func ensureSunnySchema(db *gorm.DB) {
 			"account_type":           "text DEFAULT 'free'",
 			"trial_eligibility":      "text DEFAULT 'unknown'",
 			"trial_check_error":      "text DEFAULT ''",
-			"trial_checked_at":       "datetime",
+			"trial_checked_at":       "timestamptz",
 			"openai_rt":              "text DEFAULT ''",
 			"access_token":           "text DEFAULT ''",
 			"phone_number":           "text DEFAULT ''",
@@ -225,8 +248,8 @@ func ensureSunnySchema(db *gorm.DB) {
 			"sub2api_id":             "text DEFAULT ''",
 			"last_error":             "text DEFAULT ''",
 			"metadata_json":          "text DEFAULT '{}'",
-			"last_health_checked_at": "datetime",
-			"status_changed_at":      "datetime",
+			"last_health_checked_at": "timestamptz",
+			"status_changed_at":      "timestamptz",
 		},
 		"sunny_mailboxes": {
 			"chat_gpt_password":      "text DEFAULT ''",
@@ -234,11 +257,11 @@ func ensureSunnySchema(db *gorm.DB) {
 			"openai_rt":              "text DEFAULT ''",
 			"trial_eligibility":      "text DEFAULT 'unknown'",
 			"trial_check_error":      "text DEFAULT ''",
-			"trial_checked_at":       "datetime",
-			"registered_at":          "datetime",
+			"trial_checked_at":       "timestamptz",
+			"registered_at":          "timestamptz",
 			"last_error":             "text DEFAULT ''",
-			"last_health_checked_at": "datetime",
-			"status_changed_at":      "datetime",
+			"last_health_checked_at": "timestamptz",
+			"status_changed_at":      "timestamptz",
 		},
 		"sunny_sessions": {
 			"refresh_token":           "text DEFAULT ''",
@@ -248,10 +271,10 @@ func ensureSunnySchema(db *gorm.DB) {
 			"raw_mailbox_line":        "text DEFAULT ''",
 			"access_token_status":     "text DEFAULT 'unknown'",
 			"access_token_error":      "text DEFAULT ''",
-			"access_token_checked_at": "datetime",
+			"access_token_checked_at": "timestamptz",
 			"health_check_status":     "text DEFAULT 'unknown'",
 			"health_check_error":      "text DEFAULT ''",
-			"last_refresh_at":         "datetime",
+			"last_refresh_at":         "timestamptz",
 		},
 	}
 	for table, cols := range required {

@@ -13,12 +13,14 @@ SunnyRegister 提供两份 Compose：
 
 | 服务 | 内容 | 网络边界 |
 | --- | --- | --- |
+| `postgres` | PostgreSQL 16 | 开发环境仅绑定 `127.0.0.1:5432`；生产环境不发布端口 |
 | `sunnyregister` | Go API + React 静态前端 | 开发环境发布 8000；生产环境仅回环地址 |
 | `python-worker` | FastAPI + Camoufox + Playwright | 只在 `sunnyregister-worker` 网络提供 8765 |
 | noVNC | Xvfb 虚拟桌面 | 默认关闭；启用后仅 `127.0.0.1:6080` |
-| `sunnyregister-data` | SQLite 与运行数据 | Docker named volume |
+| `sunnyregister-postgres` | PostgreSQL 数据目录 | Docker named volume |
+| `sunnyregister-data` | 管理员密码与审计导出 | Docker named volume |
 
-Go 与 Python Worker 共享 `/app/data/account_manager.db`。容器重建不会删除 named volume，除非显式执行 `down -v`。
+Go 与 Python Worker 使用同一个 PostgreSQL 数据库。容器重建不会删除 named volume，除非显式执行 `down -v`。
 
 ## 本地 Docker 启动
 
@@ -34,7 +36,7 @@ Linux：
 bash scripts/docker-up.sh
 ```
 
-脚本会创建本地 `.env`、生成管理员密码与 Worker Token、构建镜像并等待健康检查。启动后访问：
+脚本会创建本地 `.env`、生成管理员密码、Worker Token 与 PostgreSQL 密码、构建镜像并等待健康检查。启动后访问：
 
 ```text
 http://127.0.0.1:8000
@@ -63,6 +65,8 @@ nano .env
 ```text
 secrets/admin_password
 secrets/python_worker_token
+secrets/postgres_password
+secrets/database_url
 ```
 
 不要在生产环境改用普通 `docker-compose.yml`，也不要把 `SUNNYREGISTER_BIND` 改成 `0.0.0.0` 后直接暴露公网。
@@ -115,14 +119,16 @@ docker compose -f docker-compose.production.yml --env-file .env logs -f --tail=2
 docker compose -f docker-compose.production.yml --env-file .env restart
 ```
 
-## SQLite 在线备份
+## PostgreSQL 备份
 
-不要在服务运行时使用普通 `cp` 复制 SQLite 主文件。使用 Python SQLite Backup API：
+使用 `pg_dump` 生成一致性备份：
 
 ```bash
 timestamp="$(date +%Y%m%d_%H%M%S)"
-docker compose -f docker-compose.production.yml --env-file .env exec -T python-worker \
-  python -c "import sqlite3; s=sqlite3.connect('/app/data/account_manager.db'); d=sqlite3.connect('/app/data/backup_${timestamp}.db'); s.backup(d); d.close(); s.close()"
+mkdir -p backups
+docker compose -f docker-compose.production.yml --env-file .env exec -T postgres \
+  pg_dump -U "${POSTGRES_USER:-sunnyregister}" -d "${POSTGRES_DB:-sunnyregister}" -Fc \
+  > "backups/sunnyregister_${timestamp}.dump"
 ```
 
 更新脚本会自动执行同类备份：
@@ -131,7 +137,7 @@ docker compose -f docker-compose.production.yml --env-file .env exec -T python-w
 ./scripts/update-production.sh v0.2.0
 ```
 
-volume 内备份不等于异地备份。应定期导出到加密对象存储，并进行恢复演练。
+数据库 volume 不等于备份。应定期把 dump 导出到加密对象存储，并进行恢复演练。SQLite 旧数据迁移见 [PostgreSQL 迁移说明](POSTGRESQL_MIGRATION.md)。
 
 ## 资源建议
 
@@ -158,7 +164,7 @@ docker compose -f docker-compose.production.yml --env-file .env exec python-work
   sh -c 'echo "$DISPLAY"; xdpyinfo -display "$DISPLAY" >/dev/null && echo OK'
 ```
 
-检查 Worker 数据库路径：
+检查 Worker 数据库连接标识（不会返回密码）：
 
 ```bash
 docker compose -f docker-compose.production.yml --env-file .env exec python-worker \
