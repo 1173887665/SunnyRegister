@@ -91,6 +91,10 @@ type SunnyAccount struct {
 	TrialEligibility    string     `gorm:"index;default:unknown" json:"trial_eligibility"`
 	TrialCheckError     string     `gorm:"type:text" json:"trial_check_error"`
 	TrialCheckedAt      *time.Time `gorm:"index" json:"trial_checked_at"`
+	CheckoutKind        string     `gorm:"index;size:32;default:unknown" json:"checkout_kind"`
+	PaymentMethodsJSON  string     `gorm:"type:text;default:'[]'" json:"payment_methods_json"`
+	CommerceCheckError  string     `gorm:"type:text" json:"commerce_check_error"`
+	CommerceCheckedAt   *time.Time `gorm:"index" json:"commerce_checked_at"`
 	OpenAIRT            string     `gorm:"column:openai_rt;type:text" json:"openai_rt"`
 	AccessToken         string     `gorm:"type:text" json:"access_token"`
 	PhoneNumber         string     `gorm:"index" json:"phone_number"`

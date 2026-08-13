@@ -161,6 +161,8 @@ func ensureSunnyIndexes(db *gorm.DB) {
 		"CREATE INDEX IF NOT EXISTS idx_sunny_sessions_email ON sunny_sessions(email)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_accounts_email ON sunny_accounts(email)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_accounts_health_checked ON sunny_accounts(last_health_checked_at DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_sunny_accounts_checkout_kind ON sunny_accounts(checkout_kind)",
+		"CREATE INDEX IF NOT EXISTS idx_sunny_accounts_commerce_checked ON sunny_accounts(commerce_checked_at DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_mailboxes_health_checked ON sunny_mailboxes(last_health_checked_at DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_accounts_status_changed ON sunny_accounts(status_changed_at DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_mailboxes_status_changed ON sunny_mailboxes(status_changed_at DESC)",

@@ -3898,6 +3898,10 @@ type sunnySessionAccountSummary struct {
 	AccountType         string     `gorm:"column:account_type"`
 	TrialEligibility    string     `gorm:"column:trial_eligibility"`
 	TrialCheckedAt      *time.Time `gorm:"column:trial_checked_at"`
+	CheckoutKind        string     `gorm:"column:checkout_kind"`
+	PaymentMethodsJSON  string     `gorm:"column:payment_methods_json"`
+	CommerceCheckError  string     `gorm:"column:commerce_check_error"`
+	CommerceCheckedAt   *time.Time `gorm:"column:commerce_checked_at"`
 	AccessToken         string     `gorm:"column:access_token"`
 	PhoneNumber         string     `gorm:"column:phone_number"`
 	HasAccessToken      int        `gorm:"column:has_access_token"`
@@ -3951,6 +3955,11 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 	}
 	expiresAt := sunnyAccessTokenExpiry(fallback(row.AccessToken, account.AccessToken), row.ExpiresAt)
 	trialEligibility := sunnyTrialEligibilityFor(account.TrialEligibility, mailbox.TrialEligibility)
+	checkoutKind := normalizeSunnyCheckoutKind(account.CheckoutKind)
+	paymentMethods := []string{}
+	if err := json.Unmarshal([]byte(fallback(account.PaymentMethodsJSON, "[]")), &paymentMethods); err != nil {
+		paymentMethods = []string{}
+	}
 	trialCheckedAt := account.TrialCheckedAt
 	if trialCheckedAt == nil {
 		trialCheckedAt = mailbox.TrialCheckedAt
@@ -3962,6 +3971,7 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 	return map[string]any{
 		"id": row.ID, "account_id": accountID, "mailbox_id": mailbox.ID, "email": row.Email,
 		"status": status, "plan_type": plan, "trial_eligibility": trialEligibility, "group_id": mailbox.GroupID, "group_name": mailbox.GroupName,
+		"checkout_kind": checkoutKind, "payment_methods": paymentMethods, "commerce_check_error": account.CommerceCheckError,
 		"phone_bound":       sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailbox.Status),
 		"has_access_token":  row.HasAccessToken != 0 || account.HasAccessToken != 0,
 		"has_refresh_token": row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
@@ -3971,6 +3981,7 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 		"access_token_checked_at": nullableTime(row.AccessTokenCheckedAt != nil, sunnyTimePointerValue(row.AccessTokenCheckedAt)),
 		"health_check_status":     fallback(row.HealthCheckStatus, "unknown"), "health_check_error": row.HealthCheckError,
 		"trial_checked_at": nullableTime(trialCheckedAt != nil, pointerTime(trialCheckedAt)),
+		"commerce_checked_at": nullableTime(account.CommerceCheckedAt != nil, pointerTime(account.CommerceCheckedAt)),
 	}
 }
 
@@ -4014,7 +4025,7 @@ func (s *Server) sunnySessionListSidecars(rows []sunnySessionListRow) (map[strin
 		return accounts, mailboxes
 	}
 	var accRows []sunnySessionAccountSummary
-	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, trial_eligibility, trial_checked_at, access_token, phone_number, last_health_checked_at,
+	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, trial_eligibility, trial_checked_at, checkout_kind, payment_methods_json, commerce_check_error, commerce_checked_at, access_token, phone_number, last_health_checked_at,
 		CASE WHEN access_token IS NOT NULL AND access_token <> '' THEN 1 ELSE 0 END AS has_access_token,
 		CASE WHEN openai_rt IS NOT NULL AND openai_rt <> '' THEN 1 ELSE 0 END AS has_refresh_token`).Where("email IN ?", emails).Find(&accRows)
 	for _, account := range accRows {
@@ -4097,9 +4108,10 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		statusFilter := strings.TrimSpace(q.Get("status"))
 		planFilter := strings.ToLower(strings.TrimSpace(q.Get("plan_type")))
 		trialFilter := normalizeSunnyTrialFilter(q.Get("trial_eligibility"))
+		checkoutFilter := normalizeSunnyCheckoutFilter(q.Get("checkout_kind"))
 		groupFilter := uint(intValue(q.Get("group_id"), 0))
 		sortBy := strings.TrimSpace(q.Get("sort_by"))
-		if statusFilter == "" && planFilter == "" && trialFilter == "" {
+		if statusFilter == "" && planFilter == "" && trialFilter == "" && checkoutFilter == "" {
 			query := s.db.Model(&SunnySession{})
 			if kw != "" {
 				query = query.Where("LOWER(email) LIKE ?", "%"+kw+"%")
@@ -4156,6 +4168,9 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 				if !sunnyTrialApplies(text(item["status"]), text(item["plan_type"])) || normalizeSunnyTrialEligibility(text(item["trial_eligibility"])) != trialFilter {
 					continue
 				}
+			}
+			if checkoutFilter != "" && normalizeSunnyCheckoutKind(text(item["checkout_kind"])) != checkoutFilter {
+				continue
 			}
 			if groupFilter != 0 && uint(intValue(item["group_id"], 0)) != groupFilter {
 				continue
