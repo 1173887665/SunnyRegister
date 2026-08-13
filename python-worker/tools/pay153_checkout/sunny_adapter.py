@@ -15,7 +15,7 @@ from app import STORE
 
 
 _TOKEN_RE = re.compile(r"eyJ[A-Za-z0-9_.-]{40,}")
-_PROXY_AUTH_RE = re.compile(r"(https?://)[^\s/@:]+:[^\s/@]+@", re.IGNORECASE)
+_PROXY_AUTH_RE = re.compile(r"((?:https?|socks5?)://)[^\s/@:]+:[^\s/@]+@", re.IGNORECASE)
 
 
 def _safe_error(value: Any) -> str:
@@ -68,7 +68,7 @@ def start_checkout(payload: dict[str, Any]) -> str:
 
 
 def checkout_status(job_id: str) -> dict[str, Any] | None:
-    job = STORE.get(job_id, public=True)
+    job = STORE.get(job_id, public=False)
     if not job:
         return None
     raw = job.get("result") if isinstance(job.get("result"), dict) else {}
@@ -100,6 +100,15 @@ def checkout_status(job_id: str) -> dict[str, Any] | None:
         "progress": int(job.get("percent") or 0),
         "message": str(job.get("text") or ""),
         "error": _safe_error(job.get("error")),
+        "logs": [
+            {
+                "sequence": int(item.get("sequence") or sequence),
+                "time": str(item.get("time") or ""),
+                "message": _safe_error(item.get("message")),
+            }
+            for sequence, item in enumerate(job.get("logs") or [], start=1)
+            if isinstance(item, dict)
+        ][-200:],
         "result": {
             "link_type": str(raw.get("link_type") or raw.get("provider") or ""),
             "checkout_session_id": str(raw.get("checkout_session_id") or ""),

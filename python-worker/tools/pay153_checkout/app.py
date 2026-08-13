@@ -1480,7 +1480,9 @@ class JobStore:
         with self.lock:
             job = self.jobs.get(job_id)
             if job is not None:
+                job["log_sequence"] = int(job.get("log_sequence") or 0) + 1
                 job["logs"].append({
+                    "sequence": job["log_sequence"],
                     "time": time.strftime("%H:%M:%S"),
                     "message": safe[:800],
                     "major": self._is_major_log(safe),

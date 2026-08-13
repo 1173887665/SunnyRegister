@@ -561,6 +561,7 @@ func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token str
 		return nil, fmt.Errorf("提链引擎返回格式无效")
 	}
 	jobID := text(started["job_id"])
+	workerLogSequence := 0
 	for poll := 0; poll < 800; poll++ {
 		if sCancelled := task != nil && task.ID != "" && task.Status == TaskCancelled; sCancelled || (task != nil && s.taskCancelled(task)) {
 			_ = cancelSunnyCheckoutWorkerJob(ctx, workerURL, jobID)
@@ -577,6 +578,19 @@ func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token str
 		status, err := sunnyCheckoutWorkerStatus(ctx, client, workerURL, jobID)
 		if err != nil {
 			continue
+		}
+		if logs, ok := status["logs"].([]any); ok {
+			for _, rawLog := range logs {
+				entry, _ := rawLog.(map[string]any)
+				sequence := intValue(entry["sequence"], 0)
+				if sequence <= workerLogSequence {
+					continue
+				}
+				if message := strings.TrimSpace(text(entry["message"])); message != "" {
+					s.appendTaskEvent(task.ID, message, "log", "info", map[string]any{"worker_time": text(entry["time"])})
+				}
+				workerLogSequence = sequence
+			}
 		}
 		switch text(status["status"]) {
 		case "done":
