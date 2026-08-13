@@ -95,6 +95,32 @@ def checkout_status(job_id: str) -> dict[str, Any] | None:
         ),
         "",
     )
+    result = {
+        "plan": str(raw.get("plan") or ""),
+        "account_email": str(raw.get("account_email") or raw.get("email") or ""),
+        "account_id": str(raw.get("account_id") or ""),
+        "provider": str(raw.get("provider") or raw.get("link_type") or ""),
+        "link_type": str(raw.get("link_type") or raw.get("provider") or ""),
+        "checkout_session_id": str(raw.get("checkout_session_id") or ""),
+        "payment_link": link,
+        "short_link": str(raw.get("short_link") or ""),
+        "verification_url": str(raw.get("verification_url") or ""),
+        "checkout_url": str(raw.get("checkout_url") or ""),
+        "provider_redirect_url": str(raw.get("provider_redirect_url") or ""),
+        "paypal_link": str(raw.get("paypal_link") or raw.get("paypal_url") or ""),
+        "qr_data": qr_data,
+        "qr_image": qr_image,
+        "qr_image_png": str(raw.get("qr_image_png") or ""),
+        "qr_image_svg": str(raw.get("qr_image_svg") or ""),
+        "country": str(raw.get("checkout_country") or raw.get("country") or ""),
+        "currency": str(raw.get("checkout_currency") or raw.get("currency") or ""),
+        "checkout_amount": raw.get("checkout_amount"),
+        "payment_methods": raw.get("payment_methods") or raw.get("custom_payment_methods") or [],
+        "promo_requested": raw.get("promo_requested"),
+        "promo_applied": raw.get("promo_applied"),
+        "promo_campaign_used": str(raw.get("promo_campaign_used") or raw.get("promo_campaign") or ""),
+        "expires_at": raw.get("expires_at"),
+    }
     return {
         "status": str(job.get("status") or "queued"),
         "progress": int(job.get("percent") or 0),
@@ -109,16 +135,7 @@ def checkout_status(job_id: str) -> dict[str, Any] | None:
             for sequence, item in enumerate(job.get("logs") or [], start=1)
             if isinstance(item, dict)
         ][-200:],
-        "result": {
-            "link_type": str(raw.get("link_type") or raw.get("provider") or ""),
-            "checkout_session_id": str(raw.get("checkout_session_id") or ""),
-            "payment_link": link,
-            "qr_data": qr_data,
-            "qr_image": qr_image,
-            "country": str(raw.get("checkout_country") or raw.get("country") or ""),
-            "currency": str(raw.get("checkout_currency") or raw.get("currency") or ""),
-            "promo_applied": raw.get("promo_applied"),
-        },
+        "result": result,
     }
 
 

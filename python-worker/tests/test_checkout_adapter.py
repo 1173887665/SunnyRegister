@@ -48,6 +48,36 @@ class CheckoutAdapterTests(unittest.TestCase):
         self.assertNotIn("user:pass", result["logs"][1]["message"])
         self.assertIn("socks5://[PROXY]@", result["logs"][1]["message"])
 
+    def test_checkout_status_preserves_reference_result_fields(self) -> None:
+        job = {
+            "status": "done",
+            "percent": 100,
+            "text": "提取完成",
+            "error": "",
+            "logs": [],
+            "result": {
+                "plan": "plus",
+                "account_email": "user@example.com",
+                "link_type": "paypal",
+                "checkout_session_id": "cs_live_123",
+                "paypal_url": "https://pay.example/approve",
+                "payment_methods": ["card", "paypal"],
+                "checkout_amount": 0,
+                "promo_requested": True,
+                "promo_applied": True,
+                "country": "US",
+                "currency": "USD",
+            },
+        }
+        with patch.object(sunny_adapter.STORE, "get", return_value=job):
+            result = sunny_adapter.checkout_status("job-2")
+        payload = result["result"]
+        self.assertEqual(payload["account_email"], "user@example.com")
+        self.assertEqual(payload["checkout_session_id"], "cs_live_123")
+        self.assertEqual(payload["paypal_link"], "https://pay.example/approve")
+        self.assertEqual(payload["payment_methods"], ["card", "paypal"])
+        self.assertTrue(payload["promo_applied"])
+
 
 if __name__ == "__main__":
     unittest.main()

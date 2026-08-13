@@ -490,6 +490,7 @@ func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
 	}
 	wg.Wait()
 	if s.taskCancelled(task) {
+		task.ResultJSON = dumpJSON(result)
 		task.Status = TaskCancelled
 		task.Error = "用户已停止提链任务"
 		task.FinishedAt.Valid = true
