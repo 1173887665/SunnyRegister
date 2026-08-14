@@ -105,6 +105,10 @@ function CheckoutLogFloat({ open, onToggle, task, logs, scrollRef }: { open: boo
 }
 
 function splitLines(value: string) { return value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean); }
+function readBrowserText(key: string) {
+  if (typeof window === "undefined") return "";
+  try { return window.localStorage.getItem(key) || ""; } catch { return ""; }
+}
 function resultError(item: AnyRow) { return String(item.error || item.checkout_error || item.message || "").trim(); }
 function resultDisplayLink(item: AnyRow) { return String(item.payment_link || item.short_link || item.verification_url || item.provider_redirect_url || item.paypal_link || item.checkout_url || "").trim(); }
 function resultQrImage(item: AnyRow) { return String(item.qr_image || item.qr_image_png || item.qr_image_svg || "").trim(); }
@@ -151,8 +155,8 @@ function QRModal({ value, image, onClose }: { value: string; image: string; onCl
 export default function CheckoutManager() {
   const [providers, setProviders] = useState<Provider[]>(fallbackProviders);
   const [countries, setCountries] = useState<Record<string, string>>(currencyByCountry);
-  const [checkoutProxies, setCheckoutProxies] = useState("");
-  const [promotionProxies, setPromotionProxies] = useState("");
+  const [checkoutProxies, setCheckoutProxies] = useState(() => readBrowserText("pay153.proxy_pool_2"));
+  const [promotionProxies, setPromotionProxies] = useState(() => readBrowserText("pay153.proxy_pool_1"));
   const [systemAT, setSystemAT] = useState(true);
   const [sessions, setSessions] = useState<AnyRow[]>([]);
   const [groups, setGroups] = useState<AnyRow[]>([]);
@@ -161,9 +165,9 @@ export default function CheckoutManager() {
   const [selected, setSelected] = useState<number[]>([]);
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState("");
-  const [status, setStatus] = useState("");
-  const [planFilter, setPlanFilter] = useState("");
-  const [trialFilter, setTrialFilter] = useState("");
+  const [status, setStatus] = useState("已注册");
+  const [planFilter, setPlanFilter] = useState("free");
+  const [trialFilter, setTrialFilter] = useState("eligible");
   const [checkoutFilter, setCheckoutFilter] = useState("");
   const [plan, setPlan] = useState("plus");
   const [linkType, setLinkType] = useState("hosted");
@@ -199,6 +203,15 @@ export default function CheckoutManager() {
   const [cancelBusy, setCancelBusy] = useState(false);
   const logScrollRef = useRef<HTMLDivElement | null>(null);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem("pay153.proxy_pool_2", checkoutProxies);
+        window.localStorage.setItem("pay153.proxy_pool_1", promotionProxies);
+      } catch { /* private browsing may disable local storage */ }
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [checkoutProxies, promotionProxies]);
   useEffect(() => { void apiFetch("/sunny/checkout/providers").then((data) => { if (data.items?.length) setProviders(data.items); if (data.countries) setCountries(data.countries); }).catch(() => {}); }, []);
   useEffect(() => { void apiFetch("/sunny/mailbox-groups").then((data) => setGroups(data.items || [])).catch(() => setGroups([])); }, []);
   useEffect(() => {
@@ -232,7 +245,17 @@ export default function CheckoutManager() {
   const pageTo = Math.min(page * pageSize, listTotal);
   const selectedCount = selected.length;
   const allCurrentSelected = rows.length > 0 && selected.length === rows.length;
-  function switchMode(value: boolean) { setSystemAT(value); setSelected([]); setTask(null); setPage(1); }
+  function switchMode(value: boolean) {
+    setSystemAT(value);
+    setSelected([]);
+    setTask(null);
+    setPage(1);
+    if (value) {
+      setStatus("已注册");
+      setPlanFilter("free");
+      setTrialFilter("eligible");
+    }
+  }
   function changeFilter(setter: (value: string) => void, value: string) { setter(value); setSelected([]); setPage(1); }
   function toggleRow(index: number) { setSelected((old) => old.includes(index) ? old.filter((x) => x !== index) : [...old, index]); }
   function toggleCurrentPage() { setSelected(allCurrentSelected ? [] : rows.map((_, index) => index)); }
