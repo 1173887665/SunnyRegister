@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -290,6 +289,10 @@ func (s *Server) sunnyAccessTokenCheckConcurrency() int {
 	return value
 }
 
+func (s *Server) sunnyAccessTokenCheckBatchSize() int {
+	return sunnyDetectionBatchSize("SUNNY_ATCHECK_BATCH_SIZE", 30, 200)
+}
+
 func (s *Server) sunnyAccessTokenCandidates(ids []uint, scheduled bool) ([]sunnyAccessTokenCandidate, int, error) {
 	var sessions []SunnySession
 	query := s.db.Model(&SunnySession{}).Select("id", "account_id", "email", "access_token", "session_json", "health_check_status")
@@ -408,61 +411,54 @@ func (s *Server) executeSunnyAccessTokenCheckTask(task *Task, payload map[string
 		return
 	}
 	proxyURL := s.sunnyMailboxProxyURL()
-	jobs := make(chan sunnyAccessTokenCandidate)
-	results := make(chan sunnyAccessTokenResult, len(candidates))
-	var workers sync.WaitGroup
-	for i := 0; i < s.sunnyAccessTokenCheckConcurrency() && i < len(candidates); i++ {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for candidate := range jobs {
-				status, probeErr := s.sunnyProbeAccessToken(candidate.AccessToken, proxyURL)
-				message := ""
-				if probeErr != nil {
-					message = probeErr.Error()
-				}
-				results <- sunnyAccessTokenResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, Status: status, Error: message}
-			}
-		}()
-	}
-	for _, candidate := range candidates {
-		jobs <- candidate
-	}
-	close(jobs)
-	workers.Wait()
-	close(results)
 	invalidAccounts := []uint{}
 	invalidSessions := []uint{}
 	seenAccounts := map[uint]bool{}
-	items := []any{}
-	for outcome := range results {
-		now := time.Now()
-		item := map[string]any{"session_id": outcome.SessionID, "email": outcome.Email, "status": outcome.Status}
-		if outcome.Error != "" {
-			item["error"] = outcome.Error
+	items := make([]any, 0, len(candidates))
+	batchSize := s.sunnyAccessTokenCheckBatchSize()
+	concurrency := s.sunnyAccessTokenCheckConcurrency()
+	for start := 0; start < len(candidates); start += batchSize {
+		end := start + batchSize
+		if end > len(candidates) {
+			end = len(candidates)
 		}
-		switch outcome.Status {
-		case "valid":
-			result["valid"] = result["valid"].(int) + 1
-			s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "valid", "access_token_error": "", "access_token_checked_at": now})
-			s.appendAccountTaskEvent(task.ID, outcome.Email, "session", "access_token.valid", fmt.Sprintf("账户 %s：Access Token 有效", outcome.Email), "info", item)
-		case "invalid":
-			result["invalid"] = result["invalid"].(int) + 1
-			s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "invalid", "access_token_error": outcome.Error, "access_token_checked_at": now})
-			invalidSessions = append(invalidSessions, outcome.SessionID)
-			if outcome.AccountID != 0 && !seenAccounts[outcome.AccountID] {
-				seenAccounts[outcome.AccountID] = true
-				invalidAccounts = append(invalidAccounts, outcome.AccountID)
+		results := streamSunnyDetectionBatch(candidates[start:end], concurrency, func(candidate sunnyAccessTokenCandidate) sunnyAccessTokenResult {
+			status, probeErr := s.sunnyProbeAccessToken(candidate.AccessToken, proxyURL)
+			message := ""
+			if probeErr != nil {
+				message = probeErr.Error()
 			}
-			s.appendAccountTaskEvent(task.ID, outcome.Email, "session", "access_token.invalid", fmt.Sprintf("账户 %s：Access Token 无效，%s", outcome.Email, outcome.Error), "warning", item)
-		default:
-			result["failed"] = result["failed"].(int) + 1
-			s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "probe_failed", "access_token_error": outcome.Error, "access_token_checked_at": now})
-			s.appendAccountTaskEvent(task.ID, outcome.Email, "session", "access_token.check_failed", fmt.Sprintf("账户 %s：AT 检测失败，%s", outcome.Email, outcome.Error), "warning", item)
+			return sunnyAccessTokenResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, Status: status, Error: message}
+		})
+		for outcome := range results {
+			now := time.Now()
+			item := map[string]any{"session_id": outcome.SessionID, "email": outcome.Email, "status": outcome.Status}
+			if outcome.Error != "" {
+				item["error"] = outcome.Error
+			}
+			switch outcome.Status {
+			case "valid":
+				result["valid"] = result["valid"].(int) + 1
+				s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "valid", "access_token_error": "", "access_token_checked_at": now})
+				s.appendAccountTaskEvent(task.ID, outcome.Email, "session", "access_token.valid", fmt.Sprintf("账户 %s：Access Token 有效", outcome.Email), "info", item)
+			case "invalid":
+				result["invalid"] = result["invalid"].(int) + 1
+				s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "invalid", "access_token_error": outcome.Error, "access_token_checked_at": now})
+				invalidSessions = append(invalidSessions, outcome.SessionID)
+				if outcome.AccountID != 0 && !seenAccounts[outcome.AccountID] {
+					seenAccounts[outcome.AccountID] = true
+					invalidAccounts = append(invalidAccounts, outcome.AccountID)
+				}
+				s.appendAccountTaskEvent(task.ID, outcome.Email, "session", "access_token.invalid", fmt.Sprintf("账户 %s：Access Token 无效，%s", outcome.Email, outcome.Error), "warning", item)
+			default:
+				result["failed"] = result["failed"].(int) + 1
+				s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "probe_failed", "access_token_error": outcome.Error, "access_token_checked_at": now})
+				s.appendAccountTaskEvent(task.ID, outcome.Email, "session", "access_token.check_failed", fmt.Sprintf("账户 %s：AT 检测失败，%s", outcome.Email, outcome.Error), "warning", item)
+			}
+			items = append(items, item)
+			task.ProgressCurrent++
+			s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": task.ProgressCurrent, "updated_at": now})
 		}
-		items = append(items, item)
-		task.ProgressCurrent++
-		s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": task.ProgressCurrent, "updated_at": now})
 	}
 	if len(invalidAccounts) > 0 {
 		renewalTask := s.createSunnyAccessTokenRenewalTask(task, "access_token_check", invalidAccounts)

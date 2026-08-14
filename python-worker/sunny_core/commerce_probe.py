@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import time
+import uuid
+import sys
+from pathlib import Path
 from typing import Any
 
 from curl_cffi import requests as curl_requests
+
+try:
+    from tools.pay153_checkout.paypal_routing import session_checkout_kind
+except ImportError:  # pragma: no cover - direct module execution compatibility
+    from paypal_routing import session_checkout_kind
 
 
 TRIAL_URL = (
@@ -11,7 +19,7 @@ TRIAL_URL = (
     "?coupon=plus-1-month-free&is_coupon_from_query_param=true"
 )
 CHECKOUT_URL = "https://chatgpt.com/backend-api/payments/checkout"
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0"
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -62,10 +70,64 @@ def _request_with_retry(request: Any) -> Any:
 
 
 def _session(proxy_url: str) -> Any:
-    session = curl_requests.Session(impersonate="chrome136")
+    session = curl_requests.Session(impersonate="firefox144")
+    try:
+        session.trust_env = False
+    except Exception:
+        pass
     if proxy_url:
         session.proxies = {"http": proxy_url, "https": proxy_url}
     return session
+
+
+def _task_style_checkout_probe(
+    access_token: str,
+    country: str,
+    currency: str,
+    checkout_proxy_url: str,
+) -> dict[str, Any]:
+    """Run the same Checkout creation path used by PayPal extraction tasks."""
+    engine_dir = Path(__file__).resolve().parents[1] / "tools" / "pay153_checkout"
+    if str(engine_dir) not in sys.path:
+        sys.path.insert(0, str(engine_dir))
+    from app import checkout_payload, create_checkout
+
+    options: dict[str, Any] = {
+        "plan": "plus",
+        "country": country,
+        "currency": currency,
+        "checkout_country": country,
+        "checkout_currency": currency,
+        "link_type": "paypal",
+        "use_promo": False,
+        "promo_campaign": "",
+    }
+    payload = checkout_payload(options, {})
+    created = create_checkout(
+        access_token,
+        payload,
+        checkout_proxy_url,
+        str(uuid.uuid4()),
+        str(uuid.uuid4()),
+        lambda _message: None,
+        use_sen=True,
+        use_so=True,
+        allow_sentinel_fallback=True,
+    )
+    data = created.get("data") or {}
+    session_id = str(data.get("checkout_session_id") or "")
+    try:
+        return {
+            "kind": session_checkout_kind(session_id),
+            "payment_methods": _payment_methods(data),
+            "http": 200,
+            "error": "",
+        }
+    finally:
+        http = created.get("http")
+        close = getattr(http, "close", None)
+        if callable(close):
+            close()
 
 
 def probe_commerce(
@@ -83,7 +145,6 @@ def probe_commerce(
     billing_country = str(country or "DE").strip().upper() or "DE"
     billing_currency = str(currency or ("EUR" if billing_country == "DE" else "USD")).strip().upper()
     promotion_session = _session(str(promotion_proxy_url or proxy_url).strip())
-    checkout_session = _session(str(checkout_proxy_url or proxy_url).strip())
     headers = _headers(token)
     result: dict[str, Any] = {
         "trial": {"state": "", "http": 0, "error": ""},
@@ -102,31 +163,14 @@ def probe_commerce(
             result["trial"]["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
 
         try:
-            checkout_headers = {**headers, "content-type": "application/json", "x-openai-target-path": "/backend-api/payments/checkout", "x-openai-target-route": "/backend-api/payments/checkout"}
-            checkout_body = {
-                "entry_point": "all_plans_pricing_modal",
-                "plan_name": "chatgptplusplan",
-                "billing_details": {"country": billing_country, "currency": billing_currency},
-                "checkout_ui_mode": "custom",
-            }
-            checkout_response = _request_with_retry(lambda: checkout_session.post(CHECKOUT_URL, json=checkout_body, headers=checkout_headers, timeout=45))
-            checkout_payload, checkout_error = _safe_json(checkout_response)
-            session_id = str(checkout_payload.get("checkout_session_id") or checkout_payload.get("session_id") or checkout_payload.get("id") or "")
-            kind = (
-                "oaics" if session_id.startswith("oaics_")
-                else "cs_test" if session_id.startswith("cs_test_")
-                else "cs_live" if session_id.startswith("cs_")
-                else ""
+            result["checkout"] = _task_style_checkout_probe(
+                token,
+                billing_country,
+                billing_currency,
+                str(checkout_proxy_url or proxy_url).strip(),
             )
-            result["checkout"] = {
-                "kind": kind,
-                "payment_methods": _payment_methods(checkout_payload),
-                "http": checkout_response.status_code,
-                "error": checkout_error,
-            }
         except Exception as exc:
             result["checkout"]["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
         return result
     finally:
         promotion_session.close()
-        checkout_session.close()

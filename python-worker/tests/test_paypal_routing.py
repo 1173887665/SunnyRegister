@@ -2,6 +2,7 @@ import pytest
 
 from tools.pay153_checkout.paypal_routing import (
     checkout_mode,
+    reconcile_checkout_mode,
     session_checkout_kind,
     validate_session_for_mode,
 )
@@ -30,3 +31,9 @@ def test_known_modes_reject_the_opposite_checkout_type() -> None:
 def test_auto_mode_selects_from_created_session() -> None:
     assert validate_session_for_mode("auto", "oaics_123") == "oaics"
     assert validate_session_for_mode("auto", "cs_live_123") == "cs_live"
+
+
+def test_reconcile_checkout_mode_switches_to_actual_session_kind() -> None:
+    assert reconcile_checkout_mode("oaics", "cs_live") == ("cs_live", True)
+    assert reconcile_checkout_mode("cs_live", "oaics") == ("oaics", True)
+    assert reconcile_checkout_mode("oaics", "oaics") == ("oaics", False)

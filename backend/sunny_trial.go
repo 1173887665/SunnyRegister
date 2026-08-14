@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -343,7 +342,9 @@ func probeSunnyCheckout(ctx context.Context, client *http.Client, accessToken st
 		"entry_point":      "all_plans_pricing_modal",
 		"plan_name":        "chatgptplusplan",
 		"billing_details":  map[string]string{"country": country, "currency": currency},
+		"cancel_url":       "https://chatgpt.com/",
 		"checkout_ui_mode": "custom",
+		"check_card_proxy": true,
 	})
 	if err != nil {
 		return sunnyCheckoutUnknown, nil, false, err
@@ -507,6 +508,10 @@ func (s *Server) sunnyTrialConcurrency() int {
 	return value
 }
 
+func (s *Server) sunnyTrialBatchSize() int {
+	return sunnyDetectionBatchSize("SUNNY_TRIAL_BATCH_SIZE", 12, 100)
+}
+
 func (s *Server) sunnyTrialCandidates(ids []uint) ([]sunnyTrialCandidate, error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("请选择需要检测试用资格的账户")
@@ -575,122 +580,114 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 		return
 	}
 	result := map[string]any{"requested": len(candidates), "eligible": 0, "ineligible": 0, "checkout_detected": 0, "payment_detected": 0, "partial": 0, "skipped": 0, "failed": 0, "items": []any{}}
-	jobs := make(chan sunnyTrialCandidate)
-	results := make(chan sunnyTrialResult, len(candidates))
-	var workers sync.WaitGroup
-	for i := 0; i < s.sunnyTrialConcurrency() && i < len(candidates); i++ {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for candidate := range jobs {
-				outcome := sunnyTrialResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, SkipReason: candidate.SkipReason, Error: candidate.Error}
-				if outcome.SkipReason == "" && outcome.Error == "" {
-					trialCtx := context.WithValue(context.Background(), sunnyTrialProxyContextKey{}, s.sunnyCommerceProxyURL(candidate.Email))
-					commerce := sunnyCheckCommerce(trialCtx, candidate.AccessToken)
-					outcome.Eligibility = commerce.Eligibility
-					outcome.TrialState = commerce.TrialState
-					outcome.Message = commerce.TrialMessage
-					outcome.TrialError = commerce.TrialError
-					outcome.CheckoutKind = commerce.CheckoutKind
-					outcome.PaymentMethods = commerce.PaymentMethods
-					outcome.CheckoutError = commerce.CheckoutError
-					outcome.InvalidToken = commerce.InvalidToken
-				}
-				results <- outcome
-			}
-		}()
-	}
-	for _, candidate := range candidates {
-		jobs <- candidate
-	}
-	close(jobs)
-	workers.Wait()
-	close(results)
-
 	invalidAccounts := []uint{}
 	invalidSessions := []uint{}
 	seenAccounts := map[uint]bool{}
 	items := make([]any, 0, len(candidates))
-	for outcome := range results {
-		item := map[string]any{"session_id": outcome.SessionID, "email": outcome.Email}
-		now := time.Now()
-		switch {
-		case outcome.SkipReason != "":
-			result["skipped"] = result["skipped"].(int) + 1
-			item["status"], item["message"] = "skipped", outcome.SkipReason
-		case outcome.Error != "":
-			result["failed"] = result["failed"].(int) + 1
-			item["status"], item["error"] = "failed", outcome.Error
-			updates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now,
-				"checkout_kind": sunnyCheckoutUnknown, "payment_methods_json": "[]", "commerce_check_error": outcome.Error, "commerce_checked_at": now}
-			s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).Updates(updates)
-			s.db.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).Updates(map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now})
-		default:
-			eligibility := normalizeSunnyTrialEligibility(outcome.Eligibility)
-			checkoutKind := normalizeSunnyCheckoutKind(outcome.CheckoutKind)
-			paymentJSON := dumpJSON(outcome.PaymentMethods)
-			commerceError := strings.Join(compactStrings(outcome.TrialError, outcome.CheckoutError), "; ")
-			item["trial_eligibility"] = eligibility
-			item["trial_state"] = outcome.TrialState
-			item["checkout_kind"] = checkoutKind
-			item["payment_methods"] = outcome.PaymentMethods
-			if outcome.TrialError != "" {
-				item["trial_error"] = outcome.TrialError
+	batchSize := s.sunnyTrialBatchSize()
+	concurrency := s.sunnyTrialConcurrency()
+	for start := 0; start < len(candidates); start += batchSize {
+		end := start + batchSize
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+		results := streamSunnyDetectionBatch(candidates[start:end], concurrency, func(candidate sunnyTrialCandidate) sunnyTrialResult {
+			outcome := sunnyTrialResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, SkipReason: candidate.SkipReason, Error: candidate.Error}
+			if outcome.SkipReason == "" && outcome.Error == "" {
+				trialCtx := context.WithValue(context.Background(), sunnyTrialProxyContextKey{}, s.sunnyCommerceProxyURL(candidate.Email))
+				commerce := sunnyCheckCommerce(trialCtx, candidate.AccessToken)
+				outcome.Eligibility = commerce.Eligibility
+				outcome.TrialState = commerce.TrialState
+				outcome.Message = commerce.TrialMessage
+				outcome.TrialError = commerce.TrialError
+				outcome.CheckoutKind = commerce.CheckoutKind
+				outcome.PaymentMethods = commerce.PaymentMethods
+				outcome.CheckoutError = commerce.CheckoutError
+				outcome.InvalidToken = commerce.InvalidToken
 			}
-			if outcome.CheckoutError != "" {
-				item["checkout_error"] = outcome.CheckoutError
-			}
-			if eligibility == sunnyTrialEligible || eligibility == sunnyTrialIneligible {
-				result[eligibility] = result[eligibility].(int) + 1
-			}
-			if checkoutKind != sunnyCheckoutUnknown {
-				result["checkout_detected"] = result["checkout_detected"].(int) + 1
-			}
-			if len(outcome.PaymentMethods) > 0 {
-				result["payment_detected"] = result["payment_detected"].(int) + 1
-			}
-			if commerceError != "" {
-				result["partial"] = result["partial"].(int) + 1
-				item["status"], item["error"] = "partial", commerceError
-			} else {
-				item["status"], item["message"] = eligibility, outcome.Message
-			}
-			accountUpdates := map[string]any{
-				"trial_eligibility": eligibility, "trial_check_error": outcome.TrialError, "trial_checked_at": now,
-				"checkout_kind": checkoutKind, "payment_methods_json": paymentJSON, "commerce_check_error": commerceError, "commerce_checked_at": now,
-			}
-			mailboxUpdates := map[string]any{"trial_eligibility": eligibility, "trial_check_error": outcome.TrialError, "trial_checked_at": now}
-			tx := s.db.Begin()
-			updateErr := tx.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).Updates(accountUpdates).Error
-			if updateErr == nil {
-				updateErr = tx.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).Updates(mailboxUpdates).Error
-			}
-			if updateErr == nil {
-				updateErr = tx.Commit().Error
-			} else {
-				tx.Rollback()
-			}
-			if updateErr != nil {
+			return outcome
+		})
+		for outcome := range results {
+			item := map[string]any{"session_id": outcome.SessionID, "email": outcome.Email}
+			now := time.Now()
+			switch {
+			case outcome.SkipReason != "":
+				result["skipped"] = result["skipped"].(int) + 1
+				item["status"], item["message"] = "skipped", outcome.SkipReason
+			case outcome.Error != "":
 				result["failed"] = result["failed"].(int) + 1
-				item["status"], item["error"] = "failed", updateErr.Error()
-			} else if commerceError != "" {
-				s.appendAccountTaskEvent(task.ID, outcome.Email, "trial", "commerce.check_partial", fmt.Sprintf("账户 %s 商业状态检测部分完成：%s", outcome.Email, commerceError), "warning", map[string]any{"error": commerceError})
-			} else {
-				s.appendAccountTaskEvent(task.ID, outcome.Email, "trial", "commerce.checked", fmt.Sprintf("账户 %s 商业状态检测完成：试用=%s，Checkout=%s，支付方式=%s", outcome.Email, eligibility, checkoutKind, strings.Join(outcome.PaymentMethods, ",")), "info", map[string]any{"trial_eligibility": eligibility, "checkout_kind": checkoutKind, "payment_methods": outcome.PaymentMethods})
-			}
-			if outcome.InvalidToken {
-				errorMessage := fallback(strings.Join(compactStrings(outcome.TrialError, outcome.CheckoutError), "; "), "Access Token 无效或已过期")
-				s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "invalid", "access_token_error": errorMessage, "access_token_checked_at": now})
-				invalidSessions = append(invalidSessions, outcome.SessionID)
-				if outcome.AccountID != 0 && !seenAccounts[outcome.AccountID] {
-					seenAccounts[outcome.AccountID] = true
-					invalidAccounts = append(invalidAccounts, outcome.AccountID)
+				item["status"], item["error"] = "failed", outcome.Error
+				updates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now,
+					"checkout_kind": sunnyCheckoutUnknown, "payment_methods_json": "[]", "commerce_check_error": outcome.Error, "commerce_checked_at": now}
+				s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).Updates(updates)
+				s.db.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).Updates(map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now})
+			default:
+				eligibility := normalizeSunnyTrialEligibility(outcome.Eligibility)
+				checkoutKind := normalizeSunnyCheckoutKind(outcome.CheckoutKind)
+				paymentJSON := dumpJSON(outcome.PaymentMethods)
+				commerceError := strings.Join(compactStrings(outcome.TrialError, outcome.CheckoutError), "; ")
+				item["trial_eligibility"] = eligibility
+				item["trial_state"] = outcome.TrialState
+				item["checkout_kind"] = checkoutKind
+				item["payment_methods"] = outcome.PaymentMethods
+				if outcome.TrialError != "" {
+					item["trial_error"] = outcome.TrialError
+				}
+				if outcome.CheckoutError != "" {
+					item["checkout_error"] = outcome.CheckoutError
+				}
+				if eligibility == sunnyTrialEligible || eligibility == sunnyTrialIneligible {
+					result[eligibility] = result[eligibility].(int) + 1
+				}
+				if checkoutKind != sunnyCheckoutUnknown {
+					result["checkout_detected"] = result["checkout_detected"].(int) + 1
+				}
+				if len(outcome.PaymentMethods) > 0 {
+					result["payment_detected"] = result["payment_detected"].(int) + 1
+				}
+				if commerceError != "" {
+					result["partial"] = result["partial"].(int) + 1
+					item["status"], item["error"] = "partial", commerceError
+				} else {
+					item["status"], item["message"] = eligibility, outcome.Message
+				}
+				accountUpdates := map[string]any{
+					"trial_eligibility": eligibility, "trial_check_error": outcome.TrialError, "trial_checked_at": now,
+					"checkout_kind": checkoutKind, "payment_methods_json": paymentJSON, "commerce_check_error": commerceError, "commerce_checked_at": now,
+				}
+				mailboxUpdates := map[string]any{"trial_eligibility": eligibility, "trial_check_error": outcome.TrialError, "trial_checked_at": now}
+				tx := s.db.Begin()
+				updateErr := tx.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).Updates(accountUpdates).Error
+				if updateErr == nil {
+					updateErr = tx.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).Updates(mailboxUpdates).Error
+				}
+				if updateErr == nil {
+					updateErr = tx.Commit().Error
+				} else {
+					tx.Rollback()
+				}
+				if updateErr != nil {
+					result["failed"] = result["failed"].(int) + 1
+					item["status"], item["error"] = "failed", updateErr.Error()
+				} else if commerceError != "" {
+					s.appendAccountTaskEvent(task.ID, outcome.Email, "trial", "commerce.check_partial", fmt.Sprintf("账户 %s 商业状态检测部分完成：%s", outcome.Email, commerceError), "warning", map[string]any{"error": commerceError})
+				} else {
+					s.appendAccountTaskEvent(task.ID, outcome.Email, "trial", "commerce.checked", fmt.Sprintf("账户 %s 商业状态检测完成：试用=%s，Checkout=%s，支付方式=%s", outcome.Email, eligibility, checkoutKind, strings.Join(outcome.PaymentMethods, ",")), "info", map[string]any{"trial_eligibility": eligibility, "checkout_kind": checkoutKind, "payment_methods": outcome.PaymentMethods})
+				}
+				if outcome.InvalidToken {
+					errorMessage := fallback(strings.Join(compactStrings(outcome.TrialError, outcome.CheckoutError), "; "), "Access Token 无效或已过期")
+					s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "invalid", "access_token_error": errorMessage, "access_token_checked_at": now})
+					invalidSessions = append(invalidSessions, outcome.SessionID)
+					if outcome.AccountID != 0 && !seenAccounts[outcome.AccountID] {
+						seenAccounts[outcome.AccountID] = true
+						invalidAccounts = append(invalidAccounts, outcome.AccountID)
+					}
 				}
 			}
+			items = append(items, item)
+			task.ProgressCurrent++
+			s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": task.ProgressCurrent, "updated_at": now})
 		}
-		items = append(items, item)
-		task.ProgressCurrent++
-		s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": task.ProgressCurrent, "updated_at": now})
 	}
 	if len(invalidAccounts) > 0 {
 		renewalTask := s.createSunnyAccessTokenRenewalTask(task, "trial_check", invalidAccounts)

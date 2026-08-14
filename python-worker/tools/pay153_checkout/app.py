@@ -24,7 +24,7 @@ from curl_cffi import requests
 
 import stripe_checkout as sc
 from provider_checkout import PROVIDER_DEFAULTS, default_billing, stripe_to_provider
-from paypal_routing import session_checkout_kind, validate_session_for_mode
+from paypal_routing import reconcile_checkout_mode, session_checkout_kind
 from proxy_routing import checkout_route_proxy, promotion_route_proxy, shares_checkout_proxy
 from sentinel_fallback import resolve_payment_sentinel_headers
 from billing_address_resolver import resolve_cached_country_address
@@ -2493,10 +2493,21 @@ class JobStore:
                 raise RuntimeError("Checkout 未返回 Stripe Session ID")
             actual_checkout_kind = ""
             if provider == "paypal":
-                try:
-                    actual_checkout_kind = validate_session_for_mode(paypal_mode, session_id)
-                except ValueError as exc:
-                    raise RuntimeError(f"PAYPAL_CHECKOUT_TYPE_MISMATCH: {exc}") from exc
+                actual_checkout_kind = session_checkout_kind(session_id)
+                actual_mode, mode_mismatch = reconcile_checkout_mode(paypal_mode, actual_checkout_kind)
+                if actual_checkout_kind == "unknown":
+                    raise RuntimeError("PAYPAL_CHECKOUT_TYPE_UNKNOWN: Checkout 会话未返回可识别的 OAICS/CS 类型")
+                if mode_mismatch:
+                    expected_label = "OAICS" if paypal_mode == "oaics" else "CS Live"
+                    actual_label = "OAICS" if actual_checkout_kind == "oaics" else "CS Live"
+                    self.log(
+                        job_id,
+                        f"PayPal Checkout 类型与预检不一致：预检={expected_label}，实际={actual_label}；"
+                        f"自动切换为{actual_label}提链分支继续执行",
+                    )
+                paypal_mode = actual_mode
+                options["paypal_checkout_mode"] = actual_mode
+                options["oaics_paypal"] = actual_checkout_kind == "oaics"
                 actual_label = {
                     "oaics": "OAICS",
                     "cs_live": "CS Live",

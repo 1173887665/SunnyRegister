@@ -524,6 +524,11 @@ func (s *Server) runSunnyCheckoutAttempt(task *Task, payload, row map[string]any
 	}
 	item["email"] = email
 	item["status"] = "succeeded"
+	if detectedKind := normalizeSunnyCheckoutKind(text(item["checkout_kind"])); detectedKind != sunnyCheckoutUnknown {
+		// The created Checkout session is the authoritative type for future
+		// trial checks and PayPal branch selection.
+		s.db.Model(&SunnyAccount{}).Where("email = ?", email).Update("checkout_kind", detectedKind)
+	}
 	s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 提链成功", email), "checkout_result", "info", map[string]any{"email": email, "link_type": payload["link_type"]})
 	return item
 }

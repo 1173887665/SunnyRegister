@@ -10,6 +10,22 @@ def checkout_mode(checkout_kind: str) -> str:
     return "auto"
 
 
+def mode_for_session_kind(checkout_kind: str) -> str:
+    normalized = str(checkout_kind or "unknown").strip().lower()
+    if normalized == "oaics":
+        return "oaics"
+    if normalized in {"cs_live", "cs_test"}:
+        return "cs_live"
+    return "auto"
+
+
+def reconcile_checkout_mode(expected_mode: str, actual_kind: str) -> tuple[str, bool]:
+    actual_mode = mode_for_session_kind(actual_kind)
+    expected = str(expected_mode or "auto").strip().lower()
+    mismatch = expected != "auto" and actual_mode != "auto" and expected != actual_mode
+    return actual_mode, mismatch
+
+
 def session_checkout_kind(session_id: str) -> str:
     normalized = str(session_id or "").strip().lower()
     if normalized.startswith("oaics_"):

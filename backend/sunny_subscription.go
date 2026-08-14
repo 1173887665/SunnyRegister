@@ -7,7 +7,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -234,6 +233,10 @@ func (s *Server) createSunnySubscriptionTask(body map[string]any) (Task, error) 
 	return s.createTask(sunnySubscriptionTaskType, "sunny", map[string]any{"session_ids": ids}, len(candidates)), nil
 }
 
+func (s *Server) sunnySubscriptionBatchSize() int {
+	return sunnyDetectionBatchSize("SUNNY_SUBSCRIPTION_BATCH_SIZE", 20, 100)
+}
+
 func (s *Server) executeSunnySubscriptionTask(task *Task, payload map[string]any) {
 	task.Status = TaskRunning
 	task.StartedAt = sql.NullTime{Time: time.Now(), Valid: true}
@@ -249,72 +252,63 @@ func (s *Server) executeSunnySubscriptionTask(task *Task, payload map[string]any
 		return
 	}
 	proxyURL := s.sunnyMailboxProxyURL()
-	jobs := make(chan sunnySubscriptionCandidate)
-	results := make(chan sunnySubscriptionResult, len(candidates))
-	var workers sync.WaitGroup
-	for i := 0; i < s.sunnySubscriptionConcurrency() && i < len(candidates); i++ {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for candidate := range jobs {
-				if candidate.Error != "" {
-					results <- sunnySubscriptionResult{SessionID: candidate.SessionID, Email: candidate.Email, Error: candidate.Error}
-					continue
-				}
-				subscribed, subject, detectErr := sunnyDetectSubscriptionMail(candidate, proxyURL)
-				outcome := sunnySubscriptionResult{SessionID: candidate.SessionID, Email: candidate.Email, Subscribed: subscribed, Subject: subject}
-				if detectErr != nil {
-					outcome.Error = detectErr.Error()
-				}
-				results <- outcome
-			}
-		}()
-	}
-	for _, candidate := range candidates {
-		jobs <- candidate
-	}
-	close(jobs)
-	workers.Wait()
-	close(results)
-
 	items := make([]any, 0, len(candidates))
-	for outcome := range results {
-		item := map[string]any{"email": outcome.Email, "status": "not_subscribed"}
-		if outcome.Error != "" {
-			result["failed"] = result["failed"].(int) + 1
-			item["status"] = "failed"
-			item["error"] = outcome.Error
-			s.appendAccountTaskEvent(task.ID, outcome.Email, "subscription", "subscription.check_failed", fmt.Sprintf("账户 %s 订阅检测失败：%s", outcome.Email, outcome.Error), "warning", map[string]any{"error": outcome.Error})
-		} else if outcome.Subscribed {
-			result["subscribed"] = result["subscribed"].(int) + 1
-			item["status"] = "subscribed"
-			item["subject"] = outcome.Subject
-			now := time.Now()
-			tx := s.db.Begin()
-			updateErr := tx.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).Updates(map[string]any{"account_type": "plus", "updated_at": now}).Error
-			if updateErr == nil {
-				updateErr = tx.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).Updates(map[string]any{"account_type": "plus", "updated_at": now}).Error
+	batchSize := s.sunnySubscriptionBatchSize()
+	concurrency := s.sunnySubscriptionConcurrency()
+	for start := 0; start < len(candidates); start += batchSize {
+		end := start + batchSize
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+		results := streamSunnyDetectionBatch(candidates[start:end], concurrency, func(candidate sunnySubscriptionCandidate) sunnySubscriptionResult {
+			if candidate.Error != "" {
+				return sunnySubscriptionResult{SessionID: candidate.SessionID, Email: candidate.Email, Error: candidate.Error}
 			}
-			if updateErr == nil {
-				updateErr = tx.Commit().Error
-			} else {
-				tx.Rollback()
+			subscribed, subject, detectErr := sunnyDetectSubscriptionMail(candidate, proxyURL)
+			outcome := sunnySubscriptionResult{SessionID: candidate.SessionID, Email: candidate.Email, Subscribed: subscribed, Subject: subject}
+			if detectErr != nil {
+				outcome.Error = detectErr.Error()
 			}
-			if updateErr != nil {
-				result["subscribed"] = result["subscribed"].(int) - 1
+			return outcome
+		})
+		for outcome := range results {
+			item := map[string]any{"email": outcome.Email, "status": "not_subscribed"}
+			if outcome.Error != "" {
 				result["failed"] = result["failed"].(int) + 1
 				item["status"] = "failed"
-				item["error"] = updateErr.Error()
+				item["error"] = outcome.Error
+				s.appendAccountTaskEvent(task.ID, outcome.Email, "subscription", "subscription.check_failed", fmt.Sprintf("账户 %s 订阅检测失败：%s", outcome.Email, outcome.Error), "warning", map[string]any{"error": outcome.Error})
+			} else if outcome.Subscribed {
+				result["subscribed"] = result["subscribed"].(int) + 1
+				item["status"] = "subscribed"
+				item["subject"] = outcome.Subject
+				now := time.Now()
+				tx := s.db.Begin()
+				updateErr := tx.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).Updates(map[string]any{"account_type": "plus", "updated_at": now}).Error
+				if updateErr == nil {
+					updateErr = tx.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).Updates(map[string]any{"account_type": "plus", "updated_at": now}).Error
+				}
+				if updateErr == nil {
+					updateErr = tx.Commit().Error
+				} else {
+					tx.Rollback()
+				}
+				if updateErr != nil {
+					result["subscribed"] = result["subscribed"].(int) - 1
+					result["failed"] = result["failed"].(int) + 1
+					item["status"] = "failed"
+					item["error"] = updateErr.Error()
+				} else {
+					s.appendAccountTaskEvent(task.ID, outcome.Email, "subscription", "subscription.confirmed", fmt.Sprintf("账户 %s 已确认订阅成功，套餐已更新为 Plus", outcome.Email), "info", map[string]any{"subject": outcome.Subject})
+				}
 			} else {
-				s.appendAccountTaskEvent(task.ID, outcome.Email, "subscription", "subscription.confirmed", fmt.Sprintf("账户 %s 已确认订阅成功，套餐已更新为 Plus", outcome.Email), "info", map[string]any{"subject": outcome.Subject})
+				result["not_subscribed"] = result["not_subscribed"].(int) + 1
+				s.appendAccountTaskEvent(task.ID, outcome.Email, "subscription", "subscription.not_found", fmt.Sprintf("账户 %s 未检测到订阅成功邮件", outcome.Email), "info", nil)
 			}
-		} else {
-			result["not_subscribed"] = result["not_subscribed"].(int) + 1
-			s.appendAccountTaskEvent(task.ID, outcome.Email, "subscription", "subscription.not_found", fmt.Sprintf("账户 %s 未检测到订阅成功邮件", outcome.Email), "info", nil)
+			items = append(items, item)
+			task.ProgressCurrent++
+			s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": task.ProgressCurrent, "updated_at": time.Now()})
 		}
-		items = append(items, item)
-		task.ProgressCurrent++
-		s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": task.ProgressCurrent, "updated_at": time.Now()})
 	}
 	result["items"] = items
 	s.completeSunnySubscriptionTask(task, result)

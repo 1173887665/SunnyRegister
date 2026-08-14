@@ -17,14 +17,13 @@ def response(status: int, payload=None, content_type: str = "application/json"):
 def test_probe_commerce_parses_trial_checkout_and_payment_methods() -> None:
     session = MagicMock()
     session.get.return_value = response(200, {"state": "eligible"})
-    session.post.return_value = response(
-        200,
-        {
-            "checkout_session_id": "oaics_test",
-            "custom_payment_methods": [{"type": "card"}, {"type": "paypal"}, {"type": "card"}],
-        },
-    )
-    with patch("sunny_core.commerce_probe.curl_requests.Session", return_value=session):
+    with (
+        patch("sunny_core.commerce_probe.curl_requests.Session", return_value=session),
+        patch(
+            "sunny_core.commerce_probe._task_style_checkout_probe",
+            return_value={"kind": "oaics", "payment_methods": ["card", "paypal"], "http": 200, "error": ""},
+        ),
+    ):
         result = probe_commerce("token")
 
     assert result["trial"] == {"state": "eligible", "http": 200, "error": ""}
@@ -35,19 +34,27 @@ def test_probe_commerce_parses_trial_checkout_and_payment_methods() -> None:
 def test_probe_commerce_reports_html_challenge_without_leaking_body() -> None:
     session = MagicMock()
     session.get.return_value = response(403, None, "text/html; charset=UTF-8")
-    session.post.return_value = response(403, None, "text/html")
-    with patch("sunny_core.commerce_probe.curl_requests.Session", return_value=session):
+    with (
+        patch("sunny_core.commerce_probe.curl_requests.Session", return_value=session),
+        patch(
+            "sunny_core.commerce_probe._task_style_checkout_probe",
+            side_effect=RuntimeError("HTTP 403 returned text/html content"),
+        ),
+    ):
         result = probe_commerce("token")
 
     assert result["trial"]["error"] == "HTTP 403 returned text/html content"
-    assert result["checkout"]["error"] == "HTTP 403 returned text/html content"
+    assert result["checkout"]["error"] == "RuntimeError: HTTP 403 returned text/html content"
 
 
 def test_trial_network_failure_does_not_skip_checkout() -> None:
     session = MagicMock()
     session.get.side_effect = ConnectionError("trial interrupted")
-    session.post.return_value = response(200, {"checkout_session_id": "cs_live_test"})
-    with patch("sunny_core.commerce_probe.curl_requests.Session", return_value=session), patch("sunny_core.commerce_probe.time.sleep"):
+    with (
+        patch("sunny_core.commerce_probe.curl_requests.Session", return_value=session),
+        patch("sunny_core.commerce_probe._task_style_checkout_probe", return_value={"kind": "cs_live", "payment_methods": [], "http": 200, "error": ""}),
+        patch("sunny_core.commerce_probe.time.sleep"),
+    ):
         result = probe_commerce("token")
 
     assert result["trial"]["http"] == 0
@@ -59,12 +66,9 @@ def test_trial_network_failure_does_not_skip_checkout() -> None:
 def test_probe_commerce_uses_separate_promotion_and_checkout_proxies() -> None:
     promotion_session = MagicMock()
     promotion_session.get.return_value = response(200, {"state": "eligible"})
-    checkout_session = MagicMock()
-    checkout_session.post.return_value = response(200, {"checkout_session_id": "cs_live_test"})
-
-    with patch(
-        "sunny_core.commerce_probe.curl_requests.Session",
-        side_effect=[promotion_session, checkout_session],
+    with (
+        patch("sunny_core.commerce_probe.curl_requests.Session", return_value=promotion_session),
+        patch("sunny_core.commerce_probe._task_style_checkout_probe", return_value={"kind": "cs_live", "payment_methods": [], "http": 200, "error": ""}) as checkout_probe,
     ):
         result = probe_commerce(
             "token",
@@ -78,7 +82,5 @@ def test_probe_commerce_uses_separate_promotion_and_checkout_proxies() -> None:
         "http": "http://promotion-proxy",
         "https": "http://promotion-proxy",
     }
-    assert checkout_session.proxies == {
-        "http": "http://checkout-proxy",
-        "https": "http://checkout-proxy",
-    }
+    checkout_probe.assert_called_once_with("token", "DE", "EUR", "http://checkout-proxy")
+    assert promotion_session.trust_env is False
