@@ -42,6 +42,35 @@ bash scripts/docker-up.sh
 http://127.0.0.1:8000
 ```
 
+## Windows 本地完整测试
+
+本地开发机可使用单一入口完成与 CI 一致的检查并启动完整运行栈：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-local.ps1
+```
+
+脚本依次执行：
+
+1. 校验 Docker Compose 配置。
+2. 执行前端 lint/build、Go test/vet、Python compile/pytest/pip check。
+3. 构建并启动 PostgreSQL、Go 后端和 Python Worker。
+4. 实际查询 PostgreSQL，并验证 Worker、`/api/ready` 与 `/api/health`。
+
+首次执行需要访问 Docker Hub、npm 和 PyPI，并会下载浏览器运行环境。后续快速复验可复用现有镜像：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-local.ps1 -NoBuild
+```
+
+只验证运行栈、跳过宿主机三端测试：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-local.ps1 -SkipUnitTests
+```
+
+失败时脚本会输出 Compose 服务状态和末尾日志。Docker Hub 返回 `EOF` 或超时时，应先检查 Docker Desktop 的代理、镜像源和 `docker info`，然后重新执行；这类错误发生在镜像下载阶段，不是应用健康检查失败。Worker 镜像使用固定 Camoufox 浏览器版本的官方 Release 直链，避免首次构建受 GitHub 匿名 API 限流影响。
+
 停止本地环境：
 
 ```bash

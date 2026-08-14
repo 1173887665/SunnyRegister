@@ -43,6 +43,7 @@ python-worker/.venv/
 
 # Temporary
 .tmp/
+.tmp-*/
 .gocache/
 .gomodcache/
 .agents/

@@ -3,6 +3,9 @@
 .agents
 .codex
 .tmp
+.tmp-*
+.gocache
+.gomodcache
 **/.DS_Store
 
 # Local env / secrets / runtime data

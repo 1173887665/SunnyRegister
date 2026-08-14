@@ -69,6 +69,14 @@ bash scripts/docker-up.sh
 
 启动后访问 [http://127.0.0.1:8000](http://127.0.0.1:8000)。
 
+Windows 本地开发需要一次完成依赖检查、三端测试、镜像构建和运行栈健康验证时，执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-local.ps1
+```
+
+脚本成功后会保留 PostgreSQL、Go 后端和 Python Worker 容器运行，便于继续浏览器测试。
+
 ### Linux 生产部署
 
 ```bash

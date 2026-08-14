@@ -1,5 +1,16 @@
 # syntax=docker/dockerfile:1.7
 
+FROM golang:1.23-alpine AS upi-builder
+
+WORKDIR /src
+COPY python-worker/tools/pay153_checkout/tools/upi_go/go.mod \
+     python-worker/tools/pay153_checkout/tools/upi_go/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY python-worker/tools/pay153_checkout/tools/upi_go/ ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/pix_extract_slot .
+
 FROM python:3.12-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
@@ -18,7 +29,7 @@ RUN for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
     done \
     && apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true update \
     && apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true install -y --no-install-recommends \
-      ca-certificates curl golang-go tzdata \
+      ca-certificates curl tzdata \
       xvfb x11vnc novnc websockify \
       x11-utils \
       fonts-liberation fonts-noto-cjk \
@@ -31,11 +42,14 @@ RUN for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
 
 WORKDIR /app
 COPY python-worker/requirements.txt /app/requirements.txt
+COPY python-worker/install_camoufox.py /app/install_camoufox.py
+ARG CAMOUFOX_BROWSER_VERSION=152.0.4
+ARG CAMOUFOX_BROWSER_RELEASE=beta.28
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
-    && pip install -r /app/requirements.txt \
-    && python -m playwright install --with-deps chromium \
-    && python -m camoufox fetch \
+    && pip install -r /app/requirements.txt
+RUN python -m playwright install --with-deps chromium
+RUN python /app/install_camoufox.py \
     && CAMOUFOX_BIN="$(python -c 'from camoufox.pkgman import launch_path; print(launch_path())')" \
     && test -x "$CAMOUFOX_BIN" \
     && "$CAMOUFOX_BIN" --version \
@@ -46,9 +60,8 @@ COPY python-worker/worker.py /app/worker.py
 COPY python-worker/sunny_runner.py /app/sunny_runner.py
 COPY python-worker/sunny_core/ /app/sunny_core/
 COPY python-worker/tools/ /app/tools/
-RUN cd /app/tools/pay153_checkout/tools/upi_go \
-    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o pix_extract_slot . \
-    && chmod 700 pix_extract_slot
+COPY --from=upi-builder /out/pix_extract_slot /app/tools/pay153_checkout/tools/upi_go/pix_extract_slot
+RUN chmod 700 /app/tools/pay153_checkout/tools/upi_go/pix_extract_slot
 COPY python-worker/docker-entrypoint.sh /usr/local/bin/sunny-worker-entrypoint
 RUN chmod +x /usr/local/bin/sunny-worker-entrypoint
 
