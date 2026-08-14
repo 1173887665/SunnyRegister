@@ -18,6 +18,41 @@ const countryNames: Record<string, string> = { US: "美国", DE: "德国", FR: "
 const currencyByCountry: Record<string, string> = { US: "USD", DE: "EUR", FR: "EUR", NL: "EUR", IN: "INR", BR: "BRL", VN: "VND", GB: "GBP", JP: "JPY", KR: "KRW", PH: "PHP", AU: "AUD", CA: "CAD", CH: "CHF" };
 const sessionStatuses = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "登录刷新", "失败"];
 const sessionPlans = ["free", "plus", "k12", "team", "pro"];
+const checkoutPreferencesStorageKey = "sunnyregister.checkout.preferences.v1";
+const checkoutTaskStorageKey = "sunnyregister.checkout.last-task-id.v1";
+
+type CheckoutPreferences = {
+  checkoutProxies?: string;
+  promotionProxies?: string;
+  systemAT?: boolean;
+  externalText?: string;
+  query?: string;
+  group?: string;
+  status?: string;
+  planFilter?: string;
+  trialFilter?: string;
+  checkoutFilter?: string;
+  plan?: string;
+  linkType?: string;
+  country?: string;
+  currency?: string;
+  retryCount?: number;
+  concurrency?: number;
+  usePromo?: boolean;
+  promoCampaign?: string;
+  promoCode?: string;
+  promoCountry?: string;
+  idealBank?: string;
+  workspaceName?: string;
+  workspaceId?: string;
+  seatQuantity?: number;
+  priceInterval?: string;
+  creditQuantity?: number;
+  pixTaxID?: string;
+  pixAutoKind?: string;
+  pageSize?: number;
+  logOpen?: boolean;
+};
 
 const statusLabels: Record<string, string> = {
   unregistered: "未注册", registered: "已注册", phone_bound: "已接码", reverse_proxied: "已反代",
@@ -109,6 +144,17 @@ function readBrowserText(key: string) {
   if (typeof window === "undefined") return "";
   try { return window.localStorage.getItem(key) || ""; } catch { return ""; }
 }
+function readCheckoutPreferences(): CheckoutPreferences {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(checkoutPreferencesStorageKey) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch { return {}; }
+}
+function savedNumber(value: unknown, fallback: number, minimum: number, maximum: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback;
+}
 function resultError(item: AnyRow) { return String(item.error || item.checkout_error || item.message || "").trim(); }
 function resultDisplayLink(item: AnyRow) { return String(item.payment_link || item.short_link || item.verification_url || item.provider_redirect_url || item.paypal_link || item.checkout_url || "").trim(); }
 function resultQrImage(item: AnyRow) { return String(item.qr_image || item.qr_image_png || item.qr_image_svg || "").trim(); }
@@ -153,67 +199,154 @@ function QRModal({ value, image, onClose }: { value: string; image: string; onCl
 }
 
 export default function CheckoutManager() {
+  const savedPreferences = useMemo(() => readCheckoutPreferences(), []);
+  const savedTaskID = useMemo(() => readBrowserText(checkoutTaskStorageKey), []);
   const [providers, setProviders] = useState<Provider[]>(fallbackProviders);
   const [countries, setCountries] = useState<Record<string, string>>(currencyByCountry);
-  const [checkoutProxies, setCheckoutProxies] = useState(() => readBrowserText("pay153.proxy_pool_2"));
-  const [promotionProxies, setPromotionProxies] = useState(() => readBrowserText("pay153.proxy_pool_1"));
-  const [systemAT, setSystemAT] = useState(true);
+  const [checkoutProxies, setCheckoutProxies] = useState(() => savedPreferences.checkoutProxies ?? readBrowserText("pay153.proxy_pool_2"));
+  const [promotionProxies, setPromotionProxies] = useState(() => savedPreferences.promotionProxies ?? readBrowserText("pay153.proxy_pool_1"));
+  const [systemAT, setSystemAT] = useState(savedPreferences.systemAT ?? true);
   const [sessions, setSessions] = useState<AnyRow[]>([]);
   const [groups, setGroups] = useState<AnyRow[]>([]);
-  const [externalText, setExternalText] = useState("");
+  const [externalText, setExternalText] = useState(savedPreferences.externalText ?? "");
   const [externalRows, setExternalRows] = useState<AnyRow[]>([]);
   const [selected, setSelected] = useState<number[]>([]);
-  const [query, setQuery] = useState("");
-  const [group, setGroup] = useState("");
-  const [status, setStatus] = useState("已注册");
-  const [planFilter, setPlanFilter] = useState("free");
-  const [trialFilter, setTrialFilter] = useState("eligible");
-  const [checkoutFilter, setCheckoutFilter] = useState("");
-  const [plan, setPlan] = useState("plus");
-  const [linkType, setLinkType] = useState("hosted");
-  const [country, setCountry] = useState("US");
-  const [currency, setCurrency] = useState("USD");
-  const [retryCount, setRetryCount] = useState(10);
-  const [concurrency, setConcurrency] = useState(3);
-  const [usePromo, setUsePromo] = useState(true);
-  const [promoCampaign, setPromoCampaign] = useState("plus-1-month-free");
-  const [promoCode, setPromoCode] = useState("");
-  const [promoCountry, setPromoCountry] = useState("");
-  const [idealBank, setIdealBank] = useState("");
-  const [workspaceName, setWorkspaceName] = useState("Codex Workspace");
-  const [workspaceId, setWorkspaceId] = useState("");
-  const [seatQuantity, setSeatQuantity] = useState(5);
-  const [priceInterval, setPriceInterval] = useState("month");
-  const [creditQuantity, setCreditQuantity] = useState(13);
-  const [pixTaxID, setPixTaxID] = useState("");
-  const [pixAutoKind, setPixAutoKind] = useState("cpf");
+  const [query, setQuery] = useState(savedPreferences.query ?? "");
+  const [group, setGroup] = useState(savedPreferences.group ?? "");
+  const [status, setStatus] = useState(savedPreferences.status ?? "已注册");
+  const [planFilter, setPlanFilter] = useState(savedPreferences.planFilter ?? "free");
+  const [trialFilter, setTrialFilter] = useState(savedPreferences.trialFilter ?? "eligible");
+  const [checkoutFilter, setCheckoutFilter] = useState(savedPreferences.checkoutFilter ?? "");
+  const [plan, setPlan] = useState(savedPreferences.plan ?? "plus");
+  const [linkType, setLinkType] = useState(savedPreferences.linkType ?? "hosted");
+  const [country, setCountry] = useState(savedPreferences.country ?? "US");
+  const [currency, setCurrency] = useState(savedPreferences.currency ?? "USD");
+  const [retryCount, setRetryCount] = useState(() => savedNumber(savedPreferences.retryCount, 10, 1, 50));
+  const [concurrency, setConcurrency] = useState(() => savedNumber(savedPreferences.concurrency, 3, 1, 20));
+  const [usePromo, setUsePromo] = useState(savedPreferences.usePromo ?? true);
+  const [promoCampaign, setPromoCampaign] = useState(savedPreferences.promoCampaign ?? "plus-1-month-free");
+  const [promoCode, setPromoCode] = useState(savedPreferences.promoCode ?? "");
+  const [promoCountry, setPromoCountry] = useState(savedPreferences.promoCountry ?? "");
+  const [idealBank, setIdealBank] = useState(savedPreferences.idealBank ?? "");
+  const [workspaceName, setWorkspaceName] = useState(savedPreferences.workspaceName ?? "Codex Workspace");
+  const [workspaceId, setWorkspaceId] = useState(savedPreferences.workspaceId ?? "");
+  const [seatQuantity, setSeatQuantity] = useState(() => savedNumber(savedPreferences.seatQuantity, 5, 1, 100));
+  const [priceInterval, setPriceInterval] = useState(savedPreferences.priceInterval ?? "month");
+  const [creditQuantity, setCreditQuantity] = useState(() => savedNumber(savedPreferences.creditQuantity, 13, 1, 10000));
+  const [pixTaxID, setPixTaxID] = useState(savedPreferences.pixTaxID ?? "");
+  const [pixAutoKind, setPixAutoKind] = useState(savedPreferences.pixAutoKind ?? "cpf");
   const [precheckBusy, setPrecheckBusy] = useState(false);
-  const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [checkoutBusy, setCheckoutBusy] = useState(Boolean(savedTaskID));
   const [listLoading, setListLoading] = useState(false);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(() => savedNumber(savedPreferences.pageSize, 20, 10, 100));
   const [total, setTotal] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
   const [task, setTask] = useState<AnyRow | null>(null);
+  const [activeTaskID, setActiveTaskID] = useState(savedTaskID);
   const [notice, setNotice] = useState("");
   const [qrValue, setQrValue] = useState("");
   const [qrImage, setQrImage] = useState("");
-  const [logOpen, setLogOpen] = useState(false);
+  const [logOpen, setLogOpen] = useState(savedPreferences.logOpen ?? Boolean(savedTaskID));
   const [taskLogs, setTaskLogs] = useState<AnyRow[]>([]);
   const [cancelBusy, setCancelBusy] = useState(false);
   const logScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      try {
-        window.localStorage.setItem("pay153.proxy_pool_2", checkoutProxies);
-        window.localStorage.setItem("pay153.proxy_pool_1", promotionProxies);
-      } catch { /* private browsing may disable local storage */ }
-    }, 220);
-    return () => window.clearTimeout(timer);
-  }, [checkoutProxies, promotionProxies]);
+    try {
+      const preferences: CheckoutPreferences = {
+        checkoutProxies, promotionProxies, systemAT, externalText, query, group, status, planFilter, trialFilter,
+        checkoutFilter, plan, linkType, country, currency, retryCount, concurrency, usePromo, promoCampaign,
+        promoCode, promoCountry, idealBank, workspaceName, workspaceId, seatQuantity, priceInterval,
+        creditQuantity, pixTaxID, pixAutoKind, pageSize, logOpen,
+      };
+      window.localStorage.setItem(checkoutPreferencesStorageKey, JSON.stringify(preferences));
+      // Keep the legacy keys synchronized for older SunnyRegister builds.
+      window.localStorage.setItem("pay153.proxy_pool_2", checkoutProxies);
+      window.localStorage.setItem("pay153.proxy_pool_1", promotionProxies);
+    } catch { /* private browsing may disable local storage */ }
+  }, [checkoutFilter, checkoutProxies, concurrency, country, creditQuantity, currency, externalText, group, idealBank, linkType, logOpen, pageSize, pixAutoKind, pixTaxID, plan, planFilter, priceInterval, promoCampaign, promoCode, promoCountry, promotionProxies, query, retryCount, seatQuantity, status, systemAT, trialFilter, usePromo, workspaceId, workspaceName]);
+  useEffect(() => {
+    try {
+      if (activeTaskID) window.localStorage.setItem(checkoutTaskStorageKey, activeTaskID);
+      else window.localStorage.removeItem(checkoutTaskStorageKey);
+    } catch { /* private browsing may disable local storage */ }
+  }, [activeTaskID]);
   useEffect(() => { void apiFetch("/sunny/checkout/providers").then((data) => { if (data.items?.length) setProviders(data.items); if (data.countries) setCountries(data.countries); }).catch(() => {}); }, []);
   useEffect(() => { void apiFetch("/sunny/mailbox-groups").then((data) => setGroups(data.items || [])).catch(() => setGroups([])); }, []);
+  useEffect(() => {
+    if (activeTaskID) return;
+    let mounted = true;
+    void apiFetch("/tasks?page=1&page_size=100&platform=chatgpt").then((data) => {
+      if (!mounted) return;
+      const latest = (data.items || []).find((item: AnyRow) => item.type === "sunny_checkout_link" && !item.terminal);
+      if (!latest?.id) return;
+      setTask(latest);
+      setCheckoutBusy(true);
+      setLogOpen(true);
+      setActiveTaskID(String(latest.id));
+    }).catch(() => {});
+    return () => { mounted = false; };
+  }, [activeTaskID]);
+  useEffect(() => {
+    if (!activeTaskID) return;
+    let mounted = true;
+    let timer = 0;
+    let eventCursor = 0;
+
+    const waitForNextPoll = () => new Promise<void>((resolve) => { timer = window.setTimeout(resolve, 1000); });
+    const readEvents = async () => {
+      const collected: AnyRow[] = [];
+      for (let eventPage = 0; eventPage < 5 && mounted; eventPage += 1) {
+        const data = await apiFetch(`/tasks/${encodeURIComponent(activeTaskID)}/events?since=${eventCursor}&limit=200`);
+        const next = data.items || [];
+        if (!next.length) break;
+        eventCursor = Number(next[next.length - 1].id || eventCursor);
+        collected.push(...next);
+        if (next.length < 200) break;
+      }
+      if (!mounted || !collected.length) return;
+      setTaskLogs((old) => {
+        const known = new Set(old.map((item) => Number(item.id || 0)));
+        return [...old, ...collected.filter((item) => !known.has(Number(item.id || 0)))];
+      });
+    };
+    const watchTask = async () => {
+      let consecutiveFailures = 0;
+      while (mounted) {
+        try {
+          const current = await apiFetch(`/tasks/${encodeURIComponent(activeTaskID)}`);
+          if (!mounted) return;
+          setTask(current);
+          await readEvents().catch(() => {});
+          consecutiveFailures = 0;
+          if (current.terminal) {
+            setCheckoutBusy(false);
+            setRefreshKey((value) => value + 1);
+            setNotice(current.status === "succeeded" ? "提链任务完成" : "提链任务结束，请查看结果");
+            return;
+          }
+        } catch (error: any) {
+          if (!mounted) return;
+          const message = error?.message || String(error);
+          if (message.toLowerCase().includes("task not found")) {
+            setTask(null);
+            setCheckoutBusy(false);
+            setActiveTaskID("");
+            return;
+          }
+          consecutiveFailures += 1;
+          if (consecutiveFailures === 1) setNotice("提链任务状态暂时读取失败，正在继续重试");
+        }
+        await waitForNextPoll();
+      }
+    };
+    void watchTask();
+    return () => {
+      mounted = false;
+      window.clearTimeout(timer);
+    };
+  }, [activeTaskID]);
   useEffect(() => {
     if (!systemAT) return;
     let active = true;
@@ -234,11 +367,18 @@ export default function CheckoutManager() {
     }).catch(() => { if (active) { setSessions([]); setTotal(0); } }).finally(() => { if (active) setListLoading(false); });
     return () => { active = false; };
   }, [systemAT, query, group, status, planFilter, trialFilter, checkoutFilter, page, pageSize, refreshKey]);
-  useEffect(() => { const provider = providers.find((x) => x.value === linkType); if (provider) { setCountry(provider.country); setCurrency(provider.currency); } }, [linkType, providers]);
   useEffect(() => { setExternalRows(parseExternalRows(externalText)); }, [externalText]);
   useEffect(() => { if (logOpen && logScrollRef.current) logScrollRef.current.scrollTop = logScrollRef.current.scrollHeight; }, [logOpen, taskLogs]);
   const visibleExternalRows = useMemo(() => externalRows.slice((page - 1) * pageSize, page * pageSize), [externalRows, page, pageSize]);
-  const rows = systemAT ? sessions : visibleExternalRows;
+  const baseRows = systemAT ? sessions : visibleExternalRows;
+  const rows = useMemo(() => {
+    const taskItems = Array.isArray(task?.result?.items) ? task.result.items : [];
+    if (!taskItems.length) return baseRows;
+    return baseRows.map((row) => {
+      const found = taskItems.find((item: AnyRow) => item.email && item.email === row.email);
+      return found ? { ...row, checkout_result: found } : row;
+    });
+  }, [baseRows, task]);
   const listTotal = systemAT ? total : externalRows.length;
   const pageCount = Math.max(1, Math.ceil(listTotal / pageSize));
   const pageFrom = listTotal ? (page - 1) * pageSize + 1 : 0;
@@ -248,7 +388,6 @@ export default function CheckoutManager() {
   function switchMode(value: boolean) {
     setSystemAT(value);
     setSelected([]);
-    setTask(null);
     setPage(1);
     if (value) {
       setStatus("已注册");
@@ -306,35 +445,13 @@ export default function CheckoutManager() {
     try {
       const response = await apiFetch("/sunny/checkout", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selectedRows.map((x) => Number(x.id)) : [], external_ats: systemAT ? [] : selectedRows.map((x) => x.token), checkout_kinds: selectedRows.map((x) => normalized(x.checkout_kind) || "unknown"), checkout_proxies: checkoutProxies, promotion_proxies: promotionProxies, plan, link_type: linkType, country, currency, retry_count: retryCount, concurrency, use_promo: usePromo, promo_campaign: promoCampaign, promo_country: promoCountry, promo_code: promoCode, ideal_bank: idealBank, workspace_name: workspaceName, workspace_id: workspaceId, seat_quantity: seatQuantity, price_interval: priceInterval, credit_quantity: creditQuantity, pix_tax_id: pixTaxID, pix_auto_kind: pixAutoKind }) });
       const taskID = String(response.id || response.task_id);
-      let current = response;
-      let eventCursor = 0;
       setTask(response);
-      const readEvents = async () => {
-        const collected: AnyRow[] = [];
-        for (let page = 0; page < 5; page += 1) {
-          const data = await apiFetch(`/tasks/${encodeURIComponent(taskID)}/events?since=${eventCursor}&limit=200`);
-          const next = data.items || [];
-          if (!next.length) break;
-          eventCursor = Number(next[next.length - 1].id || eventCursor);
-          collected.push(...next);
-          if (next.length < 200) break;
-        }
-        if (collected.length) setTaskLogs((old) => [...old, ...collected]);
-      };
-      await readEvents().catch(() => {});
-      for (let i = 0; i < 240; i += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 1000));
-        current = await apiFetch(`/tasks/${encodeURIComponent(taskID)}`);
-        await readEvents().catch(() => {});
-        setTask(current);
-        if (current.terminal) break;
-      }
-      await readEvents().catch(() => {});
-      const items = current.result?.items || [];
-      if (systemAT) setSessions((old) => old.map((row) => { const found = items.find((item: AnyRow) => item.email === row.email); return found ? { ...row, checkout_result: found } : row; }));
-      else setExternalRows((old) => old.map((row) => { const found = items.find((item: AnyRow) => item.email === row.email); return found ? { ...row, checkout_result: found } : row; }));
-      setNotice(current.status === "succeeded" ? "提链任务完成" : "提链任务结束，请查看结果");
-    } catch (error: any) { setNotice(error.message || String(error)); } finally { setCheckoutBusy(false); }
+      setActiveTaskID(taskID);
+      setNotice("提链任务已提交，任务状态和日志将在后台持续同步");
+    } catch (error: any) {
+      setCheckoutBusy(false);
+      setNotice(error.message || String(error));
+    }
   }
   const statusLabel = task ? `${task.status} · ${task.progress || ""}` : selectedCount ? `已选择 ${selectedCount} 个账户` : "未选择账户";
   return <div className="checkout-manager space-y-5">
@@ -372,8 +489,8 @@ export default function CheckoutManager() {
         <select aria-label="套餐筛选" className="h-9 w-32 shrink-0 rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] px-2 text-xs" value={planFilter} onChange={(e) => changeFilter(setPlanFilter, e.target.value)}><option value="">全部套餐</option>{sessionPlans.map((value) => <option key={value} value={value}>{planLabels[value]}</option>)}</select>
         <select aria-label="试用资格筛选" className="h-9 w-36 shrink-0 rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] px-2 text-xs" value={trialFilter} onChange={(e) => changeFilter(setTrialFilter, e.target.value)}><option value="">全部试用资格</option><option value="eligible">有0元试用</option><option value="ineligible">无0元试用</option><option value="unknown">未检测</option></select>
         <select aria-label="Checkout 类型筛选" className="h-9 w-40 shrink-0 rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] px-2 text-xs" value={checkoutFilter} onChange={(e) => changeFilter(setCheckoutFilter, e.target.value)}><option value="">全部 Checkout</option><option value="oaics">OAICS</option><option value="cs_live">CS Live</option><option value="cs_test">CS Test</option><option value="unknown">未检测</option></select>
-      </div> : <textarea className="mb-4 min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm" value={externalText} onChange={(e) => { setExternalText(e.target.value); setSelected([]); setPage(1); }} placeholder="每行一个 AT，支持任意数量；仅本次任务临时使用，不会长期保存" />}
-      {task && <div className="mb-3 rounded-lg border border-[var(--border)] bg-[var(--bg-main)]/40 p-3"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="text-sm font-semibold">最近提链任务</div><div className="mt-1 text-xs text-[var(--text-muted)]">状态：{taskStatusLabel(task.status)} · 进度：{task.progress || "0/0"} · 成功 {task.success_count || 0} · 失败 {task.error_count || 0}</div></div>{!task.terminal && <Button variant="outline" disabled={cancelBusy || task.status === "cancel_requested"} onClick={() => void cancelTask()}>{cancelBusy || task.status === "cancel_requested" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <X className="mr-2 h-4 w-4" />}{cancelBusy || task.status === "cancel_requested" ? "停止中..." : "停止提链"}</Button>}</div>{task.terminal && <div className={`mt-2 text-xs ${task.status === "succeeded" ? "text-emerald-600" : "text-red-500"}`}>{task.status === "succeeded" ? `任务完成：成功 ${task.success_count || 0}，失败 ${task.error_count || 0}` : `任务结束：${task.error || "请查看下方账户结果"}`}</div>}</div>}
+      </div> : <textarea className="mb-4 min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm" value={externalText} onChange={(e) => { setExternalText(e.target.value); setSelected([]); setPage(1); }} placeholder="每行一个 AT，支持任意数量；内容仅保存在当前浏览器本地" />}
+      {task && <div className="mb-3 rounded-lg border border-[var(--border)] bg-[var(--bg-main)]/40 p-3"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="text-sm font-semibold">最近提链任务</div><div className="mt-1 text-xs text-[var(--text-muted)]">状态：{taskStatusLabel(task.status)} · 进度：{task.progress || "0/0"} · 成功 {task.success ?? task.success_count ?? 0} · 失败 {task.error_count ?? 0}</div></div>{!task.terminal && <Button variant="outline" disabled={cancelBusy || task.status === "cancel_requested"} onClick={() => void cancelTask()}>{cancelBusy || task.status === "cancel_requested" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <X className="mr-2 h-4 w-4" />}{cancelBusy || task.status === "cancel_requested" ? "停止中..." : "停止提链"}</Button>}</div>{task.terminal && <div className={`mt-2 text-xs ${task.status === "succeeded" ? "text-emerald-600" : "text-red-500"}`}>{task.status === "succeeded" ? `任务完成：成功 ${task.success ?? task.success_count ?? 0}，失败 ${task.error_count ?? 0}` : `任务结束：${task.error || "请查看下方账户结果"}`}</div>}</div>}
       <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-main)]/40 p-2">
         <button type="button" className="sr-text-btn" disabled={!rows.length} onClick={toggleCurrentPage}><input className="pointer-events-none" type="checkbox" tabIndex={-1} checked={allCurrentSelected} readOnly />{allCurrentSelected ? "取消本页全选" : "本页全选"}</button>
         <span className="text-xs text-[var(--text-muted)]">已选择 {selectedCount} 项</span>
