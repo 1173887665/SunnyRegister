@@ -49,6 +49,7 @@ type sunnyCheckoutRequest struct {
 	ExternalATs      []string `json:"external_ats"`
 	CheckoutProxies  string   `json:"checkout_proxies"`
 	PromotionProxies string   `json:"promotion_proxies"`
+	CheckoutKinds    []string `json:"checkout_kinds"`
 	Plan             string   `json:"plan"`
 	LinkType         string   `json:"link_type"`
 	Country          string   `json:"country"`
@@ -78,10 +79,11 @@ type sunnyCheckoutPrecheckRequest struct {
 }
 
 type sunnyCheckoutCredential struct {
-	Token     string
-	Email     string
-	SessionID uint
-	External  bool
+	Token        string
+	Email        string
+	CheckoutKind string
+	SessionID    uint
+	External     bool
 }
 
 type checkoutSecret struct {
@@ -149,6 +151,9 @@ func normalizeCheckoutProxy(raw string) (string, error) {
 	port, err := strconv.Atoi(u.Port())
 	if err != nil || port < 1 || port > 65535 {
 		return "", fmt.Errorf("invalid proxy port")
+	}
+	if strings.HasSuffix(strings.ToLower(u.Hostname()), "kookeey.info") && (port == 1000 || port == 1086) && (u.Scheme == "http" || u.Scheme == "https") {
+		u.Scheme = "socks5h"
 	}
 	return u.String(), nil
 }
@@ -281,13 +286,13 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 			}
 		}
 		items := make([]any, 0, len(candidates))
-		for _, item := range candidates {
+		for candidateIndex, item := range candidates {
 			if item.Token == "" {
 				items = append(items, map[string]any{"email": item.Email, "session_id": item.SessionID, "check_status": "invalid", "check_error": "AT 为空、格式无效或已过期", "trial_eligibility": sunnyTrialUnknown, "checkout_kind": sunnyCheckoutUnknown, "payment_methods": []string{}})
 				continue
 			}
-			probeCtx := context.WithValue(context.Background(), sunnyTrialProxyContextKey{}, checkout[0])
-			_ = promotion
+			probeCtx := context.WithValue(context.Background(), sunnyTrialProxyContextKey{}, promotion[candidateIndex%len(promotion)])
+			probeCtx = context.WithValue(probeCtx, sunnyCheckoutProxyContextKey{}, checkout[candidateIndex%len(checkout)])
 			commerce := sunnyCheckCommerce(probeCtx, item.Token)
 			trial := normalizeSunnyTrialEligibility(commerce.Eligibility)
 			checkStatus := "checked"
@@ -319,29 +324,34 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 			}
 			var sessions []SunnySession
 			s.db.Where("id IN ?", body.SessionIDs).Find(&sessions)
-			accounts := map[string]string{}
+			accounts := map[string]SunnyAccount{}
 			var accountRows []SunnyAccount
 			emails := make([]string, 0, len(sessions))
 			for _, sess := range sessions {
 				emails = append(emails, sess.Email)
 			}
 			if len(emails) > 0 {
-				s.db.Select("email", "access_token").Where("email IN ?", emails).Find(&accountRows)
+				s.db.Select("email", "access_token", "checkout_kind").Where("email IN ?", emails).Find(&accountRows)
 				for _, account := range accountRows {
-					accounts[sunnyEmailKey(account.Email)] = account.AccessToken
+					accounts[sunnyEmailKey(account.Email)] = account
 				}
 			}
 			for _, sess := range sessions {
-				token := firstText(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON), accounts[sunnyEmailKey(sess.Email)])
+				account := accounts[sunnyEmailKey(sess.Email)]
+				token := firstText(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON), account.AccessToken)
 				if token != "" {
-					creds = append(creds, sunnyCheckoutCredential{Token: token, Email: sess.Email, SessionID: sess.ID})
+					creds = append(creds, sunnyCheckoutCredential{Token: token, Email: sess.Email, CheckoutKind: normalizeSunnyCheckoutKind(account.CheckoutKind), SessionID: sess.ID})
 				}
 			}
 		} else {
-			for _, raw := range body.ExternalATs {
+			for externalIndex, raw := range body.ExternalATs {
 				token, email := parseCheckoutExternalAT(raw)
 				if token != "" {
-					creds = append(creds, sunnyCheckoutCredential{Token: token, Email: email, External: true})
+					checkoutKind := sunnyCheckoutUnknown
+					if externalIndex < len(body.CheckoutKinds) {
+						checkoutKind = normalizeSunnyCheckoutKind(body.CheckoutKinds[externalIndex])
+					}
+					creds = append(creds, sunnyCheckoutCredential{Token: token, Email: email, CheckoutKind: checkoutKind, External: true})
 				}
 			}
 			if len(creds) == 0 {
@@ -364,7 +374,7 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 		payload := map[string]any{"credential_id": id, "credentials": make([]map[string]any, len(creds)), "plan": body.Plan, "link_type": body.LinkType, "country": body.Country, "currency": body.Currency, "retry_count": body.RetryCount, "concurrency": body.Concurrency, "use_promo": body.UsePromo, "promo_campaign": body.PromoCampaign, "promo_country": body.PromoCountry, "promo_code": body.PromoCode, "workspace_name": body.WorkspaceName, "workspace_id": body.WorkspaceID, "seat_quantity": body.SeatQuantity, "price_interval": body.PriceInterval, "credit_quantity": body.CreditQuantity, "pix_tax_id": body.PixTaxID, "pix_auto_kind": body.PixAutoKind, "ideal_bank": body.IdealBank}
 		items := payload["credentials"].([]map[string]any)
 		for i, c := range creds {
-			items[i] = map[string]any{"index": i, "email": c.Email, "session_id": c.SessionID, "external": c.External}
+			items[i] = map[string]any{"index": i, "email": c.Email, "checkout_kind": c.CheckoutKind, "session_id": c.SessionID, "external": c.External}
 		}
 		task := s.createTask(sunnyCheckoutTaskType, "chatgpt", payload, len(creds))
 		writeJSON(w, http.StatusAccepted, serializeTask(task))
@@ -506,7 +516,7 @@ func (s *Server) runSunnyCheckoutAttempt(task *Task, payload, row map[string]any
 	if token == "" {
 		return map[string]any{"email": email, "status": "failed", "error": "AT 为空或已失效"}
 	}
-	item, err := s.requestSunnyCheckout(context.Background(), task, token, payload, secret.Checkout, secret.Promotion)
+	item, err := s.requestSunnyCheckout(context.Background(), task, token, text(row["checkout_kind"]), payload, secret.Checkout, secret.Promotion)
 	if err != nil {
 		message := sanitizeCheckoutError(err.Error())
 		s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 提链失败", email), "log", "warning", map[string]any{"email": email, "error": message})
@@ -518,10 +528,11 @@ func (s *Server) runSunnyCheckoutAttempt(task *Task, payload, row map[string]any
 	return item
 }
 
-func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token string, payload map[string]any, checkoutProxies, promotionProxies []string) (map[string]any, error) {
+func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, checkoutKind string, payload map[string]any, checkoutProxies, promotionProxies []string) (map[string]any, error) {
 	body := map[string]any{
 		"token": token, "checkout_proxies": checkoutProxies, "promotion_proxies": promotionProxies,
-		"plan": payload["plan"], "link_type": payload["link_type"], "country": payload["country"], "currency": payload["currency"],
+		"checkout_kind": checkoutKind,
+		"plan":          payload["plan"], "link_type": payload["link_type"], "country": payload["country"], "currency": payload["currency"],
 		"retry_count": payload["retry_count"], "use_promo": payload["use_promo"], "promo_campaign": payload["promo_campaign"], "promo_country": payload["promo_country"],
 		"promo_code": payload["promo_code"], "workspace_name": payload["workspace_name"], "workspace_id": payload["workspace_id"], "seat_quantity": payload["seat_quantity"],
 		"price_interval": payload["price_interval"], "credit_quantity": payload["credit_quantity"], "ideal_bank": payload["ideal_bank"], "pix_tax_id": payload["pix_tax_id"], "pix_auto_kind": payload["pix_auto_kind"],

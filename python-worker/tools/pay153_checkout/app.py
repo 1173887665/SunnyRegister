@@ -24,6 +24,9 @@ from curl_cffi import requests
 
 import stripe_checkout as sc
 from provider_checkout import PROVIDER_DEFAULTS, default_billing, stripe_to_provider
+from paypal_routing import session_checkout_kind, validate_session_for_mode
+from proxy_routing import checkout_route_proxy, promotion_route_proxy, shares_checkout_proxy
+from sentinel_fallback import resolve_payment_sentinel_headers
 from billing_address_resolver import resolve_cached_country_address
 from sentinel_token import SentinelTokenProvider as BaseSentinel
 from upi_go_runner import available as upi_go_available, run_upi as run_upi_go
@@ -402,6 +405,8 @@ def normalize_proxy(raw: str) -> str:
         return username, password
 
     def build(scheme: str, host: str, port: int, username: str = "", password: str = "") -> str:
+        if host.lower().rstrip(".").endswith("kookeey.info") and port in {1000, 1086} and scheme in {"http", "https"}:
+            scheme = "socks5h"
         auth = ""
         if username or password:
             auth = f"{quote(username, safe='')}:{quote(password, safe='')}@"
@@ -682,6 +687,7 @@ def create_checkout(
     *,
     use_sen: bool = True,
     use_so: bool = True,
+    allow_sentinel_fallback: bool = False,
 ) -> dict:
     http = sc.build_http(proxy or None)
     try:
@@ -696,9 +702,11 @@ def create_checkout(
         )
     except Exception as exc:
         log(f"ChatGPT 暖身提示：{type(exc).__name__}")
-    s_headers = asyncio.run(sentinel_headers(
-        proxy, "chatgpt_checkout", device_id, did, use_sen=use_sen, use_so=use_so,
-    ))
+    s_headers = resolve_payment_sentinel_headers(
+        sentinel_headers, proxy, "chatgpt_checkout", device_id, did,
+        use_sen=use_sen, use_so=use_so,
+        allow_fallback=allow_sentinel_fallback, log=log,
+    )
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -972,7 +980,7 @@ def select_paypal_exit_proxy(preferred: str, pool: list[str], scan_limit: int = 
     candidates = ([preferred] if preferred else []) + rest
     candidates = candidates[:max(1, min(int(scan_limit), len(candidates)))]
     if not candidates:
-        raise RuntimeError("代理池 2 为空")
+        raise RuntimeError("Checkout 代理池为空")
 
     rejected: list[str] = []
     executor = ThreadPoolExecutor(max_workers=min(6, len(candidates)), thread_name_prefix="paypal-geo")
@@ -996,7 +1004,7 @@ def select_paypal_exit_proxy(preferred: str, pool: list[str], scan_limit: int = 
         executor.shutdown(wait=False, cancel_futures=True)
     summary = "/".join(rejected[:12]) or "未识别"
     raise RuntimeError(
-        f"代理池 2 本轮未找到 OpenAI 支持的 PayPal 账单地区；已检测：{summary}。"
+        f"Checkout 代理池本轮未找到 OpenAI 支持的 PayPal 账单地区；已检测：{summary}。"
         "系统将更换代理继续尝试"
     )
 
@@ -1153,11 +1161,14 @@ def confirm_custom_checkout_method(
     use_sen: bool = True,
     use_so: bool = True,
     method_name: str = "GCash",
+    allow_sentinel_fallback: bool = False,
+    log=lambda _message: None,
 ) -> dict[str, Any]:
-    sentinel = asyncio.run(sentinel_headers(
-        proxy, "checkout_session_approval", device_id, did,
+    sentinel = resolve_payment_sentinel_headers(
+        sentinel_headers, proxy, "checkout_session_approval", device_id, did,
         use_sen=use_sen, use_so=use_so,
-    ))
+        allow_fallback=allow_sentinel_fallback, log=log,
+    )
     resp = http.post(
         "https://chatgpt.com/backend-api/payments/checkout/confirm",
         json={
@@ -1244,8 +1255,12 @@ def approve_checkout(
     *,
     http=None,
     log=lambda _message: None,
+    allow_sentinel_fallback: bool = False,
 ) -> dict:
-    headers = asyncio.run(sentinel_headers(proxy, "checkout_session_approval", device_id, did))
+    headers = resolve_payment_sentinel_headers(
+        sentinel_headers, proxy, "checkout_session_approval", device_id, did,
+        allow_fallback=allow_sentinel_fallback, log=log,
+    )
     http = http or sc.build_http(proxy or None)
     try:
         http.cookies.set("oai-did", did, domain="chatgpt.com")
@@ -1581,7 +1596,7 @@ class JobStore:
                     ).upper()
                     proxy_session_time = int(current.get("proxy_session_time") or 10)
                     entry_proxy = fetch_dynamic_attempt_proxy(entry_country, proxy_session_time)
-                    if current.get("link_type") in {"pix", "momo"}:
+                    if shares_checkout_proxy(current, str(current.get("link_type") or "")):
                         exit_proxy = entry_proxy
                     else:
                         exit_proxy = fetch_dynamic_attempt_proxy(exit_country, proxy_session_time)
@@ -1612,12 +1627,12 @@ class JobStore:
                 exit_pool = current.get("exit_proxies") or entry_pool
                 if current.get("paired_proxy_rotation"):
                     entry_proxy = entry_pool[(attempt - 1) % len(entry_pool)]
-                    exit_proxy = entry_proxy if current.get("link_type") in {"pix", "momo"} else exit_pool[(attempt - 1) % len(exit_pool)]
+                    exit_proxy = entry_proxy if shares_checkout_proxy(current, str(current.get("link_type") or "")) else exit_pool[(attempt - 1) % len(exit_pool)]
                     pair = (entry_proxy, exit_proxy)
                 else:
                     pair = None
                     for _ in range(40):
-                        if current.get("link_type") in {"pix", "momo"}:
+                        if shares_checkout_proxy(current, str(current.get("link_type") or "")):
                             proxy = secrets.choice(entry_pool)
                             candidate = (proxy, proxy)
                         else:
@@ -1642,15 +1657,16 @@ class JobStore:
                 # Alternate both Stripe submission shapes across outer retries.
                 # Some Checkout revisions accept a pre-created pm_* while
                 # others only complete the local mandate with inline data.
-                strategy_cycle = (
-                    ("standalone", "late_promo", "inline")
-                    if current.get("link_type") == "pix"
-                    else (("late_promo", "inline", "standalone") if current.get("link_type") == "momo" else (
-                        ("go_b", "go_b", "inline", "late_promo")
-                        if current.get("use_promo", False)
-                        else ("standalone", "inline")
-                    ))
-                )
+                if current.get("link_type") == "pix":
+                    strategy_cycle = ("standalone", "late_promo", "inline")
+                elif current.get("link_type") == "momo":
+                    strategy_cycle = ("late_promo", "inline", "standalone")
+                elif current.get("link_type") == "upi" and current.get("named_proxy_pools"):
+                    strategy_cycle = ("inline", "late_promo", "standalone")
+                elif current.get("use_promo", False):
+                    strategy_cycle = ("go_b", "go_b", "inline", "late_promo")
+                else:
+                    strategy_cycle = ("standalone", "inline")
                 current["local_method_strategy"] = strategy_cycle[(attempt - 1) % len(strategy_cycle)]
                 # Creating the Checkout at zero due removes PIX/UPI from this
                 # merchant's payment_method_types, so local methods keep the
@@ -1668,7 +1684,7 @@ class JobStore:
             )
             self.log(job_id, f"========== 提链尝试 {attempt}/{max_attempts} ==========")
             if current.get("link_type") == "paypal" and current.get("use_promo"):
-                strategy = "Checkout 创建时原生带优惠" if current.get("promo_on_create") else "创建后通过入口线路更新优惠"
+                strategy = "Checkout 创建时原生带优惠" if current.get("promo_on_create") else "创建后通过 Promotion代理池更新优惠"
                 self.log(job_id, f"PayPal 优惠策略：{strategy}")
             self._run_single(job_id, current)
             state = self.get(job_id) or {}
@@ -1734,10 +1750,15 @@ class JobStore:
             provider = str(options.get("link_type") or "").lower()
             entry_proxy = str(options.get("fixed_entry_proxy") or "").strip()
             payment_proxy = str(options.get("fixed_exit_proxy") or entry_proxy).strip()
-            if provider == "pix":
+            if shares_checkout_proxy(options, provider):
                 payment_proxy = entry_proxy
             if not entry_proxy or not payment_proxy:
-                raise RuntimeError("Rust 工作流缺少本轮固定代理")
+                raise RuntimeError("Rust 工作流缺少本轮 Checkout 或 Promotion 代理")
+            self.log(
+                job_id,
+                f"Checkout 代理池共 {len(options.get('exit_proxies') or [])} 条，"
+                f"Promotion 代理池共 {len(options.get('entry_proxies') or [])} 条，本轮已分别选择",
+            )
 
             country = str(options.get("checkout_country") or options.get("country") or "US").upper()
             payment_geo: dict[str, str] = {}
@@ -2054,6 +2075,8 @@ class JobStore:
                     if provider == "paypal":
                         result["paypal_link"] = result.get("paypal_url") or ""
                         result["provider_redirect_url"] = result.get("paypal_url") or result.get("stripe_redirect_url") or ""
+                        result_kind = session_checkout_kind(str(result.get("checkout_session_id") or ""))
+                        result["checkout_kind"] = "cs_live" if result_kind == "unknown" else result_kind
                     self.update(job_id, status="done", percent=100, text="提取完成", error="", result=result)
                     return
                 if rust_status == "failed":
@@ -2093,6 +2116,10 @@ class JobStore:
         rust_execute = str(os.getenv("PAY153_RUST_WORKFLOWS") or "").strip().lower() in {
             "1", "true", "yes", "on",
         }
+        paypal_mode = str(options.get("paypal_checkout_mode") or "auto")
+        if options.get("link_type") == "paypal":
+            mode_label = {"oaics": "OAICS", "cs_live": "CS Live"}.get(paypal_mode, "自动识别")
+            self.log(job_id, f"PayPal Checkout 类型：{mode_label}；将使用对应提链流程")
         if rust_execute and rust_base and options.get("link_type") in {"paypal", "pix", "upi", "ideal", "kakao"} and not (
             options.get("link_type") == "paypal" and options.get("oaics_paypal")
         ):
@@ -2105,16 +2132,16 @@ class JobStore:
             provider = options["link_type"]
             country = options["country"]
             entry_pool = options["entry_proxies"]
-            exit_pool = entry_pool if provider in {"pix", "momo"} else (options.get("exit_proxies") or entry_pool)
+            exit_pool = entry_pool if shares_checkout_proxy(options, provider) else (options.get("exit_proxies") or entry_pool)
             entry_proxy = options.get("fixed_entry_proxy") or secrets.choice(entry_pool)
-            exit_proxy = entry_proxy if provider in {"pix", "momo"} else (options.get("fixed_exit_proxy") or secrets.choice(exit_pool))
+            exit_proxy = entry_proxy if shares_checkout_proxy(options, provider) else (options.get("fixed_exit_proxy") or secrets.choice(exit_pool))
             payment_geo: dict[str, str] = {}
-            if provider == "hosted":
-                self.log(job_id, f"代理池共 {len(entry_pool)} 条，本次已自动选择 1 条")
-            elif provider in {"pix", "momo"}:
-                self.log(job_id, f"代理池 1 共 {len(entry_pool)} 条，本次已自动选择 1 条")
+            if provider == "hosted" and not options.get("named_proxy_pools"):
+                self.log(job_id, f"Checkout 代理池共 {len(entry_pool)} 条，本次已自动选择 1 条")
+            elif provider in {"pix", "momo"} and not options.get("named_proxy_pools"):
+                self.log(job_id, f"Promotion 代理池共 {len(entry_pool)} 条，本次已自动选择 1 条")
             else:
-                self.log(job_id, f"代理池 1 共 {len(entry_pool)} 条，代理池 2 共 {len(exit_pool)} 条，本次已分别自动选择")
+                self.log(job_id, f"Checkout 代理池共 {len(exit_pool)} 条，Promotion 代理池共 {len(entry_pool)} 条，本次已分别自动选择")
             # Every outer retry creates a brand-new Checkout, so it must also
             # use a fresh browser/device identity.  Within this single attempt
             # the same ids are kept for create -> update -> approve.
@@ -2123,8 +2150,15 @@ class JobStore:
             if provider == "ph_short":
                 short_country = country if country in {"PH", "GB", "US"} else "PH"
                 short_currency = {"PH": "PHP", "GB": "GBP", "US": "USD"}[short_country]
-                checkout_proxy_country = str(options.get("entry_proxy_country") or short_country).upper()
-                update_proxy_country = str(options.get("exit_proxy_country") or (options.get("promo_country") if options.get("use_promo") else short_country) or short_country).upper()
+                named_proxy_pools = bool(options.get("named_proxy_pools"))
+                checkout_proxy_country = str(options.get("exit_proxy_country") if named_proxy_pools else options.get("entry_proxy_country") or short_country).upper()
+                update_proxy_country = str(
+                    (options.get("entry_proxy_country") if named_proxy_pools else options.get("exit_proxy_country"))
+                    or (options.get("promo_country") if options.get("use_promo") else short_country)
+                    or short_country
+                ).upper()
+                short_checkout_proxy = exit_proxy if named_proxy_pools else entry_proxy
+                short_promotion_proxy = entry_proxy if named_proxy_pools else exit_proxy
                 self.update(job_id, percent=9, text=f"Validate {checkout_proxy_country} Checkout and {update_proxy_country} promotion proxy")
                 credentials = parse_ph_short_credentials(raw_token)
                 extractor = PhShortCheckoutExtractor(
@@ -2135,8 +2169,8 @@ class JobStore:
                         payment_locale="en",
                         checkout_proxy_country=checkout_proxy_country,
                         update_proxy_country=update_proxy_country,
-                        checkout_proxy=entry_proxy,
-                        update_proxy=exit_proxy,
+                        checkout_proxy=short_checkout_proxy,
+                        update_proxy=short_promotion_proxy,
                         plan_name="chatgptplusplan",
                         promo_campaign_id=options.get("promo_campaign") or "plus-1-month-free",
                         apply_promo=bool(options.get("use_promo")),
@@ -2192,29 +2226,37 @@ class JobStore:
 
             if provider == "pix":
                 self.update(job_id, percent=9, text="第 1/7 步：选择并检测代理")
-                main_country, main_region = proxy_country(entry_proxy, options.get("entry_proxy_country"))
-                stripe_country, stripe_region = proxy_country(exit_proxy, options.get("exit_proxy_country"))
-                self.log(job_id, f"PIX 代理校验：代理池 1={main_country}/{main_region}")
-                if main_country != "BR" or stripe_country != "BR":
+                promotion_country, promotion_region = proxy_country(entry_proxy, options.get("entry_proxy_country"))
+                checkout_country, checkout_region = proxy_country(exit_proxy, options.get("exit_proxy_country"))
+                main_country, main_region = promotion_country, promotion_region
+                stripe_country, stripe_region = checkout_country, checkout_region
+                self.log(job_id, f"PIX 代理校验：Checkout代理池={checkout_country}/{checkout_region}，Promotion代理池={promotion_country}/{promotion_region}")
+                if checkout_country != "BR" or promotion_country != "BR":
                     self.log(
                         job_id,
-                        f"PIX 当前代理为 {main_country or '?'} + {stripe_country or '?'}；不限制国家，继续由上游判断支付方式",
+                        f"PIX 当前代理为 Checkout {checkout_country or '?'} + Promotion {promotion_country or '?'}；不限制国家，继续由上游判断支付方式",
                     )
                 self.ensure_not_cancelled(job_id)
             elif provider == "momo":
                 self.update(job_id, percent=9, text="第 1/7 步：选择并检测越南代理")
-                main_country, main_region = proxy_country(entry_proxy, options.get("entry_proxy_country"))
-                self.log(job_id, f"MoMo 代理校验：代理池 1={main_country}/{main_region}")
-                if main_country != "VN":
-                    self.log(job_id, f"MoMo 当前代理为 {main_country or '?'}；继续由上游判断支付方式")
+                promotion_country, promotion_region = proxy_country(entry_proxy, options.get("entry_proxy_country"))
+                checkout_country, checkout_region = proxy_country(exit_proxy, options.get("exit_proxy_country"))
+                main_country, main_region = promotion_country, promotion_region
+                self.log(job_id, f"MoMo 代理校验：Checkout代理池={checkout_country}/{checkout_region}，Promotion代理池={promotion_country}/{promotion_region}")
+                if checkout_country != "VN":
+                    self.log(job_id, f"MoMo Checkout 代理当前为 {checkout_country or '?'}；继续由上游判断支付方式")
                 country = options["country"] = options["checkout_country"] = "VN"
                 options["currency"] = options["checkout_currency"] = "VND"
                 self.ensure_not_cancelled(job_id)
 
             promo_requested = options["plan"] == "plus" and options.get("use_promo", False)
             if provider == "gcash":
-                main_country, main_region = proxy_country(entry_proxy, options.get("entry_proxy_country"))
-                promo_proxy_country, promo_proxy_region = proxy_country(exit_proxy, options.get("exit_proxy_country"))
+                gcash_checkout_proxy = exit_proxy if options.get("named_proxy_pools") else entry_proxy
+                gcash_promotion_proxy = entry_proxy if options.get("named_proxy_pools") else exit_proxy
+                checkout_country_hint = options.get("exit_proxy_country") if options.get("named_proxy_pools") else options.get("entry_proxy_country")
+                promotion_country_hint = options.get("entry_proxy_country") if options.get("named_proxy_pools") else options.get("exit_proxy_country")
+                main_country, main_region = proxy_country(gcash_checkout_proxy, checkout_country_hint)
+                promo_proxy_country, promo_proxy_region = proxy_country(gcash_promotion_proxy, promotion_country_hint)
                 self.update(job_id, percent=9, text="校验 US Checkout 与优惠代理")
                 self.log(job_id, f"GCash 路由：Checkout={main_country}/{main_region}，账单=PH/PHP，优惠更新={promo_proxy_country}/{promo_proxy_region}")
                 if main_country != "US":
@@ -2231,7 +2273,7 @@ class JobStore:
                 payment_country = payment_geo.get("country") or ""
                 payment_region = payment_geo.get("region") or ""
                 if not payment_country:
-                    raise RuntimeError("代理池 2 未检测到国家地区")
+                    raise RuntimeError("Checkout 代理池未检测到国家地区")
                 if rejected_countries:
                     self.log(job_id, f"PayPal 已跳过不兼容地区：{'/'.join(rejected_countries[:8])}")
                 detected_currency = str(payment_geo.get("currency") or "").upper()
@@ -2251,7 +2293,7 @@ class JobStore:
                 options["payment_proxy_country"] = payment_country
                 self.log(
                     job_id,
-                    f"PayPal 代理池 2 地区：{payment_country}/{payment_region}；"
+                    f"PayPal Checkout代理池地区：{payment_country}/{payment_region}；"
                     f"Checkout={checkout_country}/{checkout_currency}（{currency_source}）",
                 )
                 if promo_requested and main_country not in {"TR", "JP"}:
@@ -2273,12 +2315,12 @@ class JobStore:
                 payment_country, payment_region = proxy_country(exit_proxy, options.get("exit_proxy_country"))
                 self.log(
                     job_id,
-                    f"iDEAL 代理校验：入口={main_country}/{main_region}，"
-                    f"支付={payment_country}/{payment_region}，账单=NL/EUR",
+                    f"iDEAL 代理校验：Promotion代理池={main_country}/{main_region}，"
+                    f"Checkout代理池={payment_country}/{payment_region}，账单=NL/EUR",
                 )
                 if payment_country != "NL":
                     raise RuntimeError(
-                        f"iDEAL 支付代理出口为 {payment_country or '未知'}，需要 NL 荷兰出口"
+                        f"iDEAL Checkout代理池出口为 {payment_country or '未知'}，需要 NL 荷兰出口"
                     )
                 self.ensure_not_cancelled(job_id)
             if provider == "twint":
@@ -2286,15 +2328,15 @@ class JobStore:
                 payment_country, payment_region = proxy_country(exit_proxy, options.get("exit_proxy_country"))
                 self.log(job_id, f"TWINT 代理校验：支付={payment_country}/{payment_region}，账单=CH/CHF")
                 if payment_country != "CH":
-                    raise RuntimeError(f"TWINT 支付代理出口为 {payment_country or '未知'}，需要 CH 瑞士出口")
+                    raise RuntimeError(f"TWINT Checkout代理池出口为 {payment_country or '未知'}，需要 CH 瑞士出口")
                 country = options["country"] = options["checkout_country"] = "CH"
                 options["currency"] = options["checkout_currency"] = "CHF"
                 self.ensure_not_cancelled(job_id)
             preflight = {}
             if promo_requested:
-                self.update(job_id, percent=12, text="读取入口支付与活动标记")
+                self.update(job_id, percent=12, text="通过 Promotion 代理池读取试用资格与活动标记")
                 preflight = preflight_trial_eligibility(
-                    token, meta.get("account_id") or "", (exit_proxy if provider == "gcash" else entry_proxy), device_id, did,
+                    token, meta.get("account_id") or "", entry_proxy, device_id, did,
                     lambda m: self.log(job_id, m),
                 )
                 detected_campaign = promo_campaign_from_payload(preflight)
@@ -2310,6 +2352,7 @@ class JobStore:
                 provider == "upi"
                 and promo_requested
                 and options.get("local_method_strategy") == "go_b"
+                and not options.get("named_proxy_pools")
             ):
                 if not upi_go_available():
                     raise RuntimeError("UPI Go Elements/B 引擎未安装")
@@ -2374,23 +2417,25 @@ class JobStore:
                 )
             )
             self.update(job_id, percent=34, text=stage2_text)
-            checkout_proxy = exit_proxy if provider in {"paypal", "upi", "ideal", "twint"} else entry_proxy
+            checkout_proxy = checkout_route_proxy(options, provider, entry_proxy, exit_proxy)
             if provider in {"pix", "momo"}:
                 self.log(
                     job_id,
-                    f"Stage1 Checkout、优惠更新、Stripe 和 approval 使用同一条 {'BR' if provider == 'pix' else 'VN'} 代理"
+                    f"Stage1 Checkout、Stripe 和 approval 使用 Checkout代理池；优惠检查与更新使用 Promotion代理池"
                     + ("；本轮优惠随 Checkout 创建" if options.get("promo_on_create") else ""),
                 )
             elif provider == "gcash":
-                self.log(job_id, f"GCash 设置：代理池 1 使用 US 创建 PH/PHP Checkout，代理池 2 使用用户选择的 {options.get('promo_country') or '优惠国家'} 更新优惠")
+                self.log(job_id, f"GCash 设置：Checkout代理池创建并确认 PH/PHP Checkout，Promotion代理池使用 {options.get('promo_country') or '优惠国家'} 更新优惠")
             elif provider == "paypal" and promo_requested:
-                self.log(job_id, f"PayPal 设置：代理池 1 用于优惠检查，代理池 2 创建 {country}/{options['currency']} Checkout")
+                self.log(job_id, f"PayPal 设置：Promotion代理池用于优惠检查，Checkout代理池创建 {country}/{options['currency']} Checkout")
             elif provider == "upi":
-                self.log(job_id, "UPI 设置：代理池 1 用于优惠检查，代理池 2 创建 IN/INR Checkout")
+                self.log(job_id, "UPI 设置：Promotion代理池用于优惠检查，Checkout代理池创建 IN/INR Checkout")
             elif provider == "ideal":
-                self.log(job_id, "iDEAL 设置：代理池 2 创建 NL/EUR Checkout，并贯穿 Stripe 支付处理")
+                self.log(job_id, "iDEAL 设置：Checkout代理池创建 NL/EUR Checkout 并贯穿 Stripe 支付处理，Promotion代理池负责优惠更新")
             elif provider == "twint":
-                self.log(job_id, "TWINT 设置：代理池 2 使用 CH 创建 CHF Checkout；可在支付方式确认后应用首月优惠")
+                self.log(job_id, "TWINT 设置：Checkout代理池使用 CH 创建 CHF Checkout；Promotion代理池负责首月优惠更新")
+            elif provider == "hosted" and options.get("named_proxy_pools"):
+                self.log(job_id, "官方 Checkout 使用 Checkout代理池创建和读取支付页面，Promotion代理池负责试用检查与优惠更新")
             elif provider != "hosted":
                 self.log(job_id, f"Checkout 将使用所选的 {country} 地区代理")
             created = create_checkout(
@@ -2402,6 +2447,7 @@ class JobStore:
                 lambda m: self.log(job_id, m),
                 use_sen=(True if provider == "gcash" else bool(options.get("use_sen", True))),
                 use_so=(True if provider == "gcash" else bool(options.get("use_so", True))),
+                allow_sentinel_fallback=provider == "paypal",
             )
             self.ensure_not_cancelled(job_id)
             self.update(job_id, percent=44, text="Checkout 创建完成，正在准备支付方式")
@@ -2416,8 +2462,9 @@ class JobStore:
                 self.log(job_id, f"Checkout 已返回活动标识：{stage1_campaign}")
             provider_chatgpt_http = chatgpt_http
             promo_chatgpt_http = chatgpt_http
-            if provider in {"paypal", "upi", "ideal", "twint", "gcash"}:
-                promo_chatgpt_http = sc.build_http(exit_proxy if provider == "gcash" else entry_proxy)
+            promotion_proxy = promotion_route_proxy(options, provider, entry_proxy, exit_proxy)
+            if provider in {"paypal", "upi", "ideal", "twint", "gcash"} or (options.get("named_proxy_pools") and promo_requested):
+                promo_chatgpt_http = sc.build_http(promotion_proxy)
                 try:
                     promo_chatgpt_http.cookies.set("oai-did", did, domain="chatgpt.com")
                     for cookie_name, cookie_value in chatgpt_http.cookies.get_dict().items():
@@ -2430,18 +2477,32 @@ class JobStore:
                 except Exception as exc:
                     self.log(job_id, f"{provider.upper()} 优惠线路暖身提示：{type(exc).__name__}")
                 if provider == "gcash":
-                    self.log(job_id, f"GCash 优惠更新使用代理池 2（{options.get('promo_country') or '用户选择地区'}），Checkout 与确认使用代理池 1（US）")
+                    self.log(job_id, f"GCash 优惠更新使用 Promotion代理池（{options.get('promo_country') or '用户选择地区'}），Checkout 与确认使用 Checkout代理池")
                 elif provider == "paypal":
-                    self.log(job_id, f"PayPal 支付处理使用代理池 2（{country}）")
+                    self.log(job_id, f"PayPal 支付处理使用 Checkout代理池（{country}），优惠更新使用 Promotion代理池")
                 elif provider == "upi":
-                    self.log(job_id, "UPI 支付处理使用代理池 2（IN）")
+                    self.log(job_id, "UPI 支付处理使用 Checkout代理池（IN），优惠更新使用 Promotion代理池")
                 elif provider == "ideal":
-                    self.log(job_id, "iDEAL 优惠更新使用代理池 1，NL/EUR Checkout 与 Stripe 使用代理池 2")
-                else:
-                    self.log(job_id, "TWINT 支付处理使用代理池 2（CH/CHF）")
+                    self.log(job_id, "iDEAL 优惠更新使用 Promotion代理池，NL/EUR Checkout 与 Stripe 使用 Checkout代理池")
+                elif provider == "twint":
+                    self.log(job_id, "TWINT 支付处理使用 Checkout代理池（CH/CHF），优惠更新使用 Promotion代理池")
+                elif provider in {"pix", "momo", "hosted"}:
+                    self.log(job_id, f"{provider.upper()} 优惠更新使用 Promotion代理池，Checkout 与支付处理使用 Checkout代理池")
             session_id = checkout_data.get("checkout_session_id") or ""
             if not session_id and provider != "hosted":
                 raise RuntimeError("Checkout 未返回 Stripe Session ID")
+            actual_checkout_kind = ""
+            if provider == "paypal":
+                try:
+                    actual_checkout_kind = validate_session_for_mode(paypal_mode, session_id)
+                except ValueError as exc:
+                    raise RuntimeError(f"PAYPAL_CHECKOUT_TYPE_MISMATCH: {exc}") from exc
+                actual_label = {
+                    "oaics": "OAICS",
+                    "cs_live": "CS Live",
+                    "cs_test": "CS Test",
+                }.get(actual_checkout_kind, "未知")
+                self.log(job_id, f"PayPal 实际 Checkout 类型：{actual_label}；分支已确认")
             if self.cancelled(job_id):
                 raise InterruptedError("任务已停止")
 
@@ -2457,8 +2518,8 @@ class JobStore:
                 "checkout_country": options.get("checkout_country") or country,
                 "checkout_currency": options.get("checkout_currency") or options["currency"],
                 "entry_proxy_pool_size": len(entry_pool),
-                "exit_proxy_pool_size": len(exit_pool) if provider not in {"hosted", "pix", "momo"} else 0,
-                "proxy_mode": ("us_checkout_promo_update" if provider == "gcash" else ("single_chain" if provider in {"pix", "momo"} else ("entry_only" if provider == "hosted" else "dual_chain"))),
+                "exit_proxy_pool_size": len(exit_pool) if options.get("named_proxy_pools") or provider not in {"hosted", "pix", "momo"} else 0,
+                "proxy_mode": ("named_checkout_promotion" if options.get("named_proxy_pools") else ("us_checkout_promo_update" if provider == "gcash" else ("single_chain" if provider in {"pix", "momo"} else ("entry_only" if provider == "hosted" else "dual_chain")))),
                 "promo_requested": promo_requested,
                 "promo_applied": None,
                 "promo_campaign_used": options.get("promo_campaign") or "plus-1-month-free",
@@ -2471,11 +2532,13 @@ class JobStore:
                 "promo_country": str(options.get("promo_country") or "").upper(),
                 "payment_proxy_country": str(options.get("payment_proxy_country") or locals().get("payment_country") or "").upper(),
             }
+            if provider == "paypal":
+                result["checkout_kind"] = actual_checkout_kind
             if promo_requested:
                 checkout_trial = checkout_data.get("one_click_trial_eligible")
                 self.log(
                     job_id,
-                    "支付标记（仅供诊断）：入口 one_click={}，Stage1 one_click={}".format(
+                    "支付标记（仅供诊断）：Promotion one_click={}，Checkout Stage1 one_click={}".format(
                         preflight.get("one_click_trial_eligible"), checkout_trial
                     ),
                 )
@@ -2567,7 +2630,7 @@ class JobStore:
                     try:
                         confirmed = confirm_custom_checkout_method(
                             chatgpt_http, token, session_id, custom_processor,
-                            custom_method_id, entry_proxy, device_id, did,
+                            custom_method_id, checkout_proxy, device_id, did,
                             use_sen=True, use_so=True, method_name="GCash",
                         )
                     except RuntimeError as confirm_error:
@@ -2577,7 +2640,7 @@ class JobStore:
                         time.sleep(1.2)
                         confirmed = confirm_custom_checkout_method(
                             chatgpt_http, token, session_id, custom_processor,
-                            custom_method_id, entry_proxy, device_id, did,
+                            custom_method_id, checkout_proxy, device_id, did,
                             use_sen=True, use_so=True, method_name="GCash",
                         )
                     self.update(job_id, percent=88, text="正在生成 GCash 跳转链接")
@@ -2672,6 +2735,8 @@ class JobStore:
                                 use_sen=bool(options.get("use_sen", True)),
                                 use_so=bool(options.get("use_so", True)),
                                 method_name="PayPal",
+                                allow_sentinel_fallback=True,
+                                log=lambda message: self.log(job_id, message),
                             )
                         except RuntimeError as confirm_error:
                             if "CUSTOM_CONFIRM_BLOCKED" not in str(confirm_error):
@@ -2681,6 +2746,8 @@ class JobStore:
                                 chatgpt_http, token, session_id, custom_processor,
                                 method_id, exit_proxy, device_id, did,
                                 use_sen=True, use_so=True, method_name="PayPal",
+                                allow_sentinel_fallback=True,
+                                log=lambda message: self.log(job_id, message),
                             )
                         started = start_custom_checkout_method(
                             chatgpt_http, token, session_id, custom_processor,
@@ -2796,7 +2863,7 @@ class JobStore:
                     self.update(job_id, percent=100, text="支付长链生成完成", status="done", result=result)
                     return
 
-                hosted_stripe_http = sc.build_http(entry_proxy)
+                hosted_stripe_http = sc.build_http(checkout_proxy)
                 hosted_profile = sc._profile(country)
                 hosted_pk = str(checkout_data.get("publishable_key") or "") or sc.verify_pk(
                     hosted_stripe_http, session_id, lambda m: self.log(job_id, m)
@@ -2838,7 +2905,7 @@ class JobStore:
                 if promo_requested and not hosted_zero:
                     self.update(job_id, percent=68, text="正在应用优惠并同步金额")
                     update_checkout_promo(
-                        chatgpt_http,
+                        promo_chatgpt_http,
                         token,
                         session_id,
                         hosted_processor,
@@ -3025,6 +3092,7 @@ class JobStore:
                     did,
                     http=provider_chatgpt_http,
                     log=provider_log,
+                    allow_sentinel_fallback=provider == "paypal",
                 )
                 self.ensure_not_cancelled(job_id)
 
@@ -3039,7 +3107,7 @@ class JobStore:
                 elif provider == "momo":
                     self.log(job_id, "MoMo 已确认可用，正在应用优惠")
                 elif provider == "ideal":
-                    self.log(job_id, "iDEAL 已确认可用，正在通过代理池 1 提交优惠；最终以 Stripe 今日应付金额为准")
+                    self.log(job_id, "iDEAL 已确认可用，正在通过 Promotion代理池提交优惠；最终以 Stripe 今日应付金额为准")
                 elif provider == "twint":
                     self.log(job_id, "TWINT 已确认可用，正在应用首月优惠并校验 CHF 今日应付金额")
                 advance_progress(70, "正在应用优惠")

@@ -12,22 +12,37 @@ if str(_ENGINE_DIR) not in sys.path:
 os.environ.setdefault("PAY153_UPI_GO_BINARY", str(_ENGINE_DIR / "tools" / "upi_go" / "pix_extract_slot"))
 
 from app import STORE
+from paypal_routing import checkout_mode
 
 
 _TOKEN_RE = re.compile(r"eyJ[A-Za-z0-9_.-]{40,}")
 _PROXY_AUTH_RE = re.compile(r"((?:https?|socks5?)://)[^\s/@:]+:[^\s/@]+@", re.IGNORECASE)
+_LEGACY_PROMOTION_POOL_RE = re.compile(r"代理池\s*1")
+_LEGACY_CHECKOUT_POOL_RE = re.compile(r"代理池\s*2")
 
 
 def _safe_error(value: Any) -> str:
     text = _TOKEN_RE.sub("[TOKEN]", str(value or ""))
-    return _PROXY_AUTH_RE.sub(r"\1[PROXY]@", text)[:1200]
+    text = _PROXY_AUTH_RE.sub(r"\1[PROXY]@", text)
+    text = _LEGACY_PROMOTION_POOL_RE.sub("Promotion代理池", text)
+    text = _LEGACY_CHECKOUT_POOL_RE.sub("Checkout代理池", text)
+    return text[:1200]
 
 
 def start_checkout(payload: dict[str, Any]) -> str:
+    link_type = str(payload.get("link_type") or "hosted").strip().lower()
+    checkout_kind = str(payload.get("checkout_kind") or "unknown").strip().lower()
+    paypal_mode = checkout_mode(checkout_kind)
     options = {
         "token_raw": str(payload.get("token") or ""),
         "plan": str(payload.get("plan") or "plus"),
-        "link_type": str(payload.get("link_type") or "hosted"),
+        "link_type": link_type,
+        "checkout_kind": checkout_kind,
+        "paypal_checkout_mode": paypal_mode,
+        # OAICS and unknown accounts stay in the Python workflow so the
+        # created session can select OAICS or Stripe automatically. Known
+        # CS Live accounts retain the reference project's PayPal workflow.
+        "oaics_paypal": link_type == "paypal" and paypal_mode != "cs_live",
         "country": str(payload.get("country") or "US").upper(),
         "currency": str(payload.get("currency") or "USD").upper(),
         "checkout_country": str(payload.get("country") or "US").upper(),
@@ -37,6 +52,7 @@ def start_checkout(payload: dict[str, Any]) -> str:
         # opposite order, so keep the translation at this adapter boundary.
         "entry_proxies": list(payload.get("promotion_proxies") or []),
         "exit_proxies": list(payload.get("checkout_proxies") or []),
+        "named_proxy_pools": True,
         "use_promo": bool(payload.get("use_promo")),
         "promo_campaign": str(payload.get("promo_campaign") or ""),
         "promo_code": str(payload.get("promo_code") or ""),
@@ -56,14 +72,12 @@ def start_checkout(payload: dict[str, Any]) -> str:
         "entry_proxy_country": str(payload.get("promo_country") or payload.get("country") or "US").upper(),
         "exit_proxy_country": str(payload.get("country") or "US").upper(),
     }
-    if options["link_type"] in {"pix", "momo"}:
-        options["exit_proxies"] = options["entry_proxies"]
     if options["link_type"] in {"gcash", "ph_short"} and options["country"] == "PH":
-        options["entry_proxy_country"] = "US"
+        options["exit_proxy_country"] = "US"
     if options["link_type"] == "gcash":
-        options["exit_proxy_country"] = str(payload.get("promo_country") or "VN").upper()
+        options["entry_proxy_country"] = str(payload.get("promo_country") or "VN").upper()
     if options["link_type"] == "ph_short" and options["use_promo"]:
-        options["exit_proxy_country"] = str(payload.get("promo_country") or "TR").upper()
+        options["entry_proxy_country"] = str(payload.get("promo_country") or "TR").upper()
     return STORE.create(options, internal=True)
 
 
@@ -102,6 +116,7 @@ def checkout_status(job_id: str) -> dict[str, Any] | None:
         "provider": str(raw.get("provider") or raw.get("link_type") or ""),
         "link_type": str(raw.get("link_type") or raw.get("provider") or ""),
         "checkout_session_id": str(raw.get("checkout_session_id") or ""),
+        "checkout_kind": str(raw.get("checkout_kind") or ""),
         "payment_link": link,
         "short_link": str(raw.get("short_link") or ""),
         "verification_url": str(raw.get("verification_url") or ""),

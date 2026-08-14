@@ -54,3 +54,31 @@ def test_trial_network_failure_does_not_skip_checkout() -> None:
     assert "trial interrupted" in result["trial"]["error"]
     assert result["checkout"]["kind"] == "cs_live"
     assert session.get.call_count == 2
+
+
+def test_probe_commerce_uses_separate_promotion_and_checkout_proxies() -> None:
+    promotion_session = MagicMock()
+    promotion_session.get.return_value = response(200, {"state": "eligible"})
+    checkout_session = MagicMock()
+    checkout_session.post.return_value = response(200, {"checkout_session_id": "cs_live_test"})
+
+    with patch(
+        "sunny_core.commerce_probe.curl_requests.Session",
+        side_effect=[promotion_session, checkout_session],
+    ):
+        result = probe_commerce(
+            "token",
+            promotion_proxy_url="http://promotion-proxy",
+            checkout_proxy_url="http://checkout-proxy",
+        )
+
+    assert result["trial"]["state"] == "eligible"
+    assert result["checkout"]["kind"] == "cs_live"
+    assert promotion_session.proxies == {
+        "http": "http://promotion-proxy",
+        "https": "http://promotion-proxy",
+    }
+    assert checkout_session.proxies == {
+        "http": "http://checkout-proxy",
+        "https": "http://checkout-proxy",
+    }

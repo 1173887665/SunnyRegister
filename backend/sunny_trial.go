@@ -32,8 +32,9 @@ var (
 		return checkSunnyTrialEligibility(ctx, accessToken, proxyURL)
 	}
 	sunnyCheckCommerce = func(ctx context.Context, accessToken string) sunnyCommerceProbeResult {
-		proxyURL, _ := ctx.Value(sunnyTrialProxyContextKey{}).(string)
-		result := checkSunnyCommerce(ctx, accessToken, proxyURL)
+		promotionProxyURL, _ := ctx.Value(sunnyTrialProxyContextKey{}).(string)
+		checkoutProxyURL, _ := ctx.Value(sunnyCheckoutProxyContextKey{}).(string)
+		result := checkSunnyCommerce(ctx, accessToken, promotionProxyURL, checkoutProxyURL)
 		if result.Eligibility != sunnyTrialUnknown || result.TrialError != "" {
 			return result
 		}
@@ -58,6 +59,7 @@ var (
 )
 
 type sunnyTrialProxyContextKey struct{}
+type sunnyCheckoutProxyContextKey struct{}
 
 type sunnyTrialCandidate struct {
 	SessionID   uint
@@ -394,14 +396,21 @@ func checkSunnyCommerce(ctx context.Context, accessToken string, proxyURLs ...st
 		result.CheckoutError = result.TrialError
 		return result
 	}
-	proxyURL := ""
+	promotionProxyURL := ""
+	checkoutProxyURL := ""
 	if len(proxyURLs) > 0 {
-		proxyURL = strings.TrimSpace(proxyURLs[0])
+		promotionProxyURL = strings.TrimSpace(proxyURLs[0])
 	}
-	if workerResult, ok := probeSunnyCommerceViaWorker(ctx, token, proxyURL); ok {
+	if len(proxyURLs) > 1 {
+		checkoutProxyURL = strings.TrimSpace(proxyURLs[1])
+	}
+	if checkoutProxyURL == "" {
+		checkoutProxyURL = promotionProxyURL
+	}
+	if workerResult, ok := probeSunnyCommerceViaWorker(ctx, token, promotionProxyURL, checkoutProxyURL); ok {
 		return workerResult
 	}
-	client := sunnyCommerceHTTPClient(proxyURLs...)
+	client := sunnyCommerceHTTPClient(checkoutProxyURL)
 	checkoutKind, methods, checkoutInvalid, checkoutErr := probeSunnyCheckout(ctx, client, token)
 	result.CheckoutKind, result.PaymentMethods = checkoutKind, methods
 	result.InvalidToken = result.InvalidToken || checkoutInvalid
@@ -411,14 +420,25 @@ func checkSunnyCommerce(ctx context.Context, accessToken string, proxyURLs ...st
 	return result
 }
 
-func probeSunnyCommerceViaWorker(ctx context.Context, accessToken, proxyURL string) (sunnyCommerceProbeResult, bool) {
+func probeSunnyCommerceViaWorker(ctx context.Context, accessToken, promotionProxyURL string, checkoutProxyURLs ...string) (sunnyCommerceProbeResult, bool) {
 	result := sunnyCommerceProbeResult{Eligibility: sunnyTrialUnknown, CheckoutKind: sunnyCheckoutUnknown, PaymentMethods: []string{}}
 	workerURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PYTHON_WORKER_URL")), "/")
 	if workerURL == "" {
 		workerURL = "http://127.0.0.1:8765"
 	}
 	country, currency := sunnyCheckoutBilling()
-	body, _ := json.Marshal(map[string]string{"access_token": accessToken, "proxy_url": proxyURL, "country": country, "currency": currency})
+	checkoutProxyURL := promotionProxyURL
+	if len(checkoutProxyURLs) > 0 && strings.TrimSpace(checkoutProxyURLs[0]) != "" {
+		checkoutProxyURL = strings.TrimSpace(checkoutProxyURLs[0])
+	}
+	body, _ := json.Marshal(map[string]string{
+		"access_token":        accessToken,
+		"proxy_url":           promotionProxyURL,
+		"promotion_proxy_url": promotionProxyURL,
+		"checkout_proxy_url":  checkoutProxyURL,
+		"country":             country,
+		"currency":            currency,
+	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, workerURL+"/probe-commerce", bytes.NewReader(body))
 	if err != nil {
 		return result, false

@@ -69,6 +69,8 @@ class ProbeAccessTokenRequest(BaseModel):
 class ProbeCommerceRequest(BaseModel):
     access_token: str
     proxy_url: str = ""
+    promotion_proxy_url: str = ""
+    checkout_proxy_url: str = ""
     country: str = "DE"
     currency: str = "EUR"
 
@@ -77,6 +79,7 @@ class CheckoutRequest(BaseModel):
     token: str
     checkout_proxies: list[str]
     promotion_proxies: list[str]
+    checkout_kind: str = "unknown"
     plan: str = "plus"
     link_type: str = "hosted"
     country: str = "US"
@@ -184,7 +187,14 @@ def probe_commerce(req: ProbeCommerceRequest, authorization: str | None = Header
     _check_token(authorization)
     from sunny_core.commerce_probe import probe_commerce as run_probe
 
-    return run_probe(req.access_token, req.proxy_url, req.country, req.currency)
+    return run_probe(
+        req.access_token,
+        req.proxy_url,
+        req.country,
+        req.currency,
+        promotion_proxy_url=req.promotion_proxy_url,
+        checkout_proxy_url=req.checkout_proxy_url,
+    )
 
 
 @app.post("/checkout/jobs")

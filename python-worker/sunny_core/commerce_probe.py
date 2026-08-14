@@ -61,15 +61,29 @@ def _request_with_retry(request: Any) -> Any:
     raise last_error
 
 
-def probe_commerce(access_token: str, proxy_url: str = "", country: str = "DE", currency: str = "") -> dict[str, Any]:
+def _session(proxy_url: str) -> Any:
+    session = curl_requests.Session(impersonate="chrome136")
+    if proxy_url:
+        session.proxies = {"http": proxy_url, "https": proxy_url}
+    return session
+
+
+def probe_commerce(
+    access_token: str,
+    proxy_url: str = "",
+    country: str = "DE",
+    currency: str = "",
+    *,
+    promotion_proxy_url: str = "",
+    checkout_proxy_url: str = "",
+) -> dict[str, Any]:
     token = str(access_token or "").strip()
     if not token:
         return {"trial": {"state": "", "http": 0, "error": "missing access token"}, "checkout": {"kind": "", "payment_methods": [], "http": 0, "error": "missing access token"}}
     billing_country = str(country or "DE").strip().upper() or "DE"
     billing_currency = str(currency or ("EUR" if billing_country == "DE" else "USD")).strip().upper()
-    session = curl_requests.Session(impersonate="chrome136")
-    if proxy_url:
-        session.proxies = {"http": proxy_url, "https": proxy_url}
+    promotion_session = _session(str(promotion_proxy_url or proxy_url).strip())
+    checkout_session = _session(str(checkout_proxy_url or proxy_url).strip())
     headers = _headers(token)
     result: dict[str, Any] = {
         "trial": {"state": "", "http": 0, "error": ""},
@@ -77,7 +91,7 @@ def probe_commerce(access_token: str, proxy_url: str = "", country: str = "DE", 
     }
     try:
         try:
-            trial_response = _request_with_retry(lambda: session.get(TRIAL_URL, headers=headers, timeout=30))
+            trial_response = _request_with_retry(lambda: promotion_session.get(TRIAL_URL, headers=headers, timeout=30))
             trial_payload, trial_error = _safe_json(trial_response)
             result["trial"] = {
                 "state": str(trial_payload.get("state") or "").strip().lower(),
@@ -95,7 +109,7 @@ def probe_commerce(access_token: str, proxy_url: str = "", country: str = "DE", 
                 "billing_details": {"country": billing_country, "currency": billing_currency},
                 "checkout_ui_mode": "custom",
             }
-            checkout_response = _request_with_retry(lambda: session.post(CHECKOUT_URL, json=checkout_body, headers=checkout_headers, timeout=45))
+            checkout_response = _request_with_retry(lambda: checkout_session.post(CHECKOUT_URL, json=checkout_body, headers=checkout_headers, timeout=45))
             checkout_payload, checkout_error = _safe_json(checkout_response)
             session_id = str(checkout_payload.get("checkout_session_id") or checkout_payload.get("session_id") or checkout_payload.get("id") or "")
             kind = (
@@ -114,4 +128,5 @@ def probe_commerce(access_token: str, proxy_url: str = "", country: str = "DE", 
             result["checkout"]["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
         return result
     finally:
-        session.close()
+        promotion_session.close()
+        checkout_session.close()

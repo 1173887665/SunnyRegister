@@ -199,6 +199,16 @@ func TestSunnyCommerceWorkerResponse(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer worker-secret" {
 			t.Fatalf("authorization = %q", got)
 		}
+		var requestBody struct {
+			PromotionProxyURL string `json:"promotion_proxy_url"`
+			CheckoutProxyURL  string `json:"checkout_proxy_url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode worker request: %v", err)
+		}
+		if requestBody.PromotionProxyURL != "http://promotion-proxy" || requestBody.CheckoutProxyURL != "http://checkout-proxy" {
+			t.Fatalf("unexpected proxy routing: %#v", requestBody)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"trial":    map[string]any{"state": "eligible", "http": 200, "error": ""},
 			"checkout": map[string]any{"kind": "oaics", "payment_methods": []string{"card", "paypal"}, "http": 200, "error": ""},
@@ -208,7 +218,7 @@ func TestSunnyCommerceWorkerResponse(t *testing.T) {
 	t.Setenv("PYTHON_WORKER_URL", worker.URL)
 	t.Setenv("PYTHON_WORKER_TOKEN", "worker-secret")
 
-	result, ok := probeSunnyCommerceViaWorker(context.Background(), "secret-at", "")
+	result, ok := probeSunnyCommerceViaWorker(context.Background(), "secret-at", "http://promotion-proxy", "http://checkout-proxy")
 	if !ok || result.Eligibility != sunnyTrialEligible || result.CheckoutKind != "oaics" {
 		t.Fatalf("unexpected result: ok=%v result=%#v", ok, result)
 	}
