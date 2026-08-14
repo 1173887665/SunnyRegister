@@ -24,6 +24,18 @@ else:
 
 
 class CheckoutAdapterTests(unittest.TestCase):
+    def test_start_checkout_maps_sunny_pool_names_to_reference_routes(self) -> None:
+        with patch.object(sunny_adapter.STORE, "create", create=True, return_value="job-3") as create:
+            result = sunny_adapter.start_checkout({
+                "token": "token",
+                "checkout_proxies": ["checkout-proxy"],
+                "promotion_proxies": ["promotion-proxy"],
+            })
+        self.assertEqual(result, "job-3")
+        options = create.call_args.args[0]
+        self.assertEqual(options["entry_proxies"], ["promotion-proxy"])
+        self.assertEqual(options["exit_proxies"], ["checkout-proxy"])
+
     def test_checkout_status_returns_ordered_sanitized_logs(self) -> None:
         token = "eyJ" + "a" * 80
         job = {

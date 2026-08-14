@@ -283,27 +283,19 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 		items := make([]any, 0, len(candidates))
 		for _, item := range candidates {
 			if item.Token == "" {
-				items = append(items, map[string]any{"email": item.Email, "session_id": item.SessionID, "status": "invalid", "error": "AT 为空、格式无效或已过期"})
+				items = append(items, map[string]any{"email": item.Email, "session_id": item.SessionID, "check_status": "invalid", "check_error": "AT 为空、格式无效或已过期", "trial_eligibility": sunnyTrialUnknown, "checkout_kind": sunnyCheckoutUnknown, "payment_methods": []string{}})
 				continue
 			}
 			probeCtx := context.WithValue(context.Background(), sunnyTrialProxyContextKey{}, checkout[0])
 			_ = promotion
 			commerce := sunnyCheckCommerce(probeCtx, item.Token)
-			eligibility, message, invalid, trialErr := checkSunnyTrialEligibility(probeCtx, item.Token)
-			if trialErr != nil {
-				message = trialErr.Error()
+			trial := normalizeSunnyTrialEligibility(commerce.Eligibility)
+			checkStatus := "checked"
+			if commerce.InvalidToken {
+				checkStatus = "invalid"
 			}
-			status := "checked"
-			if invalid {
-				status = "invalid"
-			}
-			trial := sunnyTrialUnknown
-			if eligibility {
-				trial = sunnyTrialEligible
-			} else if message != "" {
-				trial = sunnyTrialIneligible
-			}
-			items = append(items, map[string]any{"email": item.Email, "session_id": item.SessionID, "status": status, "trial_eligibility": trial, "trial_message": message, "checkout_kind": commerce.CheckoutKind, "payment_methods": commerce.PaymentMethods, "checkout_error": commerce.CheckoutError})
+			checkError := strings.Join(compactStrings(commerce.TrialError, commerce.CheckoutError), "; ")
+			items = append(items, map[string]any{"email": item.Email, "session_id": item.SessionID, "check_status": checkStatus, "check_error": checkError, "trial_eligibility": trial, "trial_message": commerce.TrialMessage, "checkout_kind": commerce.CheckoutKind, "payment_methods": commerce.PaymentMethods, "checkout_error": commerce.CheckoutError})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 		return

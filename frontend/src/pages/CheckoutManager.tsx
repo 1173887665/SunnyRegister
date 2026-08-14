@@ -68,15 +68,37 @@ function pathTone(value: unknown): BadgeTone { return ({ hosted: "blue", ph_shor
 function taskStatusLabel(value: unknown) { return ({ pending: "等待中", claimed: "已领取", running: "运行中", succeeded: "已完成", failed: "失败", cancelled: "已停止", cancel_requested: "停止中" } as Record<string, string>)[normalized(value)] || String(value || "未开始"); }
 
 function CheckoutLogFloat({ open, onToggle, task, logs, scrollRef }: { open: boolean; onToggle: () => void; task: AnyRow | null; logs: AnyRow[]; scrollRef: React.RefObject<HTMLDivElement | null> }) {
+  const [size, setSize] = useState(() => {
+    if (typeof window === "undefined") return { width: 430, height: 256 };
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("checkout.log.size") || "{}");
+      return { width: Math.max(320, Math.min(720, Number(saved.width) || 430)), height: Math.max(180, Math.min(640, Number(saved.height) || 256)) };
+    } catch { return { width: 430, height: 256 }; }
+  });
+  useEffect(() => { try { window.localStorage.setItem("checkout.log.size", JSON.stringify(size)); } catch { /* storage may be disabled */ } }, [size]);
+  function beginResize(event: React.PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const start = size;
+    const move = (current: PointerEvent) => setSize({
+      width: Math.max(320, Math.min(720, start.width + startX - current.clientX)),
+      height: Math.max(180, Math.min(640, start.height + startY - current.clientY)),
+    });
+    const stop = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", stop); };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop, { once: true });
+  }
   const progress = task?.progress_detail || {};
   const total = Number(progress.total || 0);
   const current = Number(progress.current || 0);
   const percent = total > 0 ? Math.min(100, Math.round(current * 100 / total)) : 0;
   return <div className="fixed bottom-5 right-5 z-[450] flex flex-col items-end gap-2">
-    {open && <div className="w-[min(430px,calc(100vw-2rem))] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] shadow-2xl">
+    {open && <div className="relative flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" style={{ width: size.width, height: size.height }}>
       <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2.5"><div className="flex min-w-0 items-center gap-2"><ScrollText className="h-4 w-4 shrink-0 text-[var(--accent)]" /><span className="text-sm font-bold">提链日志</span><span className="truncate text-[11px] text-[var(--text-muted)]">{taskStatusLabel(task?.status)}</span></div><button className="round-tool h-7 w-7" title="隐藏日志" onClick={onToggle}><ChevronDown className="h-4 w-4" /></button></div>
       {task && <div className="border-b border-[var(--border)] px-3 py-2"><div className="mb-1.5 flex justify-between text-[11px] text-[var(--text-muted)]"><span>{task.progress || "0/0"}</span><span>{percent}%</span></div><div className="h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700"><div className="h-full rounded-full bg-[var(--accent)] transition-[width]" style={{ width: `${percent}%` }} /></div></div>}
-      <div ref={scrollRef} className="h-64 overflow-y-auto bg-slate-950 p-3 font-mono text-[11px] leading-5 text-slate-300">{logs.length ? logs.map((item, index) => <div key={item.id || index} className="grid grid-cols-[62px_8px_minmax(0,1fr)] gap-2"><span className="text-slate-500">{String(item.created_at || "").slice(11, 19) || "--:--:--"}</span><span className={item.level === "error" ? "text-red-400" : item.level === "warning" ? "text-amber-400" : "text-emerald-400"}>●</span><span className="break-words">{item.message || item.line}</span></div>) : <div className="flex h-full items-center justify-center text-slate-500">暂无提链日志</div>}</div>
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto bg-[var(--bg-main)] p-3 font-mono text-[11px] leading-5 text-[var(--text-secondary)]">{logs.length ? logs.map((item, index) => <div key={item.id || index} className="grid grid-cols-[62px_8px_minmax(0,1fr)] gap-2"><span className="text-[var(--text-muted)]">{String(item.created_at || "").slice(11, 19) || "--:--:--"}</span><span className={item.level === "error" ? "text-red-400" : item.level === "warning" ? "text-amber-400" : "text-emerald-400"}>●</span><span className="break-words">{item.message || item.line}</span></div>) : <div className="flex h-full items-center justify-center text-[var(--text-muted)]">暂无提链日志</div>}</div>
+      <button type="button" aria-label="调整日志窗口大小" title="拖动调整日志窗口大小" className="absolute left-0 top-0 h-4 w-4 cursor-nwse-resize opacity-60 hover:opacity-100" onPointerDown={beginResize}><span className="absolute left-1 top-1 h-2 w-2 border-l-2 border-t-2 border-[var(--accent)]" /></button>
     </div>}
     <button className="inline-flex h-10 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] px-3 text-sm font-semibold shadow-lg hover:border-[var(--accent)]" title={open ? "隐藏提链日志" : "显示提链日志"} onClick={onToggle}><ScrollText className="h-4 w-4 text-[var(--accent)]" />日志{open ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}</button>
   </div>;
@@ -225,7 +247,19 @@ export default function CheckoutManager() {
     try {
       const data = await apiFetch("/sunny/checkout/precheck", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selectedRows.map((x) => Number(x.id)) : [], external_ats: systemAT ? [] : selectedRows.map((x) => x.token), checkout_proxies: checkoutProxies, promotion_proxies: promotionProxies }) });
       const byEmail = new Map((data.items || []).map((item: AnyRow) => [item.email, item]));
-      const apply = (old: AnyRow[]) => old.map((row) => { const found = byEmail.get(row.email) as AnyRow | undefined; return found ? { ...row, ...found } : row; });
+      const apply = (old: AnyRow[]) => old.map((row) => {
+        const found = byEmail.get(row.email) as AnyRow | undefined;
+        if (!found) return row;
+        return {
+          ...row,
+          trial_eligibility: found.trial_eligibility,
+          trial_message: found.trial_message,
+          checkout_kind: found.checkout_kind,
+          payment_methods: found.payment_methods,
+          checkout_error: found.checkout_error,
+          commerce_check_error: found.check_error || found.checkout_error,
+        };
+      });
       if (systemAT) setSessions(apply); else setExternalRows(apply);
       setNotice("试用资格与 Checkout 检测完成");
     } catch (error: any) { setNotice(error.message || String(error)); } finally { setPrecheckBusy(false); }
@@ -280,7 +314,7 @@ export default function CheckoutManager() {
     } catch (error: any) { setNotice(error.message || String(error)); } finally { setCheckoutBusy(false); }
   }
   const statusLabel = task ? `${task.status} · ${task.progress || ""}` : selectedCount ? `已选择 ${selectedCount} 个账户` : "未选择账户";
-  return <div className="space-y-5">
+  return <div className="checkout-manager space-y-5">
     {notice && <div className="fixed right-5 top-20 z-[500] rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white shadow-xl">{notice}</div>}
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5 shadow-sm"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--accent)]">PAYMENT ROUTER</p><h1 className="mt-1 text-2xl font-black">提链管理</h1><p className="mt-2 text-sm text-[var(--text-secondary)]">为已注册 ChatGPT 账户批量提取支付链接、跳转地址和支付二维码。</p></div><div className="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--text-muted)]">{statusLabel}</div></div></section>
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5"><div className="grid gap-4 md:grid-cols-2"><label><span className="mb-2 block text-sm font-semibold">Checkout 代理池 <b className="text-red-500">*</b></span><textarea className="min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)]" value={checkoutProxies} onChange={(e) => setCheckoutProxies(e.target.value)} placeholder="每行一个代理，支持 http://、https://、socks5://" /></label><label><span className="mb-2 block text-sm font-semibold">Promotion 代理池 <b className="text-red-500">*</b></span><textarea className="min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)]" value={promotionProxies} onChange={(e) => setPromotionProxies(e.target.value)} placeholder="每行一个代理，支持 http://、https://、socks5://" /></label></div><p className="mt-3 text-xs text-[var(--text-muted)]">每个代理池最多 500 条。每轮重试会重新选择代理组合；PIX 与 MoMo 按参考路径复用 Checkout 线路。</p></section>

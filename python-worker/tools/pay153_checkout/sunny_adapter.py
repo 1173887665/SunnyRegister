@@ -32,11 +32,11 @@ def start_checkout(payload: dict[str, Any]) -> str:
         "currency": str(payload.get("currency") or "USD").upper(),
         "checkout_country": str(payload.get("country") or "US").upper(),
         "checkout_currency": str(payload.get("currency") or "USD").upper(),
-        # SunnyRegister's Checkout pool is the reference engine entry pool;
-        # Promotion is its second/exit pool. Provider-specific routing remains
-        # owned by the reference engine.
-        "entry_proxies": list(payload.get("checkout_proxies") or []),
-        "exit_proxies": list(payload.get("promotion_proxies") or []),
+        # pay153's entry pool is the Promotion route and its exit pool is the
+        # billing/Checkout route. SunnyRegister exposes those pools in the
+        # opposite order, so keep the translation at this adapter boundary.
+        "entry_proxies": list(payload.get("promotion_proxies") or []),
+        "exit_proxies": list(payload.get("checkout_proxies") or []),
         "use_promo": bool(payload.get("use_promo")),
         "promo_campaign": str(payload.get("promo_campaign") or ""),
         "promo_code": str(payload.get("promo_code") or ""),
@@ -53,8 +53,8 @@ def start_checkout(payload: dict[str, Any]) -> str:
         "paired_proxy_rotation": True,
         "use_sen": True,
         "use_so": True,
-        "entry_proxy_country": str(payload.get("country") or "US").upper(),
-        "exit_proxy_country": str(payload.get("promo_country") or payload.get("country") or "US").upper(),
+        "entry_proxy_country": str(payload.get("promo_country") or payload.get("country") or "US").upper(),
+        "exit_proxy_country": str(payload.get("country") or "US").upper(),
     }
     if options["link_type"] in {"pix", "momo"}:
         options["exit_proxies"] = options["entry_proxies"]
