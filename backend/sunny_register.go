@@ -3093,6 +3093,7 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 		query := strings.TrimSpace(r.URL.Query().Get("q"))
 		status := normalizeSunnyProxyStatus(r.URL.Query().Get("status"))
 		country := strings.TrimSpace(r.URL.Query().Get("country"))
+		purpose := normalizeSunnyProxyPurpose(r.URL.Query().Get("purpose"))
 		db := s.db.Model(&SunnyProxy{})
 		if query != "" {
 			like := "%" + query + "%"
@@ -3100,6 +3101,9 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 		}
 		if country != "" {
 			db = db.Where("country = ?", country)
+		}
+		if purpose != "" {
+			db = db.Where("(',' || replace(lower(coalesce(purpose_tags, 'register')), ' ', '') || ',') LIKE ?", "%,"+purpose+",%")
 		}
 		switch status {
 		case "enabled":
@@ -3166,6 +3170,10 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 			writeError(w, 400, "proxy address is required")
 			return
 		}
+		purposeTags := normalizeSunnyProxyPurposes(body["purpose_tags"])
+		if len(purposeTags) == 0 {
+			purposeTags = []string{"register"}
+		}
 		enabled := true
 		if v, ok := body["enabled"]; ok {
 			enabled = asBool(v)
@@ -3173,10 +3181,11 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 		created := []map[string]any{}
 		for _, address := range addresses {
 			p := SunnyProxy{
-				Address: address,
-				Country: strings.TrimSpace(text(body["country"])),
-				Status:  fallback(normalizeSunnyProxyStatus(text(body["status"])), "enabled"),
-				Enabled: enabled,
+				Address:     address,
+				Country:     strings.TrimSpace(text(body["country"])),
+				PurposeTags: strings.Join(purposeTags, ","),
+				Status:      fallback(normalizeSunnyProxyStatus(text(body["status"])), "enabled"),
+				Enabled:     enabled,
 			}
 			if !p.Enabled {
 				p.Status = "disabled"
@@ -3243,6 +3252,11 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 			if country := strings.TrimSpace(text(body["country"])); country != "" {
 				p.Country = country
 			}
+			if _, ok := body["purpose_tags"]; ok {
+				if tags := normalizeSunnyProxyPurposes(body["purpose_tags"]); len(tags) > 0 {
+					p.PurposeTags = strings.Join(tags, ",")
+				}
+			}
 			if _, ok := body["enabled"]; ok {
 				p.Enabled = asBool(body["enabled"])
 			}
@@ -3298,6 +3312,56 @@ func normalizeSunnyProxyStatus(status string) string {
 	default:
 		return ""
 	}
+}
+
+const (
+	sunnyProxyPurposeRegister = "register"
+	sunnyProxyPurposeCommerce = "commerce"
+)
+
+func normalizeSunnyProxyPurpose(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "register", "registration", "login", "注册", "登录":
+		return sunnyProxyPurposeRegister
+	case "commerce", "trial", "checkout", "account_check", "账户检测", "商业检测":
+		return sunnyProxyPurposeCommerce
+	default:
+		return ""
+	}
+}
+
+func normalizeSunnyProxyPurposes(value any) []string {
+	values := []string{}
+	switch raw := value.(type) {
+	case []any:
+		for _, item := range raw {
+			if purpose := normalizeSunnyProxyPurpose(text(item)); purpose != "" && !containsString(values, purpose) {
+				values = append(values, purpose)
+			}
+		}
+	case []string:
+		for _, item := range raw {
+			if purpose := normalizeSunnyProxyPurpose(item); purpose != "" && !containsString(values, purpose) {
+				values = append(values, purpose)
+			}
+		}
+	default:
+		for _, item := range strings.FieldsFunc(text(value), func(r rune) bool { return r == ',' || r == ';' || r == '|' }) {
+			if purpose := normalizeSunnyProxyPurpose(item); purpose != "" && !containsString(values, purpose) {
+				values = append(values, purpose)
+			}
+		}
+	}
+	return values
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeSunnyProxyAddress(raw string) string {
@@ -3379,8 +3443,12 @@ func sunnyProxyDisplayStatus(p SunnyProxy) string {
 }
 
 func sunnyProxyJSON(p SunnyProxy) map[string]any {
+	tags := normalizeSunnyProxyPurposes(p.PurposeTags)
+	if len(tags) == 0 {
+		tags = []string{sunnyProxyPurposeRegister}
+	}
 	return map[string]any{
-		"id": p.ID, "address": p.Address, "country": p.Country, "status": sunnyProxyDisplayStatus(p), "status_key": normalizeSunnyProxyStatus(p.Status),
+		"id": p.ID, "address": p.Address, "country": p.Country, "purpose_tags": tags, "status": sunnyProxyDisplayStatus(p), "status_key": normalizeSunnyProxyStatus(p.Status),
 		"enabled": p.Enabled, "last_check_ok": p.LastCheckOK, "latency_ms": p.LatencyMS, "last_error": p.LastError,
 		"last_checked_at": nullableTime(p.LastCheckedAt != nil, pointerTime(p.LastCheckedAt)), "created_at": formatTime(p.CreatedAt), "updated_at": formatTime(p.UpdatedAt),
 	}
@@ -4656,7 +4724,10 @@ func (s *Server) sunnyValidateProxyForRegisterTask() error {
 		return nil
 	}
 	var n int64
-	s.db.Model(&SunnyProxy{}).Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).Count(&n)
+	s.db.Model(&SunnyProxy{}).
+		Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
+		Where("(',' || replace(lower(coalesce(purpose_tags, 'register')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%").
+		Count(&n)
 	if n <= 0 {
 		stats := s.sunnyProxyStats()
 		return fmt.Errorf("proxy config is enabled but no checked usable proxy is available: total=%d enabled=%d disabled=%d invalid=%d", stats["total"], stats["enabled"], stats["disabled"], stats["invalid"])
@@ -4786,6 +4857,7 @@ func (s *Server) sunnyTaskProxySnapshot(payload map[string]any) map[string]any {
 	registerProxy := normalizeSunnyProxyAddress(text(cfg["register_proxy"]))
 	var proxies []SunnyProxy
 	s.db.Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
+		Where("(',' || replace(lower(coalesce(purpose_tags, 'register')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%").
 		Order("updated_at desc, id asc").Find(&proxies)
 	proxyPool := make([]string, 0, len(proxies))
 	proxyIDs := make([]uint, 0, len(proxies))

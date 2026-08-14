@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"net/url"
@@ -191,19 +192,21 @@ func sunnyCommerceErrorMessage(payload map[string]any, raw []byte) string {
 }
 
 func probeSunnyTrial(ctx context.Context, client *http.Client, accessToken string) (string, string, string, bool, error) {
- method := http.MethodGet
- var body io.Reader
- if strings.HasPrefix(strings.TrimSpace(sunnyTrialCheckEndpoint), "http://127.0.0.1:") || strings.HasPrefix(strings.TrimSpace(sunnyTrialCheckEndpoint), "http://localhost:") {
-  method = http.MethodPost
-  payload, _ := json.Marshal(map[string]string{"access_token": strings.TrimSpace(accessToken)})
-  body = bytes.NewReader(payload)
- }
- req, err := http.NewRequestWithContext(ctx, method, sunnyTrialCheckEndpoint, body)
+	method := http.MethodGet
+	var body io.Reader
+	if strings.HasPrefix(strings.TrimSpace(sunnyTrialCheckEndpoint), "http://127.0.0.1:") || strings.HasPrefix(strings.TrimSpace(sunnyTrialCheckEndpoint), "http://localhost:") {
+		method = http.MethodPost
+		payload, _ := json.Marshal(map[string]string{"access_token": strings.TrimSpace(accessToken)})
+		body = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, sunnyTrialCheckEndpoint, body)
 	if err != nil {
 		return sunnyTrialUnknown, "", "", false, err
 	}
- sunnyCommerceHeaders(req, accessToken)
- if method == http.MethodPost { req.Header.Set("Content-Type", "application/json") }
+	sunnyCommerceHeaders(req, accessToken)
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return sunnyTrialUnknown, "", "", false, fmt.Errorf("连接 ChatGPT 试用接口失败: %w", err)
@@ -220,8 +223,14 @@ func probeSunnyTrial(ctx context.Context, client *http.Client, accessToken strin
 	if resp.StatusCode != http.StatusOK {
 		return sunnyTrialUnknown, "", message, false, fmt.Errorf("ChatGPT 试用接口返回 HTTP %d: %s", resp.StatusCode, fallback(message, "无法确认试用资格"))
 	}
- state := strings.ToLower(strings.TrimSpace(text(payload["state"])))
- if eligible, ok := payload["eligible"].(bool); ok { if eligible { state = "eligible" } else { state = "ineligible" } }
+	state := strings.ToLower(strings.TrimSpace(text(payload["state"])))
+	if eligible, ok := payload["eligible"].(bool); ok {
+		if eligible {
+			state = "eligible"
+		} else {
+			state = "ineligible"
+		}
+	}
 	switch state {
 	case "eligible":
 		return sunnyTrialEligible, state, fallback(message, "该账户有 ChatGPT Plus 0 元试用资格"), false, nil
@@ -556,7 +565,7 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 			for candidate := range jobs {
 				outcome := sunnyTrialResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, SkipReason: candidate.SkipReason, Error: candidate.Error}
 				if outcome.SkipReason == "" && outcome.Error == "" {
-					trialCtx := context.WithValue(context.Background(), sunnyTrialProxyContextKey{}, s.sunnyMailboxProxyURL())
+					trialCtx := context.WithValue(context.Background(), sunnyTrialProxyContextKey{}, s.sunnyCommerceProxyURL(candidate.Email))
 					commerce := sunnyCheckCommerce(trialCtx, candidate.AccessToken)
 					outcome.Eligibility = commerce.Eligibility
 					outcome.TrialState = commerce.TrialState
@@ -671,6 +680,32 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 	}
 	result["items"] = items
 	s.completeSunnyTrialTask(task, result)
+}
+
+// sunnyCommerceProxyURL keeps trial, Checkout and payment-method checks on a
+// dedicated healthy proxy when one is explicitly tagged for account checks.
+// An empty result intentionally preserves the direct-egress fallback.
+func (s *Server) sunnyCommerceProxyURL(accountKey string) string {
+	var proxies []SunnyProxy
+	query := "(',' || replace(lower(coalesce(purpose_tags, 'register')), ' ', '') || ',') LIKE ?"
+	if err := s.db.Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
+		Where(query, "%,"+sunnyProxyPurposeCommerce+",%").
+		Order("updated_at desc, id asc").Find(&proxies).Error; err != nil || len(proxies) == 0 {
+		return ""
+	}
+	country, _ := sunnyCheckoutBilling()
+	matched := make([]SunnyProxy, 0, len(proxies))
+	for _, proxy := range proxies {
+		if strings.EqualFold(strings.TrimSpace(proxy.Country), country) {
+			matched = append(matched, proxy)
+		}
+	}
+	if len(matched) > 0 {
+		proxies = matched
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(strings.ToLower(strings.TrimSpace(accountKey))))
+	return normalizeSunnyProxyAddress(proxies[int(hash.Sum32())%len(proxies)].Address)
 }
 
 func (s *Server) failSunnyTrialTask(task *Task, message string) {

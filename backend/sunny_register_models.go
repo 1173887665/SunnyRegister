@@ -69,6 +69,7 @@ type SunnyProxy struct {
 	ID            uint       `gorm:"primaryKey" json:"id"`
 	Address       string     `gorm:"type:text;index" json:"address"`
 	Country       string     `gorm:"index;size:80" json:"country"`
+	PurposeTags   string     `gorm:"type:text;default:'register'" json:"purpose_tags"`
 	Status        string     `gorm:"index;default:enabled" json:"status"`
 	Enabled       bool       `gorm:"default:true" json:"enabled"`
 	LastCheckOK   bool       `gorm:"default:false" json:"last_check_ok"`
