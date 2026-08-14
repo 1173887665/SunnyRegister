@@ -2746,3 +2746,258 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
     flex:1 1 100% !important;
   }
 }
+
+/* Audit page visual alignment: use the same glass surfaces and controls as the
+   rest of the application in both light and dark themes. */
+.audit-page {
+  gap: 16px;
+  min-width: 0;
+}
+.audit-heading {
+  align-items: center;
+  padding: 2px 2px 4px;
+}
+.audit-heading h1 {
+  color: var(--text-primary);
+  font-size: 30px;
+  letter-spacing: 0;
+}
+.audit-heading p {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.audit-retention {
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: var(--surface-glow);
+}
+.audit-retention label {
+  gap: 4px;
+  padding: 0 2px;
+  color: var(--text-muted);
+}
+.audit-retention select,
+.audit-actions-right > select {
+  height: 38px;
+  border-radius: 8px;
+  background: var(--bg-input);
+}
+.audit-retention button,
+.audit-actions button,
+.audit-icon-action,
+.audit-reset {
+  min-height: 38px;
+  height: 38px;
+  border-radius: 8px;
+}
+.audit-stats {
+  gap: 12px;
+}
+.audit-stats > div {
+  position: relative;
+  min-height: 88px;
+  overflow: hidden;
+  border-color: var(--border);
+  border-radius: 8px;
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--bg-card) 88%, var(--accent) 12%),
+    color-mix(in srgb, var(--bg-card) 90%, var(--accent-2) 10%));
+  box-shadow: var(--surface-glow);
+}
+.audit-stats > div::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+  content: "";
+}
+.audit-stats span {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.audit-stats strong {
+  color: var(--text-primary);
+  font-size: 28px;
+  font-variant-numeric: tabular-nums;
+}
+.audit-toolbar {
+  gap: 12px;
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: var(--surface-glow);
+}
+.audit-search input,
+.audit-filter-field input,
+.audit-filter-field select {
+  height: 40px;
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+.audit-search input:focus,
+.audit-filter-field input:focus,
+.audit-filter-field select:focus,
+.audit-retention select:focus,
+.audit-actions-right > select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.audit-filter-field {
+  gap: 5px;
+  color: var(--text-muted);
+  font-weight: 750;
+}
+.audit-reset {
+  color: var(--text-secondary);
+  background: var(--bg-input);
+}
+.audit-reset:hover,
+.audit-icon-action:hover,
+.audit-view:hover {
+  border-color: var(--accent-edge);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.audit-actions {
+  min-height: 42px;
+}
+.audit-select-all,
+.audit-selection,
+.audit-icon-action,
+.audit-view,
+.audit-pagination button {
+  border-color: var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+}
+.audit-select-all {
+  height: 38px;
+  border-radius: 8px;
+  box-shadow: var(--surface-glow);
+}
+.audit-select-all svg:not(.animate-spin) {
+  color: var(--accent);
+}
+.audit-selection {
+  height: 36px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--text-secondary);
+}
+.audit-table-wrap {
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: var(--surface-glow);
+}
+.audit-table th {
+  height: 46px;
+  border-bottom-color: var(--border);
+  background: color-mix(in srgb, var(--bg-card) 86%, var(--accent) 14%);
+  color: var(--text-secondary);
+}
+.audit-table td {
+  height: 64px;
+  border-bottom-color: var(--border-soft);
+  color: var(--text-secondary);
+}
+.audit-table tbody tr:hover,
+.audit-table tbody tr:hover td:last-child {
+  background: var(--bg-hover);
+}
+.audit-table th:last-child {
+  background: color-mix(in srgb, var(--bg-card) 86%, var(--accent) 14%);
+}
+.audit-table td b {
+  color: var(--text-primary);
+}
+.audit-table td small {
+  color: var(--text-muted);
+}
+.audit-result {
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+.audit-result.failed,
+.audit-result.error {
+  background: rgba(239, 68, 68, .12);
+  color: #f87171;
+}
+.audit-result.warning {
+  background: rgba(245, 158, 11, .14);
+  color: #fbbf24;
+}
+.audit-view {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+}
+.audit-pagination {
+  min-height: 58px;
+  border-top-color: var(--border);
+}
+.audit-pagination select {
+  height: 34px;
+  border-radius: 8px;
+  background: var(--bg-input);
+}
+.audit-pagination button:first-child,
+.audit-pagination button:last-child {
+  border-radius: 8px;
+}
+.audit-toast,
+.audit-export-progress,
+.audit-modal {
+  border-color: var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: var(--surface-glow);
+}
+.audit-toast {
+  color: var(--accent-strong);
+}
+.audit-toast.fail {
+  color: #f87171;
+}
+.audit-modal header,
+.audit-modal footer {
+  border-color: var(--border);
+}
+.audit-modal header button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.audit-modal pre {
+  border-color: var(--border);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+}
+.audit-page input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+@media (max-width: 700px) {
+  .audit-heading h1 {
+    font-size: 24px;
+  }
+  .audit-retention {
+    align-items: stretch;
+    padding: 8px;
+  }
+  .audit-retention label,
+  .audit-retention button {
+    flex: 1 1 0;
+  }
+  .audit-stats > div {
+    min-height: 76px;
+    padding: 15px 16px;
+  }
+  .audit-stats strong {
+    font-size: 23px;
+  }
+}
