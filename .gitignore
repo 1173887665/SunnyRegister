@@ -30,6 +30,7 @@ backend/static/assets/
 backend/static/index.html
 frontend/dist/
 frontend/node_modules/
+**/node_modules/
 frontend/.vite/
 frontend/coverage/
 frontend/tsconfig.tsbuildinfo

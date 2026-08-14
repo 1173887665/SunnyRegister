@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tools.pay153_checkout.sentinel_fallback import resolve_payment_sentinel_headers
+from tools.pay153_checkout.sentinel_token import SentinelVMError
 
 
 async def sentinel_success(*_args, **_kwargs) -> dict[str, str]:
@@ -65,3 +66,22 @@ def test_fallback_does_not_hide_checkout_api_errors() -> None:
             "did",
             allow_fallback=True,
         )
+
+
+def test_sentinel_vm_error_is_available_to_the_retry_log() -> None:
+    async def vm_failure(*_args, **_kwargs) -> dict[str, str]:
+        raise SentinelVMError("Sentinel Node VM exited with code 1: Cannot find module 'jsdom'")
+
+    logs: list[str] = []
+    headers = resolve_payment_sentinel_headers(
+        vm_failure,
+        "proxy",
+        "chatgpt_checkout",
+        "device",
+        "did",
+        allow_fallback=True,
+        log=logs.append,
+    )
+
+    assert headers == {}
+    assert "Cannot find module 'jsdom'" in logs[0]

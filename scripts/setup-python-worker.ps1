@@ -60,4 +60,16 @@ Invoke-Native $VenvPython @("-m", "pip", "install", "-r", (Join-Path $WorkerDir 
 Invoke-Native $VenvPython @("-m", "playwright", "install", "chromium")
 Invoke-Native $VenvPython @("-m", "camoufox", "fetch")
 
+$SentinelDir = Join-Path $WorkerDir "tools\pay153_checkout"
+if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
+  throw "npm was not found. Sentinel proof generation requires Node.js 18+ and jsdom."
+}
+Push-Location $SentinelDir
+try {
+  Invoke-Native "npm.cmd" @("ci", "--omit=dev")
+  Invoke-Native "node" @("-e", "require('jsdom')")
+} finally {
+  Pop-Location
+}
+
 Write-Host "Python Worker venv is ready: $VenvDir"

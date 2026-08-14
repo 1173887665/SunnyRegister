@@ -1,0 +1,12 @@
+{
+  "name": "sunnyregister-sentinel-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Node runtime dependencies for the bundled Sentinel VM",
+  "dependencies": {
+    "jsdom": "24.1.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

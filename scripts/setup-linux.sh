@@ -54,6 +54,12 @@ fi
 python-worker/.venv/bin/python -m camoufox fetch
 
 (
+  cd python-worker/tools/pay153_checkout
+  npm ci --omit=dev
+  node -e "require('jsdom')"
+)
+
+(
   cd frontend
   npm ci
   npm run build

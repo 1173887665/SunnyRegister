@@ -28,6 +28,10 @@ from typing import Optional
 from curl_cffi import requests
 
 
+class SentinelVMError(RuntimeError):
+    """Raised when the bundled Node Sentinel VM cannot execute a challenge."""
+
+
 # ============================================================
 # FNV-1a 32-bit Hash (与 SDK 中一致)
 # ============================================================
@@ -620,23 +624,28 @@ def _run_vm_bundle_via_node(chat_req: dict, xor_key: str, flow: str = "oauth_cre
             cwd=os.path.dirname(os.path.abspath(__file__)),
         )
 
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip().replace("\r", " ").replace("\n", " ")
+            raise SentinelVMError(
+                f"Sentinel Node VM exited with code {result.returncode}: {detail[:500] or 'no diagnostic output'}"
+            )
+
         # 从输出中提取 JSON_OUTPUT
         output = result.stdout
         marker = "=== JSON_OUTPUT ==="
         if marker in output:
             json_str = output[output.index(marker) + len(marker):].strip()
-            data = json.loads(json_str)
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError as exc:
+                raise SentinelVMError(f"Sentinel Node VM returned invalid JSON: {exc}") from exc
             return data if isinstance(data, dict) else None
-        else:
-            if result.stderr:
-                print(f"    [SENTINEL] Node.js stderr: {result.stderr[:200]}")
-            return None
+        detail = (result.stderr or output or "").strip().replace("\r", " ").replace("\n", " ")
+        raise SentinelVMError(
+            f"Sentinel Node VM produced no JSON_OUTPUT: {detail[:500] or 'no diagnostic output'}"
+        )
     except subprocess.TimeoutExpired:
-        print("    [SENTINEL] Node.js VM timeout")
-        return None
-    except Exception as e:
-        print(f"    [SENTINEL] Node.js VM error: {e}")
-        return None
+        raise SentinelVMError("Sentinel Node VM timed out after 30 seconds") from None
     finally:
         try:
             os.unlink(input_file)

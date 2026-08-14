@@ -25,7 +25,8 @@ def resolve_payment_sentinel_headers(
         ))
     except RuntimeError as exc:
         message = str(exc)
-        if not allow_fallback or not message.startswith("Sentinel token generation failed"):
+        fallbackable = message.startswith("Sentinel token generation failed") or message.startswith("Sentinel Node VM")
+        if not allow_fallback or not fallbackable:
             raise
         log(
             "PayPal Sentinel 完整证明未生成，按参考流程降级为不携带 Sentinel 头继续请求："
