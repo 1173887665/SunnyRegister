@@ -3194,6 +3194,9 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 				p.Enabled = false
 				p.LastCheckOK = false
 			}
+			if p.Enabled {
+				applySunnyProxyCheck(&p, checkSunnyProxy(address))
+			}
 			if err := s.db.Create(&p).Error; err != nil {
 				writeError(w, 400, err.Error())
 				return

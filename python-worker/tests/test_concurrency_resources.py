@@ -31,17 +31,12 @@ class ProxySnapshotTests(unittest.TestCase):
         self.assertEqual(second, "socks5://user:pass@two.example:2000")
         self.assertEqual(wrapped, first)
 
-    def test_failed_proxy_is_invalidated_before_rotating_to_next_candidate(self) -> None:
+    def test_failed_proxy_rotates_without_mutating_pool_state(self) -> None:
         class FakeDB:
             def __init__(self) -> None:
-                self.invalidated: list[tuple[int, str, str, int]] = []
                 self.events: list[tuple] = []
 
             def proxy_is_usable(self, proxy_id: int) -> bool:
-                return True
-
-            def mark_proxy_invalid(self, proxy_id: int, address: str, error: str, latency_ms: int = 0) -> bool:
-                self.invalidated.append((proxy_id, address, error, latency_ms))
                 return True
 
             def event(self, *args, **kwargs) -> None:
@@ -70,47 +65,8 @@ class ProxySnapshotTests(unittest.TestCase):
         ])
         self.assertEqual(selected["register"], "http://one.example:1000")
         self.assertEqual(selected["proxy_id"], 11)
-        self.assertEqual(db.invalidated, [(12, "http://two.example:2000", "wrong version number", 25)])
-        self.assertTrue(any("已置为失效并切换下一条" in str(args[0]) for args, _kwargs in db.events))
-
-
-class ProxyPersistenceTests(unittest.TestCase):
-    def test_mark_proxy_invalid_updates_pool_status(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database = Path(directory) / "sunny.db"
-            conn = sqlite3.connect(database)
-            conn.execute(
-                """create table sunny_proxies (
-                    id integer primary key,
-                    address text,
-                    status text,
-                    enabled integer,
-                    last_check_ok integer,
-                    latency_ms integer,
-                    last_error text,
-                    last_checked_at datetime,
-                    updated_at datetime
-                )"""
-            )
-            conn.execute(
-                "insert into sunny_proxies(id,address,status,enabled,last_check_ok) values (7,'http://proxy.example:8080','enabled',1,1)"
-            )
-            conn.commit()
-            conn.close()
-
-            with patch.dict(os.environ, {"ACCOUNT_MANAGER_DATABASE_URL": str(database)}):
-                db = SunnyDB("test-task", ensure_schema=False)
-                try:
-                    self.assertTrue(db.mark_proxy_invalid(7, "", "TLS failed", 91))
-                    row = db.conn.execute("select * from sunny_proxies where id=7").fetchone()
-                finally:
-                    db.close()
-
-        self.assertEqual(row["status"], "invalid")
-        self.assertEqual(row["enabled"], 0)
-        self.assertEqual(row["last_check_ok"], 0)
-        self.assertEqual(row["latency_ms"], 91)
-        self.assertEqual(row["last_error"], "TLS failed")
+        self.assertFalse(any("已置为失效" in str(args[0]) or "invalid" in str(args[0]).lower() for args, _kwargs in db.events))
+        self.assertTrue(any("不修改代理池状态" in str(args[0]) for args, _kwargs in db.events))
 
 
 class PhoneReservationTests(unittest.TestCase):

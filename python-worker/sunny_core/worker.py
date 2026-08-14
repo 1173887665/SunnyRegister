@@ -347,7 +347,6 @@ def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, sl
     for attempt, candidate in enumerate(candidates, start=1):
         proxy_id = int(candidate.get("id") or 0)
         candidate_proxy = str(candidate.get("register") or "")
-        stored_address = str(candidate.get("address") or candidate_proxy)
         if proxy_id > 0 and not db.proxy_is_usable(proxy_id):
             db.event(
                 f"[{email}] [代理] 跳过已被其他任务标记为失效的代理：{redact_proxy_url(candidate_proxy)}",
@@ -365,17 +364,11 @@ def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, sl
             return selected
         err = str(check.get("error") or "unknown error")
         failures.append(f"{redact_proxy_url(candidate_proxy)}: {err}")
-        marked_invalid = db.mark_proxy_invalid(
-            proxy_id,
-            stored_address,
-            err,
-            int(check.get("latency_ms") or 0),
-        )
-        transition = "已置为失效并切换下一条" if marked_invalid else "无法回写代理池状态，继续切换下一条"
+        transition = "仅本次跳过并切换下一条，不修改代理池状态"
         db.event(
             f"[{email}] [代理] 代理无法建立到 chatgpt.com:443 的 HTTPS 隧道，{transition}：{redact_proxy_url(candidate_proxy)}；原因：{err}",
             "warning",
-            detail={"email": email, "scope": "selected", "proxy": candidate_proxy, "proxy_id": proxy_id, "proxy_mode": "proxy_pool", "proxy_precheck": check, "proxy_attempt": attempt, "proxy_invalidated": marked_invalid},
+            detail={"email": email, "scope": "selected", "proxy": candidate_proxy, "proxy_id": proxy_id, "proxy_mode": "proxy_pool", "proxy_precheck": check, "proxy_attempt": attempt, "proxy_pool_status_unchanged": True},
         )
 
     local_proxy = proxies.get("local_proxy", "")

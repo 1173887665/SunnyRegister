@@ -1079,26 +1079,6 @@ class SunnyDB:
             and int(row["last_check_ok"] or 0) == 1
         )
 
-    def mark_proxy_invalid(self, proxy_id: int, address: str, error: str, latency_ms: int = 0) -> bool:
-        timestamp = now_sql()
-        detail = str(error or "proxy target HTTPS tunnel check failed")[:2000]
-        params: list[Any] = [max(0, int(latency_ms or 0)), detail, timestamp, timestamp]
-        if proxy_id > 0:
-            where, target = "id=?", proxy_id
-        elif str(address or "").strip():
-            where, target = "address=?", str(address).strip()
-        else:
-            return False
-        cursor = self.conn.execute(
-            f"""update sunny_proxies
-            set status='invalid', enabled=0, last_check_ok=0, latency_ms=?,
-                last_error=?, last_checked_at=?, updated_at=?
-            where {where}""",
-            [*params, target],
-        )
-        self.conn.commit()
-        return cursor.rowcount > 0
-
     def save_chatgpt_password(self, mailbox_id: int, password: str) -> None:
         if mailbox_id <= 0 or not password:
             return
