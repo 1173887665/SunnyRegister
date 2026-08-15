@@ -621,7 +621,6 @@ func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, ch
 				}
 				if message := strings.TrimSpace(text(entry["message"])); message != "" {
 					progress := 10 + minInt(80, workerLogSequence+1)
-					s.appendTaskEventWithContext(task.ID, message, "log", "info", map[string]any{"worker_time": text(entry["time"]), "email": email, "account_id": accountID, "index": rowIndex, "progress": progress, "current_log": message}, TaskEventContext{Email: email, AccountID: accountID, Module: "checkout", Action: "checkout.progress", Scope: "account", SubjectType: "account"})
 					s.appendCheckoutProgress(task, email, accountID, rowIndex, progress, message)
 				}
 				workerLogSequence = sequence

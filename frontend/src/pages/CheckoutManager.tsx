@@ -337,11 +337,13 @@ export default function CheckoutManager() {
       const ordered = items.filter((item) => Number(item?.id || 0) > eventCursor).sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
       if (!ordered.length) return;
       eventCursor = Math.max(eventCursor, ...ordered.map((item) => Number(item.id || 0)));
-      setTaskLogs((old) => { const known = new Set(old.map((item) => Number(item.id || 0))); return [...old, ...ordered.filter((item) => !known.has(Number(item.id || 0)))]; });
+      const visibleEvents = ordered.filter((item) => !(item.type === "log" && item.detail?.action === "checkout.progress"));
+      setTaskLogs((old) => { const known = new Set(old.map((item) => Number(item.id || 0))); return [...old, ...visibleEvents.filter((item) => !known.has(Number(item.id || 0)))]; });
       setCheckoutLive((old) => {
         const next = { ...old };
         for (const item of ordered) {
           const detail = item.detail || {};
+          if (item.type === "log" && detail.action === "checkout.progress") continue;
           if (item.type !== "checkout_progress" && item.type !== "checkout_result" && !detail.email && detail.index == null) continue;
           const key = checkoutLiveKey({ email: item.email || detail.email, account_id: item.account_id || detail.account_id, index: detail.index });
           const previous = next[key] || { progress: 0, message: "等待提链任务", status: "running", logs: [] };
