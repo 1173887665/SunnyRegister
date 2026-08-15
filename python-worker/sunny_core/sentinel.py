@@ -163,6 +163,11 @@ class SentinelBrowserRuntime:
             hook = "t.token=ye,t}({});"
             replacement = "t.___n=_n,t.__Nt=Nt,t.__D=D,t.__jt=jt,t.token=ye,t}({});"
             patched = sdk_code.replace(hook, replacement) if hook in sdk_code else sdk_code
+            # Keep the SDK's own PoW state alongside its browser-proof helpers.
+            # The reference free-registration flow uses this instance for both
+            # requirements and enforcement tokens; Python-generated PoW only
+            # passes the Sentinel endpoint's shallow validation.
+            patched = patched.replace("var P=new _;", "var P=new _;globalThis.__debugP=P;")
             self._page.evaluate("code => window.eval(code)", patched)
             if self._page.evaluate("typeof window.SentinelSDK") != "object":
                 raise RuntimeError("Sentinel SDK 初始化失败")
@@ -182,6 +187,18 @@ class SentinelBrowserRuntime:
         with cls._sdk_lock:
             if cls._sdk_code:
                 return cls._sdk_code
+            bundled = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "tools", "pay153_checkout", "sentinel_sdk_full.js")
+            )
+            if os.path.isfile(bundled):
+                try:
+                    with open(bundled, "r", encoding="utf-8") as handle:
+                        code = handle.read()
+                except OSError:
+                    code = ""
+                if code:
+                    cls._sdk_code = code
+                    return code
             response = session.get(SENTINEL_SDK_URL, timeout=30)
             if int(getattr(response, "status_code", 0) or 0) >= 400:
                 raise RuntimeError(f"Sentinel SDK 获取失败: HTTP {getattr(response, 'status_code', 0)}")
@@ -203,6 +220,23 @@ class SentinelBrowserRuntime:
             return ""
         return value
 
+    def requirements_token(self) -> str:
+        """Return the real SDK requirements token for the next `/req` call."""
+        self._check_cancelled()
+        value = self._page.evaluate(
+            """async () => {
+              const runtime = window.__debugP;
+              if (!runtime || typeof runtime.getRequirementsToken !== 'function') {
+                throw new Error('Sentinel SDK requirements API unavailable');
+              }
+              return await runtime.getRequirementsToken();
+            }"""
+        )
+        token = str(value or "").strip()
+        if not token:
+            raise RuntimeError("Sentinel SDK returned an empty requirements token")
+        return token
+
     def build_headers(
         self,
         *,
@@ -216,7 +250,10 @@ class SentinelBrowserRuntime:
         result = self._page.evaluate(
             """async ({chatReq, cachedProof, flow}) => {
               const sdk = window.SentinelSDK;
-              if (typeof sdk.__D === 'function' && typeof sdk.___n === 'function') {
+              const runtime = window.__debugP;
+              if (runtime && typeof runtime.getEnforcementToken === 'function' &&
+                  typeof sdk.__D === 'function' && typeof sdk.___n === 'function') {
+                const enforcement = await runtime.getEnforcementToken(chatReq);
                 sdk.__D(chatReq, cachedProof);
                 const turnstile = chatReq.turnstile || {};
                 const observer = chatReq.so || {};
@@ -228,7 +265,7 @@ class SentinelBrowserRuntime:
                 if (!so && observer.snapshot_dx && typeof sdk.__jt === 'function') {
                   so = await sdk.__jt(observer.snapshot_dx, cachedProof);
                 }
-                return {mode: 'internal', t, so};
+                return {mode: 'internal', enforcement, t, so};
               }
               const token = await sdk.token(flow);
               const so = typeof sdk.sessionObserverToken === 'function'
@@ -252,12 +289,16 @@ class SentinelBrowserRuntime:
             if turnstile.get("required") and not t_value:
                 raise RuntimeError("Sentinel Turnstile VM 未生成 t token")
             token = {
-                "p": enforcement,
+                "p": str(result.get("enforcement") or enforcement),
                 "t": t_value,
                 "c": str(challenge_payload.get("token") or ""),
                 "id": device_id,
                 "flow": flow,
             }
+        # The SDK returns null enforcement when the server did not request a
+        # second PoW. In that case the requirements proof is the same value the
+        # official client keeps in the payload; do not emit an empty `p` field.
+        token["p"] = token.get("p") or cached_proof
         headers = {"openai-sentinel-token": json.dumps(token, separators=(",", ":"))}
         so_value = result.get("so")
         if isinstance(so_value, str):

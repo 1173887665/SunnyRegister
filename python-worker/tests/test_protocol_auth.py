@@ -202,9 +202,13 @@ def test_sentinel_device_challenge_stops_protocol_flow() -> None:
 
 def test_sentinel_protocol_strategy_uses_narrow_runtime_headers() -> None:
     class FakeRuntime:
+        def requirements_token(self):
+            return "sdk-requirements"
+
         def build_headers(self, **kwargs):
             assert kwargs["flow"] == "oauth_create_account"
             assert kwargs["device_id"] == "device-id"
+            assert kwargs["cached_proof"] == "sdk-requirements"
             return {
                 "openai-sentinel-token": "runtime-token",
                 "openai-sentinel-so-token": "observer-token",
@@ -232,6 +236,8 @@ def test_sentinel_protocol_strategy_uses_narrow_runtime_headers() -> None:
 
     assert headers["openai-sentinel-token"] == "runtime-token"
     assert headers["openai-sentinel-so-token"] == "observer-token"
+    request_body = json.loads(flow.session.requests[0][2]["data"])
+    assert request_body["p"] == "sdk-requirements"
 
 
 def test_verify_email_can_reuse_page_loaded_by_auth_redirect() -> None:

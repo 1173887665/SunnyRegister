@@ -256,6 +256,28 @@ class ProtocolRegistrationFlow:
         self._check_cancelled()
         generator = SentinelTokenGenerator(self.device_id, USER_AGENT)
         requirements_proof = generator.requirements_token()
+        runtime: SentinelBrowserRuntime | Any | None = None
+        if self.challenge_strategy == "sentinel_protocol":
+            try:
+                if self._sentinel_runtime is None:
+                    self._sentinel_runtime = SentinelBrowserRuntime(
+                        self.session,
+                        proxy_url=self.proxy_url,
+                        log=self.log,
+                        should_cancel=self.should_cancel,
+                    )
+                runtime = self._sentinel_runtime
+                sdk_requirements = getattr(runtime, "requirements_token", None)
+                if callable(sdk_requirements):
+                    requirements_proof = str(sdk_requirements() or "").strip()
+                    if not requirements_proof:
+                        raise RuntimeError("Sentinel SDK returned an empty requirements token")
+            except Exception as exc:
+                if self.should_cancel():
+                    raise
+                error = ProtocolChallengeRequired(f"Sentinel 协议运行时初始化失败: {exc}")
+                error.traffic = self.traffic.snapshot()
+                raise error from exc
         proof = requirements_proof
         response = self._request(
             "POST",
@@ -293,17 +315,12 @@ class ProtocolRegistrationFlow:
         )
         if self.challenge_strategy == "sentinel_protocol":
             try:
-                if self._sentinel_runtime is None:
-                    self._sentinel_runtime = SentinelBrowserRuntime(
-                        self.session,
-                        proxy_url=self.proxy_url,
-                        log=self.log,
-                        should_cancel=self.should_cancel,
-                    )
-                return self._sentinel_runtime.build_headers(
+                if runtime is None:
+                    runtime = self._sentinel_runtime
+                return runtime.build_headers(
                     challenge_payload=payload,
                     cached_proof=requirements_proof,
-                    enforcement=proof,
+                    enforcement="",
                     device_id=self.device_id,
                     flow=flow,
                 )

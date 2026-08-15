@@ -21,6 +21,7 @@ sdkCode = sdkCode.replace(/\\\\/g, "\\");
 // 我们在 t}({}) 前插入暴露代码
 let hookedCode = sdkCode
   .replace("t.token=ye,t}({});", "t.___n=_n,t.__Nt=Nt,t.__D=D,t.__$=$,t.token=ye,t}({});")
+  .replace("var P=new _;", "var P=new _;globalThis.__debugP=P;")
 
 // 验证替换
 if (hookedCode === sdkCode) {
@@ -72,6 +73,45 @@ try {
   console.error("SDK run error:", e.message);
   console.error(e.stack?.substring(0, 500));
 }
+
+// Protocol registration uses the real SDK for both sides of the challenge:
+// requirements token before /req, and enforcement token after /req. Keep this
+// path separate from the legacy diagnostic mode below so Pay153 callers keep
+// their existing output contract.
+const input = JSON.parse(fs.readFileSync(process.argv[2], "utf-8"));
+if (input.action === "requirements" || input.action === "solve") {
+  (async () => {
+    try {
+      if (!window.SentinelSDK || !window.__debugP) throw new Error("Sentinel SDK runtime unavailable");
+      if (input.action === "requirements") {
+        const requestP = await window.__debugP.getRequirementsToken();
+        console.log("=== JSON_OUTPUT ===");
+        console.log(JSON.stringify({ request_p: requestP }));
+        return;
+      }
+      const chatReq = input.chatReq || {};
+      const requestP = String(input.cachedProof || "").trim();
+      if (!requestP) throw new Error("missing cachedProof");
+      const finalP = await window.__debugP.getEnforcementToken(chatReq);
+      if (typeof window.SentinelSDK.__D !== "function" || typeof window.SentinelSDK.___n !== "function") {
+        throw new Error("Sentinel SDK browser proof functions unavailable");
+      }
+      window.SentinelSDK.__D(chatReq, requestP);
+      const dx = chatReq.turnstile && chatReq.turnstile.dx;
+      const t = dx ? await window.SentinelSDK.___n(chatReq, dx) : null;
+      let so = null;
+      const observer = chatReq.so || {};
+      if (observer.collector_dx && typeof window.SentinelSDK.__Nt === "function") {
+        so = await window.SentinelSDK.__Nt(observer.collector_dx);
+      }
+      console.log("=== JSON_OUTPUT ===");
+      console.log(JSON.stringify({ final_p: finalP, t, so }));
+    } catch (error) {
+      console.error(error && error.stack ? error.stack : String(error));
+      process.exitCode = 1;
+    }
+  })();
+} else {
 
 console.log("SentinelSDK:", typeof window.SentinelSDK);
 console.log("___n:", typeof window.SentinelSDK?.___n);
@@ -146,3 +186,4 @@ setTimeout(() => {
   console.error("Timeout: 30s");
   process.exit(1);
 }, 30000);
+}
