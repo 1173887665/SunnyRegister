@@ -1094,6 +1094,42 @@ def fetch_custom_checkout_session(
         raise RuntimeError(f"读取自定义 Checkout 返回非 JSON：{text[:300]}")
 
 
+def fetch_custom_checkout_session_with_retry(
+    http,
+    token: str,
+    session_id: str,
+    processor_entity: str,
+    device_id: str,
+    log=None,
+    *,
+    attempts: int = 3,
+    delay_seconds: float = 0.8,
+    require_paypal: bool = False,
+) -> dict[str, Any]:
+    """Read an OAICS session until its custom payment methods are published."""
+    last: dict[str, Any] = {}
+    total_attempts = max(1, int(attempts))
+    for attempt in range(total_attempts):
+        last = fetch_custom_checkout_session(
+            http, token, session_id, processor_entity, device_id,
+        )
+        methods = last.get("custom_payment_methods") or []
+        paypal_ready = any(
+            "paypal" in json.dumps(method, ensure_ascii=False).lower()
+            for method in methods
+        )
+        if methods and (not require_paypal or paypal_ready):
+            if attempt:
+                if log:
+                    log(f"OAICS 支付方式延迟就绪（第 {attempt + 1} 次读取）")
+            return last
+        if attempt + 1 < total_attempts:
+            if log:
+                log(f"OAICS 支付方式尚未就绪（第 {attempt + 1} 次读取）")
+            time.sleep(max(0.0, float(delay_seconds)) * (attempt + 1))
+    return last
+
+
 def submit_custom_checkout_taxes(
     http,
     token: str,
@@ -2691,8 +2727,10 @@ class JobStore:
                     return
                 if provider == "paypal":
                     self.update(job_id, percent=58, text="正在读取 OAICS PayPal 支付方式")
-                    custom_state = fetch_custom_checkout_session(
+                    custom_state = fetch_custom_checkout_session_with_retry(
                         chatgpt_http, token, session_id, custom_processor, device_id,
+                        log=lambda message: self.log(job_id, message),
+                        require_paypal=True,
                     )
                     initial_methods = custom_state.get("custom_payment_methods") or []
                     custom_amount = custom_checkout_amount_minor(custom_state)
@@ -2704,8 +2742,10 @@ class JobStore:
                             options.get("promo_campaign") or "plus-1-month-free",
                             lambda m: self.log(job_id, m), device_id=device_id,
                         )
-                        custom_state = fetch_custom_checkout_session(
+                        custom_state = fetch_custom_checkout_session_with_retry(
                             chatgpt_http, token, session_id, custom_processor, device_id,
+                            log=lambda message: self.log(job_id, message),
+                            require_paypal=True,
                         )
                         custom_amount = custom_checkout_amount_minor(custom_state)
                         custom_currency = custom_checkout_currency(custom_state) or custom_currency
@@ -2721,8 +2761,10 @@ class JobStore:
                     if tax_checkout:
                         custom_state = tax_checkout
                     else:
-                        custom_state = fetch_custom_checkout_session(
+                        custom_state = fetch_custom_checkout_session_with_retry(
                             chatgpt_http, token, session_id, custom_processor, device_id,
+                            log=lambda message: self.log(job_id, message),
+                            require_paypal=True,
                         )
                     custom_amount = custom_checkout_amount_minor(custom_state)
                     custom_currency = custom_checkout_currency(custom_state) or custom_currency

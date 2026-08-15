@@ -515,6 +515,7 @@ def fetch_elements_session(http, pk: str, session_id: str, ctx: dict, version: s
         params["customer_session_client_secret"] = customer_session_secret
     for idx, pm in enumerate(pmt):
         params[f"deferred_intent[payment_method_types][{idx}]"] = pm
+    ctx["elements_payment_method_types"] = []
     try:
         resp = http.get(f"{STRIPE_API}/v1/elements/sessions", params=params, headers=_stripe_headers(), timeout=30)
     except Exception as e:
@@ -530,6 +531,7 @@ def fetch_elements_session(http, pk: str, session_id: str, ctx: dict, version: s
     if data.get("config_id"):
         ctx["elements_session_config_id"] = data["config_id"]
     types = [s["type"] for s in data.get("payment_method_specs", []) if isinstance(s, dict) and s.get("type")]
+    ctx["elements_payment_method_types"] = types
     if types:
         ctx["payment_method_types"] = types
     diagnostic = _paypal_setup_diagnostic(data)
@@ -1257,9 +1259,25 @@ def stripe_to_paypal_redirect(
     pk = publishable_key or verify_pk(http, session_id, log)
     log("[paypal] 第 3/7 步：Stripe init")
     init_data, version, ctx = init_checkout(http, session_id, pk, profile, log)
-    if "paypal" not in (ctx.get("payment_method_types") or []):
-        raise RuntimeError(f"当前支付线路未开放 PayPal，可用方式：{', '.join(ctx.get('payment_method_types') or []) or 'card'}")
-    fetch_elements_session(http, pk, session_id, ctx, version, profile, log)
+    init_types = [str(item).lower() for item in (ctx.get("payment_method_types") or [])]
+    if "paypal" not in init_types:
+        # Some Checkout revisions publish only card/link in /init while the
+        # Elements session exposes PayPal a moment later. Probe that session
+        # before consuming an outer proxy retry.
+        probe_ctx = dict(ctx)
+        probe_ctx["payment_method_types"] = list(dict.fromkeys([*init_types, "paypal"]))
+        fetch_elements_session(http, pk, session_id, probe_ctx, version, profile, log)
+        element_types = [
+            str(item).lower() for item in (probe_ctx.get("elements_payment_method_types") or [])
+        ]
+        if "paypal" in element_types:
+            ctx = probe_ctx
+            log("[paypal] /init 未列出 PayPal，但 Elements session 已确认 PayPal 可用")
+        else:
+            available = probe_ctx.get("elements_payment_method_types") or ctx.get("payment_method_types") or []
+            raise RuntimeError(f"当前支付线路未开放 PayPal，可用方式：{', '.join(map(str, available)) or 'card'}")
+    else:
+        fetch_elements_session(http, pk, session_id, ctx, version, profile, log)
     processor_entity = processor_entity or _entity_from_return_url(ctx.get("return_url") or init_data.get("return_url") or "") or "openai_llc"
     initial_amount = ctx.get("checkout_amount")
     initial_zero = str(initial_amount).strip() in {"0", "0.0", "0.00"}
@@ -1369,7 +1387,7 @@ def stripe_to_paypal_redirect(
             # merchant approval; neither request creates a second submission.
             pre_approve_redirect = poll_paypal_redirect_light(
                 payment_http, pk, session_id, log,
-                max_attempts=1, stage="pre-approve",
+                max_attempts=2, stage="pre-approve",
             )
             if not pre_approve_redirect:
                 pre_approve_redirect = poll_redirect_after_approve(
@@ -1385,11 +1403,11 @@ def stripe_to_paypal_redirect(
             # the full payment_pages representation. Never re-confirm here.
             redirect_url = pre_approve_redirect or poll_paypal_redirect_light(
                 payment_http, pk, session_id, log,
-                max_attempts=1, stage="post-approve",
+                max_attempts=4, stage="post-approve",
             )
             if not redirect_url:
                 redirect_url = poll_redirect_after_approve(
-                    payment_http, pk, session_id, log, ctx=ctx, max_attempts=1,
+                    payment_http, pk, session_id, log, ctx=ctx, max_attempts=8,
                 )
             if not redirect_url:
                 raise RuntimeError("PayPal buyer redirect 未生成，正在废弃当前 Checkout 并更换代理重试")
