@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	htmlpkg "html"
 	"io"
@@ -369,7 +370,20 @@ func fetchMCZeroURLAPILatestMail(email, accessURL string, proxyURL string) (map[
 
 func fetchURLAPILatestMail(email, accessURL string, limit int, proxyURL string) (map[string]any, error) {
 	if urlAPIDomainStrategy(accessURL) == "mczero" {
-		return fetchMCZeroURLAPILatestMail(email, accessURL, proxyURL)
+		payload, err := fetchMCZeroURLAPILatestMail(email, accessURL, proxyURL)
+		if err == nil {
+			return payload, nil
+		}
+		var mailErr *outlookMailError
+		if errors.As(err, &mailErr) && mailErr.Terminal {
+			return nil, err
+		}
+		// The domain-specific endpoint can be temporarily unavailable or change
+		// its response shape; preserve the legacy HTML parser for all callers.
+		if fallbackPayload, fallbackErr := fetchURLAPIGenericLatestMail(email, accessURL, limit, proxyURL); fallbackErr == nil {
+			return fallbackPayload, nil
+		}
+		return nil, err
 	}
 	return fetchURLAPIGenericLatestMail(email, accessURL, limit, proxyURL)
 }
