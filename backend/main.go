@@ -36,6 +36,7 @@ type Server struct {
 	running       map[string]bool
 	runtimeMu     sync.Mutex
 	atCheckMu     sync.Mutex
+	trialCheckMu  sync.Mutex
 	maintenanceMu sync.RWMutex
 	maintenance   map[string]any
 	smsOptionsMu  sync.Mutex

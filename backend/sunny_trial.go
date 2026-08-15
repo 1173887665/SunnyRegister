@@ -583,6 +583,28 @@ func (s *Server) sunnyTrialCandidates(ids []uint) ([]sunnyTrialCandidate, error)
 	return candidates, nil
 }
 
+func (s *Server) activeSunnyTrialSessionIDs() (map[uint]bool, error) {
+	var tasks []Task
+	if err := s.db.Where("type = ? AND status NOT IN ?", sunnyTrialTaskType, []string{TaskSucceeded, TaskFailed, TaskInterrupted, TaskCancelled}).Find(&tasks).Error; err != nil {
+		return nil, err
+	}
+	active := make(map[uint]bool)
+	for _, task := range tasks {
+		payload := jsonMap(task.PayloadJSON)
+		skipped := make(map[uint]bool)
+		for _, sessionID := range uintSlice(payload["skip_session_ids"]) {
+			skipped[sessionID] = true
+		}
+		for _, sessionID := range uintSlice(payload["session_ids"]) {
+			if skipped[sessionID] {
+				continue
+			}
+			active[sessionID] = true
+		}
+	}
+	return active, nil
+}
+
 func firstUint(values ...uint) uint {
 	for _, value := range values {
 		if value != 0 {
@@ -593,14 +615,12 @@ func firstUint(values ...uint) uint {
 }
 
 func (s *Server) createSunnyTrialTask(body map[string]any) (Task, error) {
+	s.trialCheckMu.Lock()
+	defer s.trialCheckMu.Unlock()
+
 	ids := uintSlice(body["session_ids"])
 	if len(ids) == 0 {
 		return Task{}, fmt.Errorf("请选择需要检测试用资格的账户")
-	}
-	var active int64
-	s.db.Model(&Task{}).Where("type = ? AND status NOT IN ?", sunnyTrialTaskType, []string{TaskSucceeded, TaskFailed, TaskInterrupted, TaskCancelled}).Count(&active)
-	if active > 0 {
-		return Task{}, fmt.Errorf("已有试用资格检测任务正在执行，请稍候")
 	}
 	candidates, err := s.sunnyTrialCandidates(ids)
 	if err != nil {
@@ -609,7 +629,20 @@ func (s *Server) createSunnyTrialTask(body map[string]any) (Task, error) {
 	if len(candidates) == 0 {
 		return Task{}, fmt.Errorf("未找到需要检测试用资格的账户")
 	}
-	return s.createTask(sunnyTrialTaskType, "sunny", map[string]any{"session_ids": ids}, len(candidates)), nil
+	active, err := s.activeSunnyTrialSessionIDs()
+	if err != nil {
+		return Task{}, err
+	}
+	skipSessionIDs := make([]uint, 0)
+	seen := make(map[uint]bool)
+	for _, candidate := range candidates {
+		if active[candidate.SessionID] && !seen[candidate.SessionID] {
+			skipSessionIDs = append(skipSessionIDs, candidate.SessionID)
+			seen[candidate.SessionID] = true
+		}
+	}
+	payload := map[string]any{"session_ids": ids, "skip_session_ids": skipSessionIDs}
+	return s.createTask(sunnyTrialTaskType, "sunny", payload, len(candidates)), nil
 }
 
 func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
@@ -620,6 +653,15 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 	if err != nil {
 		s.failSunnyTrialTask(task, err.Error())
 		return
+	}
+	skipSessionIDs := make(map[uint]bool)
+	for _, sessionID := range uintSlice(payload["skip_session_ids"]) {
+		skipSessionIDs[sessionID] = true
+	}
+	for index := range candidates {
+		if skipSessionIDs[candidates[index].SessionID] {
+			candidates[index].SkipReason = "已有试用资格检测任务正在执行，已跳过"
+		}
 	}
 	result := map[string]any{"requested": len(candidates), "eligible": 0, "ineligible": 0, "checkout_detected": 0, "payment_detected": 0, "retried": 0, "partial": 0, "skipped": 0, "failed": 0, "items": []any{}}
 	invalidAccounts := []uint{}

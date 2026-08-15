@@ -255,6 +255,51 @@ func TestSunnyTrialRouteCreatesLocalTask(t *testing.T) {
 	}
 }
 
+func TestSunnyTrialTasksSkipSessionsAlreadyBeingChecked(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	first := prepareSunnyTrialAccount(t, s)
+
+	mailbox := SunnyMailbox{Email: "second@example.com", Status: "已注册", AccountType: "free", Enabled: true}
+	if err := s.db.Create(&mailbox).Error; err != nil {
+		t.Fatalf("create second mailbox: %v", err)
+	}
+	account := SunnyAccount{MailboxID: mailbox.ID, Email: mailbox.Email, Status: "registered", AccountType: "free", AccessToken: "second-token"}
+	if err := s.db.Create(&account).Error; err != nil {
+		t.Fatalf("create second account: %v", err)
+	}
+	second := SunnySession{AccountID: account.ID, Email: mailbox.Email, AccessToken: account.AccessToken}
+	if err := s.db.Create(&second).Error; err != nil {
+		t.Fatalf("create second session: %v", err)
+	}
+
+	firstTask, err := s.createSunnyTrialTask(map[string]any{"session_ids": []uint{first.ID}})
+	if err != nil {
+		t.Fatalf("create first trial task: %v", err)
+	}
+	secondTask, err := s.createSunnyTrialTask(map[string]any{"session_ids": []uint{first.ID, second.ID}})
+	if err != nil {
+		t.Fatalf("create overlapping trial task: %v", err)
+	}
+	secondPayload := jsonMap(secondTask.PayloadJSON)
+	if ids := uintSlice(secondPayload["skip_session_ids"]); len(ids) != 1 || ids[0] != first.ID {
+		t.Fatalf("unexpected skipped session IDs: %#v", secondPayload)
+	}
+
+	previousCheck := sunnyCheckCommerce
+	sunnyCheckCommerce = func(context.Context, string) sunnyCommerceProbeResult {
+		return sunnyCommerceProbeResult{Eligibility: sunnyTrialEligible, TrialState: sunnyTrialEligible, TrialMessage: "eligible"}
+	}
+	t.Cleanup(func() { sunnyCheckCommerce = previousCheck })
+	s.executeSunnyTrialTask(&secondTask, secondPayload)
+	result := jsonMap(secondTask.ResultJSON)
+	if intValue(result["skipped"], 0) != 1 || intValue(result["eligible"], 0) != 1 {
+		t.Fatalf("overlapping trial task did not continue with remaining session: %#v", result)
+	}
+	if secondTask.Status != TaskSucceeded || firstTask.Status != TaskPending {
+		t.Fatalf("unexpected task statuses: first=%q second=%q", firstTask.Status, secondTask.Status)
+	}
+}
+
 func TestSunnyCommerceWorkerResponse(t *testing.T) {
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/probe-commerce" || r.Method != http.MethodPost {
