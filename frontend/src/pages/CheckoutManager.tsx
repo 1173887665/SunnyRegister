@@ -345,8 +345,10 @@ export default function CheckoutManager() {
           if (item.type !== "checkout_progress" && item.type !== "checkout_result" && !detail.email && detail.index == null) continue;
           const key = checkoutLiveKey({ email: item.email || detail.email, account_id: item.account_id || detail.account_id, index: detail.index });
           const previous = next[key] || { progress: 0, message: "等待提链任务", status: "running", logs: [] };
-          const result = item.type === "checkout_result" && detail.result && typeof detail.result === "object" ? detail.result : previous.result;
-          next[key] = { progress: item.type === "checkout_result" ? 100 : Math.max(previous.progress, Number(detail.progress || 0)), message: String(detail.current_log || item.message || previous.message), status: item.type === "checkout_result" ? (result?.status === "succeeded" ? "succeeded" : "failed") : "running", result, logs: [...previous.logs, item].slice(-200) };
+          const result = item.type === "checkout_result" && detail.result && typeof detail.result === "object" ? detail.result : item.type === "checkout_result" ? previous.result : undefined;
+          const startsNewAttempt = item.type !== "checkout_result" && previous.status !== "running";
+          const logs = startsNewAttempt ? [item] : [...previous.logs, item].slice(-200);
+          next[key] = { progress: item.type === "checkout_result" ? 100 : Math.max(startsNewAttempt ? 0 : previous.progress, Number(detail.progress || 0)), message: String(detail.current_log || item.message || previous.message), status: item.type === "checkout_result" ? (result?.status === "succeeded" ? "succeeded" : "failed") : "running", result, logs };
         }
         return next;
       });
@@ -549,7 +551,13 @@ export default function CheckoutManager() {
   async function start() {
     if (!splitLines(checkoutProxies).length || !splitLines(promotionProxies).length) { setNotice("Checkout 代理池和 Promotion 代理池都必须填写"); return; }
     if (!selected.length) { setNotice("请先勾选需要提链的账户"); return; }
-    setCheckoutBusy(true); setTask(null); setTaskLogs([]); setCheckoutLive({}); setDetailKey(""); setLogOpen(true);
+    setCheckoutBusy(true); setTask(null); setTaskLogs([]); setDetailKey(""); setLogOpen(true);
+    setCheckoutLive((old) => {
+      const visibleRows = systemAT ? sessions : externalRows;
+      const currentBatchKeys = new Set(visibleRows.filter((row) => selected.includes(checkoutSelectionKey(row, systemAT))).map((row) => checkoutLiveKey(row)));
+      if (!currentBatchKeys.size) return old;
+      return Object.fromEntries(Object.entries(old).filter(([key]) => !currentBatchKeys.has(key)));
+    });
     try {
       const response = await apiFetch("/sunny/checkout", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selected : [], external_ats: systemAT ? [] : selectedExternalRows.map((x) => x.token), checkout_kinds: systemAT ? [] : selectedExternalRows.map((x) => normalized(x.checkout_kind) || "unknown"), checkout_proxies: checkoutProxies, promotion_proxies: promotionProxies, plan, link_type: linkType, country, currency, retry_count: retryCount, concurrency, use_promo: usePromo, promo_campaign: promoCampaign, promo_country: promoCountry, promo_code: promoCode, ideal_bank: idealBank, workspace_name: workspaceName, workspace_id: workspaceId, seat_quantity: seatQuantity, price_interval: priceInterval, credit_quantity: creditQuantity, pix_tax_id: pixTaxID, pix_auto_kind: pixAutoKind }) });
       const taskID = String(response.id || response.task_id);
