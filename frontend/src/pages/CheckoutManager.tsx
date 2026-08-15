@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clipboard, Download, ExternalLink, Loader2, Play, RefreshCw, ScrollText, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Clipboard, Download, ExternalLink, ListChecks, Loader2, Play, RefreshCw, ScrollText, Trash2, X } from "lucide-react";
 import { apiFetch, triggerBrowserDownload } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -176,6 +176,26 @@ function parseExternalRows(value: string) {
   });
 }
 
+function checkoutSelectionKey(row: AnyRow, systemAT: boolean) {
+  return Number(systemAT ? row.id : row.index);
+}
+
+function checkoutPageCount(total: number, pageSize: number) {
+  return Math.max(1, Math.ceil(Math.max(0, total) / Math.max(1, pageSize)));
+}
+
+function checkoutPaginationTokens(page: number, pages: number): Array<number | "..."> {
+  if (pages <= 7) return Array.from({ length: pages }, (_, index) => index + 1);
+  const tokens: Array<number | "..."> = [1];
+  const start = Math.max(2, page - 1);
+  const end = Math.min(pages - 1, page + 1);
+  if (start > 2) tokens.push("...");
+  for (let value = start; value <= end; value += 1) tokens.push(value);
+  if (end < pages - 1) tokens.push("...");
+  tokens.push(pages);
+  return tokens;
+}
+
 function QRThumb({ value, onClick }: { value: string; onClick: () => void }) {
   const [src, setSrc] = useState("");
   useEffect(() => {
@@ -238,6 +258,7 @@ export default function CheckoutManager() {
   const [precheckBusy, setPrecheckBusy] = useState(false);
   const [checkoutBusy, setCheckoutBusy] = useState(Boolean(savedTaskID));
   const [listLoading, setListLoading] = useState(false);
+  const [selectingAll, setSelectingAll] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => savedNumber(savedPreferences.pageSize, 20, 10, 100));
   const [total, setTotal] = useState(0);
@@ -358,7 +379,6 @@ export default function CheckoutManager() {
       const nextTotal = Number(data.total || 0);
       const lastPage = Math.max(1, Math.ceil(nextTotal / pageSize));
       if (page > lastPage) {
-        setSelected([]);
         setPage(lastPage);
         return;
       }
@@ -380,11 +400,15 @@ export default function CheckoutManager() {
     });
   }, [baseRows, task]);
   const listTotal = systemAT ? total : externalRows.length;
-  const pageCount = Math.max(1, Math.ceil(listTotal / pageSize));
+  const pageCount = checkoutPageCount(listTotal, pageSize);
   const pageFrom = listTotal ? (page - 1) * pageSize + 1 : 0;
   const pageTo = Math.min(page * pageSize, listTotal);
   const selectedCount = selected.length;
-  const allCurrentSelected = rows.length > 0 && selected.length === rows.length;
+  const allCurrentSelected = rows.length > 0 && rows.every((row) => selected.includes(checkoutSelectionKey(row, systemAT)));
+  const selectedExternalRows = useMemo(
+    () => externalRows.filter((row) => selected.includes(checkoutSelectionKey(row, false))),
+    [externalRows, selected],
+  );
   function switchMode(value: boolean) {
     setSystemAT(value);
     setSelected([]);
@@ -395,19 +419,51 @@ export default function CheckoutManager() {
       setTrialFilter("eligible");
     }
   }
-  function changeFilter(setter: (value: string) => void, value: string) { setter(value); setSelected([]); setPage(1); }
-  function toggleRow(index: number) { setSelected((old) => old.includes(index) ? old.filter((x) => x !== index) : [...old, index]); }
-  function toggleCurrentPage() { setSelected(allCurrentSelected ? [] : rows.map((_, index) => index)); }
-  function changePage(value: number) { setPage(Math.min(pageCount, Math.max(1, value))); setSelected([]); }
-  function changePageSize(value: number) { setPageSize(value); setPage(1); setSelected([]); }
-  function refreshRows() { setSelected([]); if (systemAT) setRefreshKey((value) => value + 1); else setExternalRows(parseExternalRows(externalText)); setNotice("账户列表已刷新"); window.setTimeout(() => setNotice(""), 1800); }
+  function changeFilter(setter: (value: string) => void, value: string) { setter(value); setPage(1); }
+  function toggleRow(row: AnyRow) {
+    const key = checkoutSelectionKey(row, systemAT);
+    setSelected((old) => old.includes(key) ? old.filter((value) => value !== key) : [...old, key]);
+  }
+  function toggleCurrentPage() {
+    const pageKeys = rows.map((row) => checkoutSelectionKey(row, systemAT));
+    setSelected((old) => allCurrentSelected
+      ? old.filter((value) => !pageKeys.includes(value))
+      : Array.from(new Set([...old, ...pageKeys])));
+  }
+  function changePage(value: number) { setPage(Math.min(pageCount, Math.max(1, value))); }
+  function changePageSize(value: number) { setPageSize(value); setPage(1); }
+  function refreshRows() { if (systemAT) setRefreshKey((value) => value + 1); else setExternalRows(parseExternalRows(externalText)); setNotice("账户列表已刷新"); window.setTimeout(() => setNotice(""), 1800); }
+  async function selectAllRows() {
+    setSelectingAll(true);
+    try {
+      if (!systemAT) {
+        setSelected(selectedExternalRows.length === externalRows.length ? [] : externalRows.map((row) => checkoutSelectionKey(row, false)));
+        setNotice(selectedExternalRows.length === externalRows.length ? "已清除全部选择" : `已选择 ${externalRows.length} 个账户`);
+        return;
+      }
+      const params = new URLSearchParams({ selection: "all" });
+      if (query) params.set("q", query);
+      if (group) params.set("group_id", group);
+      if (status) params.set("status", status);
+      if (planFilter) params.set("plan_type", planFilter);
+      if (trialFilter) params.set("trial_eligibility", trialFilter);
+      if (checkoutFilter) params.set("checkout_kind", checkoutFilter);
+      const data = await apiFetch(`/sunny/sessions?${params.toString()}`);
+      const ids = Array.from(new Set<number>((data.ids || []).map((value: any) => Number(value)).filter((value: number) => value > 0)));
+      setSelected(ids);
+      setNotice(ids.length ? `已选择 ${ids.length} 个账户` : "当前筛选没有可选账户");
+    } catch (error: any) {
+      setNotice(error.message || String(error));
+    } finally {
+      setSelectingAll(false);
+    }
+  }
   function updatePath(value: string) { setLinkType(value); const provider = providers.find((x) => x.value === value); if (provider) { setCountry(provider.country); setCurrency(provider.currency); } }
   async function precheck() {
     if (!splitLines(checkoutProxies).length || !splitLines(promotionProxies).length || !selected.length) { setNotice("请先填写两个代理池并勾选账户"); return; }
-    const selectedRows = rows.filter((_, index) => selected.includes(index));
     setPrecheckBusy(true);
     try {
-      const data = await apiFetch("/sunny/checkout/precheck", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selectedRows.map((x) => Number(x.id)) : [], external_ats: systemAT ? [] : selectedRows.map((x) => x.token), checkout_proxies: checkoutProxies, promotion_proxies: promotionProxies }) });
+      const data = await apiFetch("/sunny/checkout/precheck", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selected : [], external_ats: systemAT ? [] : selectedExternalRows.map((x) => x.token), checkout_proxies: checkoutProxies, promotion_proxies: promotionProxies }) });
       const byEmail = new Map((data.items || []).map((item: AnyRow) => [item.email, item]));
       const apply = (old: AnyRow[]) => old.map((row) => {
         const found = byEmail.get(row.email) as AnyRow | undefined;
@@ -441,9 +497,8 @@ export default function CheckoutManager() {
     if (!splitLines(checkoutProxies).length || !splitLines(promotionProxies).length) { setNotice("Checkout 代理池和 Promotion 代理池都必须填写"); return; }
     if (!selected.length) { setNotice("请先勾选需要提链的账户"); return; }
     setCheckoutBusy(true); setTask(null); setTaskLogs([]); setLogOpen(true);
-    const selectedRows = rows.filter((_, index) => selected.includes(index));
     try {
-      const response = await apiFetch("/sunny/checkout", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selectedRows.map((x) => Number(x.id)) : [], external_ats: systemAT ? [] : selectedRows.map((x) => x.token), checkout_kinds: selectedRows.map((x) => normalized(x.checkout_kind) || "unknown"), checkout_proxies: checkoutProxies, promotion_proxies: promotionProxies, plan, link_type: linkType, country, currency, retry_count: retryCount, concurrency, use_promo: usePromo, promo_campaign: promoCampaign, promo_country: promoCountry, promo_code: promoCode, ideal_bank: idealBank, workspace_name: workspaceName, workspace_id: workspaceId, seat_quantity: seatQuantity, price_interval: priceInterval, credit_quantity: creditQuantity, pix_tax_id: pixTaxID, pix_auto_kind: pixAutoKind }) });
+      const response = await apiFetch("/sunny/checkout", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selected : [], external_ats: systemAT ? [] : selectedExternalRows.map((x) => x.token), checkout_kinds: systemAT ? [] : selectedExternalRows.map((x) => normalized(x.checkout_kind) || "unknown"), checkout_proxies: checkoutProxies, promotion_proxies: promotionProxies, plan, link_type: linkType, country, currency, retry_count: retryCount, concurrency, use_promo: usePromo, promo_campaign: promoCampaign, promo_country: promoCountry, promo_code: promoCode, ideal_bank: idealBank, workspace_name: workspaceName, workspace_id: workspaceId, seat_quantity: seatQuantity, price_interval: priceInterval, credit_quantity: creditQuantity, pix_tax_id: pixTaxID, pix_auto_kind: pixAutoKind }) });
       const taskID = String(response.id || response.task_id);
       setTask(response);
       setActiveTaskID(taskID);
@@ -481,7 +536,7 @@ export default function CheckoutManager() {
       </div>
     </section>
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><span className="text-sm font-semibold">账户 AT</span><button type="button" className={`sr-switch-only ${systemAT ? "on" : ""}`} onClick={() => switchMode(!systemAT)}><span /></button><span className="text-xs text-[var(--text-muted)]">使用系统 AT</span></div>{!systemAT && <div className="flex gap-2"><button className="sr-text-btn" disabled={!selected.length} onClick={() => { const offset = (page - 1) * pageSize; const doomed = new Set(selected.map((index) => offset + index)); const tokens = splitLines(externalText).filter((_, index) => !doomed.has(index)); setExternalText(tokens.join("\n")); setSelected([]); setPage(Math.min(page, Math.max(1, Math.ceil(tokens.length / pageSize)))); }}><Trash2 className="h-4 w-4" />删除选中</button><button className="sr-text-btn" onClick={() => { setExternalText(""); setExternalRows([]); setSelected([]); setPage(1); }}><Trash2 className="h-4 w-4" />全部清空</button></div>}</div>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><span className="text-sm font-semibold">账户 AT</span><button type="button" className={`sr-switch-only ${systemAT ? "on" : ""}`} onClick={() => switchMode(!systemAT)}><span /></button><span className="text-xs text-[var(--text-muted)]">使用系统 AT</span></div>{!systemAT && <div className="flex gap-2"><button className="sr-text-btn" disabled={!selected.length} onClick={() => { const doomed = new Set(selected); const tokens = splitLines(externalText).filter((_, index) => !doomed.has(index)); setExternalText(tokens.join("\n")); setSelected([]); setPage(Math.min(page, Math.max(1, checkoutPageCount(tokens.length, pageSize)))); }}><Trash2 className="h-4 w-4" />删除选中</button><button className="sr-text-btn" onClick={() => { setExternalText(""); setExternalRows([]); setSelected([]); setPage(1); }}><Trash2 className="h-4 w-4" />全部清空</button></div>}</div>
       {systemAT ? <div className="mb-3 flex flex-nowrap gap-2 overflow-x-auto pb-1">
         <input className="h-9 w-52 shrink-0 rounded-lg border border-[var(--border)] bg-transparent px-3 text-xs outline-none focus:border-[var(--accent)]" value={query} onChange={(e) => changeFilter(setQuery, e.target.value)} placeholder="搜索邮箱" />
         <select aria-label="分组筛选" className="h-9 w-40 shrink-0 rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] px-2 text-xs" value={group} onChange={(e) => changeFilter(setGroup, e.target.value)}><option value="">全部分组</option>{groups.map((item) => <option key={item.id} value={String(item.id)}>{item.name || `分组 ${item.id}`}</option>)}</select>
@@ -492,15 +547,13 @@ export default function CheckoutManager() {
       </div> : <textarea className="mb-4 min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm" value={externalText} onChange={(e) => { setExternalText(e.target.value); setSelected([]); setPage(1); }} placeholder="每行一个 AT，支持任意数量；内容仅保存在当前浏览器本地" />}
       {task && <div className="mb-3 rounded-lg border border-[var(--border)] bg-[var(--bg-main)]/40 p-3"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="text-sm font-semibold">最近提链任务</div><div className="mt-1 text-xs text-[var(--text-muted)]">状态：{taskStatusLabel(task.status)} · 进度：{task.progress || "0/0"} · 成功 {task.success ?? task.success_count ?? 0} · 失败 {task.error_count ?? 0}</div></div>{!task.terminal && <Button variant="outline" disabled={cancelBusy || task.status === "cancel_requested"} onClick={() => void cancelTask()}>{cancelBusy || task.status === "cancel_requested" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <X className="mr-2 h-4 w-4" />}{cancelBusy || task.status === "cancel_requested" ? "停止中..." : "停止提链"}</Button>}</div>{task.terminal && <div className={`mt-2 text-xs ${task.status === "succeeded" ? "text-emerald-600" : "text-red-500"}`}>{task.status === "succeeded" ? `任务完成：成功 ${task.success ?? task.success_count ?? 0}，失败 ${task.error_count ?? 0}` : `任务结束：${task.error || "请查看下方账户结果"}`}</div>}</div>}
       <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-main)]/40 p-2">
-        <button type="button" className="sr-text-btn" disabled={!rows.length} onClick={toggleCurrentPage}><input className="pointer-events-none" type="checkbox" tabIndex={-1} checked={allCurrentSelected} readOnly />{allCurrentSelected ? "取消本页全选" : "本页全选"}</button>
-        <span className="text-xs text-[var(--text-muted)]">已选择 {selectedCount} 项</span>
-        {selectedCount > 0 && <button type="button" className="sr-link" onClick={() => setSelected([])}>清除选择</button>}
+        <div className="sr-selection-summary" aria-live="polite"><button type="button" className="sr-select-all" disabled={selectingAll || listTotal <= 0} onClick={() => void selectAllRows()}>{selectingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ListChecks className="h-3.5 w-3.5" />}<span>{selectedCount === listTotal && listTotal > 0 ? "取消全选" : "全选"}</span></button>{selectedCount > 0 && <><span className="sr-selected-count">已选择 {selectedCount} 项</span><button type="button" className="sr-clear-selection" onClick={() => setSelected([])}>清除选择</button></>}</div>
         <button type="button" className="sr-text-btn ml-auto" disabled={listLoading} onClick={refreshRows}>{listLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}刷新列表</button>
       </div>
-      <div className="relative overflow-x-auto">{listLoading && <div className="absolute inset-0 z-10 flex items-center justify-center bg-[var(--bg-shell)]/70"><Loader2 className="h-5 w-5 animate-spin text-[var(--accent)]" /></div>}<table className="sr-account-table w-full min-w-[1420px] table-fixed text-left text-xs"><colgroup><col className="w-[58px]" /><col className="w-[190px]" /><col className="w-[130px]" /><col className="w-[100px]" /><col className="w-[86px]" /><col className="w-[112px]" /><col className="w-[128px]" /><col className="w-[118px]" /><col className="w-[330px]" /><col className="w-[86px]" /><col className="w-[150px]" /></colgroup><thead className="border-b border-[var(--border)] text-[var(--text-muted)]"><tr><th className="p-2"><input type="checkbox" aria-label="本页全选" checked={allCurrentSelected} disabled={!rows.length} onChange={toggleCurrentPage} /></th><th className="p-2">邮箱</th><th className="p-2">分组</th><th className="p-2">状态</th><th className="p-2">套餐</th><th className="p-2">试用资格</th><th className="p-2">Checkout 类型</th><th className="p-2">支付路径</th><th className="p-2">支付链接</th><th className="p-2">支付二维码</th><th className="p-2">操作</th></tr></thead><tbody>{rows.length ? rows.map((row, index) => { const result = row.checkout_result || {}; const link = resultDisplayLink(result); const error = resultError(result); const failed = normalized(result.status) === "failed"; const statusValue = row.at_status || row.status; const planValue = row.plan_type; const pathValue = result.link_type; const detail = [result.plan && `套餐 ${labelFor(result.plan, planLabels)}`, result.country && `地区 ${result.country}`, result.currency && `币种 ${result.currency}`, result.checkout_amount != null && `金额 ${result.checkout_amount}`, result.payment_methods?.length && `支付方式 ${result.payment_methods.join(", ")}`, result.checkout_session_id && `会话 ${result.checkout_session_id}`, result.promo_requested != null && `优惠 ${result.promo_applied === true ? "已生效" : result.promo_applied === false ? "未生效" : "待确认"}`].filter(Boolean).join(" · "); const qrImage = resultQrImage(result); return <tr key={`${row.id || row.index || index}`} className="border-b border-[var(--border)]/60"><td className="p-2"><input type="checkbox" checked={selected.includes(index)} onChange={() => toggleRow(index)} /></td><td className="p-2"><div className="truncate" title={row.email}>{row.email || "未知邮箱"}</div></td><td className="p-2"><div className="truncate" title={row.group_name || "-"}>{row.group_name || "-"}</div></td><td className="p-2"><AccountStatusBadge value={statusValue} /></td><td className="p-2"><AccountPlanBadge value={planValue} /></td><td className="p-2"><AccountTrialValue row={row} /></td><td className="p-2"><AccountCheckoutValue row={row} /></td><td className="p-2">{pathValue ? <CompactBadge label={labelFor(pathValue, pathLabels)} tone={pathTone(pathValue)} /> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2">{link ? <button className="block w-full truncate text-left font-medium text-[var(--accent)] underline decoration-[var(--accent)]/40 underline-offset-2 hover:decoration-[var(--accent)]" title={`${link}\n${detail}\n点击复制支付链接`} onClick={() => void copy(link)}>{link}</button> : error || failed ? <div className="truncate font-medium text-red-600 dark:text-red-400" title={`提链失败：${error || "任务未返回支付链接"}`}>提链失败：{error || "任务未返回支付链接"}</div> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2">{qrImage ? <QRImageThumb src={qrImage} onClick={() => { setQrValue(result.qr_data || ""); setQrImage(qrImage); }} /> : result.qr_data ? <QRThumb value={result.qr_data} onClick={() => { setQrValue(result.qr_data); setQrImage(""); }} /> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2">{link ? <div className="flex items-center gap-1"><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="复制支付链接" onClick={() => void copy(link)}><Clipboard className="h-3 w-3" />复制</button><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="在新窗口打开支付链接" onClick={() => window.open(link, "_blank", "noopener,noreferrer")}><ExternalLink className="h-3 w-3" />打开</button></div> : <span className="text-[var(--text-muted)]">-</span>}</td></tr>; }) : <tr><td colSpan={11} className="p-10 text-center text-sm text-[var(--text-muted)]">暂无账户，请先导入或选择 AT。</td></tr>}</tbody></table></div>
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] pt-3 text-xs text-[var(--text-muted)]">
-        <div className="flex items-center gap-3"><span>显示 {pageFrom} 至 {pageTo}，共 {listTotal} 条</span><label className="flex items-center gap-1.5">每页<select className="h-8 rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] px-2" value={pageSize} onChange={(e) => changePageSize(Number(e.target.value))}>{[10, 20, 50, 100].map((value) => <option key={value} value={value}>{value}</option>)}</select></label></div>
-        <div className="flex items-center gap-2"><button type="button" className="round-tool h-8 w-8" title="上一页" disabled={page <= 1 || listLoading} onClick={() => changePage(page - 1)}><ChevronLeft className="h-4 w-4" /></button><span className="min-w-20 text-center">第 {page} / {pageCount} 页</span><button type="button" className="round-tool h-8 w-8" title="下一页" disabled={page >= pageCount || listLoading} onClick={() => changePage(page + 1)}><ChevronRight className="h-4 w-4" /></button></div>
+      <div className="relative overflow-x-auto">{listLoading && <div className="absolute inset-0 z-10 flex items-center justify-center bg-[var(--bg-shell)]/70"><Loader2 className="h-5 w-5 animate-spin text-[var(--accent)]" /></div>}<table className="sr-account-table w-full min-w-[1420px] table-fixed text-left text-xs"><colgroup><col className="w-[58px]" /><col className="w-[190px]" /><col className="w-[130px]" /><col className="w-[100px]" /><col className="w-[86px]" /><col className="w-[112px]" /><col className="w-[128px]" /><col className="w-[118px]" /><col className="w-[330px]" /><col className="w-[86px]" /><col className="w-[150px]" /></colgroup><thead className="border-b border-[var(--border)] text-[var(--text-muted)]"><tr><th className="p-2"><input type="checkbox" aria-label="本页全选" checked={allCurrentSelected} disabled={!rows.length} onChange={toggleCurrentPage} /></th><th className="p-2">邮箱</th><th className="p-2">分组</th><th className="p-2">状态</th><th className="p-2">套餐</th><th className="p-2">试用资格</th><th className="p-2">Checkout 类型</th><th className="p-2">支付路径</th><th className="p-2">支付链接</th><th className="p-2">支付二维码</th><th className="p-2">操作</th></tr></thead><tbody>{rows.length ? rows.map((row, index) => { const result = row.checkout_result || {}; const link = resultDisplayLink(result); const error = resultError(result); const failed = normalized(result.status) === "failed"; const statusValue = row.at_status || row.status; const planValue = row.plan_type; const pathValue = result.link_type; const detail = [result.plan && `套餐 ${labelFor(result.plan, planLabels)}`, result.country && `地区 ${result.country}`, result.currency && `币种 ${result.currency}`, result.checkout_amount != null && `金额 ${result.checkout_amount}`, result.payment_methods?.length && `支付方式 ${result.payment_methods.join(", ")}`, result.checkout_session_id && `会话 ${result.checkout_session_id}`, result.promo_requested != null && `优惠 ${result.promo_applied === true ? "已生效" : result.promo_applied === false ? "未生效" : "待确认"}`].filter(Boolean).join(" · "); const qrImage = resultQrImage(result); const rowKey = checkoutSelectionKey(row, systemAT); return <tr key={`${row.id || row.index || index}`} className="border-b border-[var(--border)]/60"><td className="p-2"><input type="checkbox" checked={selected.includes(rowKey)} onChange={() => toggleRow(row)} /></td><td className="p-2"><div className="truncate" title={row.email}>{row.email || "未知邮箱"}</div></td><td className="p-2"><div className="truncate" title={row.group_name || "-"}>{row.group_name || "-"}</div></td><td className="p-2"><AccountStatusBadge value={statusValue} /></td><td className="p-2"><AccountPlanBadge value={planValue} /></td><td className="p-2"><AccountTrialValue row={row} /></td><td className="p-2"><AccountCheckoutValue row={row} /></td><td className="p-2">{pathValue ? <CompactBadge label={labelFor(pathValue, pathLabels)} tone={pathTone(pathValue)} /> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2">{link ? <button className="block w-full truncate text-left font-medium text-[var(--accent)] underline decoration-[var(--accent)]/40 underline-offset-2 hover:decoration-[var(--accent)]" title={`${link}\n${detail}\n点击复制支付链接`} onClick={() => void copy(link)}>{link}</button> : error || failed ? <div className="truncate font-medium text-red-600 dark:text-red-400" title={`提链失败：${error || "任务未返回支付链接"}`}>提链失败：{error || "任务未返回支付链接"}</div> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2">{qrImage ? <QRImageThumb src={qrImage} onClick={() => { setQrValue(result.qr_data || ""); setQrImage(qrImage); }} /> : result.qr_data ? <QRThumb value={result.qr_data} onClick={() => { setQrValue(result.qr_data); setQrImage(""); }} /> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2">{link ? <div className="flex items-center gap-1"><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="复制支付链接" onClick={() => void copy(link)}><Clipboard className="h-3 w-3" />复制</button><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="在新窗口打开支付链接" onClick={() => window.open(link, "_blank", "noopener,noreferrer")}><ExternalLink className="h-3 w-3" />打开</button></div> : <span className="text-[var(--text-muted)]">-</span>}</td></tr>; }) : <tr><td colSpan={11} className="p-10 text-center text-sm text-[var(--text-muted)]">暂无账户，请先导入或选择 AT。</td></tr>}</tbody></table></div>
+      <div className="sr-pagination">
+        <div className="sr-pagination-left"><span className="sr-pagination-range">显示 {pageFrom} 至 {pageTo}，共 {listTotal} 条</span><span className="sr-page-size-label">每页:</span><select className="sr-page-size-select" value={pageSize} onChange={(e) => changePageSize(Number(e.target.value))}>{[10, 20, 50, 100].map((value) => <option key={value} value={value}>{value}</option>)}</select></div>
+        <div className="sr-pagination-actions" aria-label="pagination"><button type="button" className="sr-page-nav" title="上一页" disabled={page <= 1 || listLoading} onClick={() => changePage(page - 1)}>‹</button>{checkoutPaginationTokens(page, pageCount).map((token, index) => token === "..." ? <span key={`ellipsis-${index}`} className="sr-page-ellipsis">...</span> : <button type="button" key={token} className={`sr-page-number ${token === page ? "active" : ""}`} onClick={() => changePage(token)}>{token}</button>)}<button type="button" className="sr-page-nav" title="下一页" disabled={page >= pageCount || listLoading} onClick={() => changePage(page + 1)}>›</button></div>
       </div>
     </section>
     {(qrValue || qrImage) && <QRModal value={qrValue} image={qrImage} onClose={() => { setQrValue(""); setQrImage(""); }} />}
