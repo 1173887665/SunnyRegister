@@ -475,7 +475,19 @@ func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
 			}
 			defer func() { <-sem }()
 			token := s.checkoutCredential(credentialID, intValue(row["index"], idx))
+			email := text(row["email"])
+			accountID := uint(intValue(row["session_id"], 0))
+			rowIndex := intValue(row["index"], idx)
+			s.appendCheckoutProgress(task, email, accountID, rowIndex, 3, "已领取提链任务")
 			item := s.runSunnyCheckoutAttempt(task, payload, row, token, secret)
+			item["index"] = rowIndex
+			if accountID > 0 {
+				item["account_id"] = accountID
+			}
+			itemCopy := make(map[string]any, len(item))
+			for key, value := range item {
+				itemCopy[key] = value
+			}
 			mu.Lock()
 			result["items"] = append(result["items"].([]any), item)
 			if text(item["status"]) == "succeeded" {
@@ -488,6 +500,13 @@ func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
 			task.ErrorCount = intValue(result["failed"], 0)
 			s.db.Save(task)
 			mu.Unlock()
+			level := "info"
+			if text(item["status"]) != "succeeded" {
+				level = "warning"
+			}
+			s.appendTaskEventWithContext(task.ID, fmt.Sprintf("账户 %s 提链%s", fallback(email, fmt.Sprintf("#%d", rowIndex)), map[bool]string{true: "成功", false: "失败"}[text(item["status"]) == "succeeded"]), "checkout_result", level, map[string]any{
+				"email": email, "account_id": accountID, "index": rowIndex, "progress": 100, "result": itemCopy,
+			}, TaskEventContext{Email: email, AccountID: accountID, Module: "checkout", Action: "checkout.result", Scope: "account", SubjectType: "account"})
 		}()
 	}
 	wg.Wait()
@@ -513,27 +532,31 @@ func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
 
 func (s *Server) runSunnyCheckoutAttempt(task *Task, payload, row map[string]any, token string, secret checkoutSecret) map[string]any {
 	email := text(row["email"])
+	accountID := uint(intValue(row["session_id"], 0))
+	rowIndex := intValue(row["index"], 0)
 	if token == "" {
+		s.appendCheckoutProgress(task, email, accountID, rowIndex, 100, "AT 为空或已失效")
 		return map[string]any{"email": email, "status": "failed", "error": "AT 为空或已失效"}
 	}
-	item, err := s.requestSunnyCheckout(context.Background(), task, token, text(row["checkout_kind"]), payload, secret.Checkout, secret.Promotion)
+	item, err := s.requestSunnyCheckout(context.Background(), task, token, text(row["checkout_kind"]), payload, secret.Checkout, secret.Promotion, email, accountID, rowIndex)
 	if err != nil {
 		message := sanitizeCheckoutError(err.Error())
+		s.appendCheckoutProgress(task, email, accountID, rowIndex, 100, message)
 		s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 提链失败", email), "log", "warning", map[string]any{"email": email, "error": message})
 		return map[string]any{"email": email, "status": "failed", "error": message}
 	}
 	item["email"] = email
 	item["status"] = "succeeded"
+	s.appendCheckoutProgress(task, email, accountID, rowIndex, 100, "支付链接已提取")
 	if detectedKind := normalizeSunnyCheckoutKind(text(item["checkout_kind"])); detectedKind != sunnyCheckoutUnknown {
 		// The created Checkout session is the authoritative type for future
 		// trial checks and PayPal branch selection.
 		s.db.Model(&SunnyAccount{}).Where("email = ?", email).Update("checkout_kind", detectedKind)
 	}
-	s.appendTaskEvent(task.ID, fmt.Sprintf("账户 %s 提链成功", email), "checkout_result", "info", map[string]any{"email": email, "link_type": payload["link_type"]})
 	return item
 }
 
-func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, checkoutKind string, payload map[string]any, checkoutProxies, promotionProxies []string) (map[string]any, error) {
+func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, checkoutKind string, payload map[string]any, checkoutProxies, promotionProxies []string, email string, accountID uint, rowIndex int) (map[string]any, error) {
 	body := map[string]any{
 		"token": token, "checkout_proxies": checkoutProxies, "promotion_proxies": promotionProxies,
 		"checkout_kind": checkoutKind,
@@ -571,6 +594,7 @@ func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, ch
 	}
 	jobID := text(started["job_id"])
 	workerLogSequence := 0
+	s.appendCheckoutProgress(task, email, accountID, rowIndex, 8, "已提交提链引擎")
 	for poll := 0; poll < 800; poll++ {
 		if sCancelled := task != nil && task.ID != "" && task.Status == TaskCancelled; sCancelled || (task != nil && s.taskCancelled(task)) {
 			_ = cancelSunnyCheckoutWorkerJob(ctx, workerURL, jobID)
@@ -596,13 +620,16 @@ func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, ch
 					continue
 				}
 				if message := strings.TrimSpace(text(entry["message"])); message != "" {
-					s.appendTaskEvent(task.ID, message, "log", "info", map[string]any{"worker_time": text(entry["time"])})
+					progress := 10 + minInt(80, workerLogSequence+1)
+					s.appendTaskEventWithContext(task.ID, message, "log", "info", map[string]any{"worker_time": text(entry["time"]), "email": email, "account_id": accountID, "index": rowIndex, "progress": progress, "current_log": message}, TaskEventContext{Email: email, AccountID: accountID, Module: "checkout", Action: "checkout.progress", Scope: "account", SubjectType: "account"})
+					s.appendCheckoutProgress(task, email, accountID, rowIndex, progress, message)
 				}
 				workerLogSequence = sequence
 			}
 		}
 		switch text(status["status"]) {
 		case "done":
+			s.appendCheckoutProgress(task, email, accountID, rowIndex, 95, "提链引擎已返回结果，正在整理")
 			if result, ok := status["result"].(map[string]any); ok {
 				return result, nil
 			}
@@ -615,6 +642,28 @@ func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, ch
 	}
 	_ = cancelSunnyCheckoutWorkerJob(context.Background(), workerURL, jobID)
 	return nil, fmt.Errorf("提链引擎执行超时")
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func (s *Server) appendCheckoutProgress(task *Task, email string, accountID uint, rowIndex, progress int, message string) {
+	if task == nil {
+		return
+	}
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 100 {
+		progress = 100
+	}
+	s.appendTaskEventWithContext(task.ID, message, "checkout_progress", "info", map[string]any{
+		"email": email, "account_id": accountID, "index": rowIndex, "progress": progress, "current_log": message,
+	}, TaskEventContext{Email: email, AccountID: accountID, Module: "checkout", Action: "checkout.progress", Scope: "account", SubjectType: "account"})
 }
 
 func sunnyCheckoutWorkerStatus(ctx context.Context, client *http.Client, workerURL, jobID string) (map[string]any, error) {

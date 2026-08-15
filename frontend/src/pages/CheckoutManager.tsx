@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { ChevronDown, ChevronUp, Clipboard, Download, ExternalLink, ListChecks, Loader2, Play, RefreshCw, ScrollText, Trash2, X } from "lucide-react";
-import { apiFetch, triggerBrowserDownload } from "@/lib/utils";
+import { ChevronDown, ChevronUp, Clipboard, Download, ExternalLink, FileText, ListChecks, Loader2, Play, RefreshCw, ScrollText, Trash2, X } from "lucide-react";
+import { API_BASE, apiFetch, triggerBrowserDownload } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
 type AnyRow = Record<string, any>;
@@ -218,6 +218,18 @@ function QRModal({ value, image, onClose }: { value: string; image: string; onCl
   return <div className="fixed inset-0 z-[600] flex items-center justify-center bg-black/60 p-4" onClick={onClose}><div className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}><div className="mb-4 flex items-center justify-between"><h3 className="text-lg font-bold">支付二维码</h3><button className="round-tool" onClick={onClose}><X className="h-4 w-4" /></button></div>{src ? <img className="mx-auto aspect-square w-full max-w-[320px] rounded-xl bg-white p-3 object-contain" src={src} alt="支付二维码" /> : <div className="flex h-80 items-center justify-center"><Loader2 className="animate-spin" /></div>}{value && <p className="mt-3 break-all text-xs text-[var(--text-muted)]">{value}</p>}<div className="mt-4 flex justify-end gap-2"><Button variant="outline" onClick={() => void copy()}><Clipboard className="mr-2 h-4 w-4" />{image ? "复制图片" : "复制内容"}</Button><Button onClick={download} disabled={!src}><Download className="mr-2 h-4 w-4" />下载二维码</Button></div></div></div>;
 }
 
+type CheckoutLiveState = { progress: number; message: string; status: string; result?: AnyRow; logs: AnyRow[] };
+function checkoutLiveKey(value: AnyRow) {
+  const email = normalized(value.email);
+  if (email) return `email:${email}`;
+  if (value.account_id != null && Number(value.account_id) > 0) return `account:${Number(value.account_id)}`;
+  return `index:${Number(value.index ?? -1)}`;
+}
+function CheckoutAccountDetail({ email, state, onClose }: { email: string; state?: CheckoutLiveState; onClose: () => void }) {
+  const logs = state?.logs || [];
+  return <div className="fixed inset-0 z-[620] flex items-center justify-center bg-black/60 p-4" onClick={onClose}><div className="flex max-h-[min(680px,calc(100vh-2rem))] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-shell)] shadow-2xl" onClick={(event) => event.stopPropagation()}><div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3"><div className="min-w-0"><h3 className="flex items-center gap-2 text-base font-bold"><FileText className="h-4 w-4 text-[var(--accent)]" />账户提链详情</h3><p className="mt-1 truncate text-xs text-[var(--text-muted)]">{email || "未知账户"} · {state?.status === "running" ? "进行中" : state?.status === "succeeded" ? "已成功" : state?.status === "failed" ? "已失败" : "待处理"}</p></div><button className="round-tool" title="关闭详情" onClick={onClose}><X className="h-4 w-4" /></button></div>{state && <div className="border-b border-[var(--border)] px-4 py-3"><div className="mb-1 flex justify-between text-[11px] text-[var(--text-muted)]"><span>{state.message || "等待提链日志"}</span><span>{Math.round(state.progress)}%</span></div><div className="h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700"><div className={`h-full rounded-full transition-[width] ${state.status === "failed" ? "bg-red-500" : "bg-[var(--accent)]"}`} style={{ width: `${Math.max(0, Math.min(100, state.progress))}%` }} /></div></div>}<div className="min-h-0 flex-1 overflow-y-auto bg-[var(--bg-main)] p-4 font-mono text-[11px] leading-5 text-[var(--text-secondary)]">{logs.length ? logs.map((item, index) => <div key={item.id || index} className="grid grid-cols-[62px_8px_minmax(0,1fr)] gap-2"><span className="text-[var(--text-muted)]">{String(item.created_at || "").slice(11, 19) || "--:--:--"}</span><span className={item.level === "error" || item.type === "checkout_result" && item.detail?.result?.status === "failed" ? "text-red-400" : "text-emerald-400"}>●</span><span className="break-words">{item.message || item.detail?.current_log || item.line}</span></div>) : <div className="flex h-full min-h-36 items-center justify-center text-[var(--text-muted)]">暂无该账户提链日志</div>}</div></div></div>;
+}
+
 export default function CheckoutManager() {
   const savedPreferences = useMemo(() => readCheckoutPreferences(), []);
   const savedTaskID = useMemo(() => readBrowserText(checkoutTaskStorageKey), []);
@@ -270,6 +282,8 @@ export default function CheckoutManager() {
   const [qrImage, setQrImage] = useState("");
   const [logOpen, setLogOpen] = useState(savedPreferences.logOpen ?? Boolean(savedTaskID));
   const [taskLogs, setTaskLogs] = useState<AnyRow[]>([]);
+  const [checkoutLive, setCheckoutLive] = useState<Record<string, CheckoutLiveState>>({});
+  const [detailKey, setDetailKey] = useState("");
   const [cancelBusy, setCancelBusy] = useState(false);
   const logScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -314,8 +328,29 @@ export default function CheckoutManager() {
     let mounted = true;
     let timer = 0;
     let eventCursor = 0;
+    let stream: EventSource | null = null;
+    let streamFailures = 0;
+    let streamDone = false;
 
     const waitForNextPoll = () => new Promise<void>((resolve) => { timer = window.setTimeout(resolve, 1000); });
+    const applyEvents = (items: AnyRow[]) => {
+      const ordered = items.filter((item) => Number(item?.id || 0) > eventCursor).sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+      if (!ordered.length) return;
+      eventCursor = Math.max(eventCursor, ...ordered.map((item) => Number(item.id || 0)));
+      setTaskLogs((old) => { const known = new Set(old.map((item) => Number(item.id || 0))); return [...old, ...ordered.filter((item) => !known.has(Number(item.id || 0)))]; });
+      setCheckoutLive((old) => {
+        const next = { ...old };
+        for (const item of ordered) {
+          const detail = item.detail || {};
+          if (item.type !== "checkout_progress" && item.type !== "checkout_result" && !detail.email && detail.index == null) continue;
+          const key = checkoutLiveKey({ email: item.email || detail.email, account_id: item.account_id || detail.account_id, index: detail.index });
+          const previous = next[key] || { progress: 0, message: "等待提链任务", status: "running", logs: [] };
+          const result = item.type === "checkout_result" && detail.result && typeof detail.result === "object" ? detail.result : previous.result;
+          next[key] = { progress: item.type === "checkout_result" ? 100 : Math.max(previous.progress, Number(detail.progress || 0)), message: String(detail.current_log || item.message || previous.message), status: item.type === "checkout_result" ? (result?.status === "succeeded" ? "succeeded" : "failed") : "running", result, logs: [...previous.logs, item].slice(-200) };
+        }
+        return next;
+      });
+    };
     const readEvents = async () => {
       const collected: AnyRow[] = [];
       for (let eventPage = 0; eventPage < 5 && mounted; eventPage += 1) {
@@ -327,21 +362,29 @@ export default function CheckoutManager() {
         if (next.length < 200) break;
       }
       if (!mounted || !collected.length) return;
-      setTaskLogs((old) => {
-        const known = new Set(old.map((item) => Number(item.id || 0)));
-        return [...old, ...collected.filter((item) => !known.has(Number(item.id || 0)))];
-      });
+      applyEvents(collected);
+    };
+    const openStream = () => {
+      if (stream || streamDone) return;
+      const apiBase = String(API_BASE || "/api").replace(/\/$/, "");
+      const source = new EventSource(`${apiBase}/tasks/${encodeURIComponent(activeTaskID)}/logs/stream?since=${eventCursor}`, { withCredentials: true });
+      stream = source;
+      source.onopen = () => { streamFailures = 0; };
+      source.onmessage = (message) => { try { const payload = JSON.parse(message.data || "{}"); if (payload.done) { streamDone = true; source.close(); stream = null; return; } applyEvents([payload]); } catch { /* Ignore malformed event and keep polling. */ } };
+      source.onerror = () => { source.close(); if (stream === source) stream = null; streamFailures += 1; };
     };
     const watchTask = async () => {
       let consecutiveFailures = 0;
       while (mounted) {
         try {
+          openStream();
           const current = await apiFetch(`/tasks/${encodeURIComponent(activeTaskID)}`);
           if (!mounted) return;
           setTask(current);
           await readEvents().catch(() => {});
           consecutiveFailures = 0;
           if (current.terminal) {
+            await readEvents().catch(() => {});
             setCheckoutBusy(false);
             setRefreshKey((value) => value + 1);
             setNotice(current.status === "succeeded" ? "提链任务完成" : "提链任务结束，请查看结果");
@@ -359,6 +402,7 @@ export default function CheckoutManager() {
           consecutiveFailures += 1;
           if (consecutiveFailures === 1) setNotice("提链任务状态暂时读取失败，正在继续重试");
         }
+        if (!stream && !streamDone && streamFailures > 0) await readEvents().catch(() => {});
         await waitForNextPoll();
       }
     };
@@ -366,6 +410,7 @@ export default function CheckoutManager() {
     return () => {
       mounted = false;
       window.clearTimeout(timer);
+      stream?.close();
     };
   }, [activeTaskID]);
   useEffect(() => {
@@ -393,12 +438,12 @@ export default function CheckoutManager() {
   const baseRows = systemAT ? sessions : visibleExternalRows;
   const rows = useMemo(() => {
     const taskItems = Array.isArray(task?.result?.items) ? task.result.items : [];
-    if (!taskItems.length) return baseRows;
     return baseRows.map((row) => {
-      const found = taskItems.find((item: AnyRow) => item.email && item.email === row.email);
-      return found ? { ...row, checkout_result: found } : row;
+      const live = checkoutLive[checkoutLiveKey(row)];
+      const found = taskItems.find((item: AnyRow) => (item.email && item.email === row.email) || (item.index != null && Number(item.index) === Number(row.index)));
+      return found || live ? { ...row, checkout_result: live?.result || found, checkout_live: live } : row;
     });
-  }, [baseRows, task]);
+  }, [baseRows, checkoutLive, task]);
   const listTotal = systemAT ? total : externalRows.length;
   const pageCount = checkoutPageCount(listTotal, pageSize);
   const pageFrom = listTotal ? (page - 1) * pageSize + 1 : 0;
@@ -496,7 +541,7 @@ export default function CheckoutManager() {
   async function start() {
     if (!splitLines(checkoutProxies).length || !splitLines(promotionProxies).length) { setNotice("Checkout 代理池和 Promotion 代理池都必须填写"); return; }
     if (!selected.length) { setNotice("请先勾选需要提链的账户"); return; }
-    setCheckoutBusy(true); setTask(null); setTaskLogs([]); setLogOpen(true);
+    setCheckoutBusy(true); setTask(null); setTaskLogs([]); setCheckoutLive({}); setDetailKey(""); setLogOpen(true);
     try {
       const response = await apiFetch("/sunny/checkout", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selected : [], external_ats: systemAT ? [] : selectedExternalRows.map((x) => x.token), checkout_kinds: systemAT ? [] : selectedExternalRows.map((x) => normalized(x.checkout_kind) || "unknown"), checkout_proxies: checkoutProxies, promotion_proxies: promotionProxies, plan, link_type: linkType, country, currency, retry_count: retryCount, concurrency, use_promo: usePromo, promo_campaign: promoCampaign, promo_country: promoCountry, promo_code: promoCode, ideal_bank: idealBank, workspace_name: workspaceName, workspace_id: workspaceId, seat_quantity: seatQuantity, price_interval: priceInterval, credit_quantity: creditQuantity, pix_tax_id: pixTaxID, pix_auto_kind: pixAutoKind }) });
       const taskID = String(response.id || response.task_id);
@@ -509,6 +554,8 @@ export default function CheckoutManager() {
     }
   }
   const statusLabel = task ? `${task.status} · ${task.progress || ""}` : selectedCount ? `已选择 ${selectedCount} 个账户` : "未选择账户";
+  const detailRow = detailKey ? rows.find((row) => checkoutLiveKey(row) === detailKey) : undefined;
+  const detailState = detailKey ? checkoutLive[detailKey] : undefined;
   return <div className="checkout-manager space-y-5">
     {notice && <div className="fixed right-5 top-20 z-[500] rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white shadow-xl">{notice}</div>}
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5 shadow-sm"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--accent)]">PAYMENT ROUTER</p><h1 className="mt-1 text-2xl font-black">提链管理</h1><p className="mt-2 text-sm text-[var(--text-secondary)]">为已注册 ChatGPT 账户批量提取支付链接、跳转地址和支付二维码。</p></div><div className="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--text-muted)]">{statusLabel}</div></div></section>
@@ -550,13 +597,14 @@ export default function CheckoutManager() {
         <div className="sr-selection-summary" aria-live="polite"><button type="button" className="sr-select-all" disabled={selectingAll || listTotal <= 0} onClick={() => void selectAllRows()}>{selectingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ListChecks className="h-3.5 w-3.5" />}<span>{selectedCount === listTotal && listTotal > 0 ? "取消全选" : "全选"}</span></button>{selectedCount > 0 && <><span className="sr-selected-count">已选择 {selectedCount} 项</span><button type="button" className="sr-clear-selection" onClick={() => setSelected([])}>清除选择</button></>}</div>
         <button type="button" className="sr-text-btn ml-auto" disabled={listLoading} onClick={refreshRows}>{listLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}刷新列表</button>
       </div>
-      <div className="relative overflow-x-auto">{listLoading && <div className="absolute inset-0 z-10 flex items-center justify-center bg-[var(--bg-shell)]/70"><Loader2 className="h-5 w-5 animate-spin text-[var(--accent)]" /></div>}<table className="sr-account-table w-full min-w-[1420px] table-fixed text-left text-xs"><colgroup><col className="w-[58px]" /><col className="w-[190px]" /><col className="w-[130px]" /><col className="w-[100px]" /><col className="w-[86px]" /><col className="w-[112px]" /><col className="w-[128px]" /><col className="w-[118px]" /><col className="w-[330px]" /><col className="w-[86px]" /><col className="w-[150px]" /></colgroup><thead className="border-b border-[var(--border)] text-[var(--text-muted)]"><tr><th className="p-2"><input type="checkbox" aria-label="本页全选" checked={allCurrentSelected} disabled={!rows.length} onChange={toggleCurrentPage} /></th><th className="p-2">邮箱</th><th className="p-2">分组</th><th className="p-2">状态</th><th className="p-2">套餐</th><th className="p-2">试用资格</th><th className="p-2">Checkout 类型</th><th className="p-2">支付路径</th><th className="p-2">支付链接</th><th className="p-2">支付二维码</th><th className="p-2">操作</th></tr></thead><tbody>{rows.length ? rows.map((row, index) => { const result = row.checkout_result || {}; const link = resultDisplayLink(result); const error = resultError(result); const failed = normalized(result.status) === "failed"; const statusValue = row.at_status || row.status; const planValue = row.plan_type; const pathValue = result.link_type; const detail = [result.plan && `套餐 ${labelFor(result.plan, planLabels)}`, result.country && `地区 ${result.country}`, result.currency && `币种 ${result.currency}`, result.checkout_amount != null && `金额 ${result.checkout_amount}`, result.payment_methods?.length && `支付方式 ${result.payment_methods.join(", ")}`, result.checkout_session_id && `会话 ${result.checkout_session_id}`, result.promo_requested != null && `优惠 ${result.promo_applied === true ? "已生效" : result.promo_applied === false ? "未生效" : "待确认"}`].filter(Boolean).join(" · "); const qrImage = resultQrImage(result); const rowKey = checkoutSelectionKey(row, systemAT); return <tr key={`${row.id || row.index || index}`} className="border-b border-[var(--border)]/60"><td className="p-2"><input type="checkbox" checked={selected.includes(rowKey)} onChange={() => toggleRow(row)} /></td><td className="p-2"><div className="truncate" title={row.email}>{row.email || "未知邮箱"}</div></td><td className="p-2"><div className="truncate" title={row.group_name || "-"}>{row.group_name || "-"}</div></td><td className="p-2"><AccountStatusBadge value={statusValue} /></td><td className="p-2"><AccountPlanBadge value={planValue} /></td><td className="p-2"><AccountTrialValue row={row} /></td><td className="p-2"><AccountCheckoutValue row={row} /></td><td className="p-2">{pathValue ? <CompactBadge label={labelFor(pathValue, pathLabels)} tone={pathTone(pathValue)} /> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2">{link ? <button className="block w-full truncate text-left font-medium text-[var(--accent)] underline decoration-[var(--accent)]/40 underline-offset-2 hover:decoration-[var(--accent)]" title={`${link}\n${detail}\n点击复制支付链接`} onClick={() => void copy(link)}>{link}</button> : error || failed ? <div className="truncate font-medium text-red-600 dark:text-red-400" title={`提链失败：${error || "任务未返回支付链接"}`}>提链失败：{error || "任务未返回支付链接"}</div> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2">{qrImage ? <QRImageThumb src={qrImage} onClick={() => { setQrValue(result.qr_data || ""); setQrImage(qrImage); }} /> : result.qr_data ? <QRThumb value={result.qr_data} onClick={() => { setQrValue(result.qr_data); setQrImage(""); }} /> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2">{link ? <div className="flex items-center gap-1"><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="复制支付链接" onClick={() => void copy(link)}><Clipboard className="h-3 w-3" />复制</button><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="在新窗口打开支付链接" onClick={() => window.open(link, "_blank", "noopener,noreferrer")}><ExternalLink className="h-3 w-3" />打开</button></div> : <span className="text-[var(--text-muted)]">-</span>}</td></tr>; }) : <tr><td colSpan={11} className="p-10 text-center text-sm text-[var(--text-muted)]">暂无账户，请先导入或选择 AT。</td></tr>}</tbody></table></div>
+      <div className="relative overflow-x-auto">{listLoading && <div className="absolute inset-0 z-10 flex items-center justify-center bg-[var(--bg-shell)]/70"><Loader2 className="h-5 w-5 animate-spin text-[var(--accent)]" /></div>}<table className="sr-account-table w-full min-w-[1420px] table-fixed text-left text-xs"><colgroup><col className="w-[58px]" /><col className="w-[190px]" /><col className="w-[130px]" /><col className="w-[100px]" /><col className="w-[86px]" /><col className="w-[112px]" /><col className="w-[128px]" /><col className="w-[118px]" /><col className="w-[330px]" /><col className="w-[86px]" /><col className="w-[150px]" /></colgroup><thead className="border-b border-[var(--border)] text-[var(--text-muted)]"><tr><th className="p-2"><input type="checkbox" aria-label="本页全选" checked={allCurrentSelected} disabled={!rows.length} onChange={toggleCurrentPage} /></th><th className="p-2">邮箱</th><th className="p-2">分组</th><th className="p-2">状态</th><th className="p-2">套餐</th><th className="p-2">试用资格</th><th className="p-2">Checkout 类型</th><th className="p-2">支付路径</th><th className="p-2">支付链接</th><th className="p-2">支付二维码</th><th className="p-2">操作</th></tr></thead><tbody>{rows.length ? rows.map((row, index) => { const result = row.checkout_result || {}; const live = row.checkout_live as CheckoutLiveState | undefined; const link = resultDisplayLink(result); const error = resultError(result); const failed = normalized(result.status) === "failed"; const statusValue = row.at_status || row.status; const planValue = row.plan_type; const pathValue = result.link_type; const detail = [result.plan && `套餐 ${labelFor(result.plan, planLabels)}`, result.country && `地区 ${result.country}`, result.currency && `币种 ${result.currency}`, result.checkout_amount != null && `金额 ${result.checkout_amount}`, result.payment_methods?.length && `支付方式 ${result.payment_methods.join(", ")}`, result.checkout_session_id && `会话 ${result.checkout_session_id}`, result.promo_requested != null && `优惠 ${result.promo_applied === true ? "已生效" : result.promo_applied === false ? "未生效" : "待确认"}`].filter(Boolean).join(" · "); const qrImage = resultQrImage(result); const rowKey = checkoutSelectionKey(row, systemAT); return <tr key={`${row.id || row.index || index}`} className="border-b border-[var(--border)]/60"><td className="p-2"><input type="checkbox" checked={selected.includes(rowKey)} onChange={() => toggleRow(row)} /></td><td className="p-2"><div className="truncate" title={row.email}>{row.email || "未知邮箱"}</div>{live && <div className="mt-1 w-full"><div className="mb-0.5 flex justify-between gap-2 text-[10px] text-[var(--text-muted)]"><span className="truncate">{live.message || "提链处理中"}</span><span>{Math.round(live.progress)}%</span></div><div className="h-1 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700"><div className={`h-full rounded-full transition-[width] ${live.status === "failed" ? "bg-red-500" : live.status === "succeeded" ? "bg-emerald-500" : "bg-[var(--accent)]"}`} style={{ width: `${Math.max(0, Math.min(100, live.progress))}%` }} /></div></div>}</td><td className="p-2"><div className="truncate" title={row.group_name || "-"}>{row.group_name || "-"}</div></td><td className="p-2"><AccountStatusBadge value={statusValue} /></td><td className="p-2"><AccountPlanBadge value={planValue} /></td><td className="p-2"><AccountTrialValue row={row} /></td><td className="p-2"><AccountCheckoutValue row={row} /></td><td className="p-2">{pathValue ? <CompactBadge label={labelFor(pathValue, pathLabels)} tone={pathTone(pathValue)} /> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2">{link ? <button className="block w-full truncate text-left font-medium text-[var(--accent)] underline decoration-[var(--accent)]/40 underline-offset-2 hover:decoration-[var(--accent)]" title={`${link}\n${detail}\n点击复制支付链接`} onClick={() => void copy(link)}>{link}</button> : error || failed ? <div className="truncate font-medium text-red-600 dark:text-red-400" title={`提链失败：${error || "任务未返回支付链接"}`}>提链失败：{error || "任务未返回支付链接"}</div> : live?.status === "running" ? <span className="text-[var(--text-muted)]">提链中...</span> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2">{qrImage ? <QRImageThumb src={qrImage} onClick={() => { setQrValue(result.qr_data || ""); setQrImage(qrImage); }} /> : result.qr_data ? <QRThumb value={result.qr_data} onClick={() => { setQrValue(result.qr_data); setQrImage(""); }} /> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2"><div className="flex items-center gap-1"><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="查看当前账户提链日志" onClick={() => setDetailKey(checkoutLiveKey(row))}><FileText className="h-3 w-3" />详情</button>{link && <><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="复制支付链接" onClick={() => void copy(link)}><Clipboard className="h-3 w-3" />复制</button><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="在新窗口打开支付链接" onClick={() => window.open(link, "_blank", "noopener,noreferrer")}><ExternalLink className="h-3 w-3" />打开</button></>}</div></td></tr>; }) : <tr><td colSpan={11} className="p-10 text-center text-sm text-[var(--text-muted)]">暂无账户，请先导入或选择 AT。</td></tr>}</tbody></table></div>
       <div className="sr-pagination">
         <div className="sr-pagination-left"><span className="sr-pagination-range">显示 {pageFrom} 至 {pageTo}，共 {listTotal} 条</span><span className="sr-page-size-label">每页:</span><select className="sr-page-size-select" value={pageSize} onChange={(e) => changePageSize(Number(e.target.value))}>{[10, 20, 50, 100].map((value) => <option key={value} value={value}>{value}</option>)}</select></div>
         <div className="sr-pagination-actions" aria-label="pagination"><button type="button" className="sr-page-nav" title="上一页" disabled={page <= 1 || listLoading} onClick={() => changePage(page - 1)}>‹</button>{checkoutPaginationTokens(page, pageCount).map((token, index) => token === "..." ? <span key={`ellipsis-${index}`} className="sr-page-ellipsis">...</span> : <button type="button" key={token} className={`sr-page-number ${token === page ? "active" : ""}`} onClick={() => changePage(token)}>{token}</button>)}<button type="button" className="sr-page-nav" title="下一页" disabled={page >= pageCount || listLoading} onClick={() => changePage(page + 1)}>›</button></div>
       </div>
     </section>
     {(qrValue || qrImage) && <QRModal value={qrValue} image={qrImage} onClose={() => { setQrValue(""); setQrImage(""); }} />}
+    {detailKey && <CheckoutAccountDetail email={detailRow?.email || detailKey.replace(/^email:/, "")} state={detailState} onClose={() => setDetailKey("")} />}
     <CheckoutLogFloat open={logOpen} onToggle={() => setLogOpen((value) => !value)} task={task} logs={taskLogs} scrollRef={logScrollRef} />
   </div>;
 }
