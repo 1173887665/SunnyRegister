@@ -196,8 +196,8 @@ func normalizeCheckoutRequest(in sunnyCheckoutRequest) (sunnyCheckoutRequest, []
 	if in.Concurrency < 1 {
 		in.Concurrency = 3
 	}
-	if in.Concurrency > 20 {
-		in.Concurrency = 20
+	if in.Concurrency > 100 {
+		in.Concurrency = 100
 	}
 	if in.SeatQuantity < 2 {
 		in.SeatQuantity = 5
