@@ -82,6 +82,7 @@ type sunnyTrialResult struct {
 	CheckoutError  string
 	SkipReason     string
 	InvalidToken   bool
+	Retried        bool
 	Error          string
 }
 
@@ -498,14 +499,55 @@ func checkSunnyTrialEligibility(ctx context.Context, accessToken string, proxyUR
 }
 
 func (s *Server) sunnyTrialConcurrency() int {
-	value := intValue(strings.TrimSpace(os.Getenv("SUNNY_TRIAL_CONCURRENCY")), 4)
+	value := intValue(strings.TrimSpace(os.Getenv("SUNNY_TRIAL_CONCURRENCY")), 8)
 	if value < 1 {
 		return 1
 	}
-	if value > 10 {
-		return 10
+	if value > 16 {
+		return 16
 	}
 	return value
+}
+
+func sunnyCommerceProbeNeedsRetry(result sunnyCommerceProbeResult) bool {
+	if result.InvalidToken {
+		return false
+	}
+	return normalizeSunnyTrialEligibility(result.Eligibility) == sunnyTrialUnknown || normalizeSunnyCheckoutKind(result.CheckoutKind) == sunnyCheckoutUnknown
+}
+
+func mergeSunnyCommerceProbeResults(initial, retried sunnyCommerceProbeResult) sunnyCommerceProbeResult {
+	merged := retried
+	if normalizeSunnyTrialEligibility(retried.Eligibility) == sunnyTrialUnknown {
+		if normalizeSunnyTrialEligibility(initial.Eligibility) != sunnyTrialUnknown {
+			merged.Eligibility = initial.Eligibility
+			merged.TrialState = initial.TrialState
+			merged.TrialMessage = initial.TrialMessage
+			merged.TrialError = initial.TrialError
+		} else if strings.TrimSpace(merged.TrialError) == "" {
+			merged.TrialError = initial.TrialError
+		}
+	}
+	if normalizeSunnyCheckoutKind(retried.CheckoutKind) == sunnyCheckoutUnknown {
+		if normalizeSunnyCheckoutKind(initial.CheckoutKind) != sunnyCheckoutUnknown {
+			merged.CheckoutKind = initial.CheckoutKind
+			merged.PaymentMethods = initial.PaymentMethods
+			merged.CheckoutError = initial.CheckoutError
+		} else if strings.TrimSpace(merged.CheckoutError) == "" {
+			merged.CheckoutError = initial.CheckoutError
+		}
+	}
+	merged.InvalidToken = initial.InvalidToken || retried.InvalidToken
+	return merged
+}
+
+func checkSunnyCommerceWithRetry(ctx context.Context, accessToken string) (sunnyCommerceProbeResult, bool) {
+	initial := sunnyCheckCommerce(ctx, accessToken)
+	if !sunnyCommerceProbeNeedsRetry(initial) {
+		return initial, false
+	}
+	retried := sunnyCheckCommerce(ctx, accessToken)
+	return mergeSunnyCommerceProbeResults(initial, retried), true
 }
 
 func (s *Server) sunnyTrialBatchSize() int {
@@ -579,7 +621,7 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 		s.failSunnyTrialTask(task, err.Error())
 		return
 	}
-	result := map[string]any{"requested": len(candidates), "eligible": 0, "ineligible": 0, "checkout_detected": 0, "payment_detected": 0, "partial": 0, "skipped": 0, "failed": 0, "items": []any{}}
+	result := map[string]any{"requested": len(candidates), "eligible": 0, "ineligible": 0, "checkout_detected": 0, "payment_detected": 0, "retried": 0, "partial": 0, "skipped": 0, "failed": 0, "items": []any{}}
 	invalidAccounts := []uint{}
 	invalidSessions := []uint{}
 	seenAccounts := map[uint]bool{}
@@ -595,7 +637,7 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 			outcome := sunnyTrialResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, SkipReason: candidate.SkipReason, Error: candidate.Error}
 			if outcome.SkipReason == "" && outcome.Error == "" {
 				trialCtx := context.WithValue(context.Background(), sunnyTrialProxyContextKey{}, s.sunnyCommerceProxyURL(candidate.Email))
-				commerce := sunnyCheckCommerce(trialCtx, candidate.AccessToken)
+				commerce, retried := checkSunnyCommerceWithRetry(trialCtx, candidate.AccessToken)
 				outcome.Eligibility = commerce.Eligibility
 				outcome.TrialState = commerce.TrialState
 				outcome.Message = commerce.TrialMessage
@@ -604,11 +646,16 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 				outcome.PaymentMethods = commerce.PaymentMethods
 				outcome.CheckoutError = commerce.CheckoutError
 				outcome.InvalidToken = commerce.InvalidToken
+				outcome.Retried = retried
 			}
 			return outcome
 		})
 		for outcome := range results {
 			item := map[string]any{"session_id": outcome.SessionID, "email": outcome.Email}
+			if outcome.Retried {
+				result["retried"] = result["retried"].(int) + 1
+				item["retried"] = true
+			}
 			now := time.Now()
 			switch {
 			case outcome.SkipReason != "":

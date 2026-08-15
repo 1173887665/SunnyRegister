@@ -533,10 +533,12 @@ const accountDetectionSummaryCopy = {
   zh: {
     refreshATSummary: "AT检测完成：有效 {valid} 个，无效 {invalid} 个，跳过 {skipped} 个，检测失败 {failed} 个；已对无效账户启动续期",
     healthCheckSummary: "测活完成：测试 {total} 个，存活 {alive} 个，封禁 {banned} 个，跳过 {skipped} 个，失败 {failed} 个",
+    trialCheckSummary: "商业状态检测完成：检测 {total} 个，试用有资格 {eligible} 个，无资格 {ineligible} 个，Checkout {checkout} 个，支付方式 {payment} 个，重试 {retried} 个，部分完成 {partial} 个，跳过 {skipped} 个，失败 {failed} 个",
   },
   en: {
     refreshATSummary: "AT check complete: {valid} valid, {invalid} invalid, {skipped} skipped, {failed} failed; renewal started for invalid accounts",
     healthCheckSummary: "Health check complete: tested {total}, alive {alive}, banned {banned}, skipped {skipped}, failed {failed}",
+    trialCheckSummary: "Commerce check complete: checked {total}, eligible {eligible}, ineligible {ineligible}, checkout {checkout}, payment {payment}, retried {retried}, partial {partial}, skipped {skipped}, failed {failed}",
   },
 };
 
@@ -3149,14 +3151,14 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     try { await load(); notify("ok", t.refreshDone); }
     catch(e:any){ notify("fail", e.message || String(e)); }
   }
-  async function pollAccountDetectionTask(initialTask: AnyObj, interval: number) {
+  async function pollAccountDetectionTask(initialTask: AnyObj, interval: number, refreshDuringTask = true) {
     let task = initialTask;
     let lastProgress = Number(task.progress_detail?.current ?? task.progress_current ?? 0);
     while (!task.terminal) {
       await new Promise((resolve)=>setTimeout(resolve,interval));
       task = await apiFetch(`/tasks/${task.id}`);
       const currentProgress = Number(task.progress_detail?.current ?? task.progress_current ?? 0);
-      if (currentProgress > lastProgress) {
+      if (refreshDuringTask && currentProgress > lastProgress) {
         lastProgress = currentProgress;
         try { await load(); } catch { /* Keep polling; the next completed batch will refresh again. */ }
       }
@@ -3218,7 +3220,8 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     if (!row) setBatchTrialBusy(true);
     try {
       const initialTask = await apiFetch("/sunny/sessions/trial-check", { method:"POST", body:JSON.stringify({ session_ids:targetIds }) });
-      const task = await pollAccountDetectionTask(initialTask,900);
+      const task = await pollAccountDetectionTask(initialTask,900,false);
+      await load();
       const result = task.result || {};
       const renewalTaskId = String(result.renewal_task_id || "");
       const invalidSessionIds = Array.isArray(result.invalid_session_ids) ? result.invalid_session_ids.map(Number).filter(Boolean) : [];
@@ -3230,14 +3233,13 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       } else {
         const failed=Number(result.failed || 0);
         notify(failed > 0 && failed === Number(result.requested || 0) ? "fail" : "ok", template(t.trialCheckSummary, {
-          total:Number(result.requested || 0), eligible:Number(result.eligible || 0), ineligible:Number(result.ineligible || 0), checkout:Number(result.checkout_detected || 0), payment:Number(result.payment_detected || 0), skipped:Number(result.skipped || 0), partial:Number(result.partial || 0), failed,
+          total:Number(result.requested || 0), eligible:Number(result.eligible || 0), ineligible:Number(result.ineligible || 0), checkout:Number(result.checkout_detected || 0), payment:Number(result.payment_detected || 0), retried:Number(result.retried || 0), skipped:Number(result.skipped || 0), partial:Number(result.partial || 0), failed,
         }));
       }
       if (renewalTaskId && invalidSessionIds.length) {
         void runPersistentSessionTask("refresh-at", invalidSessionIds, row?.email, async()=>({id:renewalTaskId}))
-          .then(()=>load()).catch((e:any)=>notify("fail",e.message||String(e)));
+          .catch((e:any)=>notify("fail",e.message||String(e)));
       }
-      await load();
     } catch(e:any) { notify("fail", e.message || String(e)); }
     finally {
       setTrialCheckingSessionIds((old)=>old.filter((id)=>!targetIds.includes(id)));

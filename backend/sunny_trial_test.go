@@ -52,6 +52,70 @@ func TestSunnyTrialCheckAPIResponses(t *testing.T) {
 	}
 }
 
+func TestSunnyTrialConcurrencyDefaultsAndLimits(t *testing.T) {
+	t.Setenv("SUNNY_TRIAL_CONCURRENCY", "")
+	s := &Server{}
+	if got := s.sunnyTrialConcurrency(); got != 8 {
+		t.Fatalf("default trial concurrency = %d, want 8", got)
+	}
+	t.Setenv("SUNNY_TRIAL_CONCURRENCY", "99")
+	if got := s.sunnyTrialConcurrency(); got != 16 {
+		t.Fatalf("maximum trial concurrency = %d, want 16", got)
+	}
+	t.Setenv("SUNNY_TRIAL_CONCURRENCY", "1")
+	if got := s.sunnyTrialConcurrency(); got != 1 {
+		t.Fatalf("configured trial concurrency = %d, want 1", got)
+	}
+}
+
+func TestSunnyCommerceCheckRetriesOnceAndMergesPartialResults(t *testing.T) {
+	previousCheck := sunnyCheckCommerce
+	callCount := 0
+	sunnyCheckCommerce = func(context.Context, string) sunnyCommerceProbeResult {
+		callCount++
+		if callCount == 1 {
+			return sunnyCommerceProbeResult{
+				Eligibility:    sunnyTrialEligible,
+				TrialState:     sunnyTrialEligible,
+				TrialMessage:   "eligible",
+				CheckoutKind:   sunnyCheckoutUnknown,
+				CheckoutError:  "temporary checkout error",
+				PaymentMethods: nil,
+			}
+		}
+		return sunnyCommerceProbeResult{
+			Eligibility:    sunnyTrialUnknown,
+			TrialError:     "temporary trial error",
+			CheckoutKind:   "oaics",
+			PaymentMethods: []string{"card"},
+		}
+	}
+	t.Cleanup(func() { sunnyCheckCommerce = previousCheck })
+
+	result, retried := checkSunnyCommerceWithRetry(context.Background(), "access-token")
+	if !retried || callCount != 2 {
+		t.Fatalf("retried=%v calls=%d, want retried once", retried, callCount)
+	}
+	if result.Eligibility != sunnyTrialEligible || result.CheckoutKind != "oaics" || len(result.PaymentMethods) != 1 {
+		t.Fatalf("partial results were not merged: %#v", result)
+	}
+}
+
+func TestSunnyCommerceCheckDoesNotRetryInvalidToken(t *testing.T) {
+	previousCheck := sunnyCheckCommerce
+	callCount := 0
+	sunnyCheckCommerce = func(context.Context, string) sunnyCommerceProbeResult {
+		callCount++
+		return sunnyCommerceProbeResult{Eligibility: sunnyTrialUnknown, CheckoutKind: sunnyCheckoutUnknown, InvalidToken: true, TrialError: "expired"}
+	}
+	t.Cleanup(func() { sunnyCheckCommerce = previousCheck })
+
+	_, retried := checkSunnyCommerceWithRetry(context.Background(), "expired-token")
+	if retried || callCount != 1 {
+		t.Fatalf("invalid token retried=%v calls=%d, want no retry", retried, callCount)
+	}
+}
+
 func prepareSunnyTrialAccount(t *testing.T, s *Server) SunnySession {
 	t.Helper()
 	if err := s.db.Model(&SunnyAccount{}).Where("email = ?", "session@example.com").Updates(map[string]any{
