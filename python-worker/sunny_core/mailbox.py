@@ -18,7 +18,7 @@ from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
 from html import unescape
 from typing import Any, Callable
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse
 
 import requests
 
@@ -48,6 +48,7 @@ XBOVO_POOL_RETRIES = _int_env("XBOVO_ICLOUD_POOL_RETRIES", 4, 0, 10)
 XBOVO_QUEUE_TIMEOUT = _int_env("XBOVO_ICLOUD_QUEUE_TIMEOUT", 120, 30, 600)
 XBOVO_LONG_POLL_SECONDS = _int_env("XBOVO_ICLOUD_LONG_POLL_SECONDS", 10, 5, 20)
 URL_API_REQUEST_TIMEOUT = max(35, int(os.getenv("URL_API_ICLOUD_REQUEST_TIMEOUT", "40") or 40))
+URL_API_SPECIALIZED_FALLBACK_SECONDS = 45
 URL_API_MAX_REDIRECTS = 3
 URL_API_MAX_RESPONSE_BYTES = 1 << 20
 _XBOVO_REQUEST_GATE = threading.BoundedSemaphore(XBOVO_MAX_CONCURRENT_REQUESTS)
@@ -272,6 +273,13 @@ def _validate_url_api_address(value: str) -> str:
     if address and (address.is_private or address.is_loopback or address.is_link_local or address.is_reserved):
         raise MailboxAccessError("mailbox_url_forbidden", "url_api 取码地址不能指向私有网络", terminal=True)
     return raw
+
+
+def _url_api_strategy(value: str) -> str:
+    hostname = (urlparse(str(value or "")).hostname or "").lower().rstrip(".")
+    if hostname == "mail.mczero.top" or hostname.endswith(".mail.mczero.top"):
+        return "mczero"
+    return "generic"
 
 
 def _html_to_text(value: str) -> str:
@@ -957,10 +965,11 @@ class URLAPIICloudReader:
         self.proxy_url = proxy_url
         self.proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
         self.url = _validate_url_api_address(account.access_key)
+        self.strategy = _url_api_strategy(self.url)
         self.seen_candidate_keys: set[str] = set()
         self.candidate_counts: dict[str, int] = {}
 
-    def _latest(self, timeout: int = URL_API_REQUEST_TIMEOUT) -> dict[str, Any]:
+    def _latest_generic(self, timeout: int = URL_API_REQUEST_TIMEOUT) -> dict[str, Any]:
         response = None
         target = self.url
         for redirect_count in range(URL_API_MAX_REDIRECTS + 1):
@@ -1065,11 +1074,104 @@ class URLAPIICloudReader:
             "source": "url_api",
         }
 
+    def _latest_mczero(self, timeout: int = URL_API_REQUEST_TIMEOUT) -> dict[str, Any]:
+        parsed = urlparse(self.url)
+        query = list(parse_qsl(parsed.query, keep_blank_values=True))
+        query = [(key, value) for key, value in query if key.lower() not in {"format", "refresh"}]
+        query.extend([("format", "json"), ("refresh", "1")])
+        endpoint = parsed._replace(query=urlencode(query)).geturl()
+        try:
+            response = requests.get(
+                endpoint,
+                headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
+                timeout=min(URL_API_REQUEST_TIMEOUT + 5, max(URL_API_REQUEST_TIMEOUT, int(timeout or 0))),
+                proxies=self.proxies,
+                allow_redirects=True,
+            )
+        except requests.RequestException as exc:
+            raise MailboxAccessError(
+                "mailbox_network_error",
+                "url_api 邮箱渠道连接超时或网络不可达，请检查取码 URL、服务器出网与代理配置",
+                str(exc),
+            ) from exc
+        response_url = getattr(response, "url", "")
+        final_url = urlparse(response_url if isinstance(response_url, str) and response_url else endpoint)
+        initial_url = urlparse(endpoint)
+        if (final_url.scheme.lower(), final_url.netloc.lower()) != (initial_url.scheme.lower(), initial_url.netloc.lower()):
+            response.close()
+            raise MailboxAccessError("mailbox_url_forbidden", "url_api 取码地址跳转超出当前邮箱渠道域名", terminal=True)
+        try:
+            if response.status_code in {401, 403, 404, 410}:
+                raise MailboxAccessError(
+                    "mailbox_credential_invalid",
+                    "url_api 取码 URL 无效、已过期或无权访问",
+                    f"HTTP {response.status_code}",
+                    terminal=True,
+                )
+            if not response.ok:
+                raise MailboxAccessError("mailbox_provider_failed", "url_api 邮箱渠道请求失败，请稍后重试", f"HTTP {response.status_code}")
+            try:
+                raw_payload = getattr(response, "content", b"")
+                if isinstance(raw_payload, (bytes, bytearray)):
+                    payload = json.loads(bytes(raw_payload).decode("utf-8-sig", errors="replace"))
+                else:
+                    payload = response.json()
+            except ValueError as exc:
+                raise MailboxAccessError("mailbox_service_response_invalid", "url_api 邮箱渠道返回了无法解析的响应，请稍后重试", str(exc)) from exc
+        finally:
+            response.close()
+        message = payload.get("message") if isinstance(payload, dict) else None
+        if not isinstance(message, dict):
+            message = {}
+        raw_html = str(message.get("preview") or "")
+        plain = _html_to_text(raw_html)
+        candidates: list[dict[str, Any]] = []
+        for index, value in enumerate(message.get("codes") or []):
+            code = str(value or "").strip()
+            if re.fullmatch(r"\d{6}", code):
+                candidates.append({"code": code, "key": f"url-api:mczero:{message.get('id') or abs(hash(raw_html))}:{index}", "score": 240.0})
+        if not candidates:
+            candidates = extract_otp_candidates(raw_html)
+        candidate = candidates[0] if candidates else None
+        subject = str(message.get("subject") or "").strip()
+        relevant = bool(re.search(r"openai|chatgpt", subject + "\n" + plain, flags=re.I))
+        return {
+            "id": f"url-api:{message.get('id') or abs(hash(raw_html))}",
+            "email": self.account.email,
+            "folder": "iCloud",
+            "subject": subject or ("ChatGPT" if relevant else "Latest iCloud mail"),
+            "from": str(message.get("from") or ""),
+            "to": self.account.email,
+            "date": str(message.get("date") or ""),
+            "body": plain,
+            "body_preview": plain[:500],
+            "raw_html": raw_html,
+            "otp": str(candidate.get("code") or "") if candidate else "",
+            "otp_key": str(candidate.get("key") or "") if candidate else "",
+            "otp_candidates": candidates,
+            "source": "url_api",
+        }
+
+    def _latest(self, timeout: int = URL_API_REQUEST_TIMEOUT, strategy: str | None = None) -> dict[str, Any]:
+        selected = strategy or getattr(self, "strategy", "generic")
+        if selected == "mczero":
+            return self._latest_mczero(timeout)
+        return self._latest_generic(timeout)
+
     def connect(self, access_token: str | None = None) -> None:
         if self.account.mailbox_channel != "url_api":
             raise MailboxAccessError("mailbox_channel_unsupported", "暂不支持该 iCloud 邮箱渠道", self.account.mailbox_channel, terminal=True)
         self.log(f"[{self.account.email}] Connecting url_api iCloud mailbox URL for OTP")
-        message = self._latest()
+        try:
+            message = self._latest()
+        except MailboxAccessError as exc:
+            if getattr(self, "strategy", "generic") != "mczero" or exc.terminal:
+                raise
+            self.log(f"[{self.account.email}] url_api 专用域名接口暂时不可用，将在等待验证码期间保留通用解析兜底")
+            try:
+                message = self._latest(strategy="generic")
+            except MailboxAccessError:
+                message = {"otp_candidates": []}
         self.seen_candidate_keys.update(str(item.get("key") or "") for item in message.get("otp_candidates") or [] if item.get("key"))
         self.log(f"[{self.account.email}] url_api iCloud mailbox URL connected")
 
@@ -1082,9 +1184,18 @@ class URLAPIICloudReader:
     def wait_for_code(self, min_timestamp: float, timeout: int = 180) -> str:
         started = time.monotonic()
         last_notice = 0.0
+        specialized = getattr(self, "strategy", "generic") == "mczero"
+        fallback_at = min(float(timeout), URL_API_SPECIALIZED_FALLBACK_SECONDS) if specialized else 0
         while time.monotonic() - started < timeout:
             remaining = max(1, int(timeout - (time.monotonic() - started)))
-            message = self._latest(timeout=max(URL_API_REQUEST_TIMEOUT, remaining))
+            use_specialized = specialized and time.monotonic() - started < fallback_at
+            try:
+                message = self._latest(timeout=max(URL_API_REQUEST_TIMEOUT, remaining), strategy="mczero" if use_specialized else "generic")
+            except MailboxAccessError as exc:
+                if exc.terminal or not use_specialized:
+                    raise
+                time.sleep(min(3, remaining))
+                continue
             unseen = [item for item in message.get("otp_candidates") or [] if item.get("key") not in self.seen_candidate_keys]
             fresh = next((item for item in unseen if float(item.get("score") or 0) >= 40), None)
             if fresh is None:

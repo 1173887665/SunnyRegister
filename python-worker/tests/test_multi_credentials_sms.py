@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+import sunny_core.mailbox as mailbox_module
 from sunny_core.auth_challenges import generate_totp, normalize_totp_secret
 from sunny_core.luban_sms import LubanSMSClient, LubanSMSError
 from sunny_core.mailbox import MailAccount, URLAPIICloudReader, account_from_row
@@ -148,6 +149,60 @@ def test_url_api_reader_ignores_baseline_and_returns_new_code() -> None:
     reader.connect()
     with patch("sunny_core.mailbox.time.sleep", return_value=None):
         assert reader.wait_for_code(0, timeout=5) == "222222"
+
+
+def test_mczero_url_api_reader_parses_json_codes_and_preview() -> None:
+    account = MailAccount(
+        email="user@icloud.com",
+        password="",
+        client_id="",
+        refresh_token="",
+        raw="user@icloud.com----https://mail.mczero.top/s/token/user@icloud.com",
+        mailbox_type="apple",
+        mailbox_channel="url_api",
+        access_key="https://mail.mczero.top/s/token/user@icloud.com",
+    )
+    reader = URLAPIICloudReader(account, None)
+    response = Mock()
+    response.status_code = 200
+    response.ok = True
+    response.url = "https://mail.mczero.top/s/token/user@icloud.com?format=json&refresh=1"
+    response.json.return_value = {
+        "state": "ready",
+        "message": {
+            "id": "message-1",
+            "date": "2026-08-15T12:18:30Z",
+            "from": "ChatGPT <noreply@icloud.com>",
+            "subject": "ChatGPT verification code",
+            "codes": ["978744", "978744"],
+            "preview": "<p>ChatGPT verification code</p><p>978744</p>",
+        },
+    }
+    with patch.object(mailbox_module.requests, "get", return_value=response) as request:
+        message = reader._latest_mczero()
+    request.assert_called_once()
+    assert "format=json" in request.call_args.args[0]
+    assert "refresh=1" in request.call_args.args[0]
+    assert message["otp"] == "978744"
+    assert message["otp_candidates"][0]["code"] == "978744"
+    assert message["body"] == "ChatGPT verification code\n978744"
+
+
+def test_mczero_url_api_reader_falls_back_to_generic_after_specialized_window() -> None:
+    account = MailAccount("user@icloud.com", "", "", "", "raw", mailbox_type="apple", mailbox_channel="url_api", access_key="https://mail.mczero.top/s/token/user@icloud.com")
+    reader = URLAPIICloudReader.__new__(URLAPIICloudReader)
+    reader.account = account
+    reader.log = lambda _message: None
+    reader.strategy = "mczero"
+    reader.seen_candidate_keys = set()
+    reader.candidate_counts = {}
+    old = extract_otp_candidates("ChatGPT verification code 111111")
+    new = extract_otp_candidates("ChatGPT verification code 978744")
+    reader._latest = Mock(side_effect=[{"otp_candidates": old}, {"otp_candidates": new}])
+    with patch.object(mailbox_module, "URL_API_SPECIALIZED_FALLBACK_SECONDS", 0):
+        with patch("sunny_core.mailbox.time.sleep", return_value=None):
+            reader.connect()
+            assert reader.wait_for_code(0, timeout=5) == "978744"
 
 
 def test_url_api_reader_never_returns_low_confidence_sender_number() -> None:

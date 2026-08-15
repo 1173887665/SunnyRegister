@@ -28,6 +28,18 @@ var (
 	urlAPIAllowPrivateForTests bool
 )
 
+func urlAPIDomainStrategy(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "generic"
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "mail.mczero.top" || strings.HasSuffix(host, ".mail.mczero.top") {
+		return "mczero"
+	}
+	return "generic"
+}
+
 func validateURLAPIMailAddress(raw string) (string, error) {
 	value := strings.TrimSpace(raw)
 	parsed, err := url.Parse(value)
@@ -210,7 +222,7 @@ func decorateURLAPIPreviewPayload(payload map[string]any, accessURL string, mail
 	}
 }
 
-func fetchURLAPILatestMail(email, accessURL string, limit int, proxyURL string) (map[string]any, error) {
+func fetchURLAPIGenericLatestMail(email, accessURL string, limit int, proxyURL string) (map[string]any, error) {
 	email = strings.TrimSpace(email)
 	if email == "" || !strings.Contains(email, "@") {
 		return nil, &outlookMailError{Code: "mailbox_format_error", Category: "format", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: "url_api 邮箱凭证格式错误，应为 icloud_email----取码URL", Terminal: true}
@@ -270,6 +282,96 @@ func fetchURLAPILatestMail(email, accessURL string, limit int, proxyURL string) 
 		"body_preview": preview, "raw_html": rawHTML, "otp": otp, "source": "url_api",
 	}
 	return map[string]any{"email": email, "mailbox_type": "apple", "mailbox_channel": "url_api", "mail_protocol": "url_api", "items": []map[string]any{item}, "count": 1, "limit": 1}, nil
+}
+
+func fetchMCZeroURLAPILatestMail(email, accessURL string, proxyURL string) (map[string]any, error) {
+	endpoint, err := validateURLAPIMailAddress(accessURL)
+	if err != nil {
+		return nil, err
+	}
+	parsed, _ := url.Parse(endpoint)
+	query := parsed.Query()
+	query.Set("format", "json")
+	query.Set("refresh", "1")
+	parsed.RawQuery = query.Encode()
+	endpoint = parsed.String()
+	client := urlAPIHTTPClient(proxyURL)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, &outlookMailError{Code: "mailbox_network_error", Category: "network", HTTPStatus: http.StatusServiceUnavailable, UserMessage: "url_api 邮箱渠道连接超时或网络不可达，请检查取码 URL、服务器出网与代理配置", Detail: err.Error()}
+	}
+	defer resp.Body.Close()
+	if _, err = validateURLAPIMailAddress(resp.Request.URL.String()); err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return nil, &outlookMailError{Code: "mailbox_credential_invalid", Category: "credential", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: "url_api 取码 URL 无效、已过期或无权访问", Detail: fmt.Sprintf("HTTP %d", resp.StatusCode), Terminal: true}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &outlookMailError{Code: "mailbox_provider_failed", Category: "service", HTTPStatus: http.StatusBadGateway, UserMessage: "url_api 邮箱渠道请求失败，请稍后重试", Detail: fmt.Sprintf("HTTP %d", resp.StatusCode)}
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	var envelope struct {
+		Message map[string]any `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, &outlookMailError{Code: "mailbox_service_response_invalid", Category: "service", HTTPStatus: http.StatusBadGateway, UserMessage: "url_api 邮箱渠道返回了无法解析的响应，请稍后重试", Detail: err.Error()}
+	}
+	message := envelope.Message
+	previewHTML := text(message["preview"])
+	plain := urlAPIText(previewHTML)
+	otp := ""
+	if codes, ok := message["codes"].([]any); ok {
+		for _, value := range codes {
+			candidate := strings.TrimSpace(text(value))
+			if urlAPIOTPPattern.MatchString(candidate) {
+				if match := urlAPIOTPPattern.FindStringSubmatch(candidate); len(match) > 1 {
+					otp = match[1]
+					break
+				}
+			}
+		}
+	}
+	if otp == "" {
+		if match := urlAPIOTPPattern.FindStringSubmatch(plain); len(match) > 1 {
+			otp = match[1]
+		}
+	}
+	subject := strings.TrimSpace(text(message["subject"]))
+	relevant := urlAPIOpenAIPattern.MatchString(subject + "\n" + plain)
+	if subject == "" {
+		if relevant {
+			subject = "ChatGPT"
+		} else {
+			subject = "Latest iCloud mail"
+		}
+	}
+	preview := plain
+	if len([]rune(preview)) > 500 {
+		preview = string([]rune(preview)[:500])
+	}
+	item := map[string]any{
+		"id": fmt.Sprintf("url-api-mczero-%s", text(message["id"])), "email": email, "folder": "iCloud",
+		"subject": subject, "from": text(message["from"]), "to": email, "date": text(message["date"]), "body": plain,
+		"body_preview": preview, "raw_html": previewHTML, "otp": otp, "source": "url_api",
+	}
+	return map[string]any{"email": email, "mailbox_type": "apple", "mailbox_channel": "url_api", "mail_protocol": "url_api", "items": []map[string]any{item}, "count": 1, "limit": 1}, nil
+}
+
+func fetchURLAPILatestMail(email, accessURL string, limit int, proxyURL string) (map[string]any, error) {
+	if urlAPIDomainStrategy(accessURL) == "mczero" {
+		return fetchMCZeroURLAPILatestMail(email, accessURL, proxyURL)
+	}
+	return fetchURLAPIGenericLatestMail(email, accessURL, limit, proxyURL)
 }
 
 func fetchURLAPIMailSubjects(email, accessURL string, limit int, proxyURL string) ([]string, error) {

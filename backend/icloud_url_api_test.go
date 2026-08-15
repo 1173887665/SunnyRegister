@@ -62,6 +62,37 @@ func TestFetchURLAPILatestMailNormalizesHTML(t *testing.T) {
 	}
 }
 
+func TestFetchMCZeroURLAPILatestMailParsesJSONCodes(t *testing.T) {
+	urlAPIAllowPrivateForTests = true
+	defer func() { urlAPIAllowPrivateForTests = false }()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("format") != "json" || r.URL.Query().Get("refresh") != "1" {
+			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"state":"ready","message":{"id":"message-1","date":"2026-08-15T12:18:30Z","from":"ChatGPT <noreply@icloud.com>","subject":"ChatGPT verification code","codes":["978744","978744"],"preview":"<p>ChatGPT verification code</p><p>978744</p>"}}`))
+	}))
+	defer server.Close()
+
+	payload, err := fetchMCZeroURLAPILatestMail("alias@icloud.com", server.URL+"/s/token/alias@icloud.com", "")
+	if err != nil {
+		t.Fatalf("fetch mczero url_api mail: %v", err)
+	}
+	items := payload["items"].([]map[string]any)
+	if len(items) != 1 || items[0]["otp"] != "978744" || items[0]["source"] != "url_api" {
+		t.Fatalf("unexpected normalized item: %#v", items)
+	}
+}
+
+func TestURLAPIDomainStrategy(t *testing.T) {
+	if got := urlAPIDomainStrategy("https://mail.mczero.top/s/key/user@icloud.com"); got != "mczero" {
+		t.Fatalf("expected mczero strategy, got %q", got)
+	}
+	if got := urlAPIDomainStrategy("https://mail.example.test/latest"); got != "generic" {
+		t.Fatalf("expected generic strategy, got %q", got)
+	}
+}
+
 func TestURLAPISubjectSkipsMailboxHeading(t *testing.T) {
 	raw := `<h2>person@icloud.com</h2><div>ChatGPT</div><div>Your ChatGPT temporary code</div>`
 	if got := urlAPISubject(raw, urlAPIText(raw)); got != "Your ChatGPT temporary code" {
