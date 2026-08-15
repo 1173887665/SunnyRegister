@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 PAY153_DIR = Path(__file__).parents[1] / "tools" / "pay153_checkout"
 if str(PAY153_DIR) not in sys.path:
@@ -11,6 +13,61 @@ if str(PAY153_DIR) not in sys.path:
 
 import app as checkout_app  # noqa: E402
 import stripe_checkout  # noqa: E402
+
+
+@pytest.mark.parametrize("message", [
+    "SSLError: Failed to perform, curl: (35) Recv failure: Connection reset by peer",
+    "curl: (35) SSL connect error",
+    "proxy TLS handshake failed",
+])
+def test_proxy_ssl_error_is_classified_for_route_rotation(message: str) -> None:
+    assert checkout_app._is_proxy_ssl_error(message) is True
+
+
+def test_non_transport_error_is_not_classified_as_proxy_ssl_error() -> None:
+    assert checkout_app._is_proxy_ssl_error("OAICS_PAYPAL_METHOD_UNAVAILABLE") is False
+
+
+def test_proxy_route_label_redacts_credentials() -> None:
+    assert checkout_app.proxy_route_label("http://user:secret@example.test:8080") == "http://example.test:8080"
+
+
+def test_ssl_retry_extends_to_three_proxy_switches_and_rotates_routes() -> None:
+    store = object.__new__(checkout_app.JobStore)
+    state = {"status": "running", "error": "", "result": None}
+    logs: list[str] = []
+    routes: list[tuple[str, str]] = []
+
+    store.cancelled = lambda _job_id: False
+    store.get = lambda _job_id: dict(state)
+
+    def update(_job_id: str, **fields):
+        state.update(fields)
+
+    store.update = update
+    store.log = lambda _job_id, message: logs.append(message)
+    store._record_success = lambda _job_id, _result: None
+
+    def run_single(_job_id: str, attempt_options: dict):
+        routes.append((attempt_options["fixed_entry_proxy"], attempt_options["fixed_exit_proxy"]))
+        state.update(status="running", error="SSLError: curl: (35) Recv failure: Connection reset by peer")
+
+    store._run_single = run_single
+    options = {
+        "retry_count": 1,
+        "link_type": "hosted",
+        "entry_proxies": ["http://entry-1:8001", "http://entry-2:8002", "http://entry-3:8003", "http://entry-4:8004"],
+        "exit_proxies": ["http://exit-1:9001", "http://exit-2:9002", "http://exit-3:9003", "http://exit-4:9004"],
+        "paired_proxy_rotation": True,
+    }
+
+    with patch.object(checkout_app.time, "sleep"):
+        store._run_locked("job-1", options)
+
+    assert len(routes) == 4
+    assert len(set(routes)) == 4
+    assert state["status"] == "error"
+    assert any("达到 3 次代理切换上限" in message for message in logs)
 
 
 class FakeResponse:

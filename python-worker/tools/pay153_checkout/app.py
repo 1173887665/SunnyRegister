@@ -449,6 +449,18 @@ def normalize_proxy(raw: str) -> str:
     return build("http", host, port)
 
 
+def proxy_route_label(proxy: str) -> str:
+    """Return a credential-free proxy label suitable for diagnostics."""
+    value = str(proxy or "").strip()
+    if not value:
+        return "-"
+    try:
+        parsed = urlsplit(value)
+        return f"{parsed.scheme.lower() or 'unknown'}://{parsed.hostname or '?'}:{parsed.port or '?'}"
+    except Exception:
+        return "invalid-proxy"
+
+
 def normalize_proxy_pool(raw: Any, label: str) -> list[str]:
     if isinstance(raw, (list, tuple)):
         values = [str(item or "").strip() for item in raw]
@@ -1335,6 +1347,22 @@ def approve_checkout(
     return payload
 
 
+def _is_proxy_ssl_error(message: str) -> bool:
+    """Identify transport failures that are usually isolated to one proxy route."""
+    lowered = str(message or "").lower()
+    return any(marker in lowered for marker in (
+        "sslerror",
+        "curl: (35)",
+        "recv failure",
+        "connection reset by peer",
+        "connection reset",
+        "connection aborted",
+        "connection closed unexpectedly",
+        "ssl connect error",
+        "tls handshake",
+    ))
+
+
 class JobStore:
     def __init__(self):
         self.lock = threading.RLock()
@@ -1599,6 +1627,7 @@ class JobStore:
     def _run_locked(self, job_id: str, options: dict):
         max_attempts = min(50, max(1, int(options.get("retry_count") or 1)))
         used_pairs: set[tuple[str, str]] = set()
+        ssl_proxy_retries = 0
         last_error = ""
         oaics_hits = 0
         requested_paypal_country = str(
@@ -1616,7 +1645,8 @@ class JobStore:
                 job_id,
                 f"PayPal billing country {requested_paypal_country} uses DE/EUR fallback from attempt 1",
             )
-        for attempt in range(1, max_attempts + 1):
+        attempt = 1
+        while attempt <= max_attempts:
             if self.cancelled(job_id):
                 self.update(job_id, status="cancelled", percent=100, text="任务已停止", error="任务已停止")
                 return
@@ -1645,26 +1675,54 @@ class JobStore:
                     )
                 except Exception as exc:
                     last_error = f"Dynamic proxy fetch failed: {type(exc).__name__}: {exc}"
+                    is_ssl_error = _is_proxy_ssl_error(last_error)
+                    if is_ssl_error and ssl_proxy_retries >= 3:
+                        self.log(job_id, "SSL/连接重置错误已达到 3 次代理切换上限，停止继续尝试")
+                        self.update(job_id, status="error", percent=100, text="SSL/代理连接失败", error=last_error[:1200])
+                        return
+                    if is_ssl_error and ssl_proxy_retries < 3:
+                        ssl_proxy_retries += 1
+                        if attempt >= max_attempts:
+                            max_attempts = min(50, attempt + 1)
+                        self.log(job_id, f"检测到 SSL/连接重置错误，切换第 {ssl_proxy_retries} 次代理后重试")
+                    can_retry = attempt < max_attempts
                     self.update(
                         job_id,
-                        status="running" if attempt < max_attempts else "error",
-                        percent=4 if attempt < max_attempts else 100,
-                        text=("正在重新获取代理" if attempt < max_attempts else "任务失败"),
+                        status="running" if can_retry else "error",
+                        percent=4 if can_retry else 100,
+                        text=("正在重新获取代理" if can_retry else "任务失败"),
                         error=last_error[:1200],
                         last_retry_error=last_error[:500],
                     )
                     self.log(job_id, f"第 {attempt}/{max_attempts} 轮代理获取失败：{last_error[:260]}")
-                    if attempt >= max_attempts:
+                    if not can_retry:
                         return
                     time.sleep(min(4, 1 + attempt * 0.35))
+                    attempt += 1
                     continue
             else:
                 entry_pool = current["entry_proxies"]
                 exit_pool = current.get("exit_proxies") or entry_pool
                 if current.get("paired_proxy_rotation"):
-                    entry_proxy = entry_pool[(attempt - 1) % len(entry_pool)]
-                    exit_proxy = entry_proxy if shares_checkout_proxy(current, str(current.get("link_type") or "")) else exit_pool[(attempt - 1) % len(exit_pool)]
-                    pair = (entry_proxy, exit_proxy)
+                    # Keep deterministic rotation while skipping combinations
+                    # already used by an earlier attempt. This prevents an
+                    # SSL retry from accidentally reusing the reset route.
+                    same_route = shares_checkout_proxy(current, str(current.get("link_type") or ""))
+                    pair = None
+                    max_offsets = max(len(entry_pool), len(exit_pool), 1)
+                    for offset in range(max_offsets):
+                        entry_proxy = entry_pool[(attempt - 1 + offset) % len(entry_pool)]
+                        exit_proxy = entry_proxy if same_route else exit_pool[(attempt - 1 + offset) % len(exit_pool)]
+                        candidate = (entry_proxy, exit_proxy)
+                        if candidate not in used_pairs or len(used_pairs) >= len(entry_pool) * len(exit_pool):
+                            pair = candidate
+                            break
+                    if pair is None:
+                        pair = (
+                            entry_pool[(attempt - 1) % len(entry_pool)],
+                            entry_pool[(attempt - 1) % len(entry_pool)]
+                            if same_route else exit_pool[(attempt - 1) % len(exit_pool)],
+                        )
                 else:
                     pair = None
                     for _ in range(40):
@@ -1680,6 +1738,10 @@ class JobStore:
                         pair = (secrets.choice(entry_pool), secrets.choice(exit_pool))
             used_pairs.add(pair)
             current["fixed_entry_proxy"], current["fixed_exit_proxy"] = pair
+            self.log(
+                job_id,
+                f"本轮代理路由：Promotion={proxy_route_label(pair[0])}；Checkout={proxy_route_label(pair[1])}",
+            )
             if current.get("link_type") == "paypal":
                 current["force_paypal_de_fallback"] = paypal_force_de_fallback
                 # Strategy A creates the Checkout with the campaign already
@@ -1755,6 +1817,16 @@ class JobStore:
                 "access token", "token_invalidated", "token_expired", "token_revoked", "jwt expired",
                 "计划类型", "提取方式", "任务已停止",
             ))
+            is_ssl_error = _is_proxy_ssl_error(last_error)
+            if is_ssl_error:
+                if ssl_proxy_retries >= 3:
+                    self.log(job_id, "SSL/连接重置错误已达到 3 次代理切换上限，停止继续尝试")
+                    self.update(job_id, status="error", percent=100, text="SSL/代理连接失败", error=last_error[:1200])
+                    return
+                ssl_proxy_retries += 1
+                if attempt >= max_attempts:
+                    max_attempts = min(50, attempt + 1)
+                self.log(job_id, f"检测到 SSL/连接重置错误，切换第 {ssl_proxy_retries} 次代理后重试")
             if non_retryable or attempt >= max_attempts:
                 self.update(job_id, status="error", percent=100, text="任务失败", error=last_error[:1200])
                 return
@@ -1778,6 +1850,7 @@ class JobStore:
             else:
                 self.log(job_id, "正在更换代理后重新尝试")
             time.sleep(min(4, 1 + attempt * 0.35))
+            attempt += 1
 
     def _run_rust_workflow(self, job_id: str, options: dict, rust_base: str):
         """Prepare one existing outer retry, then execute the payment stages in Rust."""
@@ -2160,6 +2233,7 @@ class JobStore:
             options.get("link_type") == "paypal" and options.get("oaics_paypal")
         ):
             return self._run_rust_workflow(job_id, options, rust_base)
+        transport_stage = "初始化"
         try:
             self.update(job_id, status="running", percent=6, text="解析 Access Token")
             raw_token = options.pop("token_raw")
@@ -2370,6 +2444,7 @@ class JobStore:
                 self.ensure_not_cancelled(job_id)
             preflight = {}
             if promo_requested:
+                transport_stage = "Promotion 优惠预检"
                 self.update(job_id, percent=12, text="通过 Promotion 代理池读取试用资格与活动标记")
                 preflight = preflight_trial_eligibility(
                     token, meta.get("account_id") or "", entry_proxy, device_id, did,
@@ -2453,6 +2528,7 @@ class JobStore:
                 )
             )
             self.update(job_id, percent=34, text=stage2_text)
+            transport_stage = "OpenAI Checkout 创建"
             checkout_proxy = checkout_route_proxy(options, provider, entry_proxy, exit_proxy)
             if provider in {"pix", "momo"}:
                 self.log(
@@ -2909,6 +2985,7 @@ class JobStore:
                 self.update(job_id, percent=100, text=done_text, status="done", result=result)
                 return
             if provider == "hosted":
+                transport_stage = "Stripe Hosted Checkout"
                 self.update(job_id, percent=56, text="正在检测官方长链金额")
                 if not session_id:
                     if promo_requested:
@@ -3103,6 +3180,7 @@ class JobStore:
                     elif str(identity.get("source") or "").startswith("generated_"):
                         generated_kind = str(identity.get("source")).removeprefix("generated_").upper()
                         self.log(job_id, f"PIX 本轮已自动生成 {generated_kind}、持有人/企业名称及巴西地址")
+            transport_stage = "Stripe/PayPal 支付处理"
             stripe_http = sc.build_http(exit_proxy)
 
             progress_mark = 62
@@ -3232,6 +3310,15 @@ class JobStore:
                 error_text = "该账号已有其他币种的活跃结账会话，请等待原会话释放，或更换账号后再生成当前币种链接。"
             elif "amount_too_small" in lowered:
                 error_text = "当前地区换算后的结账金额低于支付提供商下限，请提高 Codex 积分数量后重试。"
+            if _is_proxy_ssl_error(raw_error):
+                entry_label = proxy_route_label(str(options.get("fixed_entry_proxy") or ""))
+                exit_label = proxy_route_label(str(options.get("fixed_exit_proxy") or ""))
+                diagnostic = (
+                    f"传输诊断：阶段={transport_stage}；Promotion代理={entry_label}；"
+                    f"Checkout代理={exit_label}；将切换代理并重建HTTP会话"
+                )
+                self.log(job_id, diagnostic)
+                error_text = f"{error_text}（{diagnostic}）"
             self.log(job_id, f"错误：{type(exc).__name__}: {error_text}")
             if options.get("retry_wrapper"):
                 self.update(job_id, status="running", percent=8, text="本次未成功，正在更换代理重试", error=error_text[:1200])
