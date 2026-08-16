@@ -3151,17 +3151,11 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     try { await load(); notify("ok", t.refreshDone); }
     catch(e:any){ notify("fail", e.message || String(e)); }
   }
-  async function pollAccountDetectionTask(initialTask: AnyObj, interval: number, refreshDuringTask = true) {
+  async function pollAccountDetectionTask(initialTask: AnyObj, interval: number) {
     let task = initialTask;
-    let lastProgress = Number(task.progress_detail?.current ?? task.progress_current ?? 0);
     while (!task.terminal) {
       await new Promise((resolve)=>setTimeout(resolve,interval));
       task = await apiFetch(`/tasks/${task.id}`);
-      const currentProgress = Number(task.progress_detail?.current ?? task.progress_current ?? 0);
-      if (refreshDuringTask && currentProgress > lastProgress) {
-        lastProgress = currentProgress;
-        try { await load(); } catch { /* Keep polling; the next completed batch will refresh again. */ }
-      }
     }
     return task;
   }
@@ -3220,7 +3214,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     if (!row) setBatchTrialBusy(true);
     try {
       const initialTask = await apiFetch("/sunny/sessions/trial-check", { method:"POST", body:JSON.stringify({ session_ids:targetIds }) });
-      const task = await pollAccountDetectionTask(initialTask,900,false);
+      const task = await pollAccountDetectionTask(initialTask,900);
       await load();
       const result = task.result || {};
       const renewalTaskId = String(result.renewal_task_id || "");

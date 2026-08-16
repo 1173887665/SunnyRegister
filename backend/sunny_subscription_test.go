@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSunnySubscriptionMailMarkers(t *testing.T) {
@@ -67,6 +68,94 @@ func TestSunnySubscriptionTaskUpdatesMailboxAndAccountPlan(t *testing.T) {
 	result := jsonMap(task.ResultJSON)
 	if task.Status != TaskSucceeded || intValue(result["subscribed"], 0) != 1 || intValue(result["failed"], 0) != 0 {
 		t.Fatalf("unexpected task result: status=%s result=%#v", task.Status, result)
+	}
+}
+
+func TestSunnySubscriptionTaskPersistsCompletedAccountBeforeBatchFinishes(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	if err := s.db.Model(&SunnyMailbox{}).Where("email = ?", "session@example.com").Update("account_type", "free").Error; err != nil {
+		t.Fatalf("prepare first mailbox: %v", err)
+	}
+	if err := s.db.Model(&SunnyAccount{}).Where("email = ?", "session@example.com").Update("account_type", "free").Error; err != nil {
+		t.Fatalf("prepare first account: %v", err)
+	}
+	var first SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&first).Error; err != nil {
+		t.Fatalf("load first session: %v", err)
+	}
+
+	mailbox := SunnyMailbox{Email: "second@example.com", ClientID: "second-client", RefreshToken: "second-refresh", Status: "已注册", AccountType: "free", Enabled: true}
+	if err := s.db.Create(&mailbox).Error; err != nil {
+		t.Fatalf("create second mailbox: %v", err)
+	}
+	account := SunnyAccount{MailboxID: mailbox.ID, Email: mailbox.Email, Status: "registered", AccountType: "free"}
+	if err := s.db.Create(&account).Error; err != nil {
+		t.Fatalf("create second account: %v", err)
+	}
+	second := SunnySession{AccountID: account.ID, Email: mailbox.Email}
+	if err := s.db.Create(&second).Error; err != nil {
+		t.Fatalf("create second session: %v", err)
+	}
+
+	firstDetected := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	releasedSecond := false
+	defer func() {
+		if !releasedSecond {
+			close(releaseSecond)
+		}
+	}()
+	previousDetect := sunnyDetectSubscriptionMail
+	sunnyDetectSubscriptionMail = func(candidate sunnySubscriptionCandidate, _ string) (bool, string, error) {
+		if candidate.SessionID == first.ID {
+			close(firstDetected)
+			return true, "ChatGPT - Your new plan", nil
+		}
+		<-releaseSecond
+		return false, "", nil
+	}
+	t.Cleanup(func() { sunnyDetectSubscriptionMail = previousDetect })
+
+	task := s.createTask(sunnySubscriptionTaskType, "sunny", map[string]any{"session_ids": []uint{first.ID, second.ID}}, 2)
+	done := make(chan struct{})
+	go func() {
+		s.executeSunnySubscriptionTask(&task, map[string]any{"session_ids": []uint{first.ID, second.ID}})
+		close(done)
+	}()
+
+	select {
+	case <-firstDetected:
+	case <-time.After(time.Second):
+		t.Fatal("first subscription detection did not finish")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		var updated SunnyAccount
+		if err := s.db.Where("email = ?", first.Email).First(&updated).Error; err != nil {
+			t.Fatalf("reload first account: %v", err)
+		}
+		if updated.AccountType == "plus" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first completed subscription result was not persisted while the batch was running")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var running Task
+	if err := s.db.First(&running, "id = ?", task.ID).Error; err != nil {
+		t.Fatalf("reload running task: %v", err)
+	}
+	if terminalTaskStatuses[running.Status] {
+		t.Fatalf("task reached terminal state before second account completed: %q", running.Status)
+	}
+
+	close(releaseSecond)
+	releasedSecond = true
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("subscription batch did not finish after releasing second account")
 	}
 }
 
