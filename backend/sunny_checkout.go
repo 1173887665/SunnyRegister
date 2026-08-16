@@ -489,15 +489,7 @@ func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
 				itemCopy[key] = value
 			}
 			mu.Lock()
-			result["items"] = append(result["items"].([]any), item)
-			if text(item["status"]) == "succeeded" {
-				result["success"] = intValue(result["success"], 0) + 1
-			} else {
-				result["failed"] = intValue(result["failed"], 0) + 1
-			}
-			task.ProgressCurrent++
-			task.SuccessCount = intValue(result["success"], 0)
-			task.ErrorCount = intValue(result["failed"], 0)
+			recordSunnyCheckoutResult(task, result, item)
 			s.db.Save(task)
 			mu.Unlock()
 			level := "info"
@@ -528,6 +520,22 @@ func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
 	task.FinishedAt.Valid = true
 	task.FinishedAt.Time = time.Now()
 	s.db.Save(task)
+}
+
+func recordSunnyCheckoutResult(task *Task, result map[string]any, item map[string]any) {
+	items, _ := result["items"].([]any)
+	result["items"] = append(items, item)
+	if text(item["status"]) == "succeeded" {
+		result["success"] = intValue(result["success"], 0) + 1
+	} else {
+		result["failed"] = intValue(result["failed"], 0) + 1
+	}
+	task.ProgressCurrent++
+	task.SuccessCount = intValue(result["success"], 0)
+	task.ErrorCount = intValue(result["failed"], 0)
+	// Persist partial items while the batch is still running so polling can
+	// recover account results when an SSE connection misses an event.
+	task.ResultJSON = dumpJSON(result)
 }
 
 func (s *Server) runSunnyCheckoutAttempt(task *Task, payload, row map[string]any, token string, secret checkoutSecret) map[string]any {

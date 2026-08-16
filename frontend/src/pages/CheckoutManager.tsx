@@ -222,9 +222,10 @@ type CheckoutLiveState = { progress: number; message: string; status: string; re
 type CheckoutSuccessResult = { key: string; email: string; path: string; link: string; qrData: string; qrImage: string };
 
 function checkoutSuccessResult(result: AnyRow, identity: AnyRow = {}): CheckoutSuccessResult | null {
-  if (normalized(result?.status) !== "succeeded") return null;
   const link = resultDisplayLink(result);
   if (!link) return null;
+  const status = normalized(result?.status);
+  if (status && !["succeeded", "success", "done"].includes(status)) return null;
   const email = String(result.email || identity.email || "").trim();
   const accountID = Number(result.account_id || identity.account_id || 0);
   const rowIndex = Number(result.index ?? identity.index ?? -1);

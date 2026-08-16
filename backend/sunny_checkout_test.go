@@ -55,3 +55,24 @@ func TestExtractSunnyCheckoutResult(t *testing.T) {
 		t.Fatalf("result=%#v", result)
 	}
 }
+
+func TestRecordSunnyCheckoutResultPersistsPartialTaskItems(t *testing.T) {
+	task := Task{Status: TaskRunning, ProgressTotal: 2, ResultJSON: "{}"}
+	result := map[string]any{"requested": 2, "success": 0, "failed": 0, "items": []any{}}
+	item := map[string]any{
+		"email": "success@example.com", "status": "succeeded", "link_type": "paypal",
+		"payment_link": "https://www.paypal.com/agreements/approve?ba_token=BA-test",
+	}
+
+	recordSunnyCheckoutResult(&task, result, item)
+
+	serialized := serializeTask(task)
+	partial := serialized["result"].(map[string]any)
+	items := partial["items"].([]any)
+	if len(items) != 1 || text(items[0].(map[string]any)["email"]) != "success@example.com" {
+		t.Fatalf("partial task items=%#v", items)
+	}
+	if task.ProgressCurrent != 1 || task.SuccessCount != 1 || task.ErrorCount != 0 {
+		t.Fatalf("task progress=%d success=%d failed=%d", task.ProgressCurrent, task.SuccessCount, task.ErrorCount)
+	}
+}
