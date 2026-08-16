@@ -4,7 +4,7 @@ pydantic>=2.13.4,<3.0
 requests>=2.34.2,<3.0
 curl-cffi>=0.16.0,<1.0
 Flask>=3.0,<4
-gunicorn>=21,<24
+gunicorn>=26.0.0,<27
 cryptography>=50.0.0,<51.0
 playwright>=1.62.0,<2.0
 camoufox[geoip]==0.5.4
