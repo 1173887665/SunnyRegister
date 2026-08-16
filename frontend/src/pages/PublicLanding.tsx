@@ -7,7 +7,7 @@ import {
   ArrowRight,
   CheckCircle2,
   Database,
-  Github,
+  GitBranch,
   KeyRound,
   Languages,
   Link2,
@@ -238,7 +238,7 @@ export default function PublicLanding({ onLogin, logoutNotice = false, onNoticeD
         </a>
         <div className="public-nav-actions">
           <a className="round-tool" href={GITHUB_URL} target="_blank" rel="noreferrer" title={c.github} aria-label={c.github}>
-            <Github aria-hidden="true" />
+            <GitBranch aria-hidden="true" />
           </a>
           <button type="button" className="round-tool public-language" onClick={toggleLanguage} title={c.language} aria-label={c.language}>
             <Languages aria-hidden="true" /><span>{language === "zh-CN" ? "中" : "EN"}</span>
@@ -257,7 +257,7 @@ export default function PublicLanding({ onLogin, logoutNotice = false, onNoticeD
             <p>{c.lead}</p>
             <div className="public-hero-actions">
               <button type="button" className="public-primary-button" onClick={openDrawer}>{c.openConsole}<ArrowRight aria-hidden="true" /></button>
-              <a className="public-secondary-button" href={GITHUB_URL} target="_blank" rel="noreferrer"><Github aria-hidden="true" />{c.source}</a>
+              <a className="public-secondary-button" href={GITHUB_URL} target="_blank" rel="noreferrer"><GitBranch aria-hidden="true" />{c.source}</a>
             </div>
           </div>
 

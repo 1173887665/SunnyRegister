@@ -4,6 +4,13 @@ updates:
     directory: /frontend
     schedule:
       interval: weekly
+    groups:
+      eslint-toolchain:
+        patterns:
+          - "@eslint/*"
+          - "eslint"
+          - "eslint-*"
+          - "typescript-eslint"
   - package-ecosystem: gomod
     directory: /backend
     schedule:
