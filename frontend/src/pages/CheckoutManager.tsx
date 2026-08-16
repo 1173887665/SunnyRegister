@@ -311,6 +311,7 @@ export default function CheckoutManager() {
   const [taskLogs, setTaskLogs] = useState<AnyRow[]>([]);
   const [checkoutLive, setCheckoutLive] = useState<Record<string, CheckoutLiveState>>({});
   const [checkoutSuccesses, setCheckoutSuccesses] = useState<CheckoutSuccessResult[]>([]);
+  const [successListExpanded, setSuccessListExpanded] = useState(false);
   const [detailKey, setDetailKey] = useState("");
   const [cancelBusy, setCancelBusy] = useState(false);
   const logScrollRef = useRef<HTMLDivElement | null>(null);
@@ -346,6 +347,7 @@ export default function CheckoutManager() {
       if (!latest?.id) return;
       setTask(latest);
       setCheckoutSuccesses([]);
+      setSuccessListExpanded(false);
       setCheckoutBusy(true);
       setLogOpen(true);
       setActiveTaskID(String(latest.id));
@@ -442,6 +444,7 @@ export default function CheckoutManager() {
           if (message.toLowerCase().includes("task not found")) {
             setTask(null);
             setCheckoutSuccesses([]);
+            setSuccessListExpanded(false);
             setCheckoutBusy(false);
             setActiveTaskID("");
             return;
@@ -600,7 +603,7 @@ export default function CheckoutManager() {
   async function start() {
     if (!splitLines(checkoutProxies).length || !splitLines(promotionProxies).length) { setNotice("Checkout 代理池和 Promotion 代理池都必须填写"); return; }
     if (!selected.length) { setNotice("请先勾选需要提链的账户"); return; }
-    setCheckoutBusy(true); setTask(null); setTaskLogs([]); setCheckoutSuccesses([]); setDetailKey(""); setLogOpen(true);
+    setCheckoutBusy(true); setTask(null); setTaskLogs([]); setCheckoutSuccesses([]); setSuccessListExpanded(false); setDetailKey(""); setLogOpen(true);
     setCheckoutLive((old) => {
       const visibleRows = systemAT ? sessions : externalRows;
       const currentBatchKeys = new Set(visibleRows.filter((row) => selected.includes(checkoutSelectionKey(row, systemAT))).map((row) => checkoutLiveKey(row)));
@@ -650,8 +653,8 @@ export default function CheckoutManager() {
         <div className="flex flex-wrap items-center justify-between gap-3"><div><div className="text-sm font-semibold">最近提链任务</div><div className="mt-1 text-xs text-[var(--text-muted)]">状态：{taskStatusLabel(task.status)} · 进度：{task.progress || "0/0"} · 成功 {task.success ?? task.success_count ?? 0} · 失败 {task.error_count ?? 0}</div></div>{!task.terminal && <Button variant="outline" disabled={cancelBusy || task.status === "cancel_requested"} onClick={() => void cancelTask()}>{cancelBusy || task.status === "cancel_requested" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <X className="mr-2 h-4 w-4" />}{cancelBusy || task.status === "cancel_requested" ? "停止中..." : "停止提链"}</Button>}</div>
         {task.terminal && <div className={`mt-2 text-xs ${task.status === "succeeded" ? "text-emerald-600" : "text-red-500"}`}>{task.status === "succeeded" ? `任务完成：成功 ${task.success ?? task.success_count ?? 0}，失败 ${task.error_count ?? 0}` : `任务结束：${task.error || "请查看下方账户结果"}`}</div>}
         <div className="mt-3 border-t border-[var(--border)] pt-3">
-          <div className="mb-2 flex items-center gap-2 text-xs font-semibold"><span>成功账户</span><span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-600 dark:text-emerald-400">{checkoutSuccesses.length}</span></div>
-          {checkoutSuccesses.length ? <div className="overflow-x-auto"><table className="w-full min-w-[860px] table-fixed text-left text-xs"><colgroup><col className="w-[210px]" /><col className="w-[120px]" /><col /><col className="w-[100px]" /><col className="w-[82px]" /></colgroup><thead className="border-y border-[var(--border)] text-[var(--text-muted)]"><tr><th className="p-2">邮箱</th><th className="p-2">支付路径</th><th className="p-2">支付链接</th><th className="p-2">支付二维码</th><th className="p-2">操作</th></tr></thead><tbody>{checkoutSuccesses.map((item) => <tr key={item.key} className="border-b border-[var(--border)]/60"><td className="p-2"><div className="truncate font-medium" title={item.email}>{item.email}</div></td><td className="p-2"><CompactBadge label={labelFor(item.path, pathLabels)} tone={pathTone(item.path)} /></td><td className="p-2"><button className="block w-full truncate text-left font-medium text-[var(--accent)] underline decoration-[var(--accent)]/40 underline-offset-2" title={`${item.link}\n点击复制支付链接`} onClick={() => void copy(item.link)}>{item.link}</button></td><td className="p-2">{item.qrImage ? <QRImageThumb src={item.qrImage} onClick={() => { setQrValue(item.qrData); setQrImage(item.qrImage); }} /> : <QRThumb value={item.qrData} onClick={() => { setQrValue(item.qrData); setQrImage(""); }} />}</td><td className="p-2"><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="复制支付链接" onClick={() => void copy(item.link)}><Clipboard className="h-3 w-3" />复制</button></td></tr>)}</tbody></table></div> : <div className="py-4 text-center text-xs text-[var(--text-muted)]">暂无成功结果</div>}
+          <button type="button" className="flex w-full items-center gap-2 text-left text-xs font-semibold disabled:cursor-default" aria-expanded={successListExpanded} disabled={!checkoutSuccesses.length} onClick={() => setSuccessListExpanded((value) => !value)}><span>成功账户</span><span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-600 dark:text-emerald-400" aria-live="polite">{checkoutSuccesses.length}</span>{checkoutSuccesses.length > 0 && <span className="ml-auto inline-flex items-center gap-1 text-[var(--text-muted)]">{successListExpanded ? "收起" : "展开"}{successListExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}</span>}</button>
+          {successListExpanded && checkoutSuccesses.length > 0 && <div className="mt-2 overflow-x-auto"><table className="w-full min-w-[860px] table-fixed text-left text-xs"><colgroup><col className="w-[210px]" /><col className="w-[120px]" /><col /><col className="w-[100px]" /><col className="w-[82px]" /></colgroup><thead className="border-y border-[var(--border)] text-[var(--text-muted)]"><tr><th className="p-2">邮箱</th><th className="p-2">支付路径</th><th className="p-2">支付链接</th><th className="p-2">支付二维码</th><th className="p-2">操作</th></tr></thead><tbody>{checkoutSuccesses.map((item) => <tr key={item.key} className="border-b border-[var(--border)]/60"><td className="p-2"><div className="truncate font-medium" title={item.email}>{item.email}</div></td><td className="p-2"><CompactBadge label={labelFor(item.path, pathLabels)} tone={pathTone(item.path)} /></td><td className="p-2"><button className="block w-full truncate text-left font-medium text-[var(--accent)] underline decoration-[var(--accent)]/40 underline-offset-2" title={`${item.link}\n点击复制支付链接`} onClick={() => void copy(item.link)}>{item.link}</button></td><td className="p-2">{item.qrImage ? <QRImageThumb src={item.qrImage} onClick={() => { setQrValue(item.qrData); setQrImage(item.qrImage); }} /> : <QRThumb value={item.qrData} onClick={() => { setQrValue(item.qrData); setQrImage(""); }} />}</td><td className="p-2"><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="复制支付链接" onClick={() => void copy(item.link)}><Clipboard className="h-3 w-3" />复制</button></td></tr>)}</tbody></table></div>}
         </div>
       </div>}
     </section>
