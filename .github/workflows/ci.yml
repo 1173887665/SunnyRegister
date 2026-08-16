@@ -85,6 +85,12 @@ jobs:
       - name: Validate Python dependencies
         run: python -m pip check
 
+      - name: Install Playwright Chromium
+        run: python -m playwright install chromium
+
+      - name: Install Camoufox browser
+        run: python -m camoufox fetch
+
       - name: Validate Python Worker
         run: |
           python -m compileall -q python-worker

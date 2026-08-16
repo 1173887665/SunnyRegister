@@ -19,6 +19,8 @@ updates:
     directory: /python-worker
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: playwright
   - package-ecosystem: docker
     directory: /
     schedule:
