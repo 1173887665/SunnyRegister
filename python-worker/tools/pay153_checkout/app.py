@@ -456,7 +456,11 @@ def proxy_route_label(proxy: str) -> str:
         return "-"
     try:
         parsed = urlsplit(value)
-        return f"{parsed.scheme.lower() or 'unknown'}://{parsed.hostname or '?'}:{parsed.port or '?'}"
+        # Rotating gateways often share one host/port but differ by encoded
+        # credentials. Keep the credential hidden while making route changes
+        # observable in task logs.
+        fingerprint = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+        return f"{parsed.scheme.lower() or 'unknown'}://{parsed.hostname or '?'}:{parsed.port or '?'}#route={fingerprint}"
     except Exception:
         return "invalid-proxy"
 
@@ -1347,10 +1351,10 @@ def approve_checkout(
     return payload
 
 
-def _is_proxy_ssl_error(message: str) -> bool:
-    """Identify transport failures that are usually isolated to one proxy route."""
+def _proxy_transport_error_kind(message: str) -> str:
+    """Classify transport failures that should rotate the proxy route."""
     lowered = str(message or "").lower()
-    return any(marker in lowered for marker in (
+    if any(marker in lowered for marker in (
         "sslerror",
         "curl: (35)",
         "recv failure",
@@ -1360,7 +1364,26 @@ def _is_proxy_ssl_error(message: str) -> bool:
         "connection closed unexpectedly",
         "ssl connect error",
         "tls handshake",
-    ))
+    )):
+        return "SSL/连接重置"
+    if any(marker in lowered for marker in (
+        "curl: (28)",
+        "operation timed out",
+        "timed out after",
+        "failed to perform, curl: (28)",
+    )):
+        return "代理超时"
+    return ""
+
+
+def _is_proxy_ssl_error(message: str) -> bool:
+    """Identify SSL/TLS failures isolated to one proxy route."""
+    return _proxy_transport_error_kind(message) == "SSL/连接重置"
+
+
+def _is_proxy_timeout_error(message: str) -> bool:
+    """Identify curl timeout failures isolated to one proxy route."""
+    return _proxy_transport_error_kind(message) == "代理超时"
 
 
 class JobStore:
@@ -1627,7 +1650,7 @@ class JobStore:
     def _run_locked(self, job_id: str, options: dict):
         max_attempts = min(50, max(1, int(options.get("retry_count") or 1)))
         used_pairs: set[tuple[str, str]] = set()
-        ssl_proxy_retries = 0
+        proxy_transport_retries = 0
         last_error = ""
         oaics_hits = 0
         requested_paypal_country = str(
@@ -1675,16 +1698,16 @@ class JobStore:
                     )
                 except Exception as exc:
                     last_error = f"Dynamic proxy fetch failed: {type(exc).__name__}: {exc}"
-                    is_ssl_error = _is_proxy_ssl_error(last_error)
-                    if is_ssl_error and ssl_proxy_retries >= 3:
-                        self.log(job_id, "SSL/连接重置错误已达到 3 次代理切换上限，停止继续尝试")
-                        self.update(job_id, status="error", percent=100, text="SSL/代理连接失败", error=last_error[:1200])
+                    transport_kind = _proxy_transport_error_kind(last_error)
+                    if transport_kind and proxy_transport_retries >= 3:
+                        self.log(job_id, f"{transport_kind}已达到 3 次代理切换上限，停止继续尝试")
+                        self.update(job_id, status="error", percent=100, text="代理传输失败", error=last_error[:1200])
                         return
-                    if is_ssl_error and ssl_proxy_retries < 3:
-                        ssl_proxy_retries += 1
+                    if transport_kind and proxy_transport_retries < 3:
+                        proxy_transport_retries += 1
                         if attempt >= max_attempts:
                             max_attempts = min(50, attempt + 1)
-                        self.log(job_id, f"检测到 SSL/连接重置错误，切换第 {ssl_proxy_retries} 次代理后重试")
+                        self.log(job_id, f"检测到{transport_kind}，切换第 {proxy_transport_retries} 次代理后重试")
                     can_retry = attempt < max_attempts
                     self.update(
                         job_id,
@@ -1817,16 +1840,16 @@ class JobStore:
                 "access token", "token_invalidated", "token_expired", "token_revoked", "jwt expired",
                 "计划类型", "提取方式", "任务已停止",
             ))
-            is_ssl_error = _is_proxy_ssl_error(last_error)
-            if is_ssl_error:
-                if ssl_proxy_retries >= 3:
-                    self.log(job_id, "SSL/连接重置错误已达到 3 次代理切换上限，停止继续尝试")
-                    self.update(job_id, status="error", percent=100, text="SSL/代理连接失败", error=last_error[:1200])
+            transport_kind = _proxy_transport_error_kind(last_error)
+            if transport_kind:
+                if proxy_transport_retries >= 3:
+                    self.log(job_id, f"{transport_kind}已达到 3 次代理切换上限，停止继续尝试")
+                    self.update(job_id, status="error", percent=100, text="代理传输失败", error=last_error[:1200])
                     return
-                ssl_proxy_retries += 1
+                proxy_transport_retries += 1
                 if attempt >= max_attempts:
                     max_attempts = min(50, attempt + 1)
-                self.log(job_id, f"检测到 SSL/连接重置错误，切换第 {ssl_proxy_retries} 次代理后重试")
+                self.log(job_id, f"检测到{transport_kind}，切换第 {proxy_transport_retries} 次代理后重试")
             if non_retryable or attempt >= max_attempts:
                 self.update(job_id, status="error", percent=100, text="任务失败", error=last_error[:1200])
                 return

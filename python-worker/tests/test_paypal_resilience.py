@@ -24,15 +24,29 @@ def test_proxy_ssl_error_is_classified_for_route_rotation(message: str) -> None:
     assert checkout_app._is_proxy_ssl_error(message) is True
 
 
+@pytest.mark.parametrize("message", [
+    "Timeout: Failed to perform, curl: (28) Operation timed out after 60002 milliseconds with 0 bytes received",
+    "curl: (28) Operation timed out",
+])
+def test_proxy_timeout_is_classified_for_route_rotation(message: str) -> None:
+    assert checkout_app._is_proxy_timeout_error(message) is True
+
+
 def test_non_transport_error_is_not_classified_as_proxy_ssl_error() -> None:
     assert checkout_app._is_proxy_ssl_error("OAICS_PAYPAL_METHOD_UNAVAILABLE") is False
 
 
 def test_proxy_route_label_redacts_credentials() -> None:
-    assert checkout_app.proxy_route_label("http://user:secret@example.test:8080") == "http://example.test:8080"
+    label = checkout_app.proxy_route_label("http://user:secret@example.test:8080")
+    assert label.startswith("http://example.test:8080#route=")
+    assert "secret" not in label
 
 
-def test_ssl_retry_extends_to_three_proxy_switches_and_rotates_routes() -> None:
+@pytest.mark.parametrize("transport_error", [
+    "SSLError: curl: (35) Recv failure: Connection reset by peer",
+    "Timeout: Failed to perform, curl: (28) Operation timed out after 60002 milliseconds with 0 bytes received",
+])
+def test_transport_retry_extends_to_three_proxy_switches_and_rotates_routes(transport_error: str) -> None:
     store = object.__new__(checkout_app.JobStore)
     state = {"status": "running", "error": "", "result": None}
     logs: list[str] = []
@@ -50,7 +64,7 @@ def test_ssl_retry_extends_to_three_proxy_switches_and_rotates_routes() -> None:
 
     def run_single(_job_id: str, attempt_options: dict):
         routes.append((attempt_options["fixed_entry_proxy"], attempt_options["fixed_exit_proxy"]))
-        state.update(status="running", error="SSLError: curl: (35) Recv failure: Connection reset by peer")
+        state.update(status="running", error=transport_error)
 
     store._run_single = run_single
     options = {
