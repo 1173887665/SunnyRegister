@@ -918,6 +918,53 @@ func chatGPTPayload(item AccountRecord) map[string]any {
 	}
 }
 
+func (s *Server) sub2APIAccountNotes(item AccountRecord) string {
+	var mailbox SunnyMailbox
+	var session SunnySession
+	if s != nil && s.db != nil && strings.TrimSpace(item.Email) != "" {
+		s.db.Where("LOWER(email) = LOWER(?)", item.Email).Limit(1).Find(&mailbox)
+		s.db.Where("LOWER(email) = LOWER(?)", item.Email).Limit(1).Find(&session)
+		if notes := sunnySessionSecretKey(session, mailbox); notes != "" {
+			return notes
+		}
+	}
+	for _, provider := range item.ProviderAccounts {
+		if !strings.EqualFold(text(provider["provider_type"]), "mailbox") {
+			continue
+		}
+		credentials, _ := provider["credentials"].(map[string]any)
+		metadata, _ := provider["metadata"].(map[string]any)
+		for _, key := range []string{"raw", "raw_mailbox_line", "mailbox_raw", "secret_key", "sk"} {
+			if notes := firstText(text(credentials[key]), text(metadata[key])); notes != "" {
+				return notes
+			}
+		}
+		value := func(keys ...string) string {
+			for _, key := range keys {
+				if result := firstText(text(credentials[key]), text(metadata[key])); result != "" {
+					return result
+				}
+			}
+			return ""
+		}
+		mailbox := SunnyMailbox{
+			Email:           firstText(text(provider["login_identifier"]), value("email", "mailbox_email"), item.Email),
+			MailboxType:     value("mailbox_type", "type"),
+			MailboxChannel:  value("mailbox_channel", "channel"),
+			Password:        value("password", "mailbox_password"),
+			ClientID:        value("client_id", "clientId", "mailbox_client_id"),
+			RefreshToken:    value("refresh_token", "refreshToken", "mailbox_refresh_token"),
+			AccessKey:       value("access_key", "accessKey", "mailbox_access_key"),
+			ChatGPTPassword: value("chatgpt_password", "chat_gpt_password"),
+			TOTPSecret:      value("totp_secret", "totpSecret"),
+		}
+		if notes := sunnyMailboxCredentialLine(mailbox); notes != "" {
+			return notes
+		}
+	}
+	return ""
+}
+
 func (s *Server) handleBatchExport(w http.ResponseWriter, r *http.Request, format string) {
 	body, _ := parseBody(r)
 	items := s.selectedAccounts(body, "chatgpt")
@@ -948,7 +995,7 @@ func (s *Server) handleBatchExport(w http.ResponseWriter, r *http.Request, forma
 		files := map[string][]byte{}
 		for _, item := range items {
 			p := chatGPTPayload(item)
-			data := map[string]any{"proxies": []any{}, "accounts": []any{map[string]any{"name": p["email"], "platform": "openai", "type": "oauth", "credentials": map[string]any{"access_token": p["access_token"], "chatgpt_account_id": p["account_id"], "chatgpt_user_id": "", "client_id": p["client_id"], "expires_at": p["expires_at_unix"], "expires_in": 863999, "organization_id": p["workspace_id"], "refresh_token": p["refresh_token"]}, "extra": map[string]any{}, "concurrency": 10, "priority": 1, "rate_multiplier": 1, "auto_pause_on_expired": true}}}
+			data := map[string]any{"proxies": []any{}, "accounts": []any{map[string]any{"name": p["email"], "notes": s.sub2APIAccountNotes(item), "platform": "openai", "type": "oauth", "credentials": map[string]any{"access_token": p["access_token"], "chatgpt_account_id": p["account_id"], "chatgpt_user_id": "", "client_id": p["client_id"], "expires_at": p["expires_at_unix"], "expires_in": 863999, "organization_id": p["workspace_id"], "refresh_token": p["refresh_token"]}, "extra": map[string]any{}, "concurrency": 10, "priority": 1, "rate_multiplier": 1, "auto_pause_on_expired": true}}}
 			files[item.Email+"_sub2api.json"] = []byte(dumpJSONPretty(data))
 		}
 		if len(files) == 1 {

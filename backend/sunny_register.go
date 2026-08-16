@@ -3672,14 +3672,16 @@ func (s *Server) sunnySub2APIImport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "未找到需要导入的账户 Session")
 		return
 	}
-	accountRows, _ := s.sunnySessionSidecars(sessions)
+	accountRows, mailboxRows := s.sunnySessionSidecars(sessions)
 	accounts := []any{}
 	validSessions := []SunnySession{}
 	skipped := []map[string]any{}
 	for _, sess := range sessions {
-		account := accountRows[sunnyEmailKey(sess.Email)]
+		key := sunnyEmailKey(sess.Email)
+		account := accountRows[key]
 		sess.AccessToken = firstText(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON), account.AccessToken)
 		sess.RefreshToken = firstText(sess.RefreshToken, account.OpenAIRT)
+		sess.RawMailboxLine = sunnySessionSecretKey(sess, mailboxRows[key])
 		if strings.TrimSpace(sess.AccessToken) == "" || strings.TrimSpace(sess.RefreshToken) == "" {
 			skipped = append(skipped, map[string]any{"email": sess.Email, "reason": "missing access token or refresh token"})
 			continue
@@ -3820,7 +3822,7 @@ func buildSunnySub2AccountPayload(sess SunnySession, cfg map[string]any) map[str
 		credentials["model_mapping"] = mapping
 	}
 	payload := map[string]any{
-		"name": fallback(text(cfg["name_prefix"])+sess.Email, sess.Email), "notes": "", "platform": "openai", "type": "oauth",
+		"name": fallback(text(cfg["name_prefix"])+sess.Email, sess.Email), "notes": strings.TrimSpace(sess.RawMailboxLine), "platform": "openai", "type": "oauth",
 		"credentials": credentials,
 		"extra":       extra, "group_ids": groupIDs, "concurrency": intValue(cfg["concurrency"], 3), "priority": intValue(cfg["priority"], 50),
 		"rate_multiplier": 1, "auto_pause_on_expired": true,
@@ -3832,6 +3834,13 @@ func buildSunnySub2AccountPayload(sess SunnySession, cfg map[string]any) map[str
 		payload["load_factor"] = loadFactor
 	}
 	return payload
+}
+
+func sunnySessionSecretKey(sess SunnySession, mailbox SunnyMailbox) string {
+	if value := strings.TrimSpace(sunnyMailboxCredentialLine(mailbox)); value != "" {
+		return value
+	}
+	return strings.TrimSpace(sess.RawMailboxLine)
 }
 
 func sunnyDefaultSub2ModelMapping() map[string]any {
@@ -4512,11 +4521,13 @@ func (s *Server) sunnyExportSessions(w http.ResponseWriter, rows []SunnySession,
 	case "sub":
 		exportedAccounts := []any{}
 		cfg := s.sunnyGetConfig(sunnyCfgSub2API, defaultSub2APIConfig())
-		accounts, _ := s.sunnySessionSidecars(rows)
+		accounts, mailboxes := s.sunnySessionSidecars(rows)
 		for _, row := range rows {
-			account := accounts[sunnyEmailKey(row.Email)]
+			key := sunnyEmailKey(row.Email)
+			account := accounts[key]
 			row.AccessToken = firstText(row.AccessToken, sunnyAccessTokenFromSessionJSON(row.SessionJSON), account.AccessToken)
 			row.RefreshToken = firstText(row.RefreshToken, account.OpenAIRT)
+			row.RawMailboxLine = sunnySessionSecretKey(row, mailboxes[key])
 			if strings.TrimSpace(row.AccessToken) == "" {
 				continue
 			}
@@ -4564,7 +4575,9 @@ func (s *Server) sunnyExportSessions(w http.ResponseWriter, rows []SunnySession,
 	case "sub2api_json":
 		arr := []any{}
 		cfg := defaultSub2APIConfig()
+		_, mailboxes := s.sunnySessionSidecars(rows)
 		for _, r := range rows {
+			r.RawMailboxLine = sunnySessionSecretKey(r, mailboxes[sunnyEmailKey(r.Email)])
 			arr = append(arr, buildSunnySub2AccountPayload(r, cfg))
 		}
 		writeTextFile(w, timestampName("sub2api", "json"), "application/json", []byte(dumpJSONPretty(map[string]any{"accounts": arr})+"\n"))

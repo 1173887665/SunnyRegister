@@ -983,6 +983,20 @@ def _provider_is_available(db: SunnyDB, provider: str) -> bool:
     return bool(checker()) if callable(checker) else False
 
 
+def _sub2api_secret_key(db: SunnyDB, email: str, session: dict[str, Any]) -> str:
+    fetch_mailbox = getattr(db, "fetch_mailbox_by_email", None)
+    if callable(fetch_mailbox):
+        mailbox = fetch_mailbox(email)
+        if isinstance(mailbox, dict):
+            try:
+                secret_key = str(account_from_row(mailbox).raw or "").strip()
+            except (TypeError, ValueError):
+                secret_key = str(mailbox.get("raw") or "").strip()
+            if secret_key:
+                return secret_key
+    return str(session.get("raw_mailbox_line") or session.get("mailbox_raw") or "").strip()
+
+
 def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str, Any], proxy_url: str = "") -> dict[str, Any]:
     cfg, base_url, token = _sub2api_config(db)
     access_token = str(session.get("access_token") or "").strip()
@@ -1017,6 +1031,7 @@ def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str,
         credentials["model_mapping"] = model_mapping
     account_payload = {
         "name": f"{str(cfg.get('name_prefix') or '')}{email}",
+        "notes": _sub2api_secret_key(db, email, session),
         "platform": "openai",
         "type": "oauth",
         "credentials": credentials,
@@ -1124,6 +1139,7 @@ def _import_sub2api_agent_identity(
         if _is_cancel_exception(exc):
             raise
         raise RuntimeError(f"Agent Identity 凭证创建失败: {exc}") from exc
+    auth_json["notes"] = _sub2api_secret_key(db, email, session)
     auth_content = json.dumps(auth_json, ensure_ascii=False, separators=(",", ":"))
     payload = {
         "contents": [auth_content],

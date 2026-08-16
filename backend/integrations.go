@@ -168,6 +168,7 @@ func (s *Server) sub2APIAccountPayload(item AccountRecord, targetPlatform string
 
 	account := map[string]any{
 		"name":                       fallback(text(p["email"]), fmt.Sprintf("account-%d", item.ID)),
+		"notes":                      fallback(s.sub2APIAccountNotes(item), text(body["notes"])),
 		"platform":                   targetPlatform,
 		"type":                       fallback(text(body["account_type"]), "oauth"),
 		"credentials":                creds,
@@ -181,9 +182,6 @@ func (s *Server) sub2APIAccountPayload(item AccountRecord, targetPlatform string
 	}
 	if exp > 0 {
 		account["expires_at"] = exp
-	}
-	if notes := text(body["notes"]); notes != "" {
-		account["notes"] = notes
 	}
 	return account
 }
@@ -333,6 +331,9 @@ func maskSub2APIPayload(payload map[string]any) map[string]any {
 	accounts, _ := copy["accounts"].([]any)
 	for _, raw := range accounts {
 		acc, _ := raw.(map[string]any)
+		if notes := text(acc["notes"]); notes != "" {
+			acc["notes"] = previewSecret(notes)
+		}
 		creds, _ := acc["credentials"].(map[string]any)
 		for k, v := range creds {
 			if strings.Contains(strings.ToLower(k), "token") || strings.Contains(strings.ToLower(k), "secret") || strings.Contains(strings.ToLower(k), "cookie") {

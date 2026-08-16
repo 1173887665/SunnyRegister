@@ -125,7 +125,7 @@ func TestSunnySub2APIOptionsAndBatchImport(t *testing.T) {
 			account, _ := accounts[0].(map[string]any)
 			credentials, _ := account["credentials"].(map[string]any)
 			mapping, _ := credentials["model_mapping"].(map[string]any)
-			if intValue(account["proxy_id"], 0) != 9 || intValue(account["load_factor"], 0) != 80 || mapping["gpt-5.6-sol"] != "gpt-5.6-sol" {
+			if account["notes"] != "session@example.com----mailbox-password----client-id----mailbox-refresh-token" || intValue(account["proxy_id"], 0) != 9 || intValue(account["load_factor"], 0) != 80 || mapping["gpt-5.6-sol"] != "gpt-5.6-sol" {
 				t.Fatalf("unexpected account payload: %#v", account)
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -165,6 +165,44 @@ func TestSunnySub2APIOptionsAndBatchImport(t *testing.T) {
 	var account SunnyAccount
 	if err := s.db.Where("email = ?", session.Email).First(&account).Error; err != nil || account.Sub2APIStatus != "imported" || account.Sub2APIID != "remote-17" {
 		t.Fatalf("account import status=%q remote_id=%q err=%v", account.Sub2APIStatus, account.Sub2APIID, err)
+	}
+}
+
+func TestSub2APIGenericPayloadUsesMatchingMailboxSecretKey(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	payload := s.sub2APIAccountPayload(
+		AccountRecord{ID: 12, Email: "session@example.com"},
+		"openai",
+		7,
+		map[string]any{"notes": "legacy-shared-note"},
+	)
+	if payload["notes"] != "session@example.com----mailbox-password----client-id----mailbox-refresh-token" {
+		t.Fatalf("generic sub2api notes = %q", payload["notes"])
+	}
+	preview := maskSub2APIPayload(map[string]any{"accounts": []any{payload}})
+	previewAccount := preview["accounts"].([]any)[0].(map[string]any)
+	if previewAccount["notes"] == payload["notes"] {
+		t.Fatal("sub2api preview exposed the complete mailbox secret key")
+	}
+
+	legacyPayload := s.sub2APIAccountPayload(
+		AccountRecord{
+			ID:    13,
+			Email: "legacy@example.com",
+			ProviderAccounts: []map[string]any{{
+				"provider_type":    "mailbox",
+				"login_identifier": "legacy@example.com",
+				"credentials": map[string]any{
+					"password": "mail-password", "client_id": "mail-client", "refresh_token": "mail-refresh",
+				},
+			}},
+		},
+		"openai",
+		7,
+		map[string]any{},
+	)
+	if legacyPayload["notes"] != "legacy@example.com----mail-password----mail-client----mail-refresh" {
+		t.Fatalf("legacy sub2api notes = %q", legacyPayload["notes"])
 	}
 }
 

@@ -708,7 +708,7 @@ func TestSunnyAccountExportsUseStableNamesAndFormats(t *testing.T) {
 	if account["platform"] != "openai" || account["type"] != "oauth" || credentials["access_token"] != "session-access-token" {
 		t.Fatalf("unexpected SUB account: %#v", account)
 	}
-	if account["notes"] != "" || credentials["model_mapping"] == nil || credentials["subscription_expires_at"] == nil {
+	if account["notes"] != "session@example.com----mailbox-password----client-id----mailbox-refresh-token" || credentials["model_mapping"] == nil || credentials["subscription_expires_at"] == nil {
 		t.Fatalf("SUB compatibility fields are missing: %#v", account)
 	}
 }

@@ -61,6 +61,9 @@ class FakeDB:
     def set_account_sub2api_status(self, email, status, sub2api_id="", error="") -> None:
         self.sub2api_updates.append({"email": email, "status": status, "sub2api_id": sub2api_id, "error": error})
 
+    def fetch_mailbox_by_email(self, email) -> dict | None:
+        return mailbox() if email == "user@example.com" else None
+
 
 def mailbox(status="未注册", openai_rt="") -> dict:
     return {
@@ -334,6 +337,7 @@ class StageStatusTests(unittest.TestCase):
         self.assertTrue(payload["update_existing"])
         self.assertEqual(len(payload["contents"]), 1)
         imported_auth = __import__("json").loads(payload["contents"][0])
+        self.assertEqual(imported_auth["notes"], "user@example.com----password----client-id----outlook-refresh-token")
         self.assertEqual(imported_auth["auth_mode"], "agentIdentity")
         self.assertEqual(imported_auth["agent_identity"]["agent_runtime_id"], "runtime-id")
 
@@ -1110,6 +1114,7 @@ class Sub2APIImportPayloadTests(unittest.TestCase):
     def test_oauth_protocol_fields_are_forwarded_to_sub2api(self):
         db = Mock()
         db.task_id = "test-task"
+        db.fetch_mailbox_by_email.return_value = mailbox()
         db.get_config.return_value = {
             "enabled": True,
             "base_url": "https://sub2api.example",
@@ -1146,6 +1151,7 @@ class Sub2APIImportPayloadTests(unittest.TestCase):
         self.assertEqual(payload["credentials"]["organization_id"], "org-id")
         self.assertEqual(payload["credentials"]["plan_type"], "plus")
         self.assertEqual(payload["credentials"]["expires_at"], 123456789)
+        self.assertEqual(payload["notes"], "user@example.com----password----client-id----outlook-refresh-token")
         self.assertIn("gpt-5.6-sol", payload["credentials"]["model_mapping"])
         self.assertEqual(payload["extra"]["import_source"], "sunnyregister_oauth_code")
         self.assertTrue(post.call_args.kwargs["headers"]["Idempotency-Key"].startswith("sunny-test-task-7-"))
