@@ -178,6 +178,14 @@ func urlAPIHTTPClient(proxyURL string) *http.Client {
 }
 
 func fetchURLAPIPreviewHTML(accessURL, target, proxyURL string, mailboxID uint) (string, error) {
+	if strings.TrimSpace(target) != "" {
+		if _, err := resolveURLAPIPreviewTarget(accessURL, target); err != nil {
+			return "", err
+		}
+	}
+	if urlAPIDomainStrategy(accessURL) == "mczero" {
+		return fetchMCZeroURLAPIPreviewHTML(accessURL, proxyURL, mailboxID)
+	}
 	endpoint, err := resolveURLAPIPreviewTarget(accessURL, target)
 	if err != nil {
 		return "", err
@@ -209,6 +217,22 @@ func fetchURLAPIPreviewHTML(accessURL, target, proxyURL string, mailboxID uint) 
 		return "", err
 	}
 	return sanitizeURLAPIPreviewHTML(string(raw), resp.Request.URL.String(), mailboxID), nil
+}
+
+func fetchMCZeroURLAPIPreviewHTML(accessURL, proxyURL string, mailboxID uint) (string, error) {
+	payload, err := fetchMCZeroURLAPILatestMail("", accessURL, proxyURL)
+	if err != nil {
+		return "", err
+	}
+	items, _ := payload["items"].([]map[string]any)
+	if len(items) == 0 {
+		return sanitizeURLAPIPreviewHTML("<p>暂时没有收到邮件。</p>", accessURL, mailboxID), nil
+	}
+	rawHTML := text(items[0]["raw_html"])
+	if strings.TrimSpace(rawHTML) == "" {
+		rawHTML = "<p>暂时没有收到邮件。</p>"
+	}
+	return sanitizeURLAPIPreviewHTML(rawHTML, accessURL, mailboxID), nil
 }
 
 func decorateURLAPIPreviewPayload(payload map[string]any, accessURL string, mailboxID uint) {

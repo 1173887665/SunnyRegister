@@ -142,6 +142,27 @@ func TestFetchURLAPIPreviewHTMLSupportsSameOriginLinks(t *testing.T) {
 	}
 }
 
+func TestFetchMCZeroURLAPIPreviewHTMLUsesJSONMailPreview(t *testing.T) {
+	urlAPIAllowPrivateForTests = true
+	defer func() { urlAPIAllowPrivateForTests = false }()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("format") != "json" || r.URL.Query().Get("refresh") != "1" {
+			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"state":"ready","message":{"id":"message-1","preview":"<html><body><h1>ChatGPT</h1><p>验证码 <b>978744</b></p><script>alert('remove')</script></body></html>"}}`))
+	}))
+	defer server.Close()
+
+	page, err := fetchMCZeroURLAPIPreviewHTML(server.URL+"/s/token/alias@icloud.com", "", 12)
+	if err != nil {
+		t.Fatalf("fetch mczero preview: %v", err)
+	}
+	if !strings.Contains(page, "978744") || strings.Contains(page, "alert('remove')") || !strings.Contains(page, `"mailboxId":12`) {
+		t.Fatalf("unexpected mczero preview: %s", page)
+	}
+}
+
 func TestDecorateURLAPIPreviewPayloadOnlyChangesURLAPIItems(t *testing.T) {
 	urlItem := map[string]any{"source": "url_api", "raw_html": `<html><body><a href="/all">All</a></body></html>`}
 	graphItem := map[string]any{"source": "graph", "raw_html": `<html><body>Graph</body></html>`}
