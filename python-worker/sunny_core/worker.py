@@ -22,7 +22,7 @@ from .luban_sms import LubanSMSClient
 from .mailbox import account_from_row, parse_account_line
 from .openai_auth import TaskCancelledError, login_or_register, refresh_openai_access_token
 from .phone_pool import read_sms_candidates, wait_sms_code
-from .protocol_auth import ProtocolChallengeRequired, login_or_register_protocol
+from .protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationError, login_or_register_protocol
 from .proxy import build_proxy, proxy_target_tls_check, redact_proxy_url
 from .smsbower import SMSBowerClient
 from .smspool import SMSPOOL_CODE_TIMEOUT_SECONDS, SMSPoolClient
@@ -92,6 +92,19 @@ class _ProtocolBatchPolicy:
                 and self._browser_challenges >= 2
                 and self._browser_challenges * 4 >= self._protocol_attempts * 3
             )
+
+
+def _is_retryable_protocol_transport_error(error: Exception) -> bool:
+    message = str(error or "").lower()
+    return any(marker in message for marker in (
+        "curl: (28)",
+        "curl: (35)",
+        "connection reset by peer",
+        "recv failure",
+        "operation timed out",
+        "unexpected_eof_while_reading",
+        "unexpected eof while reading",
+    ))
 
 _DEFAULT_SUB2API_MODELS = (
     "codex-auto-review", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6",
@@ -1592,14 +1605,20 @@ def _run_one(
                     mailbox_proxy_url=auxiliary_proxy,
                     traffic_meter=traffic_meter,
                 )
-            except ProtocolChallengeRequired as challenge:
-                if protocol_batch_policy is not None and protocol_challenge_strategy == "native_headless":
+            except (ProtocolChallengeRequired, ProtocolRegistrationError) as protocol_error:
+                is_challenge = isinstance(protocol_error, ProtocolChallengeRequired)
+                retryable_transport_error = _is_retryable_protocol_transport_error(protocol_error)
+                if not is_challenge and not (
+                    protocol_challenge_strategy == "native_headless" and retryable_transport_error
+                ):
+                    raise
+                if protocol_batch_policy is not None and protocol_challenge_strategy == "native_headless" and is_challenge:
                     protocol_batch_policy.record_challenge()
                 db.ensure_not_cancelled()
-                protocol_traffic = getattr(challenge, "traffic", None)
+                protocol_traffic = getattr(protocol_error, "traffic", None)
                 if protocol_challenge_strategy == "sentinel_protocol":
                     db.event(
-                        f"[{email}] [认证] Sentinel 协议运行时未能生成有效证明，任务不会切换到完整浏览器接管: {challenge}",
+                        f"[{email}] [认证] Sentinel 协议运行时未能生成有效证明，任务不会切换到完整浏览器接管: {protocol_error}",
                         "error",
                         detail={
                             "email": email,
@@ -1610,14 +1629,15 @@ def _run_one(
                         },
                     )
                     raise
+                fallback_reason = "浏览器挑战" if is_challenge else "可恢复的网络传输错误"
                 db.event(
-                    f"[{email}] [认证] 协议模式遇到浏览器挑战，切换到后台无头浏览器继续注册/登录",
+                    f"[{email}] [认证] 协议模式遇到{fallback_reason}，切换到后台无头浏览器继续注册/登录",
                     "warning",
                     detail={
                         "email": email,
                         "scope": "selected",
                         "execution_mode": "protocol_headless_fallback",
-                        "protocol_error": str(challenge),
+                        "protocol_error": str(protocol_error),
                         "protocol_traffic": protocol_traffic if isinstance(protocol_traffic, dict) else {},
                     },
                 )

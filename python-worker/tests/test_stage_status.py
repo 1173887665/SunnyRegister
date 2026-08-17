@@ -95,6 +95,23 @@ class StageStatusTests(unittest.TestCase):
 
         self.assertEqual(flow._about_you_second_field_kind_from_context(context), "birth_date")
 
+    def test_existing_account_error_recognizes_japanese_response(self):
+        flow = object.__new__(OpenAIEmailRegisterFlow)
+        page = MagicMock()
+        page.locator.return_value.inner_text.return_value = (
+            "このメールアドレスには、すでにアカウントがあります。ログインしてください。 "
+            "error_code: user_already_exists"
+        )
+
+        self.assertTrue(flow._page_reports_existing_account(page))
+
+    def test_existing_account_footer_does_not_interrupt_new_registration(self):
+        flow = object.__new__(OpenAIEmailRegisterFlow)
+        page = MagicMock()
+        page.locator.return_value.inner_text.return_value = "Create your account Already have an account? Log in"
+
+        self.assertFalse(flow._page_reports_existing_account(page))
+
     def test_protocol_batch_policy_enables_fast_path_after_repeated_challenges(self):
         policy = worker._ProtocolBatchPolicy()
 
@@ -261,6 +278,31 @@ class StageStatusTests(unittest.TestCase):
         self.assertIn("invalid protocol response", str(result))
         browser_executor.assert_not_called()
 
+    def test_protocol_transport_error_falls_back_to_headless_browser(self):
+        db = FakeDB()
+        payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "protocol"}
+        browser_session = {
+            "access_token": "browser-access",
+            "auth_action": "register",
+            "plan_type": "free",
+            "session_json": {"accessToken": "browser-access"},
+        }
+        error = ProtocolRegistrationError(
+            "Validate email verification code request failed: curl: (28) Operation timed out"
+        )
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "http://proxy.example:8080", "mode": "pool"}),
+            patch.object(worker, "login_or_register_protocol", side_effect=error),
+            patch.object(worker, "login_or_register", return_value=browser_session) as browser_executor,
+        ):
+            ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
+
+        self.assertTrue(ok)
+        self.assertTrue(result["stage_complete"])
+        browser_executor.assert_called_once()
+        self.assertEqual(browser_executor.call_args.kwargs["execution_mode"], "protocol_headless_fallback")
+        self.assertTrue(any("可恢复的网络传输错误" in str(args[0]) for args, _kwargs in db.events))
+
     def test_sentinel_protocol_strategy_does_not_start_full_browser_on_challenge(self):
         db = FakeDB()
         payload = {
@@ -280,6 +322,27 @@ class StageStatusTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("Sentinel runtime failed", str(result))
         self.assertEqual(protocol_executor.call_args.kwargs["challenge_strategy"], "sentinel_protocol")
+        browser_executor.assert_not_called()
+
+    def test_sentinel_protocol_transport_error_does_not_start_full_browser(self):
+        db = FakeDB()
+        payload = {
+            "registration_stage": worker.REGISTER_ONLY,
+            "execution_mode": "protocol",
+            "protocol_challenge_strategy": "sentinel_protocol",
+        }
+        error = ProtocolRegistrationError(
+            "Sentinel oauth_create_account request failed: curl: (35) Recv failure: Connection reset by peer"
+        )
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
+            patch.object(worker, "login_or_register_protocol", side_effect=error),
+            patch.object(worker, "login_or_register") as browser_executor,
+        ):
+            ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
+
+        self.assertFalse(ok)
+        self.assertIn("Connection reset by peer", str(result))
         browser_executor.assert_not_called()
 
     def test_protocol_mode_continues_phone_stage_with_headless_oauth(self):

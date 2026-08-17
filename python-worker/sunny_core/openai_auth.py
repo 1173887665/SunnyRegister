@@ -39,6 +39,8 @@ LAST_NAMES = ["Smith", "Brown", "Taylor", "Walker", "Wilson", "Clark", "Hall", "
 REGISTER_DEVICE_PROFILES = [
     {"locale": "ja-JP", "languages": ["ja-JP", "ja"], "timezone": "Asia/Tokyo"},
 ]
+PROFILE_SUBMISSION_TIMEOUT_SECONDS = 300
+PROFILE_TRANSITION_TIMEOUT_MS = 5000
 
 # Phone binding must follow the number itself. Provider country identifiers are
 # not consistent (for example FireFox uses "mys"), while the E.164 prefix is.
@@ -762,6 +764,8 @@ class OpenAIEmailRegisterFlow:
         about_you_retry_at = 0.0
         about_you_recovery_attempted = False
         about_you_first_seen_at = 0.0
+        about_you_validation_retries = 0
+        existing_account_recovery_attempted = False
         route_error_retries = 0
         last_progress_signature = ""
         last_progress_at = time.time()
@@ -787,6 +791,25 @@ class OpenAIEmailRegisterFlow:
                         self.log(f"[认证] 页面刷新失败，继续等待：{exc}")
                     continue
                 raise RuntimeError(f"Register/login page stalled without progress: {self._page_text_summary(page, 300)}")
+            if self._page_reports_existing_account(page):
+                if existing_account_recovery_attempted:
+                    raise RuntimeError(
+                        f"[{self.account.email}] OpenAI reports that the account already exists, but login recovery did not complete"
+                    )
+                existing_account_recovery_attempted = True
+                self.existing_account = True
+                if self.auth_action == "unknown":
+                    self.auth_action = "login"
+                self.log("[认证] OpenAI 已创建或已存在该账户，立即切换邮箱登录流程恢复 Session")
+                signin_url = self._create_openai_signin_url(page.context, page)
+                _goto_auth_page(page, signin_url, self.log, timeout=90000)
+                otp_min_timestamp = time.time() - 10
+                email_code_submitted = False
+                about_you_submitted = False
+                about_you_at = 0.0
+                about_you_retry_at = 0.0
+                about_you_first_seen_at = 0.0
+                continue
             error_text = self._detect_route_error(page)
             if error_text:
                 if route_error_retries < 3 and self._retry_route_error(page):
@@ -824,13 +847,28 @@ class OpenAIEmailRegisterFlow:
                 now = time.time()
                 if not about_you_first_seen_at:
                     about_you_first_seen_at = now
-                elif now - about_you_first_seen_at >= 120:
+                elif now - about_you_first_seen_at >= PROFILE_SUBMISSION_TIMEOUT_SECONDS:
                     raise TimeoutError(
-                        f"[{self.account.email}] Profile submission did not complete within 120 seconds"
+                        f"[{self.account.email}] Profile submission did not complete within "
+                        f"{PROFILE_SUBMISSION_TIMEOUT_SECONDS} seconds"
                     )
                 if about_you_submitted:
+                    profile_error = self._profile_validation_error(page)
+                    if profile_error:
+                        if about_you_validation_retries >= 2:
+                            raise RuntimeError(f"OpenAI rejected the profile after 2 retries: {profile_error}")
+                        about_you_validation_retries += 1
+                        about_you_submitted = False
+                        about_you_at = 0.0
+                        about_you_retry_at = 0.0
+                        self.log(
+                            f"[认证] OpenAI 未接受当前基础资料，重新生成并填写（"
+                            f"{about_you_validation_retries}/2）：{profile_error}"
+                        )
+                        self._sleep_checked(1)
+                        continue
                     if now - about_you_at >= 10 and now - about_you_retry_at >= 10 and self._about_you_current_values_ok(page):
-                        self._click_continue(page, transition_timeout_ms=2500)
+                        self._click_continue(page, transition_timeout_ms=PROFILE_TRANSITION_TIMEOUT_MS)
                         about_you_retry_at = now
                         self.log("[认证] 基础资料已提交但页面未跳转，已重新点击提交按钮")
                     if not about_you_recovery_attempted and now - about_you_at >= 40 and self._about_you_current_values_ok(page):
@@ -882,6 +920,38 @@ class OpenAIEmailRegisterFlow:
         except Exception:
             value = str(getattr(page, "url", "") or "").lower()
         return any(x in value for x in ["captcha", "cloudflare", "verify you are human", "challenge", "just a moment", "security check"])
+
+    def _page_reports_existing_account(self, page) -> bool:
+        try:
+            text = re.sub(r"\s+", " ", page.locator("body").inner_text(timeout=700)).strip().lower()
+        except Exception:
+            return False
+        if any(marker in text for marker in (
+            "user_already_exists",
+            "account already exists",
+            "すでにアカウントがあります",
+            "账户已存在",
+            "帳戶已存在",
+        )):
+            return True
+        return "already has an account" in text and any(marker in text for marker in (
+            "this email", "this phone", "email address", "phone number",
+        ))
+
+    def _profile_validation_error(self, page) -> str:
+        try:
+            text = re.sub(r"\s+", " ", page.locator("body").inner_text(timeout=700)).strip()
+        except Exception:
+            return ""
+        lowered = text.lower()
+        markers = (
+            "ご入力の情報ではアカウントを作成できません",
+            "couldn't create your account with the information",
+            "cannot create an account with the information",
+            "无法使用您输入的信息创建账户",
+            "無法使用您輸入的資訊建立帳戶",
+        )
+        return text[:300] if any(marker in lowered for marker in markers) else ""
 
     def _recover_after_profile_submit(self, page) -> bool:
         """Recover if profile submit likely succeeded but the auth page is stuck."""
@@ -1695,7 +1765,7 @@ class OpenAIEmailRegisterFlow:
         self._force_fill(controls[0], name)
         self._force_fill(controls[1], second_value)
         self._sleep_checked(1.2)
-        if not self._click_continue(page, transition_timeout_ms=2500):
+        if not self._click_continue(page, transition_timeout_ms=PROFILE_TRANSITION_TIMEOUT_MS):
             raise RuntimeError("Profile filled, but finish button was not found")
 
     def _about_you_second_field_context(self, page) -> str:
