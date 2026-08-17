@@ -3166,22 +3166,13 @@ class JobStore:
                         billing.get("_place_name") or "公开场所",
                     ),
                 )
-            paypal_payment_billing = None
             if provider == "paypal":
                 paypal_country = str(options.get("payment_proxy_country") or country).upper()
                 if paypal_country != country:
-                    paypal_payment_billing = default_billing(
-                        paypal_country,
-                        meta.get("email") or "",
-                        geo=payment_geo,
-                        real_random=True,
-                    )
-                    paypal_address = paypal_payment_billing.get("address") or {}
                     self.log(
                         job_id,
-                        f"PayPal separated billing: OpenAI={country}/{options.get('currency')}, "
-                        f"PayPal={paypal_country}, city={paypal_address.get('city') or '-'}, "
-                        f"postal={paypal_address.get('postal_code') or '-'}",
+                        f"PayPal 支付出口代理地区={paypal_country}；"
+                        f"PaymentMethod 与 merchant approval 账单统一为 {country}/{options.get('currency')}",
                     )
             promotion_billing = None
             if provider == "paypal" and promo_requested:
@@ -3301,11 +3292,10 @@ class JobStore:
                 provider,
                 billing=billing,
                 promotion_billing=promotion_billing,
-                payment_billing=paypal_payment_billing,
-                payment_http=stripe_http if paypal_payment_billing else None,
                 country=options.get("checkout_country") or country,
                 chatgpt_http=provider_chatgpt_http,
                 access_token=token,
+                device_id=device_id,
                 stage1=checkout_data,
                 # PayPal 保持原协议的 Bearer approval；PIX/UPI 才使用带
                 # Sentinel 的 callback。PayPal approval 返回 approved 后仍

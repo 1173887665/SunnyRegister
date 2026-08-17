@@ -972,7 +972,15 @@ def extract_redirect_url(confirm_data: dict) -> str:
     return ""
 
 
-def approve_submission(chatgpt_http, access_token: str, session_id: str, processor_entity: str, log) -> dict:
+def approve_submission(
+    chatgpt_http,
+    access_token: str,
+    session_id: str,
+    processor_entity: str,
+    log,
+    *,
+    device_id: str = "",
+) -> dict:
     """manual_approval beta：调 ChatGPT /backend-api/payments/checkout/approve 批准提交。"""
     headers = {
         "content-type": "application/json",
@@ -985,6 +993,8 @@ def approve_submission(chatgpt_http, access_token: str, session_id: str, process
         "User-Agent": CHROME_UA,
         "OAI-Language": "en-US",
     }
+    if device_id:
+        headers["OAI-Device-Id"] = device_id
     body = {"checkout_session_id": session_id, "processor_entity": processor_entity}
     ar = chatgpt_http.post(
         "https://chatgpt.com/backend-api/payments/checkout/approve",
@@ -1244,6 +1254,7 @@ def stripe_to_paypal_redirect(
     country: str = "US",
     chatgpt_http=None,
     access_token: str = "",
+    device_id: str = "",
     publishable_key: str = "",
     processor_entity: str = "",
     approve_callback=None,
@@ -1253,9 +1264,22 @@ def stripe_to_paypal_redirect(
 ) -> tuple[str, str, dict]:
     """init→elements→create paypal pm→confirm(→manual approve)，返回 (redirect_url, pk, ctx)。"""
     profile = _profile(country)
-    payment_billing = payment_billing or billing
+    requested_payment_billing = payment_billing or billing
+    # The Stripe PaymentMethod, tax calculation, and ChatGPT merchant approval
+    # must describe one billing identity. The proxy exit may be in another
+    # country, but using that country for only the PayPal PaymentMethod creates
+    # an unstable approval context and often returns result=blocked.
+    payment_billing = billing
     payment_http = payment_http or http
     ctx_payment_country = str((payment_billing.get("address") or {}).get("country") or country).upper()
+    requested_payment_country = str(
+        (requested_payment_billing.get("address") or {}).get("country") or country
+    ).upper()
+    if requested_payment_country != ctx_payment_country:
+        log(
+            "[paypal] approval billing context aligned："
+            f"PaymentMethod/merchant={ctx_payment_country}；原支付地址={requested_payment_country}"
+        )
     pk = publishable_key or verify_pk(http, session_id, log)
     log("[paypal] 第 3/7 步：Stripe init")
     init_data, version, ctx = init_checkout(http, session_id, pk, profile, log)
@@ -1330,7 +1354,7 @@ def stripe_to_paypal_redirect(
     )
     if promotion_billing:
         log(
-            "[paypal] BR 优惠已由 checkout/update 应用；merchant 快照与 "
+            "[paypal] 优惠已由 checkout/update 应用；PaymentMethod、merchant 快照与 "
             f"Stripe/PayPal 账单统一为 {(billing.get('address') or {}).get('country') or country}"
         )
 
@@ -1397,7 +1421,14 @@ def stripe_to_paypal_redirect(
             if approve_callback:
                 approve_callback(pe)
             else:
-                approve_submission(chatgpt_http, access_token, session_id, pe, log)
+                approve_submission(
+                    chatgpt_http,
+                    access_token,
+                    session_id,
+                    pe,
+                    log,
+                    device_id=device_id,
+                )
             # Reuse an early redirect if Stripe already exposed one. Otherwise
             # read the approved submission once through /poll, then once through
             # the full payment_pages representation. Never re-confirm here.

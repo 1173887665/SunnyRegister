@@ -143,6 +143,95 @@ class FakeResponse:
         return self.payload
 
 
+def test_manual_approval_reuses_checkout_device_id() -> None:
+    captured: dict = {}
+
+    class FakeHttp:
+        def post(self, _url: str, **kwargs):
+            captured.update(kwargs)
+            return FakeResponse({"result": "approved"})
+
+    result = stripe_checkout.approve_submission(
+        FakeHttp(),
+        "token",
+        "cs_live_test",
+        "openai_ie",
+        lambda _message: None,
+        device_id="device-test-123",
+    )
+
+    assert result == {"result": "approved"}
+    assert captured["headers"]["OAI-Device-Id"] == "device-test-123"
+
+
+def test_paypal_payment_and_approval_billing_follow_checkout_country() -> None:
+    checkout_billing = {
+        "name": "Test User",
+        "email": "test@example.com",
+        "address": {
+            "country": "DE",
+            "line1": "Potsdamer Platz 1",
+            "city": "Berlin",
+            "postal_code": "10785",
+        },
+    }
+    proxy_billing = {
+        "name": "Test User",
+        "email": "test@example.com",
+        "address": {
+            "country": "BR",
+            "line1": "Avenida Paulista 1000",
+            "city": "Sao Paulo",
+            "postal_code": "01310100",
+        },
+    }
+    logs: list[str] = []
+    init_ctx = {
+        "checkout_amount": 0,
+        "currency": "eur",
+        "payment_method_types": ["card", "paypal"],
+    }
+    redirect = "https://www.paypal.com/agreements/approve?ba_token=BA-TEST"
+
+    with (
+        patch.object(
+            stripe_checkout,
+            "init_checkout",
+            return_value=({"total_summary": {"due": 0}}, stripe_checkout.STRIPE_VERSION_BASE, init_ctx),
+        ),
+        patch.object(stripe_checkout, "fetch_elements_session"),
+        patch.object(stripe_checkout, "update_tax_region"),
+        patch.object(stripe_checkout, "snapshot_billing") as snapshot,
+        patch.object(stripe_checkout, "create_paypal_payment_method", return_value="pm_test") as create_pm,
+        patch.object(
+            stripe_checkout,
+            "confirm_payment",
+            return_value={"next_action": {"redirect_to_url": {"url": redirect}}},
+        ) as confirm,
+        patch.object(stripe_checkout, "resolve_paypal_approval_url", return_value=redirect),
+    ):
+        result, _pk, ctx = stripe_checkout.stripe_to_paypal_redirect(
+            object(),
+            "cs_live_test",
+            billing=checkout_billing,
+            payment_billing=proxy_billing,
+            country="DE",
+            chatgpt_http=object(),
+            access_token="token",
+            publishable_key="pk_test",
+            processor_entity="openai_ie",
+            require_zero_due=True,
+            log=logs.append,
+        )
+
+    assert result == redirect
+    assert snapshot.call_args.args[4] == checkout_billing
+    assert create_pm.call_args.args[2] == checkout_billing
+    assert confirm.call_args.args[6]["billing"] == checkout_billing
+    assert ctx["paypal_billing_country"] == "DE"
+    assert any("PaymentMethod/merchant=DE" in message for message in logs)
+
+
 def test_oaics_session_retry_waits_for_delayed_payment_methods() -> None:
     responses = [
         {},
