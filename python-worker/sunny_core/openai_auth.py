@@ -485,6 +485,11 @@ class OpenAIEmailRegisterFlow:
             return None
         return state
 
+    def _browser_traffic_snapshot(self) -> dict[str, Any]:
+        snapshot = self.traffic_meter.snapshot()
+        snapshot["optimization"] = self.traffic_optimizer.snapshot()
+        return snapshot
+
     def run(self) -> dict[str, Any]:
         self.log(f"[认证] 开始注册或登录: {self.account.email}")
         try:
@@ -568,13 +573,21 @@ class OpenAIEmailRegisterFlow:
                     self.log("[认证] ChatGPT 注册/登录已经完成，但手机号阶段无法继续；已保存 Session 并保留已注册状态")
                     return result
                 result = self._extract_session_info(context, page)
-                result["browser_traffic"] = self.traffic_meter.snapshot()
+                result["browser_traffic"] = self._browser_traffic_snapshot()
                 result["auth_action"] = self.auth_action if self.auth_action != "unknown" else "login"
                 if self.generated_password:
                     result["generated_chatgpt_password"] = self.generated_password
                 self.log("[认证] 注册或登录完成，已读取 Session 信息")
                 return result
         finally:
+            optimization = self.traffic_optimizer.snapshot()
+            if optimization.get("enabled"):
+                self.log(
+                    "[流量] 浏览器省流："
+                    f"拦截 {optimization.get('blocked', 0)}，"
+                    f"缓存命中 {optimization.get('cache_hits', 0)} / 未命中 {optimization.get('cache_misses', 0)}，"
+                    f"缓存节省估算 {optimization.get('cache_saved_bytes', 0)} bytes"
+                )
             self.traffic_optimizer.detach()
             if self.otp_reader:
                 self.otp_reader.close()
@@ -2332,7 +2345,7 @@ class OpenAIEmailRegisterFlow:
             result["post_registration_error"] = f"已登录 ChatGPT，但获取 Refresh Token 失败: {exc}"
             self.log(f"[Session] {result['post_registration_error']}；已保留 ChatGPT Session，账号状态停留在已完成阶段")
         result["phone_bound"] = bool(result.get("phone_bound")) or self.phone_verification_completed
-        result["browser_traffic"] = self.traffic_meter.snapshot()
+        result["browser_traffic"] = self._browser_traffic_snapshot()
         return result
 
     def _read_chatgpt_session_json(self, context, page) -> dict[str, Any]:

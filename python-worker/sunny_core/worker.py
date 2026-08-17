@@ -1399,8 +1399,14 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                 registration_attempt=task_type == "sunny_register" and not is_registered_mailbox,
                 registration_succeeded=registration_succeeded,
             )
+            host_summary = ", ".join(
+                f"{host}={int((details or {}).get('bytes') or 0)}"
+                for host, details in list((snapshot.get("by_host") or {}).items())[:3]
+            )
             db.event(
-                f"[{email}] [流量] 本次代理池交互 {snapshot.get('total_bytes', 0)} bytes",
+                f"[{email}] [流量] 本次代理池 HTTP 应用层流量估算 {snapshot.get('total_bytes', 0)} bytes"
+                f"（缓存回放已排除，不含 TLS/TCP 开销）"
+                + (f"；主要域名 {host_summary}" if host_summary else ""),
                 detail={"email": email, "scope": "selected", "proxy_traffic": snapshot},
             )
         except Exception as exc:

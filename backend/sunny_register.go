@@ -3568,7 +3568,7 @@ func defaultProxyConfig() map[string]any {
 		"proxy_enabled": true, "local_proxy": "http://127.0.0.1:7897", "register_proxy": "", "provider_configs": []any{}, "precheck": true, "sid_mode": "random",
 		"browser_traffic_optimization": map[string]any{
 			"enabled": true, "block_heavy_resources": true, "static_cache_enabled": true,
-			"cache_ttl_hours": 24, "cache_max_mib": 256, "cache_object_max_mib": 8,
+			"cache_ttl_hours": 168, "cache_max_mib": 256, "cache_object_max_mib": 8,
 		},
 	}
 }

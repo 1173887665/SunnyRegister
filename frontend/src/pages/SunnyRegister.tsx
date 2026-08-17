@@ -599,11 +599,13 @@ Object.assign(zh, {
   protocolMode: "协议模式注册",
   backgroundMode: "无头浏览器注册",
   visibleMode: "可视浏览器注册",
+  trafficUsageTip: "ChatGPT 账户注册流量 / 邮箱账户历史代理交互总流量（HTTP 应用层估算，不含 TLS/TCP；缓存回放不计）",
 });
 Object.assign(en, {
   protocolMode: "Protocol Registration",
   backgroundMode: "Headless Browser Registration",
   visibleMode: "Visible Browser Registration",
+  trafficUsageTip: "ChatGPT registration traffic / mailbox lifetime proxy traffic (estimated HTTP application bytes; excludes TLS/TCP and cache replays)",
 });
 
 const MAILBOX_STATUSES = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "登录刷新", "失败"];
