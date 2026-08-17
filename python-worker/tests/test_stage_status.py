@@ -80,6 +80,39 @@ def mailbox(status="未注册", openai_rt="") -> dict:
 
 
 class StageStatusTests(unittest.TestCase):
+    def test_about_you_prefers_japanese_age_field_over_birth_date_switch(self):
+        flow = object.__new__(OpenAIEmailRegisterFlow)
+        context = (
+            "name=age id=age placeholder= aria-label=年齢 autocomplete= inputmode=numeric type=text "
+            "__FIELD_CONTEXT_END__ 何才ですか？ 生年月日を使用する"
+        )
+
+        self.assertEqual(flow._about_you_second_field_kind_from_context(context), "age")
+
+    def test_about_you_recognizes_explicit_date_input(self):
+        flow = object.__new__(OpenAIEmailRegisterFlow)
+        context = "name=birthdate id=dob aria-label=生年月日 type=date __FIELD_CONTEXT_END__ 年齢"
+
+        self.assertEqual(flow._about_you_second_field_kind_from_context(context), "birth_date")
+
+    def test_protocol_batch_policy_enables_fast_path_after_repeated_challenges(self):
+        policy = worker._ProtocolBatchPolicy()
+
+        self.assertFalse(policy.should_start_in_browser())
+        policy.record_challenge()
+        self.assertFalse(policy.should_start_in_browser())
+        policy.record_challenge()
+
+        self.assertTrue(policy.should_start_in_browser())
+
+    def test_protocol_batch_policy_stays_on_protocol_when_success_rate_is_sufficient(self):
+        policy = worker._ProtocolBatchPolicy()
+        policy.record_challenge()
+        policy.record_challenge()
+        policy.record_success()
+
+        self.assertFalse(policy.should_start_in_browser())
+
     def run_one(self, stage: str, session: dict, status="未注册", import_result=None):
         db = FakeDB()
         payload = {"registration_stage": stage, "execution_mode": "background"}
@@ -177,6 +210,42 @@ class StageStatusTests(unittest.TestCase):
         self.assertEqual(db.sessions[-1]["session"]["protocol_fallback"], "headless")
         self.assertEqual(db.sessions[-1]["session"]["protocol_traffic"]["total_bytes"], 2048)
         self.assertTrue(any("后台无头浏览器" in str(args[0]) for args, _kwargs in db.events))
+
+    def test_protocol_batch_fast_path_skips_repeated_protocol_attempt(self):
+        db = FakeDB()
+        payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "protocol"}
+        policy = worker._ProtocolBatchPolicy()
+        policy.record_challenge()
+        policy.record_challenge()
+        browser_session = {
+            "access_token": "browser-access",
+            "auth_action": "register",
+            "plan_type": "free",
+            "session_json": {"accessToken": "browser-access"},
+        }
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "http://proxy.example:8080", "mode": "pool"}),
+            patch.object(worker, "login_or_register_protocol") as protocol_executor,
+            patch.object(worker, "login_or_register", return_value=browser_session) as browser_executor,
+        ):
+            ok, result = worker._run_one(
+                db,
+                "sunny_register",
+                payload,
+                mailbox(),
+                3,
+                10,
+                protocol_batch_policy=policy,
+            )
+
+        self.assertTrue(ok)
+        self.assertTrue(result["stage_complete"])
+        protocol_executor.assert_not_called()
+        browser_executor.assert_called_once()
+        self.assertEqual(browser_executor.call_args.kwargs["execution_mode"], "protocol_headless_fallback")
+        self.assertEqual(db.sessions[-1]["session"]["requested_execution_mode"], "protocol")
+        self.assertEqual(db.sessions[-1]["session"]["protocol_fallback"], "batch_challenge_fast_path")
+        self.assertTrue(any("跳过重复协议验证" in str(args[0]) for args, _kwargs in db.events))
 
     def test_protocol_non_challenge_error_does_not_start_browser(self):
         db = FakeDB()

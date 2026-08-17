@@ -761,6 +761,7 @@ class OpenAIEmailRegisterFlow:
         about_you_at = 0.0
         about_you_retry_at = 0.0
         about_you_recovery_attempted = False
+        about_you_first_seen_at = 0.0
         route_error_retries = 0
         last_progress_signature = ""
         last_progress_at = time.time()
@@ -820,10 +821,16 @@ class OpenAIEmailRegisterFlow:
                 continue
             if "about-you" in url or self._has_about_you_form(page):
                 email_code_submitted = False
+                now = time.time()
+                if not about_you_first_seen_at:
+                    about_you_first_seen_at = now
+                elif now - about_you_first_seen_at >= 120:
+                    raise TimeoutError(
+                        f"[{self.account.email}] Profile submission did not complete within 120 seconds"
+                    )
                 if about_you_submitted:
-                    now = time.time()
                     if now - about_you_at >= 10 and now - about_you_retry_at >= 10 and self._about_you_current_values_ok(page):
-                        self._click_continue(page)
+                        self._click_continue(page, transition_timeout_ms=2500)
                         about_you_retry_at = now
                         self.log("[认证] 基础资料已提交但页面未跳转，已重新点击提交按钮")
                     if not about_you_recovery_attempted and now - about_you_at >= 40 and self._about_you_current_values_ok(page):
@@ -941,17 +948,18 @@ class OpenAIEmailRegisterFlow:
                     pass
         return out
 
-    def _click_continue(self, page) -> bool:
+    def _click_continue(self, page, transition_timeout_ms: int = 10000) -> bool:
         selectors = ['button:has-text("Finish creating account")', 'button:has-text("Create account")', 'button:has-text("Continue")', 'button:has-text("Next")', 'button:has-text("继续")', 'button:has-text("完成")', 'button[type="submit"]', '[role="button"]:has-text("Continue")', '[role="button"]:has-text("继续")']
         for selector in selectors:
             try:
                 b = page.locator(selector).first
                 if b.is_visible(timeout=700):
                     b.click(timeout=5000, force=True)
-                    try:
-                        page.wait_for_load_state("domcontentloaded", timeout=10000)
-                    except Exception:
-                        pass
+                    if transition_timeout_ms > 0:
+                        try:
+                            page.wait_for_load_state("domcontentloaded", timeout=transition_timeout_ms)
+                        except Exception:
+                            pass
                     return True
             except Exception:
                 pass
@@ -1663,7 +1671,10 @@ class OpenAIEmailRegisterFlow:
     def _has_about_you_form(self, page) -> bool:
         try:
             text = page.locator("body").inner_text(timeout=1000).lower()
-            if not any(x in text for x in ["about you", "birth", "full name", "finish creating account", "tell us about", "age"]):
+            if not any(x in text for x in [
+                "about you", "birth", "full name", "finish creating account", "tell us about", "age",
+                "年齢", "何歳", "何才", "生年月日", "姓名", "年龄", "出生日期",
+            ]):
                 return False
             return len(self._visible_inputs(page, ['input', 'textarea', '[contenteditable="true"]'])) >= 2
         except Exception:
@@ -1684,7 +1695,7 @@ class OpenAIEmailRegisterFlow:
         self._force_fill(controls[0], name)
         self._force_fill(controls[1], second_value)
         self._sleep_checked(1.2)
-        if not self._click_continue(page):
+        if not self._click_continue(page, transition_timeout_ms=2500):
             raise RuntimeError("Profile filled, but finish button was not found")
 
     def _about_you_second_field_context(self, page) -> str:
@@ -1720,6 +1731,7 @@ class OpenAIEmailRegisterFlow:
                         if (label.htmlFor && label.htmlFor === el.id) parts.push(label.textContent || '');
                         if (label.contains(el)) parts.push(label.textContent || '');
                     }
+                    parts.push('__FIELD_CONTEXT_END__');
                     let node = el.parentElement;
                     for (let i = 0; node && i < 3; i += 1, node = node.parentElement) parts.push(node.textContent || '');
                     parts.push(document.querySelector('h1,h2')?.textContent || '');
@@ -1733,6 +1745,7 @@ class OpenAIEmailRegisterFlow:
 
     def _about_you_second_field_kind_from_context(self, context: str) -> str:
         text = re.sub(r"\s+", " ", str(context or "")).strip().lower()
+        field_text = text.split("__field_context_end__", 1)[0]
         birth_date_patterns = [
             r"date\s*of\s*birth", r"birthdate", r"\bdob\b", r"fecha\s+de\s+nacimiento", r"\bnacimiento\b",
             r"\bgeburtstag\b", r"\bgeburtsdatum\b", r"生年月日", r"誕生日", r"生年月", r"出生日期", r"出生年月日",
@@ -1743,8 +1756,19 @@ class OpenAIEmailRegisterFlow:
             r"birth\s*year", r"year\s*of\s*birth", r"born\s*year", r"生年", r"出生年", r"生まれた年", r"出生年份",
         ]
         age_patterns = [
-            r"\bage\b", r"how\s*old", r"年齢", r"歳", r"何歳", r"年龄", r"年纪",
+            r"\bage\b", r"how\s*old", r"年齢", r"歳", r"才", r"何歳", r"何才", r"年龄", r"年纪",
         ]
+        # Prefer the current control's attributes and labels. The surrounding
+        # page often contains a "use date of birth" switch while the active
+        # field still asks for age.
+        if re.search(r"\btype=(date|datetime-local)\b", field_text, flags=re.I):
+            return "birth_date"
+        if any(re.search(pattern, field_text, flags=re.I) for pattern in birth_year_patterns):
+            return "birth_year"
+        if any(re.search(pattern, field_text, flags=re.I) for pattern in age_patterns):
+            return "age"
+        if any(re.search(pattern, field_text, flags=re.I) for pattern in birth_date_patterns):
+            return "birth_date"
         if any(re.search(pattern, text, flags=re.I) for pattern in birth_date_patterns):
             return "birth_date"
         if any(re.search(pattern, text, flags=re.I) for pattern in birth_year_patterns):

@@ -8,6 +8,7 @@ import time
 import traceback
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from threading import Lock
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -65,6 +66,32 @@ _MAILBOX_PROGRESS_RANK = {
     "已反代": 3,
     "reverse_proxied": 3,
 }
+
+
+class _ProtocolBatchPolicy:
+    """Skip repeated protocol attempts after this batch proves they require a browser."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._protocol_attempts = 0
+        self._browser_challenges = 0
+
+    def record_challenge(self) -> None:
+        with self._lock:
+            self._protocol_attempts += 1
+            self._browser_challenges += 1
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._protocol_attempts += 1
+
+    def should_start_in_browser(self) -> bool:
+        with self._lock:
+            return (
+                self._protocol_attempts >= 2
+                and self._browser_challenges >= 2
+                and self._browser_challenges * 4 >= self._protocol_attempts * 3
+            )
 
 _DEFAULT_SUB2API_MODELS = (
     "codex-auto-review", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6",
@@ -1329,7 +1356,15 @@ def _persist_registration_checkpoint(
     )
 
 
-def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict[str, Any], index: int, total: int) -> tuple[bool, dict[str, Any] | str]:
+def _run_one(
+    db: SunnyDB,
+    task_type: str,
+    payload: dict[str, Any],
+    mailbox: dict[str, Any],
+    index: int,
+    total: int,
+    protocol_batch_policy: _ProtocolBatchPolicy | None = None,
+) -> tuple[bool, dict[str, Any] | str]:
     db.ensure_not_cancelled()
     email = mailbox.get("email") or f"mailbox-{index}"
     stage = _stage(payload)
@@ -1507,7 +1542,44 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
 
     try:
         db.ensure_not_cancelled()
-        if execution_mode == "protocol":
+        use_protocol_browser_fast_path = (
+            execution_mode == "protocol"
+            and protocol_challenge_strategy == "native_headless"
+            and task_type == "sunny_register"
+            and not is_registered_mailbox
+            and protocol_batch_policy is not None
+            and protocol_batch_policy.should_start_in_browser()
+        )
+        if use_protocol_browser_fast_path:
+            db.event(
+                f"[{email}] [认证] 本批次协议请求已连续触发浏览器挑战，直接启动后台无头接管以跳过重复协议验证",
+                "warning",
+                detail={
+                    "email": email,
+                    "scope": "selected",
+                    "execution_mode": "protocol_headless_fast_path",
+                    "protocol_challenge_strategy": protocol_challenge_strategy,
+                },
+            )
+            session = login_or_register(
+                account,
+                proxies["register"],
+                True,
+                lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
+                phone_provider=phone_provider,
+                existing_account=False,
+                require_refresh_token=require_refresh_token,
+                should_cancel=db.cancel_requested,
+                execution_mode="protocol_headless_fallback",
+                on_progress=save_progress,
+                mailbox_proxy_url=auxiliary_proxy,
+                traffic_meter=traffic_meter,
+                traffic_config=payload.get("browser_traffic_optimization"),
+            )
+            session["requested_execution_mode"] = "protocol"
+            session["execution_mode"] = "protocol_headless_fallback"
+            session["protocol_fallback"] = "batch_challenge_fast_path"
+        elif execution_mode == "protocol":
             try:
                 session = login_or_register_protocol(
                     account,
@@ -1521,6 +1593,8 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                     traffic_meter=traffic_meter,
                 )
             except ProtocolChallengeRequired as challenge:
+                if protocol_batch_policy is not None and protocol_challenge_strategy == "native_headless":
+                    protocol_batch_policy.record_challenge()
                 db.ensure_not_cancelled()
                 protocol_traffic = getattr(challenge, "traffic", None)
                 if protocol_challenge_strategy == "sentinel_protocol":
@@ -1576,6 +1650,8 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                     },
                 )
             else:
+                if protocol_batch_policy is not None:
+                    protocol_batch_policy.record_success()
                 protocol_session = session
                 if wants_rt and require_refresh_token:
                     db.event(
@@ -1813,7 +1889,15 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
         return False, err
 
 
-def _run_one_isolated(task_id: str, task_type: str, payload: dict[str, Any], mailbox: dict[str, Any], index: int, total: int) -> tuple[int, bool, dict[str, Any] | str]:
+def _run_one_isolated(
+    task_id: str,
+    task_type: str,
+    payload: dict[str, Any],
+    mailbox: dict[str, Any],
+    index: int,
+    total: int,
+    protocol_batch_policy: _ProtocolBatchPolicy | None = None,
+) -> tuple[int, bool, dict[str, Any] | str]:
     """Run one mailbox in its own DB connection/thread.
 
     Each browser flow owns exactly one mailbox/account object, one Outlook reader,
@@ -1822,7 +1906,7 @@ def _run_one_isolated(task_id: str, task_type: str, payload: dict[str, Any], mai
     """
     worker_db = SunnyDB(task_id, ensure_schema=False)
     try:
-        ok, result = _run_one(worker_db, task_type, payload, mailbox, index, total)
+        ok, result = _run_one(worker_db, task_type, payload, mailbox, index, total, protocol_batch_policy)
         return index, ok, result
     finally:
         worker_db.close()
@@ -2074,10 +2158,11 @@ def run_sunny_task(task_id: str) -> None:
         completed = 0
         errors: list[str] = []
         items: list[dict[str, Any]] = []
+        protocol_batch_policy = _ProtocolBatchPolicy()
         if concurrency <= 1:
             for idx, mailbox in enumerate(mailboxes, start=1):
                 db.ensure_not_cancelled()
-                ok, result = _run_one(db, task_type, payload, mailbox, idx, total)
+                ok, result = _run_one(db, task_type, payload, mailbox, idx, total, protocol_batch_policy)
                 db.ensure_not_cancelled()
                 completed += 1
                 if ok:
@@ -2091,7 +2176,7 @@ def run_sunny_task(task_id: str) -> None:
             pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sunny-register")
             try:
                 futures = [
-                    pool.submit(_run_one_isolated, db.task_id, task_type, payload, mailbox, idx, total)
+                    pool.submit(_run_one_isolated, db.task_id, task_type, payload, mailbox, idx, total, protocol_batch_policy)
                     for idx, mailbox in enumerate(mailboxes, start=1)
                 ]
                 pending = set(futures)
