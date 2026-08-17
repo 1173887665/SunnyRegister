@@ -16,33 +16,36 @@ type SunnyMailboxGroup struct {
 func (SunnyMailboxGroup) TableName() string { return "sunny_mailbox_groups" }
 
 type SunnyMailbox struct {
-	ID                  uint         `gorm:"primaryKey" json:"id"`
-	GroupID             uint         `gorm:"index" json:"group_id"`
-	Email               string       `gorm:"uniqueIndex;index" json:"email"`
-	MailboxType         string       `gorm:"index;size:32;default:microsoft" json:"mailbox_type"`
-	MailboxChannel      string       `gorm:"index;size:64;default:outlook" json:"mailbox_channel"`
-	AccessKey           string       `gorm:"type:text" json:"access_key"`
-	Password            string       `gorm:"type:text" json:"password"`
-	ChatGPTPassword     string       `gorm:"type:text" json:"chatgpt_password"`
-	TOTPSecret          string       `gorm:"type:text" json:"totp_secret"`
-	ClientID            string       `gorm:"type:text" json:"client_id"`
-	RefreshToken        string       `gorm:"type:text" json:"refresh_token"`
-	OpenAIRT            string       `gorm:"column:openai_rt;type:text" json:"openai_rt"`
-	Raw                 string       `gorm:"type:text" json:"raw"`
-	AccountType         string       `gorm:"index;default:free" json:"account_type"`
-	TrialEligibility    string       `gorm:"index;default:unknown" json:"trial_eligibility"`
-	TrialCheckError     string       `gorm:"type:text" json:"trial_check_error"`
-	TrialCheckedAt      *time.Time   `gorm:"index" json:"trial_checked_at"`
-	Status              string       `gorm:"index;default:unused" json:"status"`
-	Enabled             bool         `gorm:"default:true" json:"enabled"`
-	LastError           string       `gorm:"type:text" json:"last_error"`
-	LatestMailJSON      string       `gorm:"type:text;default:'{}'" json:"latest_mail_json"`
-	LastMailAt          sql.NullTime `json:"last_mail_at"`
-	LastHealthCheckedAt *time.Time   `gorm:"index" json:"last_health_checked_at"`
-	StatusChangedAt     *time.Time   `gorm:"index" json:"status_changed_at"`
-	RegisteredAt        sql.NullTime `json:"registered_at"`
-	CreatedAt           time.Time    `json:"created_at"`
-	UpdatedAt           time.Time    `json:"updated_at"`
+	ID                             uint         `gorm:"primaryKey" json:"id"`
+	GroupID                        uint         `gorm:"index" json:"group_id"`
+	Email                          string       `gorm:"uniqueIndex;index" json:"email"`
+	MailboxType                    string       `gorm:"index;size:32;default:microsoft" json:"mailbox_type"`
+	MailboxChannel                 string       `gorm:"index;size:64;default:outlook" json:"mailbox_channel"`
+	AccessKey                      string       `gorm:"type:text" json:"access_key"`
+	Password                       string       `gorm:"type:text" json:"password"`
+	ChatGPTPassword                string       `gorm:"type:text" json:"chatgpt_password"`
+	TOTPSecret                     string       `gorm:"type:text" json:"totp_secret"`
+	ClientID                       string       `gorm:"type:text" json:"client_id"`
+	RefreshToken                   string       `gorm:"type:text" json:"refresh_token"`
+	OpenAIRT                       string       `gorm:"column:openai_rt;type:text" json:"openai_rt"`
+	Raw                            string       `gorm:"type:text" json:"raw"`
+	AccountType                    string       `gorm:"index;default:free" json:"account_type"`
+	TrialEligibility               string       `gorm:"index;default:unknown" json:"trial_eligibility"`
+	TrialCheckError                string       `gorm:"type:text" json:"trial_check_error"`
+	TrialCheckedAt                 *time.Time   `gorm:"index" json:"trial_checked_at"`
+	Status                         string       `gorm:"index;default:unused" json:"status"`
+	Enabled                        bool         `gorm:"default:true" json:"enabled"`
+	LastError                      string       `gorm:"type:text" json:"last_error"`
+	LatestMailJSON                 string       `gorm:"type:text;default:'{}'" json:"latest_mail_json"`
+	LastMailAt                     sql.NullTime `json:"last_mail_at"`
+	LastHealthCheckedAt            *time.Time   `gorm:"index" json:"last_health_checked_at"`
+	StatusChangedAt                *time.Time   `gorm:"index" json:"status_changed_at"`
+	RegisteredAt                   sql.NullTime `json:"registered_at"`
+	ChatGPTRegisterTrafficBytes    int64        `gorm:"default:0" json:"chatgpt_register_traffic_bytes"`
+	ProxyTrafficBytes              int64        `gorm:"default:0" json:"proxy_traffic_bytes"`
+	RegistrationTrafficFinalizedAt *time.Time   `json:"registration_traffic_finalized_at"`
+	CreatedAt                      time.Time    `json:"created_at"`
+	UpdatedAt                      time.Time    `json:"updated_at"`
 }
 
 func (SunnyMailbox) TableName() string { return "sunny_mailboxes" }

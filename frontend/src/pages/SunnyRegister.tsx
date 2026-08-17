@@ -23,7 +23,7 @@ const DATA_TABLE_COLUMNS: Record<string, DataTableColumn[]> = {
   mailboxes: [
     { width: 44, minWidth: 44, maxWidth: 72 }, { width: 300, minWidth: 180 }, { width: 160, minWidth: 110 },
     { width: 110, minWidth: 88 }, { width: 110, minWidth: 88 }, { width: 80, minWidth: 64 }, { width: 80, minWidth: 64 },
-    { width: 100, minWidth: 82 }, { width: 190, minWidth: 150 }, { width: 200, minWidth: 150, maxWidth: 520 },
+    { width: 100, minWidth: 82 }, { width: 150, minWidth: 120 }, { width: 190, minWidth: 150 }, { width: 200, minWidth: 150, maxWidth: 520 },
   ],
   phones: [
     { width: 44, minWidth: 44, maxWidth: 72 }, { width: 190, minWidth: 140 }, { width: 120, minWidth: 92 },
@@ -766,6 +766,27 @@ function formatDateTime(value: any) {
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return raw.replace("T", " ").replace(/\.\d+Z?$/, "").slice(0, 19) || "-";
   return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", dateStyle: "short", timeStyle: "medium" }).format(d).replace("T", " ");
+}
+
+function formatTrafficBytes(value: any): string {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (!bytes) return "-";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = bytes;
+  let index = 0;
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024;
+    index += 1;
+  }
+  const formatted = index === 0 ? amount.toFixed(0) : amount.toFixed(2).replace(/\.?(0+)$/, "");
+  return `${formatted} ${units[index]}`;
+}
+
+function formatTrafficUsage(mailbox: AnyObj): string {
+  const registered = Number(mailbox?.chatgpt_register_traffic_bytes || 0);
+  const historical = Number(mailbox?.proxy_traffic_bytes || 0);
+  if (!registered && !historical) return "-";
+  return `${formatTrafficBytes(registered)} / ${formatTrafficBytes(historical)}`;
 }
 type SortOrder = "asc" | "desc";
 function nextSortOrder(v: SortOrder): SortOrder { return v === "asc" ? "desc" : "asc"; }
@@ -1619,7 +1640,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
         </div>
         <div className="sr-table-card sr-mailbox-table-panel overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
           <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
-          <ResizableDataTable tableKey="mailboxes" columns={DATA_TABLE_COLUMNS.mailboxes} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/>,t.mailbox,t.mailboxGroup,t.status,t.planType,"AT","SK",t.enabled,<SortTimeHeader label={t.updatedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.actions]}>
+          <ResizableDataTable tableKey="mailboxes" columns={DATA_TABLE_COLUMNS.mailboxes} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/>,t.mailbox,t.mailboxGroup,t.status,t.planType,"AT","SK",t.enabled,String((t as AnyObj).trafficUsage || (t === zh ? "流量消耗" : "Traffic")),<SortTimeHeader label={t.updatedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.actions]}>
             <tbody>{items.length ? items.map((m)=><tr key={m.id}>
               <td><input type="checkbox" checked={selected.includes(m.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,m.id])) : selected.filter((id)=>id!==m.id))}/></td>
               <td title={m.email}><div className="font-semibold">{m.email}</div></td>
@@ -1629,9 +1650,10 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
               <td>{m.has_access_token ? <button className="sr-session-field-button" title={t.copy} disabled={fieldLoading[`${m.id}:access_token`]} onClick={()=>void copyMailboxField(m,"access_token")}>{fieldLoading[`${m.id}:access_token`] ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td>
               <td><button className="sr-session-field-button" title={t.copy} disabled={fieldLoading[`${m.id}:secret_key`]} onClick={()=>void copyMailboxField(m,"secret_key")}>{fieldLoading[`${m.id}:secret_key`] ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button></td>
               <td><button className={cn("sr-toggle", m.enabled && "on")} onClick={()=>run(t.done,()=>apiFetch(`/sunny/mailboxes/${m.id}`,{method:"PUT",body:JSON.stringify({enabled:!m.enabled})}))}>{m.enabled ? "ON" : "OFF"}</button></td>
+              <td className="whitespace-nowrap text-xs tabular-nums" title={formatTrafficUsage(m)}>{formatTrafficUsage(m)}</td>
               <td>{formatDateTime(m.updated_at)}</td>
               <td><div className="flex flex-wrap gap-2"><button className="sr-link" onClick={()=>void openMailboxMail(m)}>{t.queryMail}</button><button className="sr-link" onClick={()=>void openMailboxEditor(m)}>{t.edit}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={m.email || ""} onConfirm={()=>deleteMailbox(m)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td>
-			</tr>) : <tr><td colSpan={10}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noMailbox}</div><p className="mt-2 text-sm text-slate-400">{emptyMailboxDescription}</p></div></td></tr>}</tbody>
+			</tr>) : <tr><td colSpan={11}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noMailbox}</div><p className="mt-2 text-sm text-slate-400">{emptyMailboxDescription}</p></div></td></tr>}</tbody>
           </ResizableDataTable>
           <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
         </div>

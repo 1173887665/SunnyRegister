@@ -84,6 +84,7 @@ type sunnyTrialResult struct {
 	InvalidToken   bool
 	Retried        bool
 	Error          string
+	TrafficBytes   int64
 }
 
 type sunnyCommerceProbeResult struct {
@@ -142,6 +143,10 @@ func sunnyTrialApplies(status, plan string) bool {
 }
 
 func sunnyCommerceHTTPClient(proxyURLs ...string) *http.Client {
+	return sunnyCommerceHTTPClientWithMeter(nil, proxyURLs...)
+}
+
+func sunnyCommerceHTTPClientWithMeter(meter *sunnyTrafficMeter, proxyURLs ...string) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if len(proxyURLs) > 0 {
 		proxyText := strings.TrimSpace(proxyURLs[0])
@@ -151,7 +156,11 @@ func sunnyCommerceHTTPClient(proxyURLs ...string) *http.Client {
 			}
 		}
 	}
-	return &http.Client{Timeout: 45 * time.Second, Transport: transport}
+	var roundTripper http.RoundTripper = transport
+	if meter != nil {
+		roundTripper = &sunnyTrafficTransport{base: transport, meter: meter}
+	}
+	return &http.Client{Timeout: 45 * time.Second, Transport: roundTripper}
 }
 
 func sunnyCommerceHeaders(req *http.Request, accessToken string) {
@@ -409,10 +418,10 @@ func checkSunnyCommerce(ctx context.Context, accessToken string, proxyURLs ...st
 	if checkoutProxyURL == "" {
 		checkoutProxyURL = promotionProxyURL
 	}
-	if workerResult, ok := probeSunnyCommerceViaWorker(ctx, token, promotionProxyURL, checkoutProxyURL); ok {
+	if workerResult, ok := probeSunnyCommerceViaWorker(ctx, token, promotionProxyURL, checkoutProxyURL); ok && sunnyTrafficMeterFromContext(ctx) == nil {
 		return workerResult
 	}
-	client := sunnyCommerceHTTPClient(checkoutProxyURL)
+	client := sunnyCommerceHTTPClientWithMeter(sunnyTrafficMeterFromContext(ctx), checkoutProxyURL)
 	checkoutKind, methods, checkoutInvalid, checkoutErr := probeSunnyCheckout(ctx, client, token)
 	result.CheckoutKind, result.PaymentMethods = checkoutKind, methods
 	result.InvalidToken = result.InvalidToken || checkoutInvalid
@@ -493,7 +502,7 @@ func probeSunnyCommerceViaWorker(ctx context.Context, accessToken, promotionProx
 }
 
 func checkSunnyTrialEligibility(ctx context.Context, accessToken string, proxyURLs ...string) (bool, string, bool, error) {
-	client := sunnyCommerceHTTPClient(proxyURLs...)
+	client := sunnyCommerceHTTPClientWithMeter(sunnyTrafficMeterFromContext(ctx), proxyURLs...)
 	eligibility, _, message, invalid, err := probeSunnyTrial(ctx, client, accessToken)
 	return eligibility == sunnyTrialEligible, message, invalid, err
 }
@@ -678,7 +687,9 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 		results := streamSunnyDetectionBatch(candidates[start:end], concurrency, func(candidate sunnyTrialCandidate) sunnyTrialResult {
 			outcome := sunnyTrialResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, SkipReason: candidate.SkipReason, Error: candidate.Error}
 			if outcome.SkipReason == "" && outcome.Error == "" {
-				trialCtx := context.WithValue(context.Background(), sunnyTrialProxyContextKey{}, s.sunnyCommerceProxyURL(candidate.Email))
+				meter := &sunnyTrafficMeter{}
+				trialCtx := withSunnyTrafficMeter(context.Background(), meter)
+				trialCtx = context.WithValue(trialCtx, sunnyTrialProxyContextKey{}, s.sunnyCommerceProxyURL(candidate.Email))
 				commerce, retried := checkSunnyCommerceWithRetry(trialCtx, candidate.AccessToken)
 				outcome.Eligibility = commerce.Eligibility
 				outcome.TrialState = commerce.TrialState
@@ -689,11 +700,14 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 				outcome.CheckoutError = commerce.CheckoutError
 				outcome.InvalidToken = commerce.InvalidToken
 				outcome.Retried = retried
+				outcome.TrafficBytes = meter.totalBytes()
 			}
 			return outcome
 		})
 		for outcome := range results {
 			item := map[string]any{"session_id": outcome.SessionID, "email": outcome.Email}
+			s.recordSunnyProxyTraffic(outcome.Email, outcome.TrafficBytes)
+			item["proxy_traffic_bytes"] = outcome.TrafficBytes
 			if outcome.Retried {
 				result["retried"] = result["retried"].(int) + 1
 				item["retried"] = true

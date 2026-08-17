@@ -126,7 +126,7 @@ func (s *Server) sunnyMaintenanceConfigHandler(w http.ResponseWriter, r *http.Re
 	}
 }
 
-func sunnyProbeAccessToken(accessToken, proxyURL string) (string, error) {
+func sunnyProbeAccessToken(accessToken, proxyURL string, meters ...*sunnyTrafficMeter) (string, error) {
 	if strings.TrimSpace(accessToken) == "" {
 		return "invalid", fmt.Errorf("账户没有可用的 Access Token")
 	}
@@ -142,6 +142,9 @@ func sunnyProbeAccessToken(accessToken, proxyURL string) (string, error) {
 		Timeout:       12 * time.Second,
 		Transport:     transport,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	if len(meters) > 0 && meters[0] != nil && strings.TrimSpace(proxyURL) != "" {
+		client.Transport = &sunnyTrafficTransport{base: transport, meter: meters[0]}
 	}
 	req, err := http.NewRequest(http.MethodGet, sunnyProbeAccessTokenEndpoint, nil)
 	if err != nil {
@@ -189,20 +192,21 @@ func sunnyProbeAccessToken(accessToken, proxyURL string) (string, error) {
 	return "valid", nil
 }
 
-func (s *Server) sunnyProbeAccessToken(accessToken, proxyURL string) (string, error) {
-	if status, err, handled := s.sunnyProbeAccessTokenViaWorker(accessToken, proxyURL); handled {
-		return status, err
+func (s *Server) sunnyProbeAccessToken(accessToken, proxyURL string, meters ...*sunnyTrafficMeter) (string, error) {
+	if len(meters) == 0 {
+		if status, err, handled := s.sunnyProbeAccessTokenViaWorker(accessToken, proxyURL); handled {
+			return status, err
+		}
 	}
-
-	status, err := sunnyProbeAccessToken(accessToken, "")
-	if status != "probe_failed" || strings.TrimSpace(proxyURL) == "" {
-		return status, err
+	directStatus, directErr := sunnyProbeAccessToken(accessToken, "", meters...)
+	if directStatus != "probe_failed" || strings.TrimSpace(proxyURL) == "" {
+		return directStatus, directErr
 	}
-	proxyStatus, proxyErr := sunnyProbeAccessToken(accessToken, proxyURL)
+	proxyStatus, proxyErr := sunnyProbeAccessToken(accessToken, proxyURL, meters...)
 	if proxyStatus != "probe_failed" {
 		return proxyStatus, proxyErr
 	}
-	return "probe_failed", fmt.Errorf("AT 检测直连与代理链路均未得到有效 API 响应: 直连=%v; 代理=%v", err, proxyErr)
+	return "probe_failed", fmt.Errorf("AT 检测直连与代理链路均未得到有效 API 响应: 直连=%v; 代理=%v", directErr, proxyErr)
 }
 
 func (s *Server) sunnyProbeAccessTokenViaWorker(accessToken, proxyURL string) (string, error, bool) {
@@ -423,11 +427,13 @@ func (s *Server) executeSunnyAccessTokenCheckTask(task *Task, payload map[string
 			end = len(candidates)
 		}
 		results := streamSunnyDetectionBatch(candidates[start:end], concurrency, func(candidate sunnyAccessTokenCandidate) sunnyAccessTokenResult {
-			status, probeErr := s.sunnyProbeAccessToken(candidate.AccessToken, proxyURL)
+			meter := &sunnyTrafficMeter{}
+			status, probeErr := s.sunnyProbeAccessToken(candidate.AccessToken, proxyURL, meter)
 			message := ""
 			if probeErr != nil {
 				message = probeErr.Error()
 			}
+			s.recordSunnyProxyTraffic(candidate.Email, meter.totalBytes())
 			return sunnyAccessTokenResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, Status: status, Error: message}
 		})
 		for outcome := range results {

@@ -14,6 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 
 from .agent_identity import AgentIdentityUnavailableError, create_agent_identity_auth
+from .browser_traffic import ProxyTrafficMeter, use_traffic_meter
 from .db import SunnyDB, SunnyTaskCancelled, now_sql
 from .firefox_sms import FIREFOX_RELEASE_DELAY_SECONDS, FireFoxSMSClient
 from .luban_sms import LubanSMSClient
@@ -1374,6 +1375,39 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
     account = account_from_row(mailbox)
     mailbox_id = max(0, int(mailbox.get("id") or 0))
     is_registered_mailbox = bool(account.openai_rt) or str(mailbox.get("status") or "") in {"registered", "已注册", "phone_bound", "已接码", "已反代", "reverse_proxied", "登录刷新"}
+    traffic_meter = ProxyTrafficMeter(
+        proxy_url=str(proxies.get("register") or ""),
+        tracked_proxy=str(proxies.get("mode") or "") == "proxy_pool",
+        email=str(email),
+        operation=task_type,
+    )
+    traffic_scope = use_traffic_meter(traffic_meter)
+    traffic_scope.__enter__()
+    traffic_finished = False
+
+    def finalize_traffic(registration_succeeded: bool) -> dict[str, Any]:
+        nonlocal traffic_finished
+        if traffic_finished:
+            return traffic_meter.snapshot()
+        traffic_finished = True
+        snapshot = traffic_meter.snapshot()
+        try:
+            db.record_proxy_traffic(
+                str(email),
+                mailbox_id,
+                int(snapshot.get("total_bytes") or 0),
+                registration_attempt=task_type == "sunny_register" and not is_registered_mailbox,
+                registration_succeeded=registration_succeeded,
+            )
+            db.event(
+                f"[{email}] [流量] 本次代理池交互 {snapshot.get('total_bytes', 0)} bytes",
+                detail={"email": email, "scope": "selected", "proxy_traffic": snapshot},
+            )
+        except Exception as exc:
+            db.event(f"[{email}] [流量] 保存代理池流量统计失败，已保留任务结果: {exc}", "warning", detail={"email": email, "scope": "selected"})
+        finally:
+            traffic_scope.__exit__(None, None, None)
+        return snapshot
     original_mailbox_status = str(mailbox.get("status") or ("已注册" if is_registered_mailbox else "未注册"))
     original_completed_status = original_mailbox_status if _MAILBOX_PROGRESS_RANK.get(original_mailbox_status, -1) > 0 else ""
     db.upsert_account(
@@ -1518,6 +1552,8 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                     execution_mode="protocol_headless_fallback",
                     on_progress=save_progress,
                     mailbox_proxy_url=auxiliary_proxy,
+                    traffic_meter=traffic_meter,
+                    traffic_config=payload.get("browser_traffic_optimization"),
                 )
                 session["requested_execution_mode"] = "protocol"
                 session["execution_mode"] = "protocol_headless_fallback"
@@ -1553,6 +1589,8 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                             on_progress=save_progress,
                             mailbox_proxy_url=auxiliary_proxy,
                             existing_session=protocol_session,
+                            traffic_meter=traffic_meter,
+                            traffic_config=payload.get("browser_traffic_optimization"),
                         )
                         session["requested_execution_mode"] = "protocol"
                         session["execution_mode"] = "protocol_post_stage"
@@ -1581,6 +1619,8 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                 execution_mode=execution_mode,
                 on_progress=save_progress,
                 mailbox_proxy_url=auxiliary_proxy,
+                traffic_meter=traffic_meter,
+                traffic_config=payload.get("browser_traffic_optimization"),
             )
         db.ensure_not_cancelled()
         generated_password = str(session.pop("generated_chatgpt_password", "") or "")
@@ -1631,6 +1671,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             result["protocol_traffic"] = session["protocol_traffic"]
         if session.get("protocol_fallback"):
             result["protocol_fallback"] = str(session["protocol_fallback"])
+        result["proxy_traffic"] = traffic_meter.snapshot()
         if post_registration_error:
             result["stage_error"] = post_registration_error
         db.event(f"[{email}] [认证] 识别为{action_label}成功，已保存 ChatGPT Session" + (" 和 Refresh Token" if result["refresh_token"] else ""), detail={"email": email, "scope": "selected", **result})
@@ -1721,9 +1762,11 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             state="completed" if result.get("stage_complete") else "abnormal",
             error=str(result.get("stage_error") or ""),
         )
+        result["proxy_traffic"] = finalize_traffic(True)
         return True, result
     except Exception as exc:
         if _is_cancel_exception(exc):
+            finalize_traffic(False)
             current_status = db.mailbox_status(mailbox_id)
             completed_status = _highest_mailbox_progress(original_mailbox_status, current_status)
             if _MAILBOX_PROGRESS_RANK.get(completed_status, -1) > 0:
@@ -1735,6 +1778,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
             raise
         err_text = str(exc)
         err = f"[{email}] {err_text}"
+        traffic_snapshot = finalize_traffic(False)
         traffic = getattr(exc, "traffic", None)
         if _is_account_deactivated(err_text):
             db.mark_account_deactivated(email, err_text)
@@ -1756,6 +1800,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
         error_detail = {"email": email, "scope": "selected", "traceback": traceback.format_exc()[-3000:]}
         if isinstance(traffic, dict):
             error_detail["protocol_traffic"] = traffic
+        error_detail["proxy_traffic"] = traffic_snapshot
         db.event(err, "error", detail=error_detail)
         _emit_registration_progress(db, str(email), stage, "failed", state="abnormal", error=err_text)
         return False, err

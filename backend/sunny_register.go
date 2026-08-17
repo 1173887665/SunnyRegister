@@ -245,6 +245,7 @@ func serializeSunnyMailbox(m SunnyMailbox, groups map[uint]string, planType ...s
 		"password": m.Password, "chatgpt_password": m.ChatGPTPassword, "totp_secret": m.TOTPSecret, "client_id": m.ClientID, "refresh_token": m.RefreshToken, "openai_rt": m.OpenAIRT, "access_token": accessToken,
 		"has_chatgpt_password": strings.TrimSpace(m.ChatGPTPassword) != "", "has_totp_secret": strings.TrimSpace(m.TOTPSecret) != "",
 		"raw": m.Raw, "account_type": fallback(m.AccountType, "free"), "plan_type": plan, "trial_eligibility": trialEligibility, "status": status, "enabled": m.Enabled,
+		"chatgpt_register_traffic_bytes": m.ChatGPTRegisterTrafficBytes, "proxy_traffic_bytes": m.ProxyTrafficBytes,
 		"last_error": m.LastError, "latest_mail": jsonMap(m.LatestMailJSON),
 		"last_mail_at":  nullableTime(m.LastMailAt.Valid, m.LastMailAt.Time),
 		"registered_at": nullableTime(m.RegisteredAt.Valid, m.RegisteredAt.Time),
@@ -1499,11 +1500,16 @@ func refreshHotmailAccessTokenCached(email, clientID, refreshToken, proxyURL str
 	return token, endpoint, nil
 }
 
-func refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken string, ep hotmailTokenEndpoint, proxyURL string) (string, error) {
+func refreshHotmailAccessTokenFromEndpoint(clientID, refreshToken string, ep hotmailTokenEndpoint, proxyURL string, meters ...*sunnyTrafficMeter) (string, error) {
 	client := &http.Client{Timeout: 20 * time.Second}
 	if proxyURL != "" {
 		if u, err := url.Parse(proxyURL); err == nil {
-			client.Transport = &http.Transport{Proxy: http.ProxyURL(u)}
+			transport := &http.Transport{Proxy: http.ProxyURL(u)}
+			if len(meters) > 0 && meters[0] != nil {
+				client.Transport = &sunnyTrafficTransport{base: transport, meter: meters[0]}
+			} else {
+				client.Transport = transport
+			}
 		}
 	}
 	form := url.Values{}
@@ -3558,7 +3564,13 @@ func toInt(v any) int {
 }
 
 func defaultProxyConfig() map[string]any {
-	return map[string]any{"proxy_enabled": true, "local_proxy": "http://127.0.0.1:7897", "register_proxy": "", "provider_configs": []any{}, "precheck": true, "sid_mode": "random"}
+	return map[string]any{
+		"proxy_enabled": true, "local_proxy": "http://127.0.0.1:7897", "register_proxy": "", "provider_configs": []any{}, "precheck": true, "sid_mode": "random",
+		"browser_traffic_optimization": map[string]any{
+			"enabled": true, "block_heavy_resources": true, "static_cache_enabled": true,
+			"cache_ttl_hours": 24, "cache_max_mib": 256, "cache_object_max_mib": 8,
+		},
+	}
 }
 
 func (s *Server) sunnySub2APIConfig(w http.ResponseWriter, r *http.Request) {
@@ -4862,6 +4874,14 @@ func (s *Server) sunnyTaskProxySnapshot(payload map[string]any) map[string]any {
 	localProxy := normalizeSunnyProxyAddress(fallback(text(cfg["local_proxy"]), "http://127.0.0.1:7897"))
 	next["proxy_enabled"] = proxyEnabled
 	next["proxy_stats"] = stats
+	browserTrafficConfig := map[string]any{}
+	if raw, ok := cfg["browser_traffic_optimization"].(map[string]any); ok {
+		browserTrafficConfig = raw
+	}
+	next["browser_traffic_optimization"] = mergeConfig(
+		defaultProxyConfig()["browser_traffic_optimization"].(map[string]any),
+		browserTrafficConfig,
+	)
 	next["local_proxy"] = localProxy
 	if !proxyEnabled {
 		next["register_proxy"] = ""

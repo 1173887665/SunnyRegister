@@ -46,11 +46,12 @@ type sunnyHealthMailHeader struct {
 }
 
 type sunnyHealthResult struct {
-	SessionID uint
-	Email     string
-	Banned    bool
-	Checked   bool
-	Error     string
+	SessionID    uint
+	Email        string
+	Banned       bool
+	Checked      bool
+	Error        string
+	TrafficBytes int64
 }
 
 func (s *Server) sunnyHealthCheckConcurrency() int {
@@ -242,15 +243,26 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 					}
 					var subjects []string
 					var fetchErr error
+					meter := &sunnyTrafficMeter{}
 					if candidate.MailboxType == "apple" && candidate.Channel == "xbovo" {
 						subjects, fetchErr = fetchXbovoMailSubjects(candidate.Email, candidate.AccessKey, 5, proxyURL)
 					} else if candidate.MailboxType == "apple" && candidate.Channel == "url_api" {
 						subjects, fetchErr = fetchURLAPIMailSubjects(candidate.Email, candidate.AccessKey, 5, proxyURL)
+					} else if strings.TrimSpace(proxyURL) != "" {
+						var token string
+						for _, endpoint := range hotmailGraphTokenEndpoints {
+							token, fetchErr = refreshHotmailAccessTokenFromEndpoint(candidate.ClientID, candidate.RefreshToken, endpoint, proxyURL, meter)
+							if fetchErr == nil {
+								subjects, fetchErr = fetchMailSubjectsViaGraphWithMeter(token, 5, proxyURL, meter)
+								break
+							}
+						}
 					} else {
 						subjects, fetchErr = sunnyFetchOutlookMailSubjects(candidate.Email, candidate.ClientID, candidate.RefreshToken, 5, proxyURL)
 					}
+					trafficBytes := meter.totalBytes()
 					if fetchErr != nil {
-						results <- sunnyHealthResult{SessionID: candidate.SessionID, Email: candidate.Email, Error: fetchErr.Error()}
+						results <- sunnyHealthResult{SessionID: candidate.SessionID, Email: candidate.Email, Error: fetchErr.Error(), TrafficBytes: trafficBytes}
 						continue
 					}
 					banned := false
@@ -260,7 +272,7 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 							break
 						}
 					}
-					results <- sunnyHealthResult{SessionID: candidate.SessionID, Email: candidate.Email, Banned: banned, Checked: true}
+					results <- sunnyHealthResult{SessionID: candidate.SessionID, Email: candidate.Email, Banned: banned, Checked: true, TrafficBytes: trafficBytes}
 				}
 			}()
 		}
@@ -271,7 +283,9 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 		workers.Wait()
 		close(results)
 		for outcome := range results {
+			s.recordSunnyProxyTraffic(outcome.Email, outcome.TrafficBytes)
 			item := map[string]any{"email": outcome.Email, "status": "alive"}
+			item["proxy_traffic_bytes"] = outcome.TrafficBytes
 			if outcome.Error != "" {
 				now := time.Now()
 				result["failed"] = result["failed"].(int) + 1
@@ -373,6 +387,10 @@ func fetchOutlookMailSubjects(emailAddr, clientID, refreshToken string, limit in
 }
 
 func fetchMailSubjectsViaGraph(accessToken string, limit int, proxyURL string) ([]string, error) {
+	return fetchMailSubjectsViaGraphWithMeter(accessToken, limit, proxyURL, nil)
+}
+
+func fetchMailSubjectsViaGraphWithMeter(accessToken string, limit int, proxyURL string, meter *sunnyTrafficMeter) ([]string, error) {
 	if limit < 1 {
 		limit = 5
 	}
@@ -395,7 +413,12 @@ func fetchMailSubjectsViaGraph(accessToken string, limit int, proxyURL string) (
 		if parseErr != nil {
 			return nil, fmt.Errorf("invalid Graph proxy URL: %w", parseErr)
 		}
-		client.Transport = &http.Transport{Proxy: http.ProxyURL(proxy)}
+		transport := &http.Transport{Proxy: http.ProxyURL(proxy)}
+		if meter != nil {
+			client.Transport = &sunnyTrafficTransport{base: transport, meter: meter}
+		} else {
+			client.Transport = transport
+		}
 	}
 	req, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
 	if err != nil {

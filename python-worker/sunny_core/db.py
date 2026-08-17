@@ -297,6 +297,9 @@ class SunnyDB:
                 "totp_secret": "text DEFAULT ''",
                 "openai_rt": "text DEFAULT ''",
                 "registered_at": "datetime",
+                "chatgpt_register_traffic_bytes": "integer DEFAULT 0",
+                "proxy_traffic_bytes": "integer DEFAULT 0",
+                "registration_traffic_finalized_at": "datetime",
                 "last_error": "text DEFAULT ''",
                 "last_health_checked_at": "datetime",
                 "status_changed_at": "datetime",
@@ -1086,6 +1089,41 @@ class SunnyDB:
             "update sunny_mailboxes set chat_gpt_password=?, updated_at=? where id=?",
             (password, now_sql(), mailbox_id),
         )
+        self.conn.commit()
+
+    def record_proxy_traffic(
+        self,
+        email: str,
+        mailbox_id: int,
+        total_bytes: int,
+        *,
+        registration_attempt: bool = False,
+        registration_succeeded: bool = False,
+    ) -> None:
+        """Persist proxy-pool traffic without mixing in direct auxiliary traffic."""
+        total = max(0, int(total_bytes or 0))
+        if mailbox_id <= 0 or total <= 0:
+            if registration_attempt and registration_succeeded and mailbox_id > 0:
+                self.conn.execute(
+                    "update sunny_mailboxes set registration_traffic_finalized_at=coalesce(registration_traffic_finalized_at,?), updated_at=? where id=?",
+                    (now_sql(), now_sql(), mailbox_id),
+                )
+                self.conn.commit()
+            return
+        self.conn.execute(
+            "update sunny_mailboxes set proxy_traffic_bytes=coalesce(proxy_traffic_bytes,0)+?, updated_at=? where id=?",
+            (total, now_sql(), mailbox_id),
+        )
+        if registration_attempt:
+            self.conn.execute(
+                "update sunny_mailboxes set chatgpt_register_traffic_bytes=case when registration_traffic_finalized_at is null then coalesce(chatgpt_register_traffic_bytes,0)+? else chatgpt_register_traffic_bytes end where id=?",
+                (total, mailbox_id),
+            )
+            if registration_succeeded:
+                self.conn.execute(
+                    "update sunny_mailboxes set registration_traffic_finalized_at=coalesce(registration_traffic_finalized_at,?), updated_at=? where id=?",
+                    (now_sql(), now_sql(), mailbox_id),
+                )
         self.conn.commit()
 
     def mark_mailbox_by_email(self, email: str, status: str, error: str = "", openai_rt: str = "") -> None:
