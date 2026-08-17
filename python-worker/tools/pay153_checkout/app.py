@@ -1651,6 +1651,7 @@ class JobStore:
         max_attempts = min(50, max(1, int(options.get("retry_count") or 1)))
         used_pairs: set[tuple[str, str]] = set()
         proxy_transport_retries = 0
+        retry_same_strategy = False
         last_error = ""
         oaics_hits = 0
         requested_paypal_country = str(
@@ -1705,8 +1706,8 @@ class JobStore:
                         return
                     if transport_kind and proxy_transport_retries < 3:
                         proxy_transport_retries += 1
-                        if attempt >= max_attempts:
-                            max_attempts = min(50, attempt + 1)
+                        max_attempts = min(50, max_attempts + 1)
+                        retry_same_strategy = True
                         self.log(job_id, f"检测到{transport_kind}，切换第 {proxy_transport_retries} 次代理后重试")
                     can_retry = attempt < max_attempts
                     self.update(
@@ -1765,6 +1766,7 @@ class JobStore:
                 job_id,
                 f"本轮代理路由：Promotion={proxy_route_label(pair[0])}；Checkout={proxy_route_label(pair[1])}",
             )
+            logical_attempt = max(1, attempt - proxy_transport_retries)
             if current.get("link_type") == "paypal":
                 current["force_paypal_de_fallback"] = paypal_force_de_fallback
                 # Strategy A creates the Checkout with the campaign already
@@ -1772,7 +1774,7 @@ class JobStore:
                 # PayPal SetupIntent configuration.  Strategy B keeps the
                 # existing cross-entry checkout/update flow as a fallback.
                 current["promo_on_create"] = bool(
-                    (attempt - 1) % 2 == 0 and not paypal_force_de_fallback
+                    (logical_attempt - 1) % 2 == 0 and not paypal_force_de_fallback
                 )
             if current.get("link_type") in {"pix", "upi", "momo", "gcash"}:
                 # Alternate both Stripe submission shapes across outer retries.
@@ -1807,6 +1809,9 @@ class JobStore:
             if current.get("link_type") == "paypal" and current.get("use_promo"):
                 strategy = "Checkout 创建时原生带优惠" if current.get("promo_on_create") else "创建后通过 Promotion代理池更新优惠"
                 self.log(job_id, f"PayPal 优惠策略：{strategy}")
+                if retry_same_strategy:
+                    self.log(job_id, "上一轮为代理传输失败；本轮仅更换代理并沿用相同 PayPal 优惠策略")
+            retry_same_strategy = False
             self._run_single(job_id, current)
             state = self.get(job_id) or {}
             if state.get("status") in {"done", "cancelled"}:
@@ -1847,8 +1852,8 @@ class JobStore:
                     self.update(job_id, status="error", percent=100, text="代理传输失败", error=last_error[:1200])
                     return
                 proxy_transport_retries += 1
-                if attempt >= max_attempts:
-                    max_attempts = min(50, attempt + 1)
+                max_attempts = min(50, max_attempts + 1)
+                retry_same_strategy = True
                 self.log(job_id, f"检测到{transport_kind}，切换第 {proxy_transport_retries} 次代理后重试")
             if non_retryable or attempt >= max_attempts:
                 self.update(job_id, status="error", percent=100, text="任务失败", error=last_error[:1200])
@@ -3266,6 +3271,17 @@ class JobStore:
                     self.log(job_id, "TWINT 已确认可用，正在应用首月优惠并校验 CHF 今日应付金额")
                 advance_progress(70, "正在应用优惠")
                 campaign = options.get("promo_campaign") or "plus-1-month-free"
+                if provider == "paypal":
+                    self.log(
+                        job_id,
+                        "[promo] PayPal 更新上下文：campaign={}，session={}，Promotion={}，Checkout={}/{}".format(
+                            campaign,
+                            session_checkout_kind(session_id),
+                            str(main_country or "?").upper(),
+                            str(country or "?").upper(),
+                            str(options.get("currency") or "?").upper(),
+                        ),
+                    )
                 response = update_checkout_promo(
                     promo_chatgpt_http,
                     token,

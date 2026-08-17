@@ -84,6 +84,54 @@ def test_transport_retry_extends_to_three_proxy_switches_and_rotates_routes(tran
     assert any("达到 3 次代理切换上限" in message for message in logs)
 
 
+def test_paypal_transport_retry_preserves_strategy_and_business_attempts() -> None:
+    store = object.__new__(checkout_app.JobStore)
+    state = {"status": "running", "error": "", "result": None}
+    logs: list[str] = []
+    strategies: list[bool] = []
+
+    store.cancelled = lambda _job_id: False
+    store.get = lambda _job_id: dict(state)
+
+    def update(_job_id: str, **fields):
+        state.update(fields)
+
+    store.update = update
+    store.log = lambda _job_id, message: logs.append(message)
+    store._record_success = lambda _job_id, _result: None
+
+    def run_single(_job_id: str, attempt_options: dict):
+        strategies.append(bool(attempt_options["promo_on_create"]))
+        errors = [
+            "Timeout: Failed to perform, curl: (28) Operation timed out after 60002 milliseconds",
+            "RuntimeError: PayPal business path did not return an approval URL",
+            'RuntimeError: 应用 Plus 优惠失败：HTTP 403 {"detail":"This promotion is not available."}',
+        ]
+        error = errors[len(strategies) - 1]
+        state.update(status="running", error=error)
+
+    store._run_single = run_single
+    options = {
+        "retry_count": 2,
+        "link_type": "paypal",
+        "use_promo": True,
+        "country": "GB",
+        "entry_proxies": [
+            "http://promo-1:8001", "http://promo-2:8002", "http://promo-3:8003",
+        ],
+        "exit_proxies": [
+            "http://checkout-1:9001", "http://checkout-2:9002", "http://checkout-3:9003",
+        ],
+        "paired_proxy_rotation": True,
+    }
+
+    with patch.object(checkout_app.time, "sleep"):
+        store._run_locked("job-paypal", options)
+
+    assert strategies == [True, True, False]
+    assert any("沿用相同 PayPal 优惠策略" in message for message in logs)
+
+
 class FakeResponse:
     def __init__(self, payload: dict, status_code: int = 200):
         self.payload = payload
