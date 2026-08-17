@@ -171,6 +171,15 @@ def _hooked_request(original, session, method: str, url: str, kwargs: dict[str, 
     return response
 
 
+def _make_session_request_hook(original):
+    """Bind one library's original method without late-binding another hook."""
+    def request(session, method, url, **kwargs):
+        return _hooked_request(original, session, method, url, kwargs)
+
+    request._sunny_traffic_hook = True
+    return request
+
+
 def install_http_hooks() -> None:
     global _HOOKS_INSTALLED
     if _HOOKS_INSTALLED:
@@ -181,23 +190,17 @@ def install_http_hooks() -> None:
         try:
             import requests.sessions
 
-            original = requests.sessions.Session.request
-            if not getattr(original, "_sunny_traffic_hook", False):
-                def requests_request(session, method, url, **kwargs):
-                    return _hooked_request(original, session, method, url, kwargs)
-                requests_request._sunny_traffic_hook = True
-                requests.sessions.Session.request = requests_request
+            requests_original = requests.sessions.Session.request
+            if not getattr(requests_original, "_sunny_traffic_hook", False):
+                requests.sessions.Session.request = _make_session_request_hook(requests_original)
         except Exception:
             pass
         try:
             from curl_cffi import requests as curl_requests
 
-            original = curl_requests.Session.request
-            if not getattr(original, "_sunny_traffic_hook", False):
-                def curl_request(session, method, url, **kwargs):
-                    return _hooked_request(original, session, method, url, kwargs)
-                curl_request._sunny_traffic_hook = True
-                curl_requests.Session.request = curl_request
+            curl_original = curl_requests.Session.request
+            if not getattr(curl_original, "_sunny_traffic_hook", False):
+                curl_requests.Session.request = _make_session_request_hook(curl_original)
         except Exception:
             pass
         _HOOKS_INSTALLED = True

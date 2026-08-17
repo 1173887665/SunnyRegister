@@ -1,6 +1,29 @@
 from __future__ import annotations
 
-from sunny_core.browser_traffic import BrowserTrafficConfig, BrowserTrafficOptimizer, ProxyTrafficMeter
+from sunny_core.browser_traffic import (
+    BrowserTrafficConfig,
+    BrowserTrafficOptimizer,
+    ProxyTrafficMeter,
+    _make_session_request_hook,
+)
+
+
+def test_session_hooks_keep_requests_and_curl_originals_separate() -> None:
+    calls: list[str] = []
+
+    def requests_original(_session, _method, _url, **_kwargs):
+        calls.append("requests")
+        return type("Response", (), {"url": "https://example.test", "status_code": 200, "headers": {}, "content": b""})()
+
+    def curl_original(_session, _method, _url, **_kwargs):
+        calls.append("curl")
+        return type("Response", (), {"url": "https://example.test", "status_code": 200, "headers": {}, "content": b""})()
+
+    requests_hook = _make_session_request_hook(requests_original)
+    curl_hook = _make_session_request_hook(curl_original)
+    requests_hook(object(), "GET", "https://example.test")
+    curl_hook(object(), "GET", "https://example.test")
+    assert calls == ["requests", "curl"]
 
 
 def test_proxy_traffic_meter_counts_application_bytes_by_phase() -> None:
