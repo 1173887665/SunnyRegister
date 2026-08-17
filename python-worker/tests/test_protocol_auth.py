@@ -5,7 +5,12 @@ from unittest.mock import patch
 
 from sunny_core.browser_traffic import ProxyTrafficMeter
 from sunny_core.mailbox import MailAccount
-from sunny_core.protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationFlow, _response_error
+from sunny_core.protocol_auth import (
+    ProtocolChallengeRequired,
+    ProtocolRegistrationError,
+    ProtocolRegistrationFlow,
+    _response_error,
+)
 
 
 class FakeResponse:
@@ -87,6 +92,50 @@ def test_protocol_challenge_error_omits_upstream_html() -> None:
     assert "HTTP 403" in str(error)
     assert "HTML challenge page was omitted" in str(error)
     assert "<html>" not in str(error)
+
+
+def test_protocol_request_retries_transient_connection_reset() -> None:
+    class FlakySession(FakeSession):
+        def request(self, method, url, **kwargs):
+            self.requests.append((method, url, kwargs))
+            if len(self.requests) == 1:
+                raise RuntimeError("Failed to perform, curl: (35) Recv failure: Connection reset by peer")
+            return FakeResponse(text="ok", url=url)
+
+    flow = ProtocolRegistrationFlow(
+        MailAccount("user@outlook.com", "password", "client", "refresh", "raw"),
+        session=FlakySession([]),
+    )
+    with patch("sunny_core.protocol_auth.time.sleep"):
+        response = flow._request("GET", "https://chatgpt.com/", step="ChatGPT session initialization")
+
+    assert response.status_code == 200
+    assert len(flow.session.requests) == 2
+
+
+def test_protocol_homepage_reset_falls_back_to_lightweight_csrf() -> None:
+    flow = ProtocolRegistrationFlow(
+        MailAccount("user@outlook.com", "password", "client", "refresh", "raw"),
+        session=FakeSession([]),
+    )
+    calls = []
+
+    def request(method, url, *, step, **kwargs):
+        calls.append((method, url, step))
+        if len(calls) == 1:
+            raise ProtocolRegistrationError(
+                "ChatGPT session initialization request failed: curl: (35) Recv failure: Connection reset by peer"
+            )
+        if len(calls) == 2:
+            return FakeResponse(payload={"csrfToken": "csrf-token"}, url=url)
+        return FakeResponse(payload={"url": "https://auth.openai.com/authorize"}, url=url)
+
+    flow._request = request
+    flow._start_next_auth()
+
+    assert calls[0][1] == "https://chatgpt.com/"
+    assert calls[1][1] == "https://chatgpt.com/api/auth/csrf"
+    assert flow.auth_page_url == "https://auth.openai.com/authorize"
 
 
 def sentinel_response():

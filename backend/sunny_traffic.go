@@ -17,6 +17,16 @@ type sunnyTrafficMeter struct {
 	RequestBodyBytes    int64
 	ResponseHeaderBytes int64
 	ResponseBodyBytes   int64
+	ExternalBytes       int64
+}
+
+func (m *sunnyTrafficMeter) addExternal(bytes int64) {
+	if m == nil || bytes <= 0 {
+		return
+	}
+	m.mu.Lock()
+	m.ExternalBytes += bytes
+	m.mu.Unlock()
 }
 
 type sunnyTrafficMeterKey struct{}
@@ -69,7 +79,7 @@ func (m *sunnyTrafficMeter) totalBytes() int64 {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.RequestHeaderBytes + m.RequestBodyBytes + m.ResponseHeaderBytes + m.ResponseBodyBytes
+	return m.RequestHeaderBytes + m.RequestBodyBytes + m.ResponseHeaderBytes + m.ResponseBodyBytes + m.ExternalBytes
 }
 
 type sunnyTrafficTransport struct {

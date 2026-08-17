@@ -96,6 +96,7 @@ type sunnyCommerceProbeResult struct {
 	TrialError     string
 	CheckoutError  string
 	InvalidToken   bool
+	TrafficBytes   int64
 }
 
 func normalizeSunnyTrialEligibility(value string) string {
@@ -418,7 +419,8 @@ func checkSunnyCommerce(ctx context.Context, accessToken string, proxyURLs ...st
 	if checkoutProxyURL == "" {
 		checkoutProxyURL = promotionProxyURL
 	}
-	if workerResult, ok := probeSunnyCommerceViaWorker(ctx, token, promotionProxyURL, checkoutProxyURL); ok && sunnyTrafficMeterFromContext(ctx) == nil {
+	if workerResult, ok := probeSunnyCommerceViaWorker(ctx, token, promotionProxyURL, checkoutProxyURL); ok {
+		sunnyTrafficMeterFromContext(ctx).addExternal(workerResult.TrafficBytes)
 		return workerResult
 	}
 	client := sunnyCommerceHTTPClientWithMeter(sunnyTrafficMeterFromContext(ctx), checkoutProxyURL)
@@ -479,6 +481,9 @@ func probeSunnyCommerceViaWorker(ctx context.Context, accessToken, promotionProx
 			HTTP           int      `json:"http"`
 			Error          string   `json:"error"`
 		} `json:"checkout"`
+		Traffic struct {
+			TotalBytes int64 `json:"total_bytes"`
+		} `json:"traffic"`
 	}
 	if json.Unmarshal(raw, &payload) != nil {
 		return result, false
@@ -498,6 +503,7 @@ func probeSunnyCommerceViaWorker(ctx context.Context, accessToken, promotionProx
 		result.CheckoutError = fallback(strings.TrimSpace(payload.Checkout.Error), fmt.Sprintf("ChatGPT Checkout 接口返回 HTTP %d，未提供可识别类型", payload.Checkout.HTTP))
 	}
 	result.InvalidToken = payload.Trial.HTTP == http.StatusUnauthorized || payload.Checkout.HTTP == http.StatusUnauthorized
+	result.TrafficBytes = payload.Traffic.TotalBytes
 	return result, true
 }
 

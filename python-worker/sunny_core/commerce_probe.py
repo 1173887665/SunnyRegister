@@ -8,6 +8,8 @@ from typing import Any
 
 from curl_cffi import requests as curl_requests
 
+from .browser_traffic import ProxyTrafficMeter, use_traffic_meter
+
 try:
     from tools.pay153_checkout.paypal_routing import session_checkout_kind
 except ImportError:  # pragma: no cover - direct module execution compatibility
@@ -144,15 +146,29 @@ def probe_commerce(
         return {"trial": {"state": "", "http": 0, "error": "missing access token"}, "checkout": {"kind": "", "payment_methods": [], "http": 0, "error": "missing access token"}}
     billing_country = str(country or "DE").strip().upper() or "DE"
     billing_currency = str(currency or ("EUR" if billing_country == "DE" else "USD")).strip().upper()
-    promotion_session = _session(str(promotion_proxy_url or proxy_url).strip())
+    selected_promotion_proxy = str(promotion_proxy_url or proxy_url).strip()
+    selected_checkout_proxy = str(checkout_proxy_url or proxy_url).strip()
+    promotion_session = _session(selected_promotion_proxy)
+    promotion_meter = ProxyTrafficMeter(
+        proxy_url=selected_promotion_proxy,
+        tracked_proxy=bool(selected_promotion_proxy),
+        operation="commerce_trial",
+    )
+    checkout_meter = ProxyTrafficMeter(
+        proxy_url=selected_checkout_proxy,
+        tracked_proxy=bool(selected_checkout_proxy),
+        operation="commerce_checkout",
+    )
     headers = _headers(token)
     result: dict[str, Any] = {
         "trial": {"state": "", "http": 0, "error": ""},
         "checkout": {"kind": "", "payment_methods": [], "http": 0, "error": ""},
+        "traffic": {"requests": 0, "total_bytes": 0},
     }
     try:
         try:
-            trial_response = _request_with_retry(lambda: promotion_session.get(TRIAL_URL, headers=headers, timeout=30))
+            with use_traffic_meter(promotion_meter):
+                trial_response = _request_with_retry(lambda: promotion_session.get(TRIAL_URL, headers=headers, timeout=30))
             trial_payload, trial_error = _safe_json(trial_response)
             result["trial"] = {
                 "state": str(trial_payload.get("state") or "").strip().lower(),
@@ -163,14 +179,21 @@ def probe_commerce(
             result["trial"]["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
 
         try:
-            result["checkout"] = _task_style_checkout_probe(
-                token,
-                billing_country,
-                billing_currency,
-                str(checkout_proxy_url or proxy_url).strip(),
-            )
+            with use_traffic_meter(checkout_meter):
+                result["checkout"] = _task_style_checkout_probe(
+                    token,
+                    billing_country,
+                    billing_currency,
+                    selected_checkout_proxy,
+                )
         except Exception as exc:
             result["checkout"]["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
+        promotion_traffic = promotion_meter.snapshot()
+        checkout_traffic = checkout_meter.snapshot()
+        result["traffic"] = {
+            "requests": int(promotion_traffic.get("requests") or 0) + int(checkout_traffic.get("requests") or 0),
+            "total_bytes": int(promotion_traffic.get("total_bytes") or 0) + int(checkout_traffic.get("total_bytes") or 0),
+        }
         return result
     finally:
         promotion_session.close()

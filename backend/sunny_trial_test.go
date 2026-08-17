@@ -321,6 +321,7 @@ func TestSunnyCommerceWorkerResponse(t *testing.T) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"trial":    map[string]any{"state": "eligible", "http": 200, "error": ""},
 			"checkout": map[string]any{"kind": "oaics", "payment_methods": []string{"card", "paypal"}, "http": 200, "error": ""},
+			"traffic":  map[string]any{"requests": 3, "total_bytes": 4321},
 		})
 	}))
 	defer worker.Close()
@@ -333,6 +334,31 @@ func TestSunnyCommerceWorkerResponse(t *testing.T) {
 	}
 	if got := strings.Join(result.PaymentMethods, ","); got != "card,paypal" {
 		t.Fatalf("payment methods = %q", got)
+	}
+	if result.TrafficBytes != 4321 {
+		t.Fatalf("traffic bytes = %d", result.TrafficBytes)
+	}
+}
+
+func TestSunnyCommerceUsesWorkerWhenTrafficMeterIsActive(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"trial":    map[string]any{"state": "eligible", "http": 200, "error": ""},
+			"checkout": map[string]any{"kind": "oaics", "payment_methods": []string{"card"}, "http": 200, "error": ""},
+			"traffic":  map[string]any{"requests": 2, "total_bytes": 7654},
+		})
+	}))
+	defer worker.Close()
+	t.Setenv("PYTHON_WORKER_URL", worker.URL)
+
+	meter := &sunnyTrafficMeter{}
+	ctx := withSunnyTrafficMeter(context.Background(), meter)
+	result := checkSunnyCommerce(ctx, "secret-at", "http://promotion-proxy", "http://checkout-proxy")
+	if result.Eligibility != sunnyTrialEligible || result.CheckoutKind != "oaics" {
+		t.Fatalf("unexpected commerce result: %#v", result)
+	}
+	if got := meter.totalBytes(); got != 7654 {
+		t.Fatalf("worker traffic was not added to meter: %d", got)
 	}
 }
 

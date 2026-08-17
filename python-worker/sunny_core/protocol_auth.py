@@ -38,6 +38,18 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/136.0.0.0 Safari/537.36"
 )
+_TRANSIENT_TRANSPORT_MARKERS = (
+    "curl: (35)",
+    "curl: (56)",
+    "curl: (28)",
+    "connection reset",
+    "recv failure",
+    "connection aborted",
+    "connection refused",
+    "ssl connect error",
+    "tls handshake",
+    "timed out",
+)
 
 
 class ProtocolRegistrationError(RuntimeError):
@@ -141,6 +153,11 @@ def _response_error(response, step: str) -> ProtocolRegistrationError:
     return ProtocolRegistrationError(f"{step} failed (HTTP {status}): {body}")
 
 
+def _is_transient_transport_error(error: BaseException) -> bool:
+    message = str(error or "").lower()
+    return any(marker in message for marker in _TRANSIENT_TRANSPORT_MARKERS)
+
+
 class ProtocolRegistrationFlow:
     """ChatGPT email registration/login through HTTP requests only.
 
@@ -218,16 +235,32 @@ class ProtocolRegistrationFlow:
     def _request(self, method: str, url: str, *, step: str, **kwargs):
         self._check_cancelled()
         kwargs.setdefault("timeout", 30)
-        try:
-            if self.traffic_meter is None:
-                response = self.session.request(method, url, **kwargs)
-            else:
-                with suspend_http_traffic_hook():
+        response = None
+        for attempt in range(3):
+            try:
+                if self.traffic_meter is None:
                     response = self.session.request(method, url, **kwargs)
-        except Exception as exc:
-            error = ProtocolRegistrationError(f"{step} request failed: {exc}")
+                else:
+                    with suspend_http_traffic_hook():
+                        response = self.session.request(method, url, **kwargs)
+                break
+            except Exception as exc:
+                if (
+                    attempt < 2
+                    and method.upper() in {"GET", "HEAD", "OPTIONS"}
+                    and _is_transient_transport_error(exc)
+                ):
+                    self.log(f"[协议] {step} 遇到临时网络错误，正在重试 ({attempt + 1}/2)")
+                    time.sleep(0.35 * (attempt + 1))
+                    self._check_cancelled()
+                    continue
+                error = ProtocolRegistrationError(f"{step} request failed: {exc}")
+                error.traffic = self.traffic.snapshot()
+                raise error from exc
+        if response is None:
+            error = ProtocolRegistrationError(f"{step} request failed: empty response")
             error.traffic = self.traffic.snapshot()
-            raise error from exc
+            raise error
         request_headers = dict(getattr(self.session, "headers", {}) or {})
         request_headers.update(dict(kwargs.get("headers") or {}))
         self.traffic.record(method, url, request_headers, kwargs, response)
@@ -366,14 +399,21 @@ class ProtocolRegistrationFlow:
         }
 
     def _start_next_auth(self) -> None:
-        landing = self._request(
-            "GET",
-            f"{CHATGPT_BASE_URL}/",
-            step="ChatGPT session initialization",
-            allow_redirects=True,
-        )
-        if landing.status_code >= 500:
-            raise _response_error(landing, "ChatGPT session initialization")
+        try:
+            landing = self._request(
+                "GET",
+                f"{CHATGPT_BASE_URL}/",
+                step="ChatGPT session initialization",
+                allow_redirects=True,
+            )
+            if landing.status_code >= 500:
+                raise _response_error(landing, "ChatGPT session initialization")
+        except ProtocolRegistrationError as exc:
+            if not _is_transient_transport_error(exc):
+                raise
+            # The full shell is optional for the protocol flow. Some proxy exits
+            # reset that large response while still allowing the auth API.
+            self.log("[协议] ChatGPT 首页被代理重置，改用轻量 CSRF 初始化")
         csrf_response = self._request(
             "GET",
             f"{CHATGPT_BASE_URL}/api/auth/csrf",

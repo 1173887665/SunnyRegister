@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 from sunny_core.commerce_probe import probe_commerce
@@ -84,3 +85,34 @@ def test_probe_commerce_uses_separate_promotion_and_checkout_proxies() -> None:
     }
     checkout_probe.assert_called_once_with("token", "DE", "EUR", "http://checkout-proxy")
     assert promotion_session.trust_env is False
+
+
+def test_probe_commerce_returns_worker_proxy_traffic_summary() -> None:
+    session = MagicMock()
+    session.get.return_value = response(200, {"state": "eligible"})
+
+    class FakeMeter:
+        snapshots = iter(({"requests": 2, "total_bytes": 120}, {"requests": 3, "total_bytes": 340}))
+
+        def __init__(self, **_kwargs):
+            self.snapshot_value = next(self.snapshots)
+
+        def snapshot(self):
+            return self.snapshot_value
+
+    with (
+        patch("sunny_core.commerce_probe.curl_requests.Session", return_value=session),
+        patch("sunny_core.commerce_probe.ProxyTrafficMeter", side_effect=FakeMeter),
+        patch("sunny_core.commerce_probe.use_traffic_meter", side_effect=lambda meter: nullcontext(meter)),
+        patch(
+            "sunny_core.commerce_probe._task_style_checkout_probe",
+            return_value={"kind": "oaics", "payment_methods": [], "http": 200, "error": ""},
+        ),
+    ):
+        result = probe_commerce(
+            "token",
+            promotion_proxy_url="http://promotion-proxy",
+            checkout_proxy_url="http://checkout-proxy",
+        )
+
+    assert result["traffic"] == {"requests": 5, "total_bytes": 460}
