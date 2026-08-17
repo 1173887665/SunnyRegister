@@ -41,7 +41,7 @@ type SunnyMailbox struct {
 	LastHealthCheckedAt            *time.Time   `gorm:"index" json:"last_health_checked_at"`
 	StatusChangedAt                *time.Time   `gorm:"index" json:"status_changed_at"`
 	RegisteredAt                   sql.NullTime `json:"registered_at"`
-	ChatGPTRegisterTrafficBytes    int64        `gorm:"default:0" json:"chatgpt_register_traffic_bytes"`
+	ChatGPTRegisterTrafficBytes    int64        `gorm:"column:chatgpt_register_traffic_bytes;default:0" json:"chatgpt_register_traffic_bytes"`
 	ProxyTrafficBytes              int64        `gorm:"default:0" json:"proxy_traffic_bytes"`
 	RegistrationTrafficFinalizedAt *time.Time   `json:"registration_traffic_finalized_at"`
 	CreatedAt                      time.Time    `json:"created_at"`

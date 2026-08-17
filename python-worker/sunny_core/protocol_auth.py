@@ -14,6 +14,7 @@ from typing import Any, Callable
 from urllib.parse import unquote, urlencode, urlsplit
 
 from .auth_challenges import generate_totp
+from .browser_traffic import ProxyTrafficMeter, _response_body_bytes, suspend_http_traffic_hook
 from .mailbox import MailAccount, create_mailbox_reader
 from .proxy import normalize_proxy_url
 from .sentinel import (
@@ -159,6 +160,7 @@ class ProtocolRegistrationFlow:
         session: Any | None = None,
         challenge_strategy: str = "native_headless",
         mailbox_proxy_url: str | None = None,
+        traffic_meter: ProxyTrafficMeter | None = None,
     ):
         self.account = account
         self.proxy_url = normalize_proxy_url(proxy_url)
@@ -175,6 +177,7 @@ class ProtocolRegistrationFlow:
         self.auth_action = "login" if existing_account else "unknown"
         self.generated_password = ""
         self.traffic = ProtocolTrafficMeter()
+        self.traffic_meter = traffic_meter
         self.challenge_strategy = (
             challenge_strategy if challenge_strategy in {"native_headless", "sentinel_protocol"} else "native_headless"
         )
@@ -216,7 +219,11 @@ class ProtocolRegistrationFlow:
         self._check_cancelled()
         kwargs.setdefault("timeout", 30)
         try:
-            response = self.session.request(method, url, **kwargs)
+            if self.traffic_meter is None:
+                response = self.session.request(method, url, **kwargs)
+            else:
+                with suspend_http_traffic_hook():
+                    response = self.session.request(method, url, **kwargs)
         except Exception as exc:
             error = ProtocolRegistrationError(f"{step} request failed: {exc}")
             error.traffic = self.traffic.snapshot()
@@ -224,6 +231,18 @@ class ProtocolRegistrationFlow:
         request_headers = dict(getattr(self.session, "headers", {}) or {})
         request_headers.update(dict(kwargs.get("headers") or {}))
         self.traffic.record(method, url, request_headers, kwargs, response)
+        if self.traffic_meter is not None:
+            request_body = kwargs.get("data") if kwargs.get("data") is not None else kwargs.get("json")
+            self.traffic_meter.record(
+                method,
+                str(getattr(response, "url", "") or url),
+                request_headers,
+                request_body,
+                int(getattr(response, "status_code", 0) or 0),
+                getattr(response, "headers", None),
+                _response_body_bytes(response),
+                "protocol_http",
+            )
         if os.environ.get("SUNNY_PROTOCOL_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
             response_url = str(getattr(response, "url", "") or url)
             parsed = urlsplit(response_url)
@@ -874,6 +893,7 @@ def login_or_register_protocol(
     on_progress: Callable[[str, dict[str, Any]], None] | None = None,
     challenge_strategy: str = "native_headless",
     mailbox_proxy_url: str | None = None,
+    traffic_meter: ProxyTrafficMeter | None = None,
 ) -> dict[str, Any]:
     return ProtocolRegistrationFlow(
         account,
@@ -884,4 +904,5 @@ def login_or_register_protocol(
         on_progress=on_progress,
         challenge_strategy=challenge_strategy,
         mailbox_proxy_url=mailbox_proxy_url,
+        traffic_meter=traffic_meter,
     ).run()

@@ -1512,6 +1512,7 @@ def _run_one(db: SunnyDB, task_type: str, payload: dict[str, Any], mailbox: dict
                     on_progress=save_progress,
                     challenge_strategy=protocol_challenge_strategy,
                     mailbox_proxy_url=auxiliary_proxy,
+                    traffic_meter=traffic_meter,
                 )
             except ProtocolChallengeRequired as challenge:
                 db.ensure_not_cancelled()

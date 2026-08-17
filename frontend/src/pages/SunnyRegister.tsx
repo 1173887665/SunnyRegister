@@ -595,6 +595,17 @@ const en = Object.assign({
   statusLabels: { "未注册": "Unregistered", "已注册": "Registered", "registered": "Registered", "已接码": "Phone Bound", "phone_bound": "Phone Bound", "已反代": "Reverse Proxied", "reverse_proxied": "Reverse Proxied", "已封禁": "Banned", "需二验": "Needs 2FA", "注册中": "Registering", "登录刷新": "Refreshing Login", "失败": "Failed", "failed": "Failed", "禁用": "Disabled" },
 }, accountDetectionSummaryCopy.en);
 
+Object.assign(zh, {
+  protocolMode: "协议模式注册",
+  backgroundMode: "无头浏览器注册",
+  visibleMode: "可视浏览器注册",
+});
+Object.assign(en, {
+  protocolMode: "Protocol Registration",
+  backgroundMode: "Headless Browser Registration",
+  visibleMode: "Visible Browser Registration",
+});
+
 const MAILBOX_STATUSES = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "登录刷新", "失败"];
 const PLAN_TYPE_OPTIONS = ["free", "plus", "k12", "team", "pro"];
 const HEALTH_CHECKABLE_STATUSES = new Set(["已注册", "已接码", "已反代", "PLUS试用中", "需二验", "registered", "phone_bound", "reverse_proxied"]);

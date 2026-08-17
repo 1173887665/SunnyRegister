@@ -86,6 +86,19 @@ func TestSunnyMailboxManualAccessTokenCreatesLinkedRowsWithoutLengthLimit(t *tes
 	if session.AccessToken != longToken || session.AccountID != account.ID {
 		t.Fatalf("session token length=%d account_id=%d, want length=%d account_id=%d", len(session.AccessToken), session.AccountID, len(longToken), account.ID)
 	}
+	if err := s.db.Model(&mailbox).Updates(map[string]any{
+		"chatgpt_register_traffic_bytes": int64(2048),
+		"proxy_traffic_bytes":            int64(8192),
+	}).Error; err != nil {
+		t.Fatalf("prepare mailbox traffic: %v", err)
+	}
+	var stored SunnyMailbox
+	if err := s.db.First(&stored, mailbox.ID).Error; err != nil {
+		t.Fatalf("reload mailbox traffic: %v", err)
+	}
+	if stored.ChatGPTRegisterTrafficBytes != 2048 || stored.ProxyTrafficBytes != 8192 {
+		t.Fatalf("stored mailbox traffic=%d/%d", stored.ChatGPTRegisterTrafficBytes, stored.ProxyTrafficBytes)
+	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api/sunny/mailboxes?summary=true&page=1&page_size=100", nil)
 	listRes := httptest.NewRecorder()
@@ -105,6 +118,12 @@ func TestSunnyMailboxManualAccessTokenCreatesLinkedRowsWithoutLengthLimit(t *tes
 			found = true
 			if item["has_access_token"] != true {
 				t.Fatalf("mailbox list has_access_token=%v", item["has_access_token"])
+			}
+			if item["chatgpt_register_traffic_bytes"] != float64(2048) {
+				t.Fatalf("mailbox list chatgpt_register_traffic_bytes=%v", item["chatgpt_register_traffic_bytes"])
+			}
+			if item["proxy_traffic_bytes"] != float64(8192) {
+				t.Fatalf("mailbox list proxy_traffic_bytes=%v", item["proxy_traffic_bytes"])
 			}
 		}
 	}

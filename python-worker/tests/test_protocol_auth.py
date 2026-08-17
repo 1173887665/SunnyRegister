@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+from sunny_core.browser_traffic import ProxyTrafficMeter
 from sunny_core.mailbox import MailAccount
 from sunny_core.protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationFlow, _response_error
 
@@ -125,12 +126,14 @@ def test_protocol_registration_completes_without_browser() -> None:
         raw="user@outlook.com----MailboxPass123!----client-id----mail-refresh-token",
     )
     checkpoints = []
+    traffic_meter = ProxyTrafficMeter(proxy_url="http://proxy.example:8080", tracked_proxy=True)
     with patch("sunny_core.protocol_auth.create_mailbox_reader", FakeReader):
         result = ProtocolRegistrationFlow(
             account,
             "http://proxy.example:8080",
             session=session,
             on_progress=lambda checkpoint, _snapshot: checkpoints.append(checkpoint),
+            traffic_meter=traffic_meter,
         ).run()
 
     assert result["access_token"] == "access-token"
@@ -141,6 +144,9 @@ def test_protocol_registration_completes_without_browser() -> None:
     assert result["sentinel_runtime_used"] is False
     assert result["protocol_traffic"]["requests"] == 17
     assert result["protocol_traffic"]["total_bytes"] > 0
+    assert traffic_meter.snapshot()["requests"] == 17
+    assert traffic_meter.snapshot()["total_bytes"] > 0
+    assert set(traffic_meter.snapshot()["by_kind"]) == {"protocol_http"}
     assert checkpoints == ["protocol_started", "email_submitted", "email_verified", "auth_completed", "registered"]
     assert session.closed is True
     assert not session.responses

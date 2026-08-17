@@ -5,6 +5,8 @@ from sunny_core.browser_traffic import (
     BrowserTrafficOptimizer,
     ProxyTrafficMeter,
     _make_session_request_hook,
+    suspend_http_traffic_hook,
+    use_traffic_meter,
 )
 
 
@@ -41,6 +43,20 @@ def test_proxy_traffic_meter_ignores_untracked_proxy() -> None:
     meter = ProxyTrafficMeter(proxy_url="http://pool:8080", tracked_proxy=False)
     meter.record("GET", "https://chatgpt.com/", {}, None, 200, {}, 1024)
     assert meter.snapshot()["total_bytes"] == 0
+
+
+def test_http_hook_can_be_suspended_for_explicit_protocol_metering() -> None:
+    meter = ProxyTrafficMeter(proxy_url="http://pool:8080", tracked_proxy=True)
+    session = type("Session", (), {"headers": {}, "proxies": {"https": "http://pool:8080"}})()
+
+    def original(_session, _method, _url, **_kwargs):
+        return type("Response", (), {"url": "https://example.test", "status_code": 200, "headers": {}, "content": b"ok"})()
+
+    request = _make_session_request_hook(original)
+    with use_traffic_meter(meter), suspend_http_traffic_hook():
+        request(session, "GET", "https://example.test")
+
+    assert meter.snapshot()["requests"] == 0
 
 
 def test_browser_traffic_config_has_conservative_bounds() -> None:

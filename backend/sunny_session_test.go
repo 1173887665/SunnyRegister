@@ -34,6 +34,7 @@ func newSunnySessionTestServer(t *testing.T) *Server {
 	if err := db.AutoMigrate(&SunnyMailboxGroup{}, &SunnyMailbox{}, &SunnyAccount{}, &SunnySession{}, &Task{}, &TaskEvent{}, &SunnyKVConfig{}, &SunnyProxy{}); err != nil {
 		t.Fatalf("migrate test database: %v", err)
 	}
+	ensureSunnySchema(db)
 	now := time.Now()
 	mailbox := SunnyMailbox{
 		Email: "session@example.com", Password: "mailbox-password", ClientID: "client-id",

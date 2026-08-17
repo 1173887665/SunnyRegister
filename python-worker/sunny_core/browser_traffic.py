@@ -17,6 +17,9 @@ from urllib.parse import urlsplit
 _CURRENT_METER: contextvars.ContextVar["ProxyTrafficMeter | None"] = contextvars.ContextVar(
     "sunny_proxy_traffic_meter", default=None
 )
+_HTTP_HOOK_SUSPENDED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "sunny_http_traffic_hook_suspended", default=False
+)
 _HOOKS_LOCK = threading.Lock()
 _HOOKS_INSTALLED = False
 
@@ -151,8 +154,19 @@ def current_traffic_meter() -> ProxyTrafficMeter | None:
     return _CURRENT_METER.get()
 
 
+@contextlib.contextmanager
+def suspend_http_traffic_hook() -> Iterator[None]:
+    token = _HTTP_HOOK_SUSPENDED.set(True)
+    try:
+        yield
+    finally:
+        _HTTP_HOOK_SUSPENDED.reset(token)
+
+
 def _hooked_request(original, session, method: str, url: str, kwargs: dict[str, Any]):
     response = original(session, method, url, **kwargs)
+    if _HTTP_HOOK_SUSPENDED.get():
+        return response
     meter = current_traffic_meter()
     proxy = kwargs.get("proxies") or getattr(session, "proxies", None)
     if meter and meter.matches_proxy(proxy):

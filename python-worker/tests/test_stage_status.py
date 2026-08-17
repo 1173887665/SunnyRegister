@@ -129,7 +129,7 @@ class StageStatusTests(unittest.TestCase):
             "session_json": {"accessToken": "protocol-access", "account": {"planType": "plus"}},
         }
         with (
-            patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "http://proxy.example:8080", "mode": "proxy_pool"}),
             patch.object(worker, "login_or_register_protocol", return_value=session) as protocol_executor,
             patch.object(worker, "login_or_register") as browser_executor,
         ):
@@ -140,6 +140,9 @@ class StageStatusTests(unittest.TestCase):
         browser_executor.assert_not_called()
         protocol_executor.assert_called_once()
         self.assertEqual(protocol_executor.call_args.kwargs["challenge_strategy"], "native_headless")
+        traffic_meter = protocol_executor.call_args.kwargs["traffic_meter"]
+        self.assertTrue(traffic_meter.tracked_proxy)
+        self.assertEqual(traffic_meter.proxy_url, "http://proxy.example:8080")
         self.assertEqual(db.account_updates[-1]["account_type"], "plus")
 
     def test_protocol_challenge_falls_back_to_headless_browser_only(self):
