@@ -175,7 +175,7 @@ func sunnyProbeAccessToken(accessToken, proxyURL string, meters ...*sunnyTraffic
 		if jsonErr == nil && atProbeAuthenticationError(payload) {
 			return "invalid", fmt.Errorf("AT 已失效: %s", detail)
 		}
-		return "probe_failed", fmt.Errorf("AT 检测被上游拒绝但未确认令牌失效: %s", detail)
+		return "blocked", fmt.Errorf("AT 检测被上游边缘拦截，未确认令牌失效: %s", detail)
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return "valid", nil
@@ -193,23 +193,24 @@ func sunnyProbeAccessToken(accessToken, proxyURL string, meters ...*sunnyTraffic
 }
 
 func (s *Server) sunnyProbeAccessToken(accessToken, proxyURL string, meters ...*sunnyTrafficMeter) (string, error) {
-	if len(meters) == 0 {
-		if status, err, handled := s.sunnyProbeAccessTokenViaWorker(accessToken, proxyURL); handled {
-			return status, err
-		}
+	if status, err, handled := s.sunnyProbeAccessTokenViaWorker(accessToken, proxyURL, meters...); handled {
+		return status, err
 	}
 	directStatus, directErr := sunnyProbeAccessToken(accessToken, "", meters...)
-	if directStatus != "probe_failed" || strings.TrimSpace(proxyURL) == "" {
+	if directStatus == "valid" || directStatus == "invalid" || strings.TrimSpace(proxyURL) == "" {
 		return directStatus, directErr
 	}
 	proxyStatus, proxyErr := sunnyProbeAccessToken(accessToken, proxyURL, meters...)
-	if proxyStatus != "probe_failed" {
+	if proxyStatus == "valid" || proxyStatus == "invalid" {
 		return proxyStatus, proxyErr
+	}
+	if directStatus == "blocked" && proxyStatus == "blocked" {
+		return "blocked", fmt.Errorf("AT 检测直连与代理链路均被上游边缘拦截，未确认令牌失效: 直连=%v; 代理=%v", directErr, proxyErr)
 	}
 	return "probe_failed", fmt.Errorf("AT 检测直连与代理链路均未得到有效 API 响应: 直连=%v; 代理=%v", directErr, proxyErr)
 }
 
-func (s *Server) sunnyProbeAccessTokenViaWorker(accessToken, proxyURL string) (string, error, bool) {
+func (s *Server) sunnyProbeAccessTokenViaWorker(accessToken, proxyURL string, meters ...*sunnyTrafficMeter) (string, error, bool) {
 	workerURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PYTHON_WORKER_URL")), "/")
 	if workerURL == "" {
 		workerURL = "http://127.0.0.1:8765"
@@ -240,8 +241,12 @@ func (s *Server) sunnyProbeAccessTokenViaWorker(accessToken, proxyURL string) (s
 		return "", nil, false
 	}
 	status := strings.TrimSpace(text(payload["status"]))
-	if status != "valid" && status != "invalid" && status != "probe_failed" {
+	if status != "valid" && status != "invalid" && status != "blocked" && status != "probe_failed" {
 		return "", nil, false
+	}
+	if len(meters) > 0 && meters[0] != nil {
+		traffic, _ := payload["traffic"].(map[string]any)
+		meters[0].addExternal(int64(intValue(traffic["total_bytes"], 0)))
 	}
 	message := strings.TrimSpace(text(payload["error"]))
 	if message != "" {
@@ -456,6 +461,10 @@ func (s *Server) executeSunnyAccessTokenCheckTask(task *Task, payload map[string
 					invalidAccounts = append(invalidAccounts, outcome.AccountID)
 				}
 				s.appendAccountTaskEvent(task.ID, outcome.Email, "session", "access_token.invalid", fmt.Sprintf("账户 %s：Access Token 无效，%s", outcome.Email, outcome.Error), "warning", item)
+			case "blocked":
+				result["skipped"] = result["skipped"].(int) + 1
+				s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "probe_blocked", "access_token_error": outcome.Error, "access_token_checked_at": now})
+				s.appendAccountTaskEvent(task.ID, outcome.Email, "session", "access_token.probe_blocked", fmt.Sprintf("账户 %s：AT 检测被上游边缘拦截，未确认令牌失效", outcome.Email), "warning", item)
 			default:
 				result["failed"] = result["failed"].(int) + 1
 				s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "probe_failed", "access_token_error": outcome.Error, "access_token_checked_at": now})
@@ -480,7 +489,7 @@ func (s *Server) failSunnyAccessTokenCheckTask(task *Task, message string) {
 	task.Status = TaskFailed
 	task.Error = message
 	task.FinishedAt = sql.NullTime{Time: time.Now(), Valid: true}
-	task.ResultJSON = dumpJSON(map[string]any{"requested": task.ProgressTotal, "valid": 0, "invalid": 0, "failed": task.ProgressTotal})
+	task.ResultJSON = dumpJSON(map[string]any{"requested": task.ProgressTotal, "valid": 0, "invalid": 0, "failed": task.ProgressTotal, "skipped": 0})
 	s.db.Save(task)
 	s.appendTaskEvent(task.ID, message, "log", "error", nil)
 }

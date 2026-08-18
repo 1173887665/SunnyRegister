@@ -4,6 +4,8 @@ from typing import Any
 
 from curl_cffi import requests as curl_requests
 
+from .browser_traffic import ProxyTrafficMeter, use_traffic_meter
+
 
 MODELS_URL = "https://chatgpt.com/backend-api/models"
 
@@ -78,18 +80,36 @@ def probe_access_token(access_token: str, proxy_url: str = "") -> dict[str, Any]
 
     configured_proxy = str(proxy_url or "").strip()
     attempts = [("配置代理", configured_proxy), ("服务器直连", "")] if configured_proxy else [("服务器直连", "")]
+    meter = ProxyTrafficMeter(
+        proxy_url=configured_proxy,
+        tracked_proxy=bool(configured_proxy),
+        operation="access_token_probe",
+    )
     errors: list[str] = []
+    all_blocked = True
     for source, proxy in attempts:
         try:
-            result = _request(token, proxy)
+            with use_traffic_meter(meter):
+                result = _request(token, proxy)
         except Exception as exc:
+            all_blocked = False
             errors.append(f"{source}={exc}")
             continue
         result["source"] = source
         if result.get("status") in {"valid", "invalid"}:
+            result["traffic"] = meter.snapshot()
             return result
+        if result.get("status") != "blocked":
+            all_blocked = False
         errors.append(f"{source}={result.get('error') or '未得到可判定响应'}")
+    if all_blocked:
+        return {
+            "status": "blocked",
+            "error": "AT 检测被 Cloudflare/上游边缘拦截，未判定令牌失效；" + "; ".join(errors),
+            "traffic": meter.snapshot(),
+        }
     return {
         "status": "probe_failed",
         "error": "AT 检测未能到达官方模型接口，未判定令牌失效；" + "; ".join(errors),
+        "traffic": meter.snapshot(),
     }

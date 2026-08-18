@@ -88,17 +88,22 @@ func TestSunnyAccessTokenProbeUsesPythonWorker(t *testing.T) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status": "invalid",
-			"error":  "AT 已失效: HTTP 401, code=token_invalidated",
+			"status":  "invalid",
+			"error":   "AT 已失效: HTTP 401, code=token_invalidated",
+			"traffic": map[string]any{"total_bytes": 321},
 		})
 	}))
 	defer worker.Close()
 	t.Setenv("PYTHON_WORKER_URL", worker.URL)
 
 	s := &Server{}
-	status, err := s.sunnyProbeAccessToken("expired-token", "http://proxy.example:8080")
+	meter := &sunnyTrafficMeter{}
+	status, err := s.sunnyProbeAccessToken("expired-token", "http://proxy.example:8080", meter)
 	if status != "invalid" || err == nil || !strings.Contains(err.Error(), "token_invalidated") {
 		t.Fatalf("worker probe status=%q err=%v", status, err)
+	}
+	if meter.totalBytes() != 321 {
+		t.Fatalf("worker probe traffic=%d, want 321", meter.totalBytes())
 	}
 }
 
@@ -411,7 +416,7 @@ func TestSunnyAccessTokenProbeClassifiesAuthenticationResponses(t *testing.T) {
 		{name: "valid", statusCode: http.StatusOK, contentType: "application/json", body: `{"title":"ChatGPT","models":[],"categories":[],"versions":[]}`, wantStatus: "valid"},
 		{name: "expired", statusCode: http.StatusUnauthorized, contentType: "application/json", body: `{"error":{"message":"Your authentication token has been invalidated.","type":"invalid_request_error","code":"token_invalidated"},"status":401}`, wantStatus: "invalid", wantError: true},
 		{name: "auth forbidden", statusCode: http.StatusForbidden, contentType: "application/json", body: `{"error":"invalid access token"}`, wantStatus: "invalid", wantError: true},
-		{name: "cloudflare forbidden", statusCode: http.StatusForbidden, contentType: "text/html", body: `<html>blocked</html>`, wantStatus: "probe_failed", wantError: true},
+		{name: "cloudflare forbidden", statusCode: http.StatusForbidden, contentType: "text/html", body: `<html>blocked</html>`, wantStatus: "blocked", wantError: true},
 		{name: "rate limited", statusCode: http.StatusTooManyRequests, contentType: "application/json", body: `{}`, wantStatus: "valid"},
 		{name: "upstream failure", statusCode: http.StatusBadGateway, contentType: "text/html", body: `<html>bad gateway</html>`, wantStatus: "probe_failed", wantError: true},
 	}
@@ -548,6 +553,42 @@ func TestSunnyAccessTokenCheckQueuesRenewalForRejectedToken(t *testing.T) {
 	payload := jsonMap(renewal.PayloadJSON)
 	if ids := uintSlice(payload["account_ids"]); len(ids) != 1 || ids[0] != session.AccountID {
 		t.Fatalf("unexpected renewal payload: %#v", payload)
+	}
+}
+
+func TestSunnyAccessTokenCheckSkipsEdgeBlockedTokenWithoutRenewal(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	originalEndpoint := sunnyProbeAccessTokenEndpoint
+	defer func() { sunnyProbeAccessTokenEndpoint = originalEndpoint }()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("<html>Cloudflare challenge</html>"))
+	}))
+	defer server.Close()
+	sunnyProbeAccessTokenEndpoint = server.URL
+
+	checkTask := s.createTask(sunnyAccessTokenCheckTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
+	s.executeSunnyAccessTokenCheckTask(&checkTask, map[string]any{"session_ids": []any{float64(session.ID)}})
+	var refreshed SunnySession
+	if err := s.db.Where("id = ?", session.ID).First(&refreshed).Error; err != nil {
+		t.Fatalf("reload session: %v", err)
+	}
+	if refreshed.AccessTokenStatus != "probe_blocked" {
+		t.Fatalf("AT status=%q, want probe_blocked", refreshed.AccessTokenStatus)
+	}
+	result := jsonMap(checkTask.ResultJSON)
+	if intValue(result["skipped"], 0) != 1 || intValue(result["failed"], 0) != 0 || intValue(result["invalid"], 0) != 0 {
+		t.Fatalf("unexpected edge-blocked result: %#v", result)
+	}
+	var renewalCount int64
+	s.db.Model(&Task{}).Where("type = ?", "sunny_refresh_session").Count(&renewalCount)
+	if renewalCount != 0 {
+		t.Fatalf("edge-blocked probe queued %d renewal task(s)", renewalCount)
 	}
 }
 
