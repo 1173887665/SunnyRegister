@@ -1666,7 +1666,15 @@ class OpenAIEmailRegisterFlow:
         if not inputs:
             raise RuntimeError("Entered password step but password input was not found")
         for item in inputs:
-            item.fill(password)
+            try:
+                item.fill(password, timeout=5000)
+            except Exception as exc:
+                # React can navigate to email verification while the old
+                # password node is still attached but disabled. Treat that
+                # transition as progress instead of waiting on a stale locator.
+                if "email-verification" in str(getattr(page, "url", "") or "") or not self._has_visible_password(page):
+                    return
+                raise RuntimeError(f"ChatGPT password field was not editable: {str(exc)[:240]}") from exc
         if not self._click_continue(page):
             raise RuntimeError("Password has been filled, but continue button was not found")
 

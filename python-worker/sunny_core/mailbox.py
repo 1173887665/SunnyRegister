@@ -51,7 +51,11 @@ URL_API_REQUEST_TIMEOUT = max(35, int(os.getenv("URL_API_ICLOUD_REQUEST_TIMEOUT"
 URL_API_SPECIALIZED_FALLBACK_SECONDS = 45
 URL_API_MAX_REDIRECTS = 3
 URL_API_MAX_RESPONSE_BYTES = 1 << 20
+URL_API_MAX_CONCURRENT_REQUESTS = _int_env("URL_API_ICLOUD_MAX_CONCURRENCY", 3, 1, 20)
+URL_API_QUEUE_TIMEOUT = _int_env("URL_API_ICLOUD_QUEUE_TIMEOUT", 30, 5, 300)
+URL_API_POLL_JITTER_SECONDS = 1.5
 _XBOVO_REQUEST_GATE = threading.BoundedSemaphore(XBOVO_MAX_CONCURRENT_REQUESTS)
+_URL_API_REQUEST_GATE = threading.BoundedSemaphore(URL_API_MAX_CONCURRENT_REQUESTS)
 
 
 class MailboxAccessError(RuntimeError):
@@ -974,21 +978,13 @@ class URLAPIICloudReader:
         target = self.url
         for redirect_count in range(URL_API_MAX_REDIRECTS + 1):
             target = _validate_url_api_address(target)
-            try:
-                response = requests.get(
-                    target,
-                    headers={"Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8", "User-Agent": "Mozilla/5.0"},
-                    timeout=min(URL_API_REQUEST_TIMEOUT + 5, max(URL_API_REQUEST_TIMEOUT, int(timeout or 0))),
-                    proxies=self.proxies,
-                    allow_redirects=False,
-                    stream=True,
-                )
-            except requests.RequestException as exc:
-                raise MailboxAccessError(
-                    "mailbox_network_error",
-                    "url_api 邮箱渠道连接超时或网络不可达，请检查取码 URL、服务器出网与代理配置",
-                    str(exc),
-                ) from exc
+            response = self._request_url(
+                target,
+                headers={"Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8", "User-Agent": "Mozilla/5.0"},
+                timeout=min(URL_API_REQUEST_TIMEOUT + 5, max(URL_API_REQUEST_TIMEOUT, int(timeout or 0))),
+                allow_redirects=False,
+                stream=True,
+            )
             if response.status_code not in {301, 302, 303, 307, 308}:
                 break
             location = str(response.headers.get("Location") or "").strip()
@@ -1080,20 +1076,12 @@ class URLAPIICloudReader:
         query = [(key, value) for key, value in query if key.lower() not in {"format", "refresh"}]
         query.extend([("format", "json"), ("refresh", "1")])
         endpoint = parsed._replace(query=urlencode(query)).geturl()
-        try:
-            response = requests.get(
-                endpoint,
-                headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
-                timeout=min(URL_API_REQUEST_TIMEOUT + 5, max(URL_API_REQUEST_TIMEOUT, int(timeout or 0))),
-                proxies=self.proxies,
-                allow_redirects=True,
-            )
-        except requests.RequestException as exc:
-            raise MailboxAccessError(
-                "mailbox_network_error",
-                "url_api 邮箱渠道连接超时或网络不可达，请检查取码 URL、服务器出网与代理配置",
-                str(exc),
-            ) from exc
+        response = self._request_url(
+            endpoint,
+            headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
+            timeout=min(URL_API_REQUEST_TIMEOUT + 5, max(URL_API_REQUEST_TIMEOUT, int(timeout or 0))),
+            allow_redirects=True,
+        )
         response_url = getattr(response, "url", "")
         final_url = urlparse(response_url if isinstance(response_url, str) and response_url else endpoint)
         initial_url = urlparse(endpoint)
@@ -1123,7 +1111,11 @@ class URLAPIICloudReader:
         message = payload.get("message") if isinstance(payload, dict) else None
         if not isinstance(message, dict):
             message = {}
-        raw_html = str(message.get("preview") or "")
+        raw_html = "\n".join(
+            str(message.get(key) or "")
+            for key in ("preview", "body", "content", "html", "text", "snippet")
+            if message.get(key)
+        )
         plain = _html_to_text(raw_html)
         candidates: list[dict[str, Any]] = []
         for index, value in enumerate(message.get("codes") or []):
@@ -1158,6 +1150,47 @@ class URLAPIICloudReader:
             return self._latest_mczero(timeout)
         return self._latest_generic(timeout)
 
+    def _request_url(
+        self,
+        target: str,
+        *,
+        headers: dict[str, str],
+        timeout: int,
+        allow_redirects: bool,
+        stream: bool = False,
+    ):
+        acquired = _URL_API_REQUEST_GATE.acquire(timeout=URL_API_QUEUE_TIMEOUT)
+        if not acquired:
+            raise MailboxAccessError(
+                "mailbox_provider_busy",
+                "url_api 邮箱渠道当前请求较多，请稍后重试",
+                f"local concurrency queue timed out after {URL_API_QUEUE_TIMEOUT}s",
+            )
+        try:
+            last_error: Exception | None = None
+            for attempt in range(3):
+                try:
+                    return requests.get(
+                        target,
+                        headers=headers,
+                        timeout=timeout,
+                        proxies=self.proxies,
+                        allow_redirects=allow_redirects,
+                        stream=stream,
+                    )
+                except requests.RequestException as exc:
+                    last_error = exc
+                    if attempt >= 2:
+                        break
+                    time.sleep(0.4 * (attempt + 1) + random.uniform(0, 0.4))
+            raise MailboxAccessError(
+                "mailbox_network_error",
+                "url_api 邮箱渠道连接超时或网络不可达，请检查取码 URL、服务器出网与代理配置",
+                str(last_error or "request failed"),
+            ) from last_error
+        finally:
+            _URL_API_REQUEST_GATE.release()
+
     def connect(self, access_token: str | None = None) -> None:
         if self.account.mailbox_channel != "url_api":
             raise MailboxAccessError("mailbox_channel_unsupported", "暂不支持该 iCloud 邮箱渠道", self.account.mailbox_channel, terminal=True)
@@ -1184,16 +1217,22 @@ class URLAPIICloudReader:
     def wait_for_code(self, min_timestamp: float, timeout: int = 180) -> str:
         started = time.monotonic()
         last_notice = 0.0
+        last_error_notice = 0.0
         specialized = getattr(self, "strategy", "generic") == "mczero"
         fallback_at = min(float(timeout), URL_API_SPECIALIZED_FALLBACK_SECONDS) if specialized else 0
+        time.sleep(min(random.uniform(0, URL_API_POLL_JITTER_SECONDS), max(0.0, float(timeout))))
         while time.monotonic() - started < timeout:
             remaining = max(1, int(timeout - (time.monotonic() - started)))
             use_specialized = specialized and time.monotonic() - started < fallback_at
             try:
                 message = self._latest(timeout=max(URL_API_REQUEST_TIMEOUT, remaining), strategy="mczero" if use_specialized else "generic")
             except MailboxAccessError as exc:
-                if exc.terminal or not use_specialized:
+                if exc.terminal:
                     raise
+                if time.monotonic() - last_error_notice >= 20:
+                    route_label = "专用" if use_specialized else "通用"
+                    self.log(f"[{self.account.email}] url_api {route_label}取码接口暂时不可用，将继续重试：{str(exc)[:180]}")
+                    last_error_notice = time.monotonic()
                 time.sleep(min(3, remaining))
                 continue
             unseen = [item for item in message.get("otp_candidates") or [] if item.get("key") not in self.seen_candidate_keys]

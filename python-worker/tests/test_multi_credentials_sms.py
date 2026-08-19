@@ -188,6 +188,32 @@ def test_mczero_url_api_reader_parses_json_codes_and_preview() -> None:
     assert message["body"] == "ChatGPT verification code\n978744"
 
 
+def test_mczero_url_api_reader_parses_alternate_message_body_field() -> None:
+    account = MailAccount(
+        "user@icloud.com", "", "", "", "raw",
+        mailbox_type="apple", mailbox_channel="url_api",
+        access_key="https://mail.mczero.top/s/token/user@icloud.com",
+    )
+    reader = URLAPIICloudReader(account, None)
+    response = Mock()
+    response.status_code = 200
+    response.ok = True
+    response.url = "https://mail.mczero.top/s/token/user@icloud.com?format=json"
+    response.json.return_value = {
+        "state": "ready",
+        "message": {
+            "id": "message-2",
+            "subject": "ChatGPT verification code",
+            "body": "Your one-time code is 482901",
+        },
+    }
+    with patch.object(mailbox_module.requests, "get", return_value=response):
+        message = reader._latest_mczero()
+
+    assert message["otp"] == "482901"
+    assert message["body"] == "Your one-time code is 482901"
+
+
 def test_mczero_url_api_reader_falls_back_to_generic_after_specialized_window() -> None:
     account = MailAccount("user@icloud.com", "", "", "", "raw", mailbox_type="apple", mailbox_channel="url_api", access_key="https://mail.mczero.top/s/token/user@icloud.com")
     reader = URLAPIICloudReader.__new__(URLAPIICloudReader)
@@ -285,7 +311,7 @@ def test_browser_password_login_uses_exact_imported_password() -> None:
 
     flow._fill_password_step(page)
 
-    password_input.fill.assert_called_once_with("Short1!")
+    password_input.fill.assert_called_once_with("Short1!", timeout=5000)
     assert account.chatgpt_password == "Short1!"
 
 

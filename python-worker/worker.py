@@ -249,7 +249,7 @@ def _start_task_process(task_id: str) -> subprocess.Popen:
 
 
 def _watch_task_process(task_id: str, process: subprocess.Popen) -> None:
-    last_signature: tuple[str, str, str] | None = None
+    last_signature: tuple[str, str, str, str] | None = None
     last_activity = time.monotonic()
     reclaimed_reason = ""
     while process.poll() is None:
@@ -259,7 +259,22 @@ def _watch_task_process(task_id: str, process: subprocess.Popen) -> None:
             db = SunnyDB(task_id, ensure_schema=False)
             try:
                 task = db.task()
-                signature = (str(task.get("updated_at") or ""), str(task.get("progress_current") or ""), str(task.get("status") or ""))
+                event_row = db.conn.execute(
+                    "select max(created_at) as latest_event_at from task_events where task_id=?",
+                    (task_id,),
+                ).fetchone()
+                if isinstance(event_row, dict):
+                    latest_event_at = str(event_row.get("latest_event_at") or "")
+                elif event_row:
+                    latest_event_at = str(event_row["latest_event_at"] or "")
+                else:
+                    latest_event_at = ""
+                signature = (
+                    str(task.get("updated_at") or ""),
+                    str(task.get("progress_current") or ""),
+                    str(task.get("status") or ""),
+                    latest_event_at,
+                )
             finally:
                 db.close()
             if signature != last_signature:
