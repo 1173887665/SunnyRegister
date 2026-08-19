@@ -3109,7 +3109,7 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 			db = db.Where("country = ?", country)
 		}
 		if purpose != "" {
-			db = db.Where("(',' || replace(lower(coalesce(purpose_tags, 'register')), ' ', '') || ',') LIKE ?", "%,"+purpose+",%")
+			db = db.Where("(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?", "%,"+purpose+",%")
 		}
 		switch status {
 		case "enabled":
@@ -3176,9 +3176,15 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 			writeError(w, 400, "proxy address is required")
 			return
 		}
-		purposeTags := normalizeSunnyProxyPurposes(body["purpose_tags"])
-		if len(purposeTags) == 0 {
-			purposeTags = []string{"register"}
+		purposeTags, hasPurposeTags := body["purpose_tags"]
+		normalizedPurposeTags := normalizeSunnyProxyPurposes(purposeTags)
+		if !hasPurposeTags {
+			normalizedPurposeTags = []string{sunnyProxyPurposeRegister}
+		}
+		country, countryErr := normalizeSunnyProxyCountry(text(body["country"]))
+		if countryErr != nil {
+			writeError(w, http.StatusBadRequest, countryErr.Error())
+			return
 		}
 		enabled := true
 		if v, ok := body["enabled"]; ok {
@@ -3188,8 +3194,8 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 		for _, address := range addresses {
 			p := SunnyProxy{
 				Address:     address,
-				Country:     strings.TrimSpace(text(body["country"])),
-				PurposeTags: strings.Join(purposeTags, ","),
+				Country:     country,
+				PurposeTags: strings.Join(normalizedPurposeTags, ","),
 				Status:      fallback(normalizeSunnyProxyStatus(text(body["status"])), "enabled"),
 				Enabled:     enabled,
 			}
@@ -3258,12 +3264,21 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 			if v := normalizeSunnyProxyAddress(text(body["address"])); v != "" {
 				p.Address = v
 			}
-			if country := strings.TrimSpace(text(body["country"])); country != "" {
+			if rawCountry := strings.TrimSpace(text(body["country"])); rawCountry != "" {
+				country, countryErr := normalizeSunnyProxyCountry(rawCountry)
+				if countryErr != nil {
+					writeError(w, http.StatusBadRequest, countryErr.Error())
+					return
+				}
 				p.Country = country
 			}
 			if _, ok := body["purpose_tags"]; ok {
-				if tags := normalizeSunnyProxyPurposes(body["purpose_tags"]); len(tags) > 0 {
-					p.PurposeTags = strings.Join(tags, ",")
+				p.PurposeTags = strings.Join(normalizeSunnyProxyPurposes(body["purpose_tags"]), ",")
+			}
+			if containsString(normalizeSunnyProxyPurposes(p.PurposeTags), sunnyProxyPurposePayment) {
+				if _, countryErr := normalizeSunnyProxyCountry(p.Country); countryErr != nil {
+					writeError(w, http.StatusBadRequest, "支付探测代理必须配置有效国家代码")
+					return
 				}
 			}
 			if _, ok := body["enabled"]; ok {
@@ -3326,6 +3341,7 @@ func normalizeSunnyProxyStatus(status string) string {
 const (
 	sunnyProxyPurposeRegister = "register"
 	sunnyProxyPurposeCommerce = "commerce"
+	sunnyProxyPurposePayment  = "payment_probe"
 )
 
 func normalizeSunnyProxyPurpose(value string) string {
@@ -3334,6 +3350,8 @@ func normalizeSunnyProxyPurpose(value string) string {
 		return sunnyProxyPurposeRegister
 	case "commerce", "trial", "checkout", "account_check", "账户检测", "商业检测":
 		return sunnyProxyPurposeCommerce
+	case "payment_probe", "payment", "payment_check", "支付探测", "支付检测":
+		return sunnyProxyPurposePayment
 	default:
 		return ""
 	}
@@ -3453,9 +3471,6 @@ func sunnyProxyDisplayStatus(p SunnyProxy) string {
 
 func sunnyProxyJSON(p SunnyProxy) map[string]any {
 	tags := normalizeSunnyProxyPurposes(p.PurposeTags)
-	if len(tags) == 0 {
-		tags = []string{sunnyProxyPurposeRegister}
-	}
 	return map[string]any{
 		"id": p.ID, "address": p.Address, "country": p.Country, "purpose_tags": tags, "status": sunnyProxyDisplayStatus(p), "status_key": normalizeSunnyProxyStatus(p.Status),
 		"enabled": p.Enabled, "last_check_ok": p.LastCheckOK, "latency_ms": p.LatencyMS, "last_error": p.LastError,
@@ -3987,21 +4002,25 @@ type sunnySessionListRow struct {
 }
 
 type sunnySessionAccountSummary struct {
-	ID                  uint       `gorm:"column:id"`
-	Email               string     `gorm:"column:email"`
-	Status              string     `gorm:"column:status"`
-	AccountType         string     `gorm:"column:account_type"`
-	TrialEligibility    string     `gorm:"column:trial_eligibility"`
-	TrialCheckedAt      *time.Time `gorm:"column:trial_checked_at"`
-	CheckoutKind        string     `gorm:"column:checkout_kind"`
-	PaymentMethodsJSON  string     `gorm:"column:payment_methods_json"`
-	CommerceCheckError  string     `gorm:"column:commerce_check_error"`
-	CommerceCheckedAt   *time.Time `gorm:"column:commerce_checked_at"`
-	AccessToken         string     `gorm:"column:access_token"`
-	PhoneNumber         string     `gorm:"column:phone_number"`
-	HasAccessToken      int        `gorm:"column:has_access_token"`
-	HasRefreshToken     int        `gorm:"column:has_refresh_token"`
-	LastHealthCheckedAt *time.Time `gorm:"column:last_health_checked_at"`
+	ID                      uint       `gorm:"column:id"`
+	Email                   string     `gorm:"column:email"`
+	Status                  string     `gorm:"column:status"`
+	AccountType             string     `gorm:"column:account_type"`
+	TrialEligibility        string     `gorm:"column:trial_eligibility"`
+	TrialCheckedAt          *time.Time `gorm:"column:trial_checked_at"`
+	CheckoutKind            string     `gorm:"column:checkout_kind"`
+	PaymentMethodsJSON      string     `gorm:"column:payment_methods_json"`
+	PaymentProbeMethodsJSON string     `gorm:"column:payment_probe_methods_json"`
+	PaymentProbeResultsJSON string     `gorm:"column:payment_probe_results_json"`
+	PaymentProbeError       string     `gorm:"column:payment_probe_error"`
+	PaymentProbedAt         *time.Time `gorm:"column:payment_probed_at"`
+	CommerceCheckError      string     `gorm:"column:commerce_check_error"`
+	CommerceCheckedAt       *time.Time `gorm:"column:commerce_checked_at"`
+	AccessToken             string     `gorm:"column:access_token"`
+	PhoneNumber             string     `gorm:"column:phone_number"`
+	HasAccessToken          int        `gorm:"column:has_access_token"`
+	HasRefreshToken         int        `gorm:"column:has_refresh_token"`
+	LastHealthCheckedAt     *time.Time `gorm:"column:last_health_checked_at"`
 }
 
 type sunnySessionMailboxSummary struct {
@@ -4052,8 +4071,16 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 	trialEligibility := sunnyTrialEligibilityFor(account.TrialEligibility, mailbox.TrialEligibility)
 	checkoutKind := normalizeSunnyCheckoutKind(account.CheckoutKind)
 	paymentMethods := []string{}
-	if err := json.Unmarshal([]byte(fallback(account.PaymentMethodsJSON, "[]")), &paymentMethods); err != nil {
+	paymentMethodsJSON := account.PaymentMethodsJSON
+	if account.PaymentProbedAt != nil {
+		paymentMethodsJSON = account.PaymentProbeMethodsJSON
+	}
+	if err := json.Unmarshal([]byte(fallback(paymentMethodsJSON, "[]")), &paymentMethods); err != nil {
 		paymentMethods = []string{}
+	}
+	paymentProbeResults := map[string]any{}
+	if err := json.Unmarshal([]byte(fallback(account.PaymentProbeResultsJSON, "{}")), &paymentProbeResults); err != nil {
+		paymentProbeResults = map[string]any{}
 	}
 	trialCheckedAt := account.TrialCheckedAt
 	if trialCheckedAt == nil {
@@ -4066,7 +4093,8 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 	return map[string]any{
 		"id": row.ID, "account_id": accountID, "mailbox_id": mailbox.ID, "email": row.Email,
 		"status": status, "plan_type": plan, "trial_eligibility": trialEligibility, "group_id": mailbox.GroupID, "group_name": mailbox.GroupName,
-		"checkout_kind": checkoutKind, "payment_methods": paymentMethods, "commerce_check_error": account.CommerceCheckError,
+		"checkout_kind": checkoutKind, "payment_methods": paymentMethods, "payment_probe_results": paymentProbeResults,
+		"payment_probe_error": account.PaymentProbeError, "payment_probed_at": nullableTime(account.PaymentProbedAt != nil, pointerTime(account.PaymentProbedAt)), "commerce_check_error": account.CommerceCheckError,
 		"phone_bound":       sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailbox.Status),
 		"has_access_token":  row.HasAccessToken != 0 || account.HasAccessToken != 0,
 		"has_refresh_token": row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
@@ -4120,7 +4148,7 @@ func (s *Server) sunnySessionListSidecars(rows []sunnySessionListRow) (map[strin
 		return accounts, mailboxes
 	}
 	var accRows []sunnySessionAccountSummary
-	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, trial_eligibility, trial_checked_at, checkout_kind, payment_methods_json, commerce_check_error, commerce_checked_at, access_token, phone_number, last_health_checked_at,
+	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, trial_eligibility, trial_checked_at, checkout_kind, payment_methods_json, payment_probe_methods_json, payment_probe_results_json, payment_probe_error, payment_probed_at, commerce_check_error, commerce_checked_at, access_token, phone_number, last_health_checked_at,
 		CASE WHEN access_token IS NOT NULL AND access_token <> '' THEN 1 ELSE 0 END AS has_access_token,
 		CASE WHEN openai_rt IS NOT NULL AND openai_rt <> '' THEN 1 ELSE 0 END AS has_refresh_token`).Where("email IN ?", emails).Find(&accRows)
 	for _, account := range accRows {
@@ -4204,9 +4232,10 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		planFilter := strings.ToLower(strings.TrimSpace(q.Get("plan_type")))
 		trialFilter := normalizeSunnyTrialFilter(q.Get("trial_eligibility"))
 		checkoutFilter := normalizeSunnyCheckoutFilter(q.Get("checkout_kind"))
+		paymentMethodFilter := normalizeSunnyPaymentMethodFilter(q.Get("payment_methods"))
 		groupFilter := uint(intValue(q.Get("group_id"), 0))
 		sortBy := strings.TrimSpace(q.Get("sort_by"))
-		if statusFilter == "" && planFilter == "" && trialFilter == "" && checkoutFilter == "" {
+		if statusFilter == "" && planFilter == "" && trialFilter == "" && checkoutFilter == "" && len(paymentMethodFilter) == 0 {
 			query := s.db.Model(&SunnySession{})
 			if kw != "" {
 				query = query.Where("LOWER(email) LIKE ?", "%"+kw+"%")
@@ -4265,6 +4294,9 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 				}
 			}
 			if checkoutFilter != "" && normalizeSunnyCheckoutKind(text(item["checkout_kind"])) != checkoutFilter {
+				continue
+			}
+			if !sunnyHasAllPaymentMethods(item["payment_methods"], paymentMethodFilter) {
 				continue
 			}
 			if groupFilter != 0 && uint(intValue(item["group_id"], 0)) != groupFilter {
@@ -4340,6 +4372,20 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			return
 		}
 		task, err := s.createSunnyTrialTask(body)
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, serializeTask(task))
+		return
+	}
+	if len(parts) == 1 && parts[0] == "payment-probe" && r.Method == http.MethodPost {
+		body, err := parseBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		task, err := s.createSunnyPaymentProbeTask(body)
 		if err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return
@@ -4754,7 +4800,7 @@ func (s *Server) sunnyValidateProxyForRegisterTask() error {
 	var n int64
 	s.db.Model(&SunnyProxy{}).
 		Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
-		Where("(',' || replace(lower(coalesce(purpose_tags, 'register')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%").
+		Where("(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%").
 		Count(&n)
 	if n <= 0 {
 		stats := s.sunnyProxyStats()
@@ -4893,7 +4939,7 @@ func (s *Server) sunnyTaskProxySnapshot(payload map[string]any) map[string]any {
 	registerProxy := normalizeSunnyProxyAddress(text(cfg["register_proxy"]))
 	var proxies []SunnyProxy
 	s.db.Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
-		Where("(',' || replace(lower(coalesce(purpose_tags, 'register')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%").
+		Where("(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%").
 		Order("updated_at desc, id asc").Find(&proxies)
 	proxyPool := make([]string, 0, len(proxies))
 	proxyIDs := make([]uint, 0, len(proxies))

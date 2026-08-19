@@ -72,7 +72,7 @@ type SunnyProxy struct {
 	ID            uint       `gorm:"primaryKey" json:"id"`
 	Address       string     `gorm:"type:text;index" json:"address"`
 	Country       string     `gorm:"index;size:80" json:"country"`
-	PurposeTags   string     `gorm:"type:text;default:'register'" json:"purpose_tags"`
+	PurposeTags   string     `gorm:"type:text" json:"purpose_tags"`
 	Status        string     `gorm:"index;default:enabled" json:"status"`
 	Enabled       bool       `gorm:"default:true" json:"enabled"`
 	LastCheckOK   bool       `gorm:"default:false" json:"last_check_ok"`
@@ -86,30 +86,34 @@ type SunnyProxy struct {
 func (SunnyProxy) TableName() string { return "sunny_proxies" }
 
 type SunnyAccount struct {
-	ID                  uint       `gorm:"primaryKey" json:"id"`
-	MailboxID           uint       `gorm:"index" json:"mailbox_id"`
-	Email               string     `gorm:"uniqueIndex;index" json:"email"`
-	GroupName           string     `gorm:"index" json:"group_name"`
-	Status              string     `gorm:"index;default:pending" json:"status"`
-	AccountType         string     `gorm:"index;default:free" json:"account_type"`
-	TrialEligibility    string     `gorm:"index;default:unknown" json:"trial_eligibility"`
-	TrialCheckError     string     `gorm:"type:text" json:"trial_check_error"`
-	TrialCheckedAt      *time.Time `gorm:"index" json:"trial_checked_at"`
-	CheckoutKind        string     `gorm:"index;size:32;default:unknown" json:"checkout_kind"`
-	PaymentMethodsJSON  string     `gorm:"type:text;default:'[]'" json:"payment_methods_json"`
-	CommerceCheckError  string     `gorm:"type:text" json:"commerce_check_error"`
-	CommerceCheckedAt   *time.Time `gorm:"index" json:"commerce_checked_at"`
-	OpenAIRT            string     `gorm:"column:openai_rt;type:text" json:"openai_rt"`
-	AccessToken         string     `gorm:"type:text" json:"access_token"`
-	PhoneNumber         string     `gorm:"index" json:"phone_number"`
-	Sub2APIStatus       string     `gorm:"column:sub2api_status;index" json:"sub2api_status"`
-	Sub2APIID           string     `gorm:"column:sub2api_id" json:"sub2api_id"`
-	LastError           string     `gorm:"type:text" json:"last_error"`
-	MetadataJSON        string     `gorm:"type:text;default:'{}'" json:"metadata_json"`
-	LastHealthCheckedAt *time.Time `gorm:"index" json:"last_health_checked_at"`
-	StatusChangedAt     *time.Time `gorm:"index" json:"status_changed_at"`
-	CreatedAt           time.Time  `json:"created_at"`
-	UpdatedAt           time.Time  `json:"updated_at"`
+	ID                      uint       `gorm:"primaryKey" json:"id"`
+	MailboxID               uint       `gorm:"index" json:"mailbox_id"`
+	Email                   string     `gorm:"uniqueIndex;index" json:"email"`
+	GroupName               string     `gorm:"index" json:"group_name"`
+	Status                  string     `gorm:"index;default:pending" json:"status"`
+	AccountType             string     `gorm:"index;default:free" json:"account_type"`
+	TrialEligibility        string     `gorm:"index;default:unknown" json:"trial_eligibility"`
+	TrialCheckError         string     `gorm:"type:text" json:"trial_check_error"`
+	TrialCheckedAt          *time.Time `gorm:"index" json:"trial_checked_at"`
+	CheckoutKind            string     `gorm:"index;size:32;default:unknown" json:"checkout_kind"`
+	PaymentMethodsJSON      string     `gorm:"type:text;default:'[]'" json:"payment_methods_json"`
+	PaymentProbeMethodsJSON string     `gorm:"type:text;default:'[]'" json:"payment_probe_methods_json"`
+	PaymentProbeResultsJSON string     `gorm:"type:text;default:'{}'" json:"payment_probe_results_json"`
+	PaymentProbeError       string     `gorm:"type:text" json:"payment_probe_error"`
+	PaymentProbedAt         *time.Time `gorm:"index" json:"payment_probed_at"`
+	CommerceCheckError      string     `gorm:"type:text" json:"commerce_check_error"`
+	CommerceCheckedAt       *time.Time `gorm:"index" json:"commerce_checked_at"`
+	OpenAIRT                string     `gorm:"column:openai_rt;type:text" json:"openai_rt"`
+	AccessToken             string     `gorm:"type:text" json:"access_token"`
+	PhoneNumber             string     `gorm:"index" json:"phone_number"`
+	Sub2APIStatus           string     `gorm:"column:sub2api_status;index" json:"sub2api_status"`
+	Sub2APIID               string     `gorm:"column:sub2api_id" json:"sub2api_id"`
+	LastError               string     `gorm:"type:text" json:"last_error"`
+	MetadataJSON            string     `gorm:"type:text;default:'{}'" json:"metadata_json"`
+	LastHealthCheckedAt     *time.Time `gorm:"index" json:"last_health_checked_at"`
+	StatusChangedAt         *time.Time `gorm:"index" json:"status_changed_at"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
 }
 
 func (SunnyAccount) TableName() string { return "sunny_accounts" }

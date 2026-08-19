@@ -132,6 +132,47 @@ def _task_style_checkout_probe(
             close()
 
 
+def probe_payment_methods(
+    access_token: str,
+    proxy_url: str = "",
+    country: str = "US",
+    currency: str = "USD",
+) -> dict[str, Any]:
+    token = str(access_token or "").strip()
+    if not token:
+        return {
+            "checkout": {"kind": "", "payment_methods": [], "http": 0, "error": "missing access token"},
+            "traffic": {"requests": 0, "total_bytes": 0},
+        }
+    billing_country = str(country or "US").strip().upper() or "US"
+    billing_currency = str(currency or "USD").strip().upper() or "USD"
+    selected_proxy = str(proxy_url or "").strip()
+    meter = ProxyTrafficMeter(
+        proxy_url=selected_proxy,
+        tracked_proxy=bool(selected_proxy),
+        operation="payment_method_probe",
+    )
+    result: dict[str, Any] = {
+        "checkout": {"kind": "", "payment_methods": [], "http": 0, "error": ""},
+        "traffic": {"requests": 0, "total_bytes": 0},
+    }
+    try:
+        with use_traffic_meter(meter):
+            result["checkout"] = _task_style_checkout_probe(
+                token,
+                billing_country,
+                billing_currency,
+                selected_proxy,
+            )
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {str(exc)[:240]}"
+        status = 401 if "HTTP 401" in message else 403 if "HTTP 403" in message else 0
+        result["checkout"]["http"] = status
+        result["checkout"]["error"] = message
+    result["traffic"] = meter.snapshot()
+    return result
+
+
 def probe_commerce(
     access_token: str,
     proxy_url: str = "",

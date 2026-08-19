@@ -1,7 +1,7 @@
 from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
-from sunny_core.commerce_probe import probe_commerce
+from sunny_core.commerce_probe import probe_commerce, probe_payment_methods
 
 
 def response(status: int, payload=None, content_type: str = "application/json"):
@@ -116,3 +116,26 @@ def test_probe_commerce_returns_worker_proxy_traffic_summary() -> None:
         )
 
     assert result["traffic"] == {"requests": 5, "total_bytes": 460}
+
+
+def test_probe_payment_methods_only_runs_checkout_for_requested_country() -> None:
+    class FakeMeter:
+        def __init__(self, **_kwargs):
+            pass
+
+        def snapshot(self):
+            return {"requests": 2, "total_bytes": 240}
+
+    with (
+        patch("sunny_core.commerce_probe.ProxyTrafficMeter", side_effect=FakeMeter),
+        patch("sunny_core.commerce_probe.use_traffic_meter", side_effect=lambda meter: nullcontext(meter)),
+        patch(
+            "sunny_core.commerce_probe._task_style_checkout_probe",
+            return_value={"kind": "oaics", "payment_methods": ["card", "momo"], "http": 200, "error": ""},
+        ) as checkout_probe,
+    ):
+        result = probe_payment_methods("token", "http://vn-proxy", "VN", "VND")
+
+    checkout_probe.assert_called_once_with("token", "VN", "VND", "http://vn-proxy")
+    assert result["checkout"]["payment_methods"] == ["card", "momo"]
+    assert result["traffic"] == {"requests": 2, "total_bytes": 240}

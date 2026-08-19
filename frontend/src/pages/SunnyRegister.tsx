@@ -2,7 +2,7 @@ import { Fragment, useDeferredValue, useEffect, useLayoutEffect, useRef, useStat
 import type { Dispatch, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
-import { Activity, ArrowLeft, ArrowRight, ChevronDown, CircleHelp, Crown, Download, Globe2, Inbox, ListChecks, Loader2, Pencil, Plus, RefreshCw, RotateCw, Save, Search, Settings2, Sparkles, Trash2, Upload, X } from "lucide-react";
+import { Activity, ArrowLeft, ArrowRight, ChevronDown, CircleHelp, CreditCard, Crown, Download, Globe2, Inbox, ListChecks, Loader2, Pencil, Plus, RefreshCw, RotateCw, Save, Search, Settings2, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -603,6 +603,15 @@ Object.assign(zh, {
   visibleMode: "可视浏览器注册",
   atProbeBlocked: "AT检测被上游拦截，未确认令牌失效，请稍后重试",
   trafficUsageTip: "ChatGPT 账户注册流量 / 邮箱账户历史代理交互总流量（HTTP 应用层估算，不含 TLS/TCP；缓存回放不计）",
+  proxyPurposeEmptyHint: "不选择任何用途时，该代理即使启用也不会被任何任务使用。",
+  proxyTip: "管理出站代理用途。注册任务使用注册/登录代理；试用和 Checkout 使用账户检测代理；多国家支付方式检测使用支付探测代理。",
+  proxyPurposePayment: "支付探测",
+  proxyCountryPlaceholder: "两个大写国家代码，例如 US / JP / BR",
+  proxyCountryInvalid: "国家代码必须是两个大写英文字母，并且对应真实国家",
+  paymentProbe: "支付探测", paymentProbing: "探测中...", paymentProbeNoSelection: "请选择需要探测支付方式的账户",
+  paymentProbeUnavailable: "该账户没有可用 Access Token", paymentProbeDone: "账户 {email}：探测到 {count} 种支付方式",
+  paymentProbeSummary: "支付探测完成：检测成功 {detected} 个，部分完成 {partial} 个，跳过 {skipped} 个，失败 {failed} 个",
+  allPaymentMethods: "全部支付方式", paymentMethodFilter: "支付方式筛选（同时满足）", clearPaymentMethods: "清除支付方式筛选",
 });
 Object.assign(en, {
   protocolMode: "Protocol Registration",
@@ -610,6 +619,15 @@ Object.assign(en, {
   visibleMode: "Visible Browser Registration",
   atProbeBlocked: "The upstream edge blocked the AT check; token expiry was not confirmed. Try again later.",
   trafficUsageTip: "ChatGPT registration traffic / mailbox lifetime proxy traffic (estimated HTTP application bytes; excludes TLS/TCP and cache replays)",
+  proxyPurposeEmptyHint: "With no purpose selected, this proxy is never assigned to a task even when enabled.",
+  proxyTip: "Manage outbound proxies by purpose. Registration uses register/login proxies; trial and Checkout use account-check proxies; multi-country payment checks use payment-probe proxies.",
+  proxyPurposePayment: "Payment Probe",
+  proxyCountryPlaceholder: "Two uppercase country letters, e.g. US / JP / BR",
+  proxyCountryInvalid: "Country must be two uppercase letters mapped to a real country",
+  paymentProbe: "Payment Probe", paymentProbing: "Probing...", paymentProbeNoSelection: "Select accounts to probe payment methods",
+  paymentProbeUnavailable: "This account has no usable Access Token", paymentProbeDone: "Account {email}: detected {count} payment methods",
+  paymentProbeSummary: "Payment probe complete: {detected} succeeded, {partial} partial, {skipped} skipped, {failed} failed",
+  allPaymentMethods: "All Payment Methods", paymentMethodFilter: "Payment methods (match all)", clearPaymentMethods: "Clear payment method filters",
 });
 
 const MAILBOX_STATUSES = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "登录刷新", "失败"];
@@ -2904,8 +2922,9 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
     if (!selected.length) return;
     const statusValue = String(form.status || "启用");
     const countryValue = String(form.country || "").trim();
+    if (countryValue && !/^[A-Z]{2}$/.test(countryValue)) { notify("fail", t.proxyCountryInvalid); return; }
     const updates: AnyObj = {status: statusValue, enabled: statusValue === "启用"};
-    if (Array.isArray(form.purpose_tags) && form.purpose_tags.length) updates.purpose_tags = form.purpose_tags;
+    updates.purpose_tags = Array.isArray(form.purpose_tags) ? form.purpose_tags : [];
     if (countryValue) updates.country = countryValue;
     try {
       await Promise.all(selected.map((id)=>apiFetch(`/sunny/proxy-config/pool/${id}`, { method:"PUT", body: JSON.stringify(updates) })));
@@ -2914,7 +2933,7 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
       await load();
     } catch(e:any) { notify("fail", e.message || String(e)); }
   }
-  const purposeOptions = [{value:"",label:t.proxyPurposeAll},{value:"register",label:t.proxyPurposeRegister},{value:"commerce",label:t.proxyPurposeCommerce}];
+  const purposeOptions = [{value:"",label:t.proxyPurposeAll},{value:"register",label:t.proxyPurposeRegister},{value:"commerce",label:t.proxyPurposeCommerce},{value:"payment_probe",label:t.proxyPurposePayment}];
   const countryOptions = [{value:"",label:t.proxyAllCountry}, ...countries.map((c)=>({value:c,label:c}))];
   const allChecked = items.length > 0 && items.every((p)=>selected.includes(Number(p.id)));
   const statusOptions = PROXY_STATUSES.map((s)=>({value:s,label:s==="启用"?t.proxyStatusEnabled:s==="停用"?t.proxyStatusDisabled:t.proxyStatusInvalid}));
@@ -2969,7 +2988,7 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
           <td><input type="checkbox" checked={selected.includes(Number(p.id))} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,Number(p.id)])) : selected.filter((id)=>id!==Number(p.id)))}/></td>
           <td title={p.address}><div className="font-semibold">{p.address}</div>{p.last_error ? <div className="mt-1 max-w-xl truncate text-xs text-red-400">{p.last_error}</div> : null}</td>
           <td>{p.country || "-"}</td>
-          <td><div className="flex flex-wrap gap-1">{(Array.isArray(p.purpose_tags) ? p.purpose_tags : ["register"]).map((tag:string)=><Badge key={tag} variant="secondary">{tag === "commerce" ? t.proxyPurposeCommerce : t.proxyPurposeRegister}</Badge>)}</div></td>
+          <td>{Array.isArray(p.purpose_tags) && p.purpose_tags.length ? <div className="flex flex-wrap gap-1">{p.purpose_tags.map((tag:string)=><Badge key={tag} variant="secondary">{tag === "commerce" ? t.proxyPurposeCommerce : tag === "payment_probe" ? t.proxyPurposePayment : t.proxyPurposeRegister}</Badge>)}</div> : <span className="text-slate-400">-</span>}</td>
           <td><ProxyStatusBadge t={t} status={p.status || "启用"} />{p.latency_ms ? <div className="mt-1 text-xs text-[var(--text-muted)]">{t.proxyLatency}: {p.latency_ms}ms</div> : null}</td>
           <td>{formatDateTime(p.last_checked_at)}</td>
           <td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" disabled={loading} onClick={()=>checkOne(p)}>{t.refresh}</button><button className="sr-link" onClick={()=>setEditing(p)}>{t.edit}</button><ConfirmBubble message={t.proxyConfirmDelete} detail={p.address || ""} onConfirm={()=>deleteProxy(p)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td>
@@ -2985,11 +3004,13 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
 function ProxyEditModal({ t, proxy, onClose, onSaved, notify }: { t: typeof zh; proxy: AnyObj; onClose:()=>void; onSaved:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
   const [form,setForm]=useState<AnyObj>({...proxy, country:String(proxy.country || ""), status: proxy.status || "启用"});
   const isNew = !form.id;
-  const [purposeTags, setPurposeTags] = useState<string[]>(Array.isArray(proxy.purpose_tags) && proxy.purpose_tags.length ? proxy.purpose_tags : ["register"]);
+  const [purposeTags, setPurposeTags] = useState<string[]>(isNew ? ["register"] : Array.isArray(proxy.purpose_tags) ? proxy.purpose_tags : []);
   async function save(){
     const lines = String(form.address || "").split(/\r?\n/).map((x)=>x.trim()).filter(Boolean);
     if (!lines.length) { notify("fail", t.validationFailed); return; }
     const status = String(form.status || "启用");
+    const normalizedCountry = String(form.country || "").trim();
+    if (isNew && !/^[A-Z]{2}$/.test(normalizedCountry)) { notify("fail", t.proxyCountryInvalid); return; }
     try {
       const editBody: AnyObj = {address:lines[0], status, enabled:status==="启用"};
       const country = String(form.country || "").trim();
@@ -3007,8 +3028,8 @@ function ProxyEditModal({ t, proxy, onClose, onSaved, notify }: { t: typeof zh; 
     <div className="sr-modal-body space-y-4">
       <div><Label>{t.proxyAddress}</Label>{isNew ? <Textarea className="min-h-40 rounded-[14px]" placeholder={t.proxyAddressPlaceholder} value={form.address||""} onChange={(e)=>setForm({...form,address:e.target.value})}/> : <Input placeholder={t.proxyAddressPlaceholder} value={form.address||""} onChange={(e)=>setForm({...form,address:e.target.value})}/>}</div>
       <div className="grid gap-4 md:grid-cols-2">
-        <div><Label>{t.proxyCountry}</Label><Input placeholder={t.proxyCountryPlaceholder} value={form.country||""} onChange={(e)=>setForm({...form,country:e.target.value})}/></div>
-        <div><Label>{t.proxyPurpose}</Label><div className="flex flex-wrap gap-2 pt-2">{[["register",t.proxyPurposeRegister],["commerce",t.proxyPurposeCommerce]].map(([value,label])=><label key={value} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={purposeTags.includes(value)} onChange={(e)=>setPurposeTags(e.target.checked ? Array.from(new Set([...purposeTags,value])) : purposeTags.filter((x)=>x!==value))}/>{label}</label>)}</div></div>
+        <div><Label>{t.proxyCountry}</Label><Input maxLength={2} autoCapitalize="characters" placeholder={t.proxyCountryPlaceholder} value={form.country||""} onChange={(e)=>setForm({...form,country:e.target.value.replace(/[^a-z]/gi,"").toUpperCase().slice(0,2)})}/></div>
+        <div><Label>{t.proxyPurpose}</Label><div className="flex flex-wrap gap-2 pt-2">{[["register",t.proxyPurposeRegister],["commerce",t.proxyPurposeCommerce],["payment_probe",t.proxyPurposePayment]].map(([value,label])=><label key={value} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={purposeTags.includes(value)} onChange={(e)=>setPurposeTags(e.target.checked ? Array.from(new Set([...purposeTags,value])) : purposeTags.filter((x)=>x!==value))}/>{label}</label>)}</div><p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">{t.proxyPurposeEmptyHint}</p></div>
         <div><Label>{t.status}</Label><SelectBox value={form.status||"启用"} onChange={(v)=>setForm({...form,status:String(v)})} options={PROXY_STATUSES.map((s)=>({value:s,label:s==="启用"?t.proxyStatusEnabled:s==="停用"?t.proxyStatusDisabled:t.proxyStatusInvalid}))} /></div>
       </div>
     </div>
@@ -3022,8 +3043,8 @@ function ProxyBatchEditModal({ t, count, form, setForm, onClose, onSaved }: { t:
     <div className="sr-modal-body space-y-4">
       <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 text-sm font-bold text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200">{t.selected}: {count}</div>
       <div className="grid gap-4 md:grid-cols-2">
-        <div><Label>{t.proxyCountry}</Label><Input placeholder={t.proxyCountryKeep} value={form.country||""} onChange={(e)=>setForm({...form,country:e.target.value})}/></div>
-        <div><Label>{t.proxyPurpose}</Label><div className="flex flex-wrap gap-2 pt-2">{[["register",t.proxyPurposeRegister],["commerce",t.proxyPurposeCommerce]].map(([value,label])=><label key={value} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={(form.purpose_tags||[]).includes(value)} onChange={(e)=>setForm({...form,purpose_tags:e.target.checked ? Array.from(new Set([...(form.purpose_tags||[]),value])) : (form.purpose_tags||[]).filter((x:string)=>x!==value)})}/>{label}</label>)}</div></div>
+        <div><Label>{t.proxyCountry}</Label><Input maxLength={2} autoCapitalize="characters" placeholder={t.proxyCountryKeep} value={form.country||""} onChange={(e)=>setForm({...form,country:e.target.value.replace(/[^a-z]/gi,"").toUpperCase().slice(0,2)})}/></div>
+        <div><Label>{t.proxyPurpose}</Label><div className="flex flex-wrap gap-2 pt-2">{[["register",t.proxyPurposeRegister],["commerce",t.proxyPurposeCommerce],["payment_probe",t.proxyPurposePayment]].map(([value,label])=><label key={value} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={(form.purpose_tags||[]).includes(value)} onChange={(e)=>setForm({...form,purpose_tags:e.target.checked ? Array.from(new Set([...(form.purpose_tags||[]),value])) : (form.purpose_tags||[]).filter((x:string)=>x!==value)})}/>{label}</label>)}</div><p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">{t.proxyPurposeEmptyHint}</p></div>
         <div><Label>{t.status}</Label><SelectBox value={form.status||"启用"} onChange={(v)=>setForm({...form,status:String(v)})} options={PROXY_STATUSES.map((s)=>({value:s,label:s==="启用"?t.proxyStatusEnabled:s==="停用"?t.proxyStatusDisabled:t.proxyStatusInvalid}))} /></div>
       </div>
     </div>
@@ -3061,9 +3082,26 @@ function CheckoutBadge({ t, row }: { t: AnyObj; row: AnyObj }) {
   if (!trialCheckable(row) || !row.checkout_kind || row.checkout_kind === "unknown") return <span className="text-slate-400">-</span>;
   return <span className="font-semibold text-sky-600 dark:text-sky-400">{checkoutKindLabel(t, row.checkout_kind)}</span>;
 }
+const PAYMENT_METHOD_OPTIONS = ["paypal","card","link","gcash","kakao_pay","nicepay","ideal","momo","twint","pix","upi"];
+const PAYMENT_METHOD_LABELS: Record<string,string> = {paypal:"PayPal",card:"Card",link:"Link",gcash:"GCash",kakao_pay:"Kakao Pay",nicepay:"Nicepay",ideal:"iDEAL",momo:"MoMo",twint:"TWINT",pix:"PIX",upi:"UPI"};
+function paymentMethodLabel(value: any) {
+  const key=String(value||"").trim().toLowerCase();
+  return PAYMENT_METHOD_LABELS[key] || key.replace(/_/g," ").replace(/\b\w/g,(char)=>char.toUpperCase());
+}
 function PaymentMethodsBadge({ row }: { row: AnyObj }) {
-  if (!trialCheckable(row) || !Array.isArray(row.payment_methods) || row.payment_methods.length === 0) return <span className="text-slate-400">-</span>;
-  return <span className="text-slate-700 dark:text-slate-200" title={row.commerce_check_error || row.payment_methods.join(", ")}>{row.payment_methods.join(", ")}</span>;
+  if (!Array.isArray(row.payment_methods) || row.payment_methods.length === 0) return <span className="text-slate-400">-</span>;
+  const title=[row.payment_probe_error || row.commerce_check_error,Object.entries(row.payment_probe_results||{}).map(([country,detail]:[string,any])=>`${country}: ${(detail?.methods||[]).map(paymentMethodLabel).join(", ") || detail?.error || "-"}`).join("\n")].filter(Boolean).join("\n");
+  return <div className="flex flex-wrap gap-1" title={title}>{row.payment_methods.map((method:string)=><Badge key={method} variant="secondary" className="whitespace-nowrap">{paymentMethodLabel(method)}</Badge>)}</div>;
+}
+function PaymentMethodFilter({t,value,options,onChange}:{t:AnyObj;value:string[];options:string[];onChange:(value:string[])=>void}) {
+  const toggle=(method:string)=>onChange(value.includes(method)?value.filter((item)=>item!==method):[...value,method]);
+  return <details className="relative">
+    <summary className="sr-select-like flex min-h-10 cursor-pointer list-none items-center gap-2 whitespace-nowrap px-3"><CreditCard className="h-4 w-4"/><span>{value.length?`${t.paymentMethodFilter} (${value.length})`:t.allPaymentMethods}</span><ChevronDown className="ml-auto h-4 w-4"/></summary>
+    <div className="absolute left-0 top-[calc(100%+6px)] z-30 min-w-56 border border-[var(--border)] bg-[var(--bg-shell)] p-2 shadow-xl">
+      {options.map((method)=><label key={method} className="flex cursor-pointer items-center gap-2 px-2 py-2 text-sm"><input type="checkbox" checked={value.includes(method)} onChange={()=>toggle(method)}/><span>{paymentMethodLabel(method)}</span></label>)}
+      {value.length>0&&<button type="button" className="sr-link mt-1 w-full px-2 py-2 text-left" onClick={()=>onChange([])}>{t.clearPaymentMethods}</button>}
+    </div>
+  </details>;
 }
 void CheckoutBadge;
 void PaymentMethodsBadge;
@@ -3102,6 +3140,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const [plan,setPlan]=useCachedState("session.plan","");
   const [trialEligibility,setTrialEligibility]=useCachedState("session.trialEligibility","");
   const [checkoutKind,setCheckoutKind]=useCachedState("session.checkoutKind","");
+  const [paymentMethods,setPaymentMethods]=useCachedState<string[]>("session.paymentMethods",[]);
   const [group,setGroup]=useCachedState("session.group","");
   const [groups,setGroups]=useState<AnyObj[]>([]);
   const [selected,setSelected]=useCachedState<number[]>("session.selected",[]);
@@ -3114,6 +3153,8 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const [batchSubscriptionBusy,setBatchSubscriptionBusy]=useState(false);
   const [trialCheckingSessionIds,setTrialCheckingSessionIds]=useState<number[]>([]);
   const [batchTrialBusy,setBatchTrialBusy]=useState(false);
+  const [paymentProbingSessionIds,setPaymentProbingSessionIds]=useState<number[]>([]);
+  const [batchPaymentProbeBusy,setBatchPaymentProbeBusy]=useState(false);
   const [atCheckingSessionIds,setATCheckingSessionIds]=useState<number[]>([]);
   const [batchATCheckBusy,setBatchATCheckBusy]=useState(false);
   const [sub2ImportingSessionIds,setSub2ImportingSessionIds]=useState<number[]>([]);
@@ -3146,6 +3187,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     if (plan) qs.set("plan_type", plan);
     if (trialEligibility) qs.set("trial_eligibility", trialEligibility);
     if (checkoutKind) qs.set("checkout_kind", checkoutKind);
+    if (paymentMethods.length) qs.set("payment_methods", paymentMethods.join(","));
     if (group) qs.set("group_id", group);
     const res = await apiFetch(`/sunny/sessions?${qs.toString()}`);
     setItems(res.items||[]);
@@ -3160,6 +3202,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       if(plan) qs.set("plan_type",plan);
       if(trialEligibility) qs.set("trial_eligibility",trialEligibility);
       if(checkoutKind) qs.set("checkout_kind",checkoutKind);
+      if(paymentMethods.length) qs.set("payment_methods",paymentMethods.join(","));
       if(group) qs.set("group_id",group);
       const result=await apiFetch(`/sunny/sessions?${allSelectionParams(qs).toString()}`);
       const ids=selectionIDs(result);
@@ -3168,12 +3211,13 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     } catch(e:any) { notify("fail",e.message||String(e)); }
     finally { setSelectingAll(false); }
   };
-  useEffect(()=>{void load()},[sortBy, timeSort, page, pageSize, debouncedQuery, status, plan, trialEligibility, checkoutKind, group]);
-  useEffect(()=>{setPage(1)},[sortBy, timeSort, pageSize, query, status, plan, trialEligibility, checkoutKind, group]);
+  useEffect(()=>{void load()},[sortBy, timeSort, page, pageSize, debouncedQuery, status, plan, trialEligibility, checkoutKind, paymentMethods, group]);
+  useEffect(()=>{setPage(1)},[sortBy, timeSort, pageSize, query, status, plan, trialEligibility, checkoutKind, paymentMethods, group]);
   useEffect(()=>{apiFetch("/sunny/mailbox-groups").then((res)=>setGroups(sortMailboxGroups(res.items||[]))).catch(()=>setGroups([]));},[]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
   const exportFormat = ["sk", "at", "sub"].includes(fmt) ? fmt : "sk";
   const allChecked = items.length > 0 && items.every((x)=>selected.includes(x.id));
+  const paymentMethodOptions=Array.from(new Set([...PAYMENT_METHOD_OPTIONS,...paymentMethods,...items.flatMap((item)=>Array.isArray(item.payment_methods)?item.payment_methods:[])])).map(String);
   async function exp(ids?: number[], format = exportFormat){
     const sessionIds = ids?.length ? ids : selected;
     if (!sessionIds.length) { notify("fail", t.selectExportRows); return; }
@@ -3275,6 +3319,30 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     finally {
       setTrialCheckingSessionIds((old)=>old.filter((id)=>!targetIds.includes(id)));
       if (!row) setBatchTrialBusy(false);
+    }
+  }
+  async function runPaymentProbe(ids: number[], row?: AnyObj) {
+    if (row && !row.has_access_token) { notify("fail", t.paymentProbeUnavailable); return; }
+    if (!ids.length) { notify("fail", t.paymentProbeNoSelection); return; }
+    const targetIds=Array.from(new Set(ids.map(Number).filter(Boolean)));
+    setPaymentProbingSessionIds((old)=>Array.from(new Set([...old,...targetIds])));
+    if (!row) setBatchPaymentProbeBusy(true);
+    try {
+      const initialTask=await apiFetch("/sunny/sessions/payment-probe",{method:"POST",body:JSON.stringify({session_ids:targetIds})});
+      const task=await pollAccountDetectionTask(initialTask,1200);
+      const result=task.result||{};
+      if (row) {
+        const item=(result.items||[]).find((entry:AnyObj)=>Number(entry.session_id)===Number(row.id));
+        if (item?.status==="detected" || item?.status==="partial") notify(item?.status==="partial"?"fail":"ok",template(t.paymentProbeDone,{email:row.email,count:Array.isArray(item.payment_methods)?item.payment_methods.length:0}));
+        else notify("fail",item?.error||item?.message||task.error||t.failed);
+      } else {
+        notify(Number(result.failed||0)===Number(result.requested||0)?"fail":"ok",template(t.paymentProbeSummary,{detected:Number(result.detected||0),partial:Number(result.partial||0),skipped:Number(result.skipped||0),failed:Number(result.failed||0)}));
+      }
+      await load();
+    } catch(e:any) { notify("fail",e.message||String(e)); }
+    finally {
+      setPaymentProbingSessionIds((old)=>old.filter((id)=>!targetIds.includes(id)));
+      if (!row) setBatchPaymentProbeBusy(false);
     }
   }
   function toggleTimeSort(field: string) {
@@ -3427,11 +3495,13 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       <SelectBox className="sr-select-like" value={plan} onChange={(v)=>setPlan(String(v))} options={[{value:"",label:t.planType}, ...SESSION_PLAN_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))]} />
       <SelectBox className="sr-select-like" value={trialEligibility} onChange={(v)=>setTrialEligibility(String(v))} options={[{value:"",label:t.allTrialEligibility},{value:"eligible",label:t.trialEligible},{value:"ineligible",label:t.trialIneligible},{value:"unknown",label:t.trialUnknown}]} />
       <SelectBox className="sr-select-like" value={checkoutKind} onChange={(v)=>setCheckoutKind(String(v))} options={[{value:"",label:t.allCheckoutKinds},{value:"oaics",label:t.checkoutOAICS},{value:"cs_live",label:t.checkoutCSLive},{value:"cs_test",label:t.checkoutCSTest},{value:"unknown",label:t.checkoutUnknown}]} />
+      <PaymentMethodFilter t={t} value={paymentMethods} options={paymentMethodOptions} onChange={setPaymentMethods}/>
       <SelectionSummary t={t} count={selected.length} total={total} selectingAll={selectingAll} onSelectAll={selectAllFiltered} onClear={()=>setSelected([])}/>
       <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
         {activeRenewalTasks.length > 0 && <button className={cn("sr-text-btn sr-action-danger",stoppingRenewal&&"is-running")} aria-busy={stoppingRenewal} disabled={stoppingRenewal} title={t.stopRenewalTip} onClick={()=>void stopRenewalTasks()}>{stoppingRenewal ? <Loader2 className="h-4 w-4 animate-spin"/> : <X className="h-4 w-4"/>}{stoppingRenewal ? t.stoppingRenewal : t.stopRenewal}</button>}
         <button className={cn("sr-text-btn sr-action-info",batchSub2Busy&&"is-running")} aria-busy={batchSub2Busy} disabled={batchSub2Busy || selected.length===0} title={selected.length===0?t.sub2NoSelection:t.importSub2API} onClick={()=>void importSub2API(selected)}>{batchSub2Busy?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>}{batchSub2Busy?t.importingSub2API:"反代"}</button>
         <button className={cn("sr-text-btn sr-action-info",batchTrialBusy&&"is-running")} aria-busy={batchTrialBusy} disabled={batchTrialBusy || selected.length === 0} title={selected.length === 0 ? t.trialNoSelection : t.trialCheck} onClick={()=>runTrialCheck(selected)}>{batchTrialBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{batchTrialBusy ? t.trialChecking : t.trialCheck}</button>
+        <button className={cn("sr-text-btn sr-action-info",batchPaymentProbeBusy&&"is-running")} aria-busy={batchPaymentProbeBusy} disabled={batchPaymentProbeBusy || selected.length === 0} title={selected.length === 0 ? t.paymentProbeNoSelection : t.paymentProbe} onClick={()=>runPaymentProbe(selected)}>{batchPaymentProbeBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <CreditCard className="h-4 w-4"/>}{batchPaymentProbeBusy ? t.paymentProbing : t.paymentProbe}</button>
         <button className={cn("sr-text-btn sr-action-info",batchATCheckBusy&&"is-running")} aria-busy={batchATCheckBusy} disabled={batchATCheckBusy || selected.length === 0 || selected.some((id)=>atCheckingSessionIds.includes(id)||refreshingSessionIds.includes(id))} title={selected.length === 0 ? t.refreshATNoSelection : t.refreshAT} onClick={()=>refreshAccessTokens(selected)}>{batchATCheckBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{batchATCheckBusy ? t.refreshingAT : t.refreshAT}</button>
         <button className={cn("sr-text-btn sr-action-health",healthBusy&&"is-running")} aria-busy={healthBusy} disabled={healthBusy || selected.length === 0} title={selected.length === 0 ? t.healthNoSelection : t.healthCheck} onClick={()=>runHealthCheck(selected)}>{healthBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Activity className="h-4 w-4"/>}{healthBusy ? t.healthChecking : t.healthCheck}</button>
         <button className={cn("sr-text-btn sr-action-health",batchSubscriptionBusy&&"is-running")} aria-busy={batchSubscriptionBusy} disabled={subscriptionCheckingSessionIds.length > 0 || selected.length === 0} title={selected.length === 0 ? t.subscriptionNoSelection : t.subscriptionCheck} onClick={()=>runSubscriptionCheck(selected)}>{batchSubscriptionBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Crown className="h-4 w-4"/>}{batchSubscriptionBusy ? t.subscriptionChecking : t.subscriptionCheck}</button>
@@ -3445,6 +3515,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
           const checkingAT=atCheckingSessionIds.includes(s.id);
           const checkingSubscription=subscriptionCheckingSessionIds.includes(s.id);
           const checkingTrial=trialCheckingSessionIds.includes(s.id);
+          const probingPayment=paymentProbingSessionIds.includes(s.id);
           const importingSub2=sub2ImportingSessionIds.includes(s.id);
           const acquiringRT=acquiringRTSessionIds.includes(s.id);
           const skLoading=fieldLoading[`${s.id}:secret_key`];
@@ -3453,7 +3524,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
           const renewalView=renewalViewForSession(persistentTasks,s);
           const renewalPercent=renewalView ? Math.min(100, Math.max(0, (renewalView.progress.current / renewalView.progress.total) * 100)) : 0;
           return <Fragment key={s.id}>
-            <tr><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td title={s.email}>{s.email}</td><td title={s.group_name || "-"}>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td><TrialEligibilityBadge t={t} row={s}/></td><td><CheckoutBadge t={t} row={s}/></td><td><PaymentMethodsBadge row={s}/></td><td>{s.access_token_status === "renewal_failed" ? <FailureState label={t.atRenewalFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "invalid" ? <FailureState label={t.atInvalidOrExpired} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_blocked" ? <FailureState label={t.atProbeBlocked} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_failed" ? <FailureState label={t.atProbeFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : formatDateTime(s.access_token_expires_at)}</td><td>{s.health_check_status === "failed" ? <FailureState label={t.accountHealthCheckFailed} detail={s.health_check_error} onOpen={setFailureDetail}/> : formatDateTime(s.last_health_checked_at)}</td><td><div className="flex flex-wrap gap-2"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><button className="sr-link inline-flex items-center gap-1" disabled={!trialCheckable(s) || checkingTrial} title={!trialCheckable(s) ? t.trialUnavailable : t.trialCheck} onClick={()=>runTrialCheck([s.id],s)}>{checkingTrial ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{checkingTrial ? t.trialChecking : t.trialCheck}</button><button className="sr-link inline-flex items-center gap-1" disabled={importingSub2} onClick={()=>void importSub2API([s.id],s)}>{importingSub2?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>}{importingSub2?t.importingSub2API:"反代"}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing || checkingAT} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing || checkingAT ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link" disabled={healthBusy} onClick={()=>runHealthCheck([s.id],s)}><Activity className="inline h-4 w-4"/>{t.healthCheck}</button><button className="sr-link" disabled={subscriptionCheckingSessionIds.length > 0} onClick={()=>runSubscriptionCheck([s.id],s)}>{checkingSubscription ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Crown className="inline h-4 w-4"/>}{checkingSubscription ? t.subscriptionChecking : t.subscriptionCheck}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>
+            <tr><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td title={s.email}>{s.email}</td><td title={s.group_name || "-"}>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td><TrialEligibilityBadge t={t} row={s}/></td><td><CheckoutBadge t={t} row={s}/></td><td><PaymentMethodsBadge row={s}/></td><td>{s.access_token_status === "renewal_failed" ? <FailureState label={t.atRenewalFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "invalid" ? <FailureState label={t.atInvalidOrExpired} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_blocked" ? <FailureState label={t.atProbeBlocked} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_failed" ? <FailureState label={t.atProbeFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : formatDateTime(s.access_token_expires_at)}</td><td>{s.health_check_status === "failed" ? <FailureState label={t.accountHealthCheckFailed} detail={s.health_check_error} onOpen={setFailureDetail}/> : formatDateTime(s.last_health_checked_at)}</td><td><div className="flex flex-wrap gap-2"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><button className="sr-link inline-flex items-center gap-1" disabled={!trialCheckable(s) || checkingTrial} title={!trialCheckable(s) ? t.trialUnavailable : t.trialCheck} onClick={()=>runTrialCheck([s.id],s)}>{checkingTrial ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{checkingTrial ? t.trialChecking : t.trialCheck}</button><button className="sr-link inline-flex items-center gap-1" disabled={!s.has_access_token || probingPayment} title={!s.has_access_token?t.paymentProbeUnavailable:t.paymentProbe} onClick={()=>runPaymentProbe([s.id],s)}>{probingPayment?<Loader2 className="h-4 w-4 animate-spin"/>:<CreditCard className="h-4 w-4"/>}{probingPayment?t.paymentProbing:t.paymentProbe}</button><button className="sr-link inline-flex items-center gap-1" disabled={importingSub2} onClick={()=>void importSub2API([s.id],s)}>{importingSub2?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>}{importingSub2?t.importingSub2API:"反代"}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing || checkingAT} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing || checkingAT ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link" disabled={healthBusy} onClick={()=>runHealthCheck([s.id],s)}><Activity className="inline h-4 w-4"/>{t.healthCheck}</button><button className="sr-link" disabled={subscriptionCheckingSessionIds.length > 0} onClick={()=>runSubscriptionCheck([s.id],s)}>{checkingSubscription ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Crown className="inline h-4 w-4"/>}{checkingSubscription ? t.subscriptionChecking : t.subscriptionCheck}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>
             {renewalView && <tr className="sr-renewal-progress-row"><td/><td colSpan={13}><div className={cn("sr-renewal-progress",`is-${renewalView.progress.state}`)}><strong className="sr-renewal-progress-count">{renewalView.progress.current}/{renewalView.progress.total}</strong><div className="sr-renewal-progress-main"><div className="sr-renewal-progress-label">{renewalStepLabel(t,renewalView.progress.checkpoint)}</div><div className="sr-renewal-progress-track"><span style={{width:`${renewalPercent}%`}}/></div>{renewalView.progress.error && <div className="sr-renewal-progress-error">{renewalView.progress.error}</div>}</div><button className="sr-renewal-progress-close" title={t.closeRenewalProgress} onClick={()=>dismissSessionRenewal(renewalView.task.clientId,s.email)}><X className="h-4 w-4"/></button></div></td></tr>}
           </Fragment>;
         }) : <tr><td colSpan={14}><div className="sr-empty !min-h-[260px]"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><p className="mt-3 text-sm text-slate-400">{t.noData}</p></div></td></tr>}</tbody>

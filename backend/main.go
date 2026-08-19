@@ -27,29 +27,30 @@ import (
 var embeddedStatic embed.FS
 
 type Server struct {
-	db            *gorm.DB
-	adminUser     string
-	adminPass     string
-	staticFS      http.FileSystem
-	wake          chan struct{}
-	stop          chan struct{}
-	running       map[string]bool
-	runtimeMu     sync.Mutex
-	atCheckMu     sync.Mutex
-	trialCheckMu  sync.Mutex
-	maintenanceMu sync.RWMutex
-	maintenance   map[string]any
-	smsOptionsMu  sync.Mutex
-	smsOptionsRun map[string]*sunnySMSOptionsFlight
-	sessionMu     sync.Mutex
-	sessions      map[string]time.Time
-	loginMu       sync.Mutex
-	loginFailures map[string]*loginFailure
-	sessionTTL    time.Duration
-	secureCookies bool
-	production    bool
-	checkoutMu    sync.Mutex
-	checkoutCreds map[string]checkoutSecret
+	db             *gorm.DB
+	adminUser      string
+	adminPass      string
+	staticFS       http.FileSystem
+	wake           chan struct{}
+	stop           chan struct{}
+	running        map[string]bool
+	runtimeMu      sync.Mutex
+	atCheckMu      sync.Mutex
+	trialCheckMu   sync.Mutex
+	paymentProbeMu sync.Mutex
+	maintenanceMu  sync.RWMutex
+	maintenance    map[string]any
+	smsOptionsMu   sync.Mutex
+	smsOptionsRun  map[string]*sunnySMSOptionsFlight
+	sessionMu      sync.Mutex
+	sessions       map[string]time.Time
+	loginMu        sync.Mutex
+	loginFailures  map[string]*loginFailure
+	sessionTTL     time.Duration
+	secureCookies  bool
+	production     bool
+	checkoutMu     sync.Mutex
+	checkoutCreds  map[string]checkoutSecret
 }
 
 type loginFailure struct {

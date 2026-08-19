@@ -1,0 +1,468 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"io"
+	"math/rand"
+	"net/http"
+	"os"
+	"sort"
+	"strings"
+	"time"
+)
+
+const sunnyPaymentProbeTaskType = "sunny_account_payment_probe"
+
+type sunnyPaymentProbeCandidate struct {
+	SessionID   uint
+	AccountID   uint
+	Email       string
+	AccessToken string
+	SkipReason  string
+	Error       string
+}
+
+type sunnyPaymentCountryProbe struct {
+	Country      string
+	Methods      []string
+	ProxyID      uint
+	Attempts     int
+	HTTP         int
+	InvalidToken bool
+	Error        string
+	TrafficBytes int64
+}
+
+type sunnyPaymentAccountProbe struct {
+	Candidate    sunnyPaymentProbeCandidate
+	Methods      []string
+	Countries    map[string]any
+	Errors       []string
+	Succeeded    int
+	InvalidToken bool
+	TrafficBytes int64
+}
+
+type sunnyPaymentProbeResponse struct {
+	Methods      []string
+	HTTP         int
+	InvalidToken bool
+	Error        string
+	TrafficBytes int64
+}
+
+var sunnyProbePaymentMethods = probeSunnyPaymentMethods
+
+func normalizeSunnyPaymentMethod(value string) string {
+	method := strings.ToLower(strings.TrimSpace(value))
+	method = strings.TrimPrefix(method, "cpmt_")
+	method = strings.TrimPrefix(method, "payment_method_")
+	method = strings.NewReplacer("-", "_", " ", "_").Replace(method)
+	aliases := map[string]string{
+		"credit_card": "card", "cards": "card", "paypal_express": "paypal",
+		"gcash_wallet": "gcash", "kakao": "kakao_pay", "kakaopay": "kakao_pay",
+		"nice_pay": "nicepay", "ideal_bank": "ideal", "momo_wallet": "momo",
+		"twint_wallet": "twint", "pix_qr": "pix", "upi_collect": "upi",
+	}
+	if canonical := aliases[method]; canonical != "" {
+		method = canonical
+	}
+	if len(method) > 64 {
+		return ""
+	}
+	for _, char := range method {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '_' {
+			return ""
+		}
+	}
+	return method
+}
+
+func normalizeSunnyPaymentMethods(values []string) []string {
+	seen := map[string]bool{}
+	methods := make([]string, 0, len(values))
+	for _, value := range values {
+		method := normalizeSunnyPaymentMethod(value)
+		if method != "" && !seen[method] {
+			seen[method] = true
+			methods = append(methods, method)
+		}
+	}
+	priority := map[string]int{"paypal": 0, "card": 1, "link": 2, "gcash": 3, "kakao_pay": 4, "nicepay": 5, "ideal": 6, "momo": 7, "twint": 8, "pix": 9, "upi": 10}
+	sort.Slice(methods, func(i, j int) bool {
+		left, leftKnown := priority[methods[i]]
+		right, rightKnown := priority[methods[j]]
+		if leftKnown != rightKnown {
+			return leftKnown
+		}
+		if leftKnown {
+			return left < right
+		}
+		return methods[i] < methods[j]
+	})
+	return methods
+}
+
+func normalizeSunnyPaymentMethodFilter(value string) []string {
+	return normalizeSunnyPaymentMethods(strings.FieldsFunc(value, func(char rune) bool {
+		return char == ',' || char == ';' || char == '|'
+	}))
+}
+
+func sunnyHasAllPaymentMethods(value any, required []string) bool {
+	if len(required) == 0 {
+		return true
+	}
+	available := map[string]bool{}
+	if methods, ok := value.([]string); ok {
+		for _, method := range normalizeSunnyPaymentMethods(methods) {
+			available[method] = true
+		}
+	} else if methods, ok := value.([]any); ok {
+		for _, method := range methods {
+			available[normalizeSunnyPaymentMethod(text(method))] = true
+		}
+	}
+	for _, method := range required {
+		if !available[method] {
+			return false
+		}
+	}
+	return true
+}
+
+func probeSunnyPaymentMethods(ctx context.Context, accessToken, country, currency, proxyURL string) sunnyPaymentProbeResponse {
+	if workerResult, ok := probeSunnyPaymentMethodsViaWorker(ctx, accessToken, country, currency, proxyURL); ok {
+		return workerResult
+	}
+	meter := sunnyTrafficMeterFromContext(ctx)
+	client := sunnyCommerceHTTPClientWithMeter(meter, proxyURL)
+	_, methods, invalid, err := probeSunnyCheckoutForCountry(ctx, client, accessToken, country, currency)
+	result := sunnyPaymentProbeResponse{Methods: normalizeSunnyPaymentMethods(methods), HTTP: http.StatusOK, InvalidToken: invalid}
+	if err != nil {
+		result.HTTP = 0
+		result.Error = err.Error()
+	}
+	return result
+}
+
+func probeSunnyPaymentMethodsViaWorker(ctx context.Context, accessToken, country, currency, proxyURL string) (sunnyPaymentProbeResponse, bool) {
+	result := sunnyPaymentProbeResponse{}
+	workerURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PYTHON_WORKER_URL")), "/")
+	if workerURL == "" {
+		workerURL = "http://127.0.0.1:8765"
+	}
+	body, _ := json.Marshal(map[string]string{"access_token": accessToken, "proxy_url": proxyURL, "country": country, "currency": currency})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, workerURL+"/probe-payment-methods", bytes.NewReader(body))
+	if err != nil {
+		return result, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token := secretValue("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := (&http.Client{Timeout: 100 * time.Second}).Do(req)
+	if err != nil {
+		return result, false
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	if err != nil || resp.StatusCode == http.StatusNotFound || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return result, false
+	}
+	var payload struct {
+		Checkout struct {
+			PaymentMethods []string `json:"payment_methods"`
+			HTTP           int      `json:"http"`
+			Error          string   `json:"error"`
+		} `json:"checkout"`
+		Traffic struct {
+			TotalBytes int64 `json:"total_bytes"`
+		} `json:"traffic"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return result, false
+	}
+	result.Methods = normalizeSunnyPaymentMethods(payload.Checkout.PaymentMethods)
+	result.HTTP = payload.Checkout.HTTP
+	result.InvalidToken = payload.Checkout.HTTP == http.StatusUnauthorized
+	result.Error = strings.TrimSpace(payload.Checkout.Error)
+	result.TrafficBytes = payload.Traffic.TotalBytes
+	if result.HTTP < 200 || result.HTTP >= 300 {
+		result.Error = fallback(result.Error, fmt.Sprintf("ChatGPT Checkout 接口返回 HTTP %d", result.HTTP))
+	}
+	return result, true
+}
+
+func (s *Server) sunnyPaymentProbeBatchSize() int {
+	return sunnyDetectionBatchSize("SUNNY_PAYMENT_PROBE_BATCH_SIZE", 8, 50)
+}
+
+func (s *Server) sunnyPaymentProbeConcurrency() int {
+	return sunnyDetectionBatchSize("SUNNY_PAYMENT_PROBE_CONCURRENCY", 3, 8)
+}
+
+func (s *Server) sunnyPaymentCountryConcurrency() int {
+	return sunnyDetectionBatchSize("SUNNY_PAYMENT_PROBE_COUNTRY_CONCURRENCY", 3, 8)
+}
+
+func (s *Server) sunnyPaymentProbeCandidates(ids []uint) ([]sunnyPaymentProbeCandidate, error) {
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("请选择需要探测支付方式的账户")
+	}
+	var sessions []SunnySession
+	if err := s.db.Where("id IN ?", ids).Order("id asc").Find(&sessions).Error; err != nil {
+		return nil, err
+	}
+	accounts, _ := s.sunnySessionSidecars(sessions)
+	candidates := make([]sunnyPaymentProbeCandidate, 0, len(sessions))
+	for _, session := range sessions {
+		account := accounts[sunnyEmailKey(session.Email)]
+		candidate := sunnyPaymentProbeCandidate{
+			SessionID: session.ID, AccountID: firstUint(session.AccountID, account.ID), Email: session.Email,
+			AccessToken: firstText(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken),
+		}
+		if strings.TrimSpace(candidate.AccessToken) == "" {
+			candidate.Error = "账户缺少 Access Token"
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates, nil
+}
+
+func (s *Server) sunnyPaymentProxyGroups() (map[string][]SunnyProxy, error) {
+	var proxies []SunnyProxy
+	purposeQuery := "(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?"
+	if err := s.db.Where("status = ? AND enabled = ?", "enabled", true).
+		Where(purposeQuery, "%,"+sunnyProxyPurposePayment+",%").Order("id asc").Find(&proxies).Error; err != nil {
+		return nil, err
+	}
+	groups := map[string][]SunnyProxy{}
+	for _, proxy := range proxies {
+		country, err := normalizeSunnyProxyCountry(proxy.Country)
+		if err == nil {
+			groups[country] = append(groups[country], proxy)
+		}
+	}
+	if len(groups) == 0 {
+		return nil, fmt.Errorf("请先为支付探测用途配置至少一个已启用且国家代码有效的代理")
+	}
+	return groups, nil
+}
+
+func (s *Server) activeSunnyPaymentProbeSessionIDs() (map[uint]bool, error) {
+	var tasks []Task
+	if err := s.db.Where("type = ? AND status NOT IN ?", sunnyPaymentProbeTaskType, []string{TaskSucceeded, TaskFailed, TaskInterrupted, TaskCancelled}).Find(&tasks).Error; err != nil {
+		return nil, err
+	}
+	active := map[uint]bool{}
+	for _, task := range tasks {
+		payload := jsonMap(task.PayloadJSON)
+		skipped := map[uint]bool{}
+		for _, id := range uintSlice(payload["skip_session_ids"]) {
+			skipped[id] = true
+		}
+		for _, id := range uintSlice(payload["session_ids"]) {
+			if !skipped[id] {
+				active[id] = true
+			}
+		}
+	}
+	return active, nil
+}
+
+func (s *Server) createSunnyPaymentProbeTask(body map[string]any) (Task, error) {
+	s.paymentProbeMu.Lock()
+	defer s.paymentProbeMu.Unlock()
+	ids := uintSlice(body["session_ids"])
+	candidates, err := s.sunnyPaymentProbeCandidates(ids)
+	if err != nil {
+		return Task{}, err
+	}
+	if len(candidates) == 0 {
+		return Task{}, fmt.Errorf("未找到需要探测支付方式的账户")
+	}
+	if _, err := s.sunnyPaymentProxyGroups(); err != nil {
+		return Task{}, err
+	}
+	active, err := s.activeSunnyPaymentProbeSessionIDs()
+	if err != nil {
+		return Task{}, err
+	}
+	skipped := make([]uint, 0)
+	for _, candidate := range candidates {
+		if active[candidate.SessionID] {
+			skipped = append(skipped, candidate.SessionID)
+		}
+	}
+	payload := map[string]any{"session_ids": ids, "skip_session_ids": skipped}
+	return s.createTask(sunnyPaymentProbeTaskType, "sunny", payload, len(candidates)), nil
+}
+
+func shuffledSunnyProxies(proxies []SunnyProxy) []SunnyProxy {
+	shuffled := append([]SunnyProxy(nil), proxies...)
+	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+	return shuffled
+}
+
+func (s *Server) probeSunnyPaymentCountry(candidate sunnyPaymentProbeCandidate, country string, proxies []SunnyProxy) sunnyPaymentCountryProbe {
+	result := sunnyPaymentCountryProbe{Country: country}
+	currency := checkoutCountryCurrency[country]
+	if currency == "" {
+		currency = "USD"
+	}
+	for _, proxy := range shuffledSunnyProxies(proxies) {
+		result.Attempts++
+		ctx, cancel := context.WithTimeout(context.Background(), 105*time.Second)
+		meter := &sunnyTrafficMeter{}
+		ctx = withSunnyTrafficMeter(ctx, meter)
+		probed := sunnyProbePaymentMethods(ctx, candidate.AccessToken, country, currency, normalizeSunnyProxyAddress(proxy.Address))
+		cancel()
+		result.TrafficBytes += meter.totalBytes() + probed.TrafficBytes
+		result.ProxyID, result.HTTP, result.InvalidToken, result.Error = proxy.ID, probed.HTTP, probed.InvalidToken, probed.Error
+		if probed.InvalidToken {
+			return result
+		}
+		if strings.TrimSpace(probed.Error) == "" && probed.HTTP >= 200 && probed.HTTP < 300 {
+			result.Methods = normalizeSunnyPaymentMethods(probed.Methods)
+			return result
+		}
+	}
+	result.Error = fallback(result.Error, "该国家没有可用的支付探测代理")
+	return result
+}
+
+func (s *Server) probeSunnyPaymentAccount(candidate sunnyPaymentProbeCandidate, groups map[string][]SunnyProxy) sunnyPaymentAccountProbe {
+	result := sunnyPaymentAccountProbe{Candidate: candidate, Countries: map[string]any{}}
+	if candidate.SkipReason != "" || candidate.Error != "" {
+		return result
+	}
+	countries := make([]string, 0, len(groups))
+	for country := range groups {
+		countries = append(countries, country)
+	}
+	sort.Strings(countries)
+	probes := streamSunnyDetectionBatch(countries, s.sunnyPaymentCountryConcurrency(), func(country string) sunnyPaymentCountryProbe {
+		return s.probeSunnyPaymentCountry(candidate, country, groups[country])
+	})
+	allMethods := []string{}
+	for probe := range probes {
+		result.TrafficBytes += probe.TrafficBytes
+		detail := map[string]any{"methods": probe.Methods, "proxy_id": probe.ProxyID, "attempts": probe.Attempts, "http": probe.HTTP}
+		if probe.Error != "" {
+			detail["error"] = probe.Error
+			result.Errors = append(result.Errors, probe.Country+": "+probe.Error)
+		} else {
+			result.Succeeded++
+			allMethods = append(allMethods, probe.Methods...)
+		}
+		result.InvalidToken = result.InvalidToken || probe.InvalidToken
+		result.Countries[probe.Country] = detail
+	}
+	sort.Strings(result.Errors)
+	result.Methods = normalizeSunnyPaymentMethods(allMethods)
+	return result
+}
+
+func (s *Server) executeSunnyPaymentProbeTask(task *Task, payload map[string]any) {
+	task.Status = TaskRunning
+	task.StartedAt = sql.NullTime{Time: time.Now(), Valid: true}
+	s.db.Save(task)
+	candidates, err := s.sunnyPaymentProbeCandidates(uintSlice(payload["session_ids"]))
+	if err != nil {
+		s.failSunnyPaymentProbeTask(task, err.Error())
+		return
+	}
+	groups, err := s.sunnyPaymentProxyGroups()
+	if err != nil {
+		s.failSunnyPaymentProbeTask(task, err.Error())
+		return
+	}
+	skipped := map[uint]bool{}
+	for _, id := range uintSlice(payload["skip_session_ids"]) {
+		skipped[id] = true
+	}
+	for index := range candidates {
+		if skipped[candidates[index].SessionID] {
+			candidates[index].SkipReason = "已有支付方式探测任务正在执行，已跳过"
+		}
+	}
+	result := map[string]any{"requested": len(candidates), "detected": 0, "partial": 0, "skipped": 0, "failed": 0, "items": []any{}}
+	items := make([]any, 0, len(candidates))
+	batchSize := s.sunnyPaymentProbeBatchSize()
+	for start := 0; start < len(candidates); start += batchSize {
+		end := start + batchSize
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+		outcomes := streamSunnyDetectionBatch(candidates[start:end], s.sunnyPaymentProbeConcurrency(), func(candidate sunnyPaymentProbeCandidate) sunnyPaymentAccountProbe {
+			return s.probeSunnyPaymentAccount(candidate, groups)
+		})
+		for outcome := range outcomes {
+			now := time.Now()
+			item := map[string]any{"session_id": outcome.Candidate.SessionID, "email": outcome.Candidate.Email, "payment_methods": outcome.Methods, "countries": outcome.Countries, "proxy_traffic_bytes": outcome.TrafficBytes}
+			s.recordSunnyProxyTraffic(outcome.Candidate.Email, outcome.TrafficBytes)
+			switch {
+			case outcome.Candidate.SkipReason != "":
+				result["skipped"] = result["skipped"].(int) + 1
+				item["status"], item["message"] = "skipped", outcome.Candidate.SkipReason
+			case outcome.Candidate.Error != "":
+				result["failed"] = result["failed"].(int) + 1
+				item["status"], item["error"] = "failed", outcome.Candidate.Error
+			case outcome.Succeeded == 0:
+				message := strings.Join(outcome.Errors, "; ")
+				result["failed"] = result["failed"].(int) + 1
+				item["status"], item["error"] = "failed", message
+				s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Candidate.Email).Updates(map[string]any{"payment_probe_results_json": dumpJSON(outcome.Countries), "payment_probe_error": message})
+			default:
+				message := strings.Join(outcome.Errors, "; ")
+				status := "detected"
+				if message != "" {
+					status = "partial"
+					result["partial"] = result["partial"].(int) + 1
+				} else {
+					result["detected"] = result["detected"].(int) + 1
+				}
+				item["status"] = status
+				if message != "" {
+					item["error"] = message
+				}
+				updates := map[string]any{"payment_methods_json": dumpJSON(outcome.Methods), "payment_probe_methods_json": dumpJSON(outcome.Methods), "payment_probe_results_json": dumpJSON(outcome.Countries), "payment_probe_error": message, "payment_probed_at": now}
+				if updateErr := s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Candidate.Email).Updates(updates).Error; updateErr != nil {
+					result[status] = result[status].(int) - 1
+					result["failed"] = result["failed"].(int) + 1
+					item["status"], item["error"] = "failed", updateErr.Error()
+				}
+			}
+			if outcome.InvalidToken {
+				errorMessage := fallback(strings.Join(outcome.Errors, "; "), "Access Token 无效或已过期")
+				s.db.Model(&SunnySession{}).Where("id = ?", outcome.Candidate.SessionID).Updates(map[string]any{"access_token_status": "invalid", "access_token_error": errorMessage, "access_token_checked_at": now})
+			}
+			items = append(items, item)
+			task.ProgressCurrent++
+			s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": task.ProgressCurrent, "updated_at": now})
+		}
+	}
+	result["items"] = items
+	task.Status = TaskSucceeded
+	task.SuccessCount = intValue(result["detected"], 0) + intValue(result["partial"], 0)
+	task.ErrorCount = intValue(result["failed"], 0)
+	task.ResultJSON = dumpJSON(result)
+	task.FinishedAt = sql.NullTime{Time: time.Now(), Valid: true}
+	s.db.Save(task)
+	s.appendTaskEvent(task.ID, "账户支付方式探测任务完成", "log", "info", result)
+}
+
+func (s *Server) failSunnyPaymentProbeTask(task *Task, message string) {
+	task.Status = TaskFailed
+	task.Error = message
+	task.ErrorCount = task.ProgressTotal
+	task.ResultJSON = dumpJSON(map[string]any{"requested": task.ProgressTotal, "detected": 0, "partial": 0, "skipped": 0, "failed": task.ProgressTotal})
+	task.FinishedAt = sql.NullTime{Time: time.Now(), Valid: true}
+	s.db.Save(task)
+	s.appendTaskEvent(task.ID, message, "log", "error", nil)
+}

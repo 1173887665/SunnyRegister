@@ -349,6 +349,12 @@ func sunnyPaymentMethods(value any) []string {
 
 func probeSunnyCheckout(ctx context.Context, client *http.Client, accessToken string) (string, []string, bool, error) {
 	country, currency := sunnyCheckoutBilling()
+	return probeSunnyCheckoutForCountry(ctx, client, accessToken, country, currency)
+}
+
+func probeSunnyCheckoutForCountry(ctx context.Context, client *http.Client, accessToken, country, currency string) (string, []string, bool, error) {
+	country = strings.ToUpper(strings.TrimSpace(country))
+	currency = strings.ToUpper(strings.TrimSpace(currency))
 	body, err := json.Marshal(map[string]any{
 		"entry_point":      "all_plans_pricing_modal",
 		"plan_name":        "chatgptplusplan",
@@ -813,7 +819,7 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 // An empty result intentionally preserves the direct-egress fallback.
 func (s *Server) sunnyCommerceProxyURL(accountKey string) string {
 	var proxies []SunnyProxy
-	query := "(',' || replace(lower(coalesce(purpose_tags, 'register')), ' ', '') || ',') LIKE ?"
+	query := "(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?"
 	if err := s.db.Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
 		Where(query, "%,"+sunnyProxyPurposeCommerce+",%").
 		Order("updated_at desc, id asc").Find(&proxies).Error; err != nil || len(proxies) == 0 {

@@ -75,6 +75,13 @@ class ProbeCommerceRequest(BaseModel):
     currency: str = "EUR"
 
 
+class ProbePaymentMethodsRequest(BaseModel):
+    access_token: str
+    proxy_url: str = ""
+    country: str = "US"
+    currency: str = "USD"
+
+
 class CheckoutRequest(BaseModel):
     token: str
     checkout_proxies: list[str]
@@ -195,6 +202,14 @@ def probe_commerce(req: ProbeCommerceRequest, authorization: str | None = Header
         promotion_proxy_url=req.promotion_proxy_url,
         checkout_proxy_url=req.checkout_proxy_url,
     )
+
+
+@app.post("/probe-payment-methods")
+def probe_payment_methods(req: ProbePaymentMethodsRequest, authorization: str | None = Header(default=None)) -> dict:
+    _check_token(authorization)
+    from sunny_core.commerce_probe import probe_payment_methods as run_probe
+
+    return run_probe(req.access_token, req.proxy_url, req.country, req.currency)
 
 
 @app.post("/checkout/jobs")

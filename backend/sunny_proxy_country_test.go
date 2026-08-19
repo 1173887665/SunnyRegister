@@ -60,3 +60,27 @@ func TestSunnyProxyUpdateKeepsCountryWhenCountryIsBlank(t *testing.T) {
 		t.Fatalf("invalid update = country %q, status %q", proxy.Country, proxy.Status)
 	}
 }
+
+func TestNormalizeSunnyProxyCountry(t *testing.T) {
+	for _, country := range []string{"JP", "BR", "US", "PH", "KR", "NL", "VN", "CH", "IN"} {
+		if normalized, err := normalizeSunnyProxyCountry(country); err != nil || normalized != country {
+			t.Fatalf("country %q normalized=%q err=%v", country, normalized, err)
+		}
+	}
+	for _, country := range []string{"jp", "JPN", "CC", "MM", "ZZ", ""} {
+		if _, err := normalizeSunnyProxyCountry(country); err == nil {
+			t.Fatalf("country %q should be rejected", country)
+		}
+	}
+}
+
+func TestSunnyProxyCreateRejectsInvalidCountry(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/proxy-config/pool", strings.NewReader(`{"address":"http://127.0.0.1:7897","country":"ZZ","purpose_tags":["payment_probe"],"enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	s.sunnyProxyPool(recorder, req, nil)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "国家代码") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
