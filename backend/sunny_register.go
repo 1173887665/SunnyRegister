@@ -4009,6 +4009,7 @@ type sunnySessionAccountSummary struct {
 	TrialEligibility        string     `gorm:"column:trial_eligibility"`
 	TrialCheckedAt          *time.Time `gorm:"column:trial_checked_at"`
 	CheckoutKind            string     `gorm:"column:checkout_kind"`
+	CheckoutResultJSON      string     `gorm:"column:checkout_result_json"`
 	PaymentMethodsJSON      string     `gorm:"column:payment_methods_json"`
 	PaymentProbeMethodsJSON string     `gorm:"column:payment_probe_methods_json"`
 	PaymentProbeResultsJSON string     `gorm:"column:payment_probe_results_json"`
@@ -4093,7 +4094,7 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 	return map[string]any{
 		"id": row.ID, "account_id": accountID, "mailbox_id": mailbox.ID, "email": row.Email,
 		"status": status, "plan_type": plan, "trial_eligibility": trialEligibility, "group_id": mailbox.GroupID, "group_name": mailbox.GroupName,
-		"checkout_kind": checkoutKind, "payment_methods": paymentMethods, "payment_probe_results": paymentProbeResults,
+		"checkout_kind": checkoutKind, "checkout_result": sunnyCheckoutResultJSON(account.CheckoutResultJSON), "payment_methods": paymentMethods, "payment_probe_results": paymentProbeResults,
 		"payment_probe_error": account.PaymentProbeError, "payment_probed_at": nullableTime(account.PaymentProbedAt != nil, pointerTime(account.PaymentProbedAt)), "commerce_check_error": account.CommerceCheckError,
 		"phone_bound":       sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailbox.Status),
 		"has_access_token":  row.HasAccessToken != 0 || account.HasAccessToken != 0,
@@ -4148,7 +4149,7 @@ func (s *Server) sunnySessionListSidecars(rows []sunnySessionListRow) (map[strin
 		return accounts, mailboxes
 	}
 	var accRows []sunnySessionAccountSummary
-	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, trial_eligibility, trial_checked_at, checkout_kind, payment_methods_json, payment_probe_methods_json, payment_probe_results_json, payment_probe_error, payment_probed_at, commerce_check_error, commerce_checked_at, access_token, phone_number, last_health_checked_at,
+	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, trial_eligibility, trial_checked_at, checkout_kind, checkout_result_json, payment_methods_json, payment_probe_methods_json, payment_probe_results_json, payment_probe_error, payment_probed_at, commerce_check_error, commerce_checked_at, access_token, phone_number, last_health_checked_at,
 		CASE WHEN access_token IS NOT NULL AND access_token <> '' THEN 1 ELSE 0 END AS has_access_token,
 		CASE WHEN openai_rt IS NOT NULL AND openai_rt <> '' THEN 1 ELSE 0 END AS has_refresh_token`).Where("email IN ?", emails).Find(&accRows)
 	for _, account := range accRows {

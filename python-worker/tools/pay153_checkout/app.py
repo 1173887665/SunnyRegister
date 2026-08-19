@@ -1395,7 +1395,10 @@ class JobStore:
         self.worker_limit = max(1, int(os.getenv("PAY153_WORKERS", "20")))
         self.global_rpm = max(1, int(os.getenv("PAY153_GLOBAL_RPM", "20")))
         self.pool = ThreadPoolExecutor(max_workers=self.worker_limit)
-        self.internal_worker_limit = max(1, int(os.getenv("PAY153_INTERNAL_WORKERS", "5")))
+        # The Go batch scheduler already applies the user-selected account
+        # concurrency. Keep enough internal slots so this pool does not
+        # silently reduce that configured value to a fixed default.
+        self.internal_worker_limit = max(1, int(os.getenv("PAY153_INTERNAL_WORKERS", "100")))
         self.internal_pool = ThreadPoolExecutor(max_workers=self.internal_worker_limit)
         self.pending: deque[tuple[str, dict]] = deque()
         self.start_times: deque[float] = deque()
@@ -1648,7 +1651,8 @@ class JobStore:
             account_lock.release()
 
     def _run_locked(self, job_id: str, options: dict):
-        max_attempts = min(50, max(1, int(options.get("retry_count") or 1)))
+        retry_count = min(50, max(0, int(options.get("retry_count") or 0)))
+        max_attempts = min(51, retry_count + 1)
         used_pairs: set[tuple[str, str]] = set()
         proxy_transport_retries = 0
         retry_same_strategy = False
@@ -1706,7 +1710,6 @@ class JobStore:
                         return
                     if transport_kind and proxy_transport_retries < 3:
                         proxy_transport_retries += 1
-                        max_attempts = min(50, max_attempts + 1)
                         retry_same_strategy = True
                         self.log(job_id, f"检测到{transport_kind}，切换第 {proxy_transport_retries} 次代理后重试")
                     can_retry = attempt < max_attempts
@@ -1852,7 +1855,6 @@ class JobStore:
                     self.update(job_id, status="error", percent=100, text="代理传输失败", error=last_error[:1200])
                     return
                 proxy_transport_retries += 1
-                max_attempts = min(50, max_attempts + 1)
                 retry_same_strategy = True
                 self.log(job_id, f"检测到{transport_kind}，切换第 {proxy_transport_retries} 次代理后重试")
             if non_retryable or attempt >= max_attempts:
@@ -3459,7 +3461,7 @@ def config():
             "max_per_pool": 500,
             "selection": "random_per_job",
         },
-        "retry_policy": {"min": 1, "max": 50, "default_pix": 10, "default_other": 3},
+        "retry_policy": {"min": 0, "max": 50, "default_pix": 10, "default_other": 3, "meaning": "失败后的重试次数，首次提链不计入"},
         "pix_identity_policy": {"default": "cpf", "auto_kinds": ["cpf", "mixed", "cnpj"], "regenerate_each_attempt": True},
         "task_limits": {
             "global_rpm": STORE.global_rpm,
@@ -3518,9 +3520,14 @@ def start_checkout():
         return jsonify({"error": "出口代理至少填写 1 条"}), 400
     raw_pix_tax_id = re.sub(r"\D", "", str(data.get("pix_tax_id") or ""))[:14] if link_type == "pix" else ""
     try:
-        retry_count = min(10, max(1, int(data.get("retry_count") or (10 if link_type in {"pix", "momo", "gcash"} else 3))))
+        default_retry_count = 10 if link_type in {"pix", "momo", "gcash"} else 3
+        raw_retry_count = data.get("retry_count")
+        if raw_retry_count is None or str(raw_retry_count).strip() == "":
+            retry_count = default_retry_count
+        else:
+            retry_count = min(50, max(0, int(raw_retry_count)))
     except (TypeError, ValueError):
-        return jsonify({"error": "重试次数需要填写 1-50 的整数"}), 400
+        return jsonify({"error": "失败重试次数需要填写 0-50 的整数"}), 400
     pix_identity: dict[str, str] = {}
     if link_type == "pix":
         manual_identity = {

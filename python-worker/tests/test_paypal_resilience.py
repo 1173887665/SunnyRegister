@@ -46,7 +46,7 @@ def test_proxy_route_label_redacts_credentials() -> None:
     "SSLError: curl: (35) Recv failure: Connection reset by peer",
     "Timeout: Failed to perform, curl: (28) Operation timed out after 60002 milliseconds with 0 bytes received",
 ])
-def test_transport_retry_extends_to_three_proxy_switches_and_rotates_routes(transport_error: str) -> None:
+def test_transport_retry_respects_configured_attempt_budget_and_rotates_routes(transport_error: str) -> None:
     store = object.__new__(checkout_app.JobStore)
     state = {"status": "running", "error": "", "result": None}
     logs: list[str] = []
@@ -78,10 +78,10 @@ def test_transport_retry_extends_to_three_proxy_switches_and_rotates_routes(tran
     with patch.object(checkout_app.time, "sleep"):
         store._run_locked("job-1", options)
 
-    assert len(routes) == 4
-    assert len(set(routes)) == 4
+    assert len(routes) == 2
+    assert len(set(routes)) == 2
     assert state["status"] == "error"
-    assert any("达到 3 次代理切换上限" in message for message in logs)
+    assert not any("达到 3 次代理切换上限" in message for message in logs)
 
 
 def test_paypal_transport_retry_preserves_strategy_and_business_attempts() -> None:
@@ -130,6 +130,35 @@ def test_paypal_transport_retry_preserves_strategy_and_business_attempts() -> No
 
     assert strategies == [True, True, False]
     assert any("沿用相同 PayPal 优惠策略" in message for message in logs)
+
+
+def test_retry_count_is_failures_after_initial_attempt() -> None:
+    store = object.__new__(checkout_app.JobStore)
+    state = {"status": "running", "error": "", "result": None}
+    attempts: list[int] = []
+
+    store.cancelled = lambda _job_id: False
+    store.get = lambda _job_id: dict(state)
+    store.update = lambda _job_id, **fields: state.update(fields)
+    store.log = lambda _job_id, _message: None
+    store._record_success = lambda _job_id, _result: None
+
+    def run_single(_job_id: str, _options: dict):
+        attempts.append(1)
+        state.update(status="running", error="temporary checkout failure")
+
+    store._run_single = run_single
+    options = {
+        "retry_count": 3,
+        "link_type": "hosted",
+        "entry_proxies": ["http://entry:8001"],
+        "exit_proxies": ["http://exit:9001"],
+    }
+
+    with patch.object(checkout_app.time, "sleep"):
+        store._run_locked("job-retry-budget", options)
+
+    assert len(attempts) == 4
 
 
 class FakeResponse:

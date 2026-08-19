@@ -263,6 +263,7 @@ func ensureSunnySchema(db *gorm.DB) {
 			"trial_check_error":          "text DEFAULT ''",
 			"trial_checked_at":           "timestamptz",
 			"checkout_kind":              "text DEFAULT 'unknown'",
+			"checkout_result_json":       "text DEFAULT '{}'",
 			"payment_methods_json":       "text DEFAULT '[]'",
 			"payment_probe_methods_json": "text DEFAULT '[]'",
 			"payment_probe_results_json": "text DEFAULT '{}'",

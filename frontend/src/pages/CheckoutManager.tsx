@@ -280,7 +280,7 @@ export default function CheckoutManager() {
   const [linkType, setLinkType] = useState(savedPreferences.linkType ?? "hosted");
   const [country, setCountry] = useState(savedPreferences.country ?? "US");
   const [currency, setCurrency] = useState(savedPreferences.currency ?? "USD");
-  const [retryCount, setRetryCount] = useState(() => savedNumber(savedPreferences.retryCount, 10, 1, 50));
+  const [retryCount, setRetryCount] = useState(() => savedNumber(savedPreferences.retryCount, 10, 0, 50));
   const [concurrency, setConcurrency] = useState(() => savedNumber(savedPreferences.concurrency, 3, 1, 100));
   const [usePromo, setUsePromo] = useState(savedPreferences.usePromo ?? true);
   const [promoCampaign, setPromoCampaign] = useState(savedPreferences.promoCampaign ?? "plus-1-month-free");
@@ -499,7 +499,9 @@ export default function CheckoutManager() {
         logs: live?.logs || [],
       } : undefined;
       const effectiveLive = terminalLive || live;
-      return found || live ? { ...row, checkout_result: effectiveLive?.result || found, checkout_live: effectiveLive } : row;
+      const persisted = row.checkout_result && typeof row.checkout_result === "object" ? row.checkout_result : undefined;
+      const result = effectiveLive?.result || found || persisted;
+      return result || live ? { ...row, checkout_result: result, checkout_live: effectiveLive } : row;
     });
   }, [baseRows, checkoutLive, task]);
   const listTotal = systemAT ? total : externalRows.length;
@@ -644,7 +646,7 @@ export default function CheckoutManager() {
       <div className="flex flex-wrap items-end gap-3">
         <label className="w-64 max-w-full"><span className="mb-1 flex h-5 items-center gap-2 text-xs text-[var(--text-muted)]"><span>优惠配置</span><button type="button" className={`sr-switch-only scale-90 ${usePromo ? "on" : ""}`} aria-label="启用优惠配置" onClick={(event) => { event.preventDefault(); setUsePromo(!usePromo); }}><span /></button></span><input className="h-10 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 text-sm" value={promoCampaign} onChange={(e) => setPromoCampaign(e.target.value)} disabled={!usePromo || plan !== "plus"} placeholder="Plus Campaign" /></label>
         <label className="w-52 max-w-full"><span className="mb-1 flex h-5 items-center text-xs text-[var(--text-muted)]">优惠码（Team）</span><input className="h-10 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 text-sm" value={promoCode} onChange={(e) => setPromoCode(e.target.value)} disabled={plan !== "team"} placeholder="选填" /></label>
-        <label><span className="mb-1 flex h-5 items-center text-xs text-[var(--text-muted)]">失败重试次数</span><input className="h-10 w-24 rounded-xl border border-[var(--border)] bg-transparent px-3 text-sm" type="number" min={1} max={50} value={retryCount} onChange={(e) => setRetryCount(Number(e.target.value))} /></label>
+        <label><span className="mb-1 flex h-5 items-center text-xs text-[var(--text-muted)]">失败重试次数</span><input className="h-10 w-24 rounded-xl border border-[var(--border)] bg-transparent px-3 text-sm" type="number" min={0} max={50} value={retryCount} onChange={(e) => setRetryCount(Number(e.target.value))} /></label>
         <label><span className="mb-1 flex h-5 items-center text-xs text-[var(--text-muted)]">提链并发</span><input className="h-10 w-24 rounded-xl border border-[var(--border)] bg-transparent px-3 text-sm" type="number" min={1} max={100} value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value))} /></label>
         <Button variant="outline" disabled={precheckBusy || selectedCount === 0} onClick={() => void precheck()}>{precheckBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{precheckBusy ? "检测中..." : "检测资格 / Checkout"}</Button>
         <Button className="ml-auto" disabled={checkoutBusy || selectedCount === 0} onClick={() => void start()}>{checkoutBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}{checkoutBusy ? "提链中..." : "开始提链"}</Button>

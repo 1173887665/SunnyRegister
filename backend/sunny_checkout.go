@@ -187,7 +187,7 @@ func normalizeCheckoutRequest(in sunnyCheckoutRequest) (sunnyCheckoutRequest, []
 	if checkoutCountryCurrency[in.Country] == "" {
 		return in, nil, nil, fmt.Errorf("不支持的国家/地区")
 	}
-	if in.RetryCount < 1 {
+	if in.RetryCount < 0 {
 		in.RetryCount = 10
 	}
 	if in.RetryCount > 50 {
@@ -561,6 +561,19 @@ func (s *Server) runSunnyCheckoutAttempt(task *Task, payload, row map[string]any
 		// trial checks and PayPal branch selection.
 		s.db.Model(&SunnyAccount{}).Where("email = ?", email).Update("checkout_kind", detectedKind)
 	}
+	// Keep the latest successful payment material on the account so the account
+	// table remains useful after the task view is refreshed or reopened.
+	if accountID > 0 {
+		stored := map[string]any{
+			"status": "succeeded", "email": email,
+			"link_type": text(item["link_type"]), "payment_link": text(item["payment_link"]),
+			"qr_data": text(item["qr_data"]), "qr_image": text(item["qr_image"]),
+			"checkout_session_id": text(item["checkout_session_id"]),
+			"country":             text(item["country"]), "currency": text(item["currency"]),
+			"checkout_amount": item["checkout_amount"],
+		}
+		s.db.Model(&SunnyAccount{}).Where("id = ? OR email = ?", accountID, email).Update("checkout_result_json", dumpJSON(stored))
+	}
 	return item
 }
 
@@ -764,4 +777,12 @@ func extractSunnyCheckoutResult(v map[string]any, provider string) map[string]an
 		out["payment_link"] = strings.Replace(text(out["payment_link"]), "/checkout/openai_llc/", "/checkout/", 1)
 	}
 	return out
+}
+
+func sunnyCheckoutResultJSON(raw string) map[string]any {
+	result := map[string]any{}
+	if strings.TrimSpace(raw) == "" || json.Unmarshal([]byte(raw), &result) != nil {
+		return result
+	}
+	return result
 }

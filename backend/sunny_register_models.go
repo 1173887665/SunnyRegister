@@ -96,6 +96,7 @@ type SunnyAccount struct {
 	TrialCheckError         string     `gorm:"type:text" json:"trial_check_error"`
 	TrialCheckedAt          *time.Time `gorm:"index" json:"trial_checked_at"`
 	CheckoutKind            string     `gorm:"index;size:32;default:unknown" json:"checkout_kind"`
+	CheckoutResultJSON      string     `gorm:"type:text;default:'{}'" json:"checkout_result_json"`
 	PaymentMethodsJSON      string     `gorm:"type:text;default:'[]'" json:"payment_methods_json"`
 	PaymentProbeMethodsJSON string     `gorm:"type:text;default:'[]'" json:"payment_probe_methods_json"`
 	PaymentProbeResultsJSON string     `gorm:"type:text;default:'{}'" json:"payment_probe_results_json"`
