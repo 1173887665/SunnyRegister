@@ -816,6 +816,35 @@ class BrowserCsrfTests(unittest.TestCase):
         context.request.get.assert_not_called()
         context.request.post.assert_not_called()
 
+    def test_signin_fallback_retries_tls_disconnect(self):
+        account = MailAccount(
+            email="user@example.com",
+            password="password",
+            client_id="client-id",
+            refresh_token="outlook-refresh-token",
+            raw="user@example.com----password----client-id----outlook-refresh-token",
+        )
+        flow = OpenAIEmailRegisterFlow(account, "", True, lambda _message: None)
+        context = Mock()
+        context.cookies.return_value = [{"name": "oai-did", "value": "device-id"}]
+        page = Mock()
+        page.evaluate.side_effect = [
+            {"ok": True, "status": 200, "text": '{"csrfToken":"browser-csrf"}'},
+            RuntimeError("browser fetch failed"),
+        ]
+        response = Mock(ok=True)
+        response.json.return_value = {"url": "https://auth.openai.com/authorize"}
+        context.request.post.side_effect = [
+            RuntimeError("Client network socket disconnected before secure TLS connection was established"),
+            response,
+        ]
+
+        signin_url = flow._create_openai_signin_url(context, page)
+
+        self.assertEqual(signin_url, "https://auth.openai.com/authorize")
+        self.assertEqual(context.request.post.call_count, 2)
+        page.wait_for_timeout.assert_called_once_with(600)
+
 
 class BrowserBackendTests(unittest.TestCase):
     def test_background_mode_uses_one_camoufox_incognito_context(self):

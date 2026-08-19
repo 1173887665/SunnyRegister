@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from sunny_core.openai_auth import _goto_auth_page
+from sunny_core.openai_auth import _goto_auth_page, _goto_chatgpt_page
 
 
 def test_auth_navigation_accepts_ns_binding_aborted_after_redirect() -> None:
@@ -34,6 +34,30 @@ def test_auth_navigation_retries_when_abort_did_not_land() -> None:
     assert result is committed
     assert page.goto.call_count == 2
     assert page.goto.call_args_list[1].kwargs["wait_until"] == "commit"
+
+
+def test_auth_navigation_accepts_ns_error_abort_after_redirect() -> None:
+    page = Mock()
+    page.url = "https://chatgpt.com/"
+
+    def redirected(*_args, **_kwargs):
+        page.url = "https://auth.openai.com/log-in"
+        raise RuntimeError("Page.goto: NS_ERROR_ABORT")
+
+    page.goto.side_effect = redirected
+
+    assert _goto_auth_page(page, "https://auth.openai.com/api/accounts/authorize") is None
+    page.goto.assert_called_once()
+
+
+def test_chatgpt_navigation_retries_transient_ssl_error() -> None:
+    page = Mock()
+    response = object()
+    page.goto.side_effect = [RuntimeError("Page.goto: SSL_ERROR_UNKNOWN"), response]
+
+    assert _goto_chatgpt_page(page) is response
+    assert page.goto.call_count == 2
+    page.wait_for_timeout.assert_called_once_with(600)
 
 
 def test_auth_navigation_does_not_accept_unchanged_chatgpt_page() -> None:

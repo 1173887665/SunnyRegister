@@ -523,6 +523,7 @@ func TestSunnyHealthTaskDoesNotInspectOrRenewAccessToken(t *testing.T) {
 
 func TestSunnyAccessTokenCheckQueuesRenewalForRejectedToken(t *testing.T) {
 	s := newSunnySessionTestServer(t)
+	t.Setenv("SUNNY_AT_RENEWAL_CONCURRENCY", "4")
 	var session SunnySession
 	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
 		t.Fatalf("load session: %v", err)
@@ -553,6 +554,9 @@ func TestSunnyAccessTokenCheckQueuesRenewalForRejectedToken(t *testing.T) {
 	payload := jsonMap(renewal.PayloadJSON)
 	if ids := uintSlice(payload["account_ids"]); len(ids) != 1 || ids[0] != session.AccountID {
 		t.Fatalf("unexpected renewal payload: %#v", payload)
+	}
+	if got := intValue(payload["concurrency"], 0); got != 4 {
+		t.Fatalf("renewal concurrency=%d, want 4", got)
 	}
 }
 

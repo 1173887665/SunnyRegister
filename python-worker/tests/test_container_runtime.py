@@ -116,6 +116,31 @@ class XbovoICloudReaderTests(unittest.TestCase):
         self.assertEqual(kwargs["headers"]["X-API-Key"], "alias_key")
         self.assertEqual(kwargs["proxies"]["https"], "http://proxy.example:8080")
 
+    def test_connect_defers_transient_network_failure_to_otp_polling(self) -> None:
+        logs: list[str] = []
+        reader = XbovoICloudReader(self._account(), logs.append)
+        transient = MailboxAccessError("mailbox_network_error", "temporary network failure")
+
+        with patch.object(reader, "_request", side_effect=transient) as request:
+            reader.connect()
+
+        self.assertEqual(request.call_args.kwargs["timeout"], 10)
+        self.assertTrue(any("验证码阶段继续重试" in message for message in logs))
+
+    def test_wait_for_code_retries_transient_provider_failure(self) -> None:
+        reader = XbovoICloudReader(self._account(), None)
+        transient = MailboxAccessError("mailbox_network_error", "temporary network failure")
+        success = {"ok": True, "code": "123456"}
+
+        with (
+            patch.object(reader, "_request", side_effect=[transient, success]) as request,
+            patch("sunny_core.mailbox.time.sleep"),
+        ):
+            code = reader.wait_for_code(1_700_000_000, timeout=5)
+
+        self.assertEqual(code, "123456")
+        self.assertEqual(request.call_count, 2)
+
     def test_pool_exhaustion_is_retried_and_responses_are_closed(self) -> None:
         busy = Mock(ok=False, status_code=503, text='{"ok":false,"error":"PoolError: connection pool exhausted"}')
         busy.json.return_value = {"ok": False, "error": "PoolError: connection pool exhausted"}

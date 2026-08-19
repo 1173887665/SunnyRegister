@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -78,6 +80,7 @@ class RefreshSessionTests(unittest.TestCase):
         self.assertEqual(payload["execution_mode"], "protocol")
         self.assertEqual(payload["protocol_challenge_strategy"], "native_headless")
         self.assertEqual(payload["registration_stage"], "register_only")
+        self.assertTrue(payload["access_token_renewal"])
         renewal = [item for item in db.event_details if item.get("progress_type") == "access_token_renewal"]
         self.assertEqual((renewal[0]["current"], renewal[0]["total"]), (1, 7))
         self.assertEqual((renewal[-1]["current"], renewal[-1]["total"], renewal[-1]["state"]), (9, 9, "succeeded"))
@@ -188,6 +191,64 @@ class RefreshSessionTests(unittest.TestCase):
         self.assertEqual(run_one.call_args_list[1].args[2]["execution_mode"], "background")
         self.assertTrue(run_one.call_args_list[1].args[2]["renewal_retry_fresh_context"])
         self.assertEqual(sleep_mock.call_count, 2)
+
+    def test_batch_renewal_runs_accounts_with_bounded_concurrency(self):
+        class ParallelDB:
+            task_id = "renewal-task"
+
+            def __init__(self) -> None:
+                self.updates: list[dict] = []
+
+            def fetch_accounts(self, _ids=None):
+                return [{"id": index, "email": f"user{index}@example.com"} for index in range(1, 5)]
+
+            def event(self, *_args, **_kwargs):
+                return None
+
+            def cancel_requested(self):
+                return False
+
+            def update_task(self, **fields):
+                self.updates.append(fields)
+
+        db = ParallelDB()
+        lock = threading.Lock()
+        active = 0
+        peak = 0
+
+        def refresh_one(_task_id, _payload, account_id, index, total):
+            nonlocal active, peak
+            self.assertEqual(total, 4)
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.03)
+            with lock:
+                active -= 1
+            return index, 1, [], [{"email": f"user{account_id}@example.com"}]
+
+        with patch.object(worker, "_refresh_sessions_isolated", side_effect=refresh_one) as isolated:
+            ok, errors, items = worker._refresh_sessions(db, {"account_ids": [1, 2, 3, 4], "concurrency": 3})
+
+        self.assertEqual(ok, 4)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(items), 4)
+        self.assertEqual(isolated.call_count, 4)
+        self.assertEqual(peak, 3)
+        self.assertEqual(db.updates[-1]["progress_current"], 4)
+
+    def test_icloud_renewal_reuses_auth_proxy_when_auxiliary_route_is_direct(self):
+        proxies = {"register": "http://proxy.example:8080"}
+
+        self.assertEqual(
+            worker._mailbox_proxy_for_task({"access_token_renewal": True}, proxies, "", "apple"),
+            "http://proxy.example:8080",
+        )
+        self.assertEqual(worker._mailbox_proxy_for_task({}, proxies, "", "apple"), "")
+        self.assertEqual(
+            worker._mailbox_proxy_for_task({"access_token_renewal": True}, proxies, "", "microsoft"),
+            "",
+        )
 
     def test_failed_renewal_does_not_duplicate_email_prefix(self):
         db = FakeRefreshDB()

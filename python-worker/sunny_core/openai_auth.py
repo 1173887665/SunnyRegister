@@ -77,7 +77,17 @@ _DRIVER_DISCONNECTED_MARKERS = (
 
 _NAVIGATION_ABORT_MARKERS = (
     "ns_binding_aborted",
+    "ns_error_abort",
     "net::err_aborted",
+)
+
+_TRANSIENT_BROWSER_NETWORK_MARKERS = (
+    "ssl_error_unknown",
+    "client network socket disconnected before secure tls connection",
+    "net::err_connection_reset",
+    "ns_error_net_timeout",
+    "connection reset",
+    "timed out",
 )
 
 
@@ -89,6 +99,27 @@ def _is_browser_driver_disconnected(error: Any) -> bool:
 def _is_navigation_aborted(error: Any) -> bool:
     message = str(error or "").strip().lower()
     return any(marker in message for marker in _NAVIGATION_ABORT_MARKERS)
+
+
+def _is_transient_browser_network_error(error: Any) -> bool:
+    message = str(error or "").strip().lower()
+    return any(marker in message for marker in _TRANSIENT_BROWSER_NETWORK_MARKERS)
+
+
+def _goto_chatgpt_page(page: Any, log: Callable[[str], None] | None = None, *, timeout: int = 60000):
+    """Open ChatGPT with bounded retries for proxy/browser TLS resets."""
+    for attempt in range(3):
+        try:
+            return page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=timeout)
+        except Exception as exc:
+            if attempt >= 2 or not _is_transient_browser_network_error(exc):
+                raise
+            if log:
+                log(f"[认证] ChatGPT 页面遇到临时 TLS/网络错误，正在重试 ({attempt + 1}/2)：{str(exc)[:180]}")
+            try:
+                page.wait_for_timeout(600 * (attempt + 1))
+            except Exception:
+                time.sleep(0.6 * (attempt + 1))
 
 
 def _auth_navigation_landed(page: Any, previous_url: str = "") -> bool:
@@ -526,7 +557,7 @@ class OpenAIEmailRegisterFlow:
                 self._check_cancelled()
                 page = context.new_page()
                 self._log_runtime_fingerprint(page)
-                landing_response = page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+                landing_response = _goto_chatgpt_page(page, self.log, timeout=60000)
                 if landing_response and landing_response.status >= 400:
                     self.log(f"[认证] ChatGPT 首页返回 HTTP {landing_response.status}，继续尝试通过浏览器会话初始化认证")
                 self._check_cancelled()
@@ -680,12 +711,30 @@ class OpenAIEmailRegisterFlow:
         if payload is None:
             if browser_error:
                 self.log(f"[认证] 浏览器内 signin 请求未成功，切换后备请求：{browser_error[:300]}")
-            response = context.request.post(
-                signin_endpoint,
-                form={"callbackUrl": f"{CHATGPT_BASE_URL}/", "csrfToken": csrf_value, "json": "true"},
-                headers={"Accept": "application/json", "Accept-Language": self.fingerprint.accept_language},
-                timeout=30000,
-            )
+            response = None
+            for attempt in range(3):
+                try:
+                    response = context.request.post(
+                        signin_endpoint,
+                        form={"callbackUrl": f"{CHATGPT_BASE_URL}/", "csrfToken": csrf_value, "json": "true"},
+                        headers={"Accept": "application/json", "Accept-Language": self.fingerprint.accept_language},
+                        timeout=30000,
+                    )
+                    break
+                except Exception as exc:
+                    if attempt >= 2 or not _is_transient_browser_network_error(exc):
+                        raise
+                    self._check_cancelled()
+                    self.log(f"[认证] signin TLS 连接被中断，正在重试 ({attempt + 1}/2)：{str(exc)[:180]}")
+                    if page is not None:
+                        try:
+                            page.wait_for_timeout(600 * (attempt + 1))
+                        except Exception:
+                            time.sleep(0.6 * (attempt + 1))
+                    else:
+                        time.sleep(0.6 * (attempt + 1))
+            if response is None:
+                raise RuntimeError("打开 OpenAI 认证页失败: signin 请求未返回响应")
             if not response.ok:
                 raise RuntimeError(f"打开 OpenAI 认证页失败: HTTP {response.status} {response.text()[:300]}")
             payload = response.json()
@@ -957,7 +1006,7 @@ class OpenAIEmailRegisterFlow:
         """Recover if profile submit likely succeeded but the auth page is stuck."""
         self.log("[认证] 基础资料提交后长时间未跳转，开始执行会话恢复检查")
         try:
-            page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+            _goto_chatgpt_page(page, self.log, timeout=60000)
             self._sleep_checked(2)
             if self._has_chatgpt_session(page):
                 self.log("[认证] 会话恢复成功：ChatGPT Session 已可读取")

@@ -368,6 +368,19 @@ def _auxiliary_proxy(payload: dict[str, Any], proxies: dict[str, Any]) -> str:
     return ""
 
 
+def _mailbox_proxy_for_task(
+    payload: dict[str, Any],
+    proxies: dict[str, Any],
+    auxiliary_proxy: str,
+    mailbox_type: str,
+) -> str:
+    if auxiliary_proxy:
+        return auxiliary_proxy
+    if payload.get("access_token_renewal") is True and str(mailbox_type or "").strip().lower() == "apple":
+        return str(proxies.get("register") or "")
+    return ""
+
+
 def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, slot: int = 0) -> dict[str, Any]:
     proxies = _proxy_snapshot(payload, slot)
     proxy = proxies.get("register", "")
@@ -1421,6 +1434,12 @@ def _run_one(
     if protocol_challenge_strategy not in {"native_headless", "sentinel_protocol"}:
         protocol_challenge_strategy = "native_headless"
     account = account_from_row(mailbox)
+    mailbox_proxy_url = _mailbox_proxy_for_task(payload, proxies, auxiliary_proxy, account.mailbox_type)
+    if mailbox_proxy_url and not auxiliary_proxy:
+        db.event(
+            f"[{email}] [邮箱] AT续期的 iCloud 邮箱 API 将复用当前认证代理，避免服务器直连不可达",
+            detail={"email": email, "scope": "selected", "mailbox_proxy": redact_proxy_url(mailbox_proxy_url), "renewal_mailbox_proxy_fallback": True},
+        )
     mailbox_id = max(0, int(mailbox.get("id") or 0))
     is_registered_mailbox = bool(account.openai_rt) or str(mailbox.get("status") or "") in {"registered", "已注册", "phone_bound", "已接码", "已反代", "reverse_proxied", "登录刷新"}
     traffic_meter = ProxyTrafficMeter(
@@ -1585,7 +1604,7 @@ def _run_one(
                 should_cancel=db.cancel_requested,
                 execution_mode="protocol_headless_fallback",
                 on_progress=save_progress,
-                mailbox_proxy_url=auxiliary_proxy,
+                mailbox_proxy_url=mailbox_proxy_url,
                 traffic_meter=traffic_meter,
                 traffic_config=payload.get("browser_traffic_optimization"),
             )
@@ -1602,7 +1621,7 @@ def _run_one(
                     should_cancel=db.cancel_requested,
                     on_progress=save_progress,
                     challenge_strategy=protocol_challenge_strategy,
-                    mailbox_proxy_url=auxiliary_proxy,
+                    mailbox_proxy_url=mailbox_proxy_url,
                     traffic_meter=traffic_meter,
                 )
             except (ProtocolChallengeRequired, ProtocolRegistrationError) as protocol_error:
@@ -1652,7 +1671,7 @@ def _run_one(
                     should_cancel=db.cancel_requested,
                     execution_mode="protocol_headless_fallback",
                     on_progress=save_progress,
-                    mailbox_proxy_url=auxiliary_proxy,
+                    mailbox_proxy_url=mailbox_proxy_url,
                     traffic_meter=traffic_meter,
                     traffic_config=payload.get("browser_traffic_optimization"),
                 )
@@ -1690,7 +1709,7 @@ def _run_one(
                             should_cancel=db.cancel_requested,
                             execution_mode="protocol_post_stage",
                             on_progress=save_progress,
-                            mailbox_proxy_url=auxiliary_proxy,
+                            mailbox_proxy_url=mailbox_proxy_url,
                             existing_session=protocol_session,
                             traffic_meter=traffic_meter,
                             traffic_config=payload.get("browser_traffic_optimization"),
@@ -1721,7 +1740,7 @@ def _run_one(
                 should_cancel=db.cancel_requested,
                 execution_mode=execution_mode,
                 on_progress=save_progress,
-                mailbox_proxy_url=auxiliary_proxy,
+                mailbox_proxy_url=mailbox_proxy_url,
                 traffic_meter=traffic_meter,
                 traffic_config=payload.get("browser_traffic_optimization"),
             )
@@ -1932,12 +1951,15 @@ def _run_one_isolated(
         worker_db.close()
 
 
-def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
+def _refresh_sessions_sequential(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
     accounts = db.fetch_accounts(_ids(payload.get("account_ids")) or None)
+    index_offset = max(0, int(payload.get("_renewal_index_offset") or 0))
+    total_accounts = max(1, int(payload.get("_renewal_total") or len(accounts) or 1))
+    parallel = bool(payload.get("_renewal_parallel"))
     ok = 0
     errors: list[str] = []
     items: list[dict[str, Any]] = []
-    for idx, acc in enumerate(accounts, start=1):
+    for idx, acc in enumerate(accounts, start=index_offset + 1):
         db.ensure_not_cancelled()
         email = acc.get("email") or ""
         renewal_current = 1
@@ -1977,7 +1999,8 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                     _account_event(db, email, "session", "access_token.renewed", f"[{email}] [Session] 已通过 Refresh Token 完成 AT 续期", account_id=account_id)
                     renewal_current = 7
                     _emit_renewal_progress(db, email, renewal_current, renewal_total, "completed", state="succeeded")
-                    db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
+                    if not parallel:
+                        db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
                     continue
                 except Exception as exc:
                     if _is_cancel_exception(exc):
@@ -2005,6 +2028,7 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                     "execution_mode": "protocol",
                     "protocol_challenge_strategy": "native_headless",
                     "registration_stage": "register_only",
+                    "access_token_renewal": True,
                     "mailbox_ids": [int(mailbox.get("id") or 0)],
                 }
             )
@@ -2014,7 +2038,7 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                 f"[{email}] [Session] 复用注册机登录链路更新 AT：协议登录优先，遇到浏览器挑战时由原生无头浏览器接管",
                 detail={"email": email, "scope": "selected", "renewal_login_mode": "protocol_native_headless"},
             )
-            succeeded, result = _run_one(db, "sunny_login", fallback_payload, mailbox, idx, len(accounts))
+            succeeded, result = _run_one(db, "sunny_login", fallback_payload, mailbox, idx, total_accounts)
             if not succeeded and _is_account_deactivated(result):
                 raise RuntimeError(str(result).strip())
             if not succeeded:
@@ -2031,7 +2055,7 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                     time.sleep(1)
                 background_payload = dict(fallback_payload)
                 background_payload.update({"execution_mode": "background", "renewal_retry_fresh_context": True})
-                succeeded, result = _run_one(db, "sunny_login", background_payload, mailbox, idx, len(accounts))
+                succeeded, result = _run_one(db, "sunny_login", background_payload, mailbox, idx, total_accounts)
             if not succeeded and _is_account_deactivated(result):
                 raise RuntimeError(str(result).strip())
             if not succeeded and _is_otp_security_context_failure(result):
@@ -2051,7 +2075,7 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                 retry_payload = dict(fallback_payload)
                 retry_payload["execution_mode"] = "background"
                 retry_payload["renewal_retry_fresh_context"] = True
-                succeeded, result = _run_one(db, "sunny_login", retry_payload, mailbox, idx, len(accounts))
+                succeeded, result = _run_one(db, "sunny_login", retry_payload, mailbox, idx, total_accounts)
             if not succeeded:
                 result_text = str(result).strip()
                 email_prefix = f"[{email}] "
@@ -2081,8 +2105,93 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                 db.mark_access_token_renewal_failed(email, str(exc))
                 _account_event(db, email, "session", "access_token.renewal_failed", errors[-1], "error", account_id=int(acc.get("id") or 0), detail={"error": str(exc)})
                 _emit_renewal_progress(db, email, renewal_current, renewal_total, "failed", state="failed", error=str(exc))
-        db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
+        if not parallel:
+            db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
     return ok, errors, items
+
+
+def _refresh_sessions_isolated(
+    task_id: str,
+    payload: dict[str, Any],
+    account_id: int,
+    index: int,
+    total: int,
+) -> tuple[int, int, list[str], list[dict[str, Any]]]:
+    """Refresh one account with an isolated DB connection and auth context."""
+    worker_db = SunnyDB(task_id, ensure_schema=False)
+    single_payload = dict(payload)
+    single_payload.update(
+        {
+            "account_ids": [account_id],
+            "_renewal_index_offset": index - 1,
+            "_renewal_total": total,
+            "_renewal_parallel": True,
+        }
+    )
+    try:
+        ok, errors, items = _refresh_sessions_sequential(worker_db, single_payload)
+        return index, ok, errors, items
+    finally:
+        worker_db.close()
+
+
+def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
+    accounts = db.fetch_accounts(_ids(payload.get("account_ids")) or None)
+    if len(accounts) <= 1:
+        return _refresh_sessions_sequential(db, payload)
+    requested = int(payload.get("concurrency") or os.getenv("SUNNY_AT_RENEWAL_CONCURRENCY") or 3)
+    concurrency = max(1, min(requested, 6, len(accounts)))
+    if concurrency <= 1:
+        return _refresh_sessions_sequential(db, payload)
+    db.event(
+        f"[系统] AT续期并发数：{concurrency}，每个账户使用独立 Worker/认证上下文",
+        detail={"scope": "global", "concurrency": concurrency, "total": len(accounts), "operation": "access_token_renewal"},
+    )
+    success = 0
+    completed = 0
+    errors: list[str] = []
+    items: list[dict[str, Any]] = []
+    for batch_start in range(0, len(accounts), concurrency):
+        batch = accounts[batch_start : batch_start + concurrency]
+        pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sunny-renewal")
+        try:
+            futures = {
+                pool.submit(
+                    _refresh_sessions_isolated,
+                    db.task_id,
+                    payload,
+                    int(account.get("id") or 0),
+                    batch_start + offset,
+                    len(accounts),
+                ): str(account.get("email") or "")
+                for offset, account in enumerate(batch, start=1)
+            }
+            pending = set(futures)
+            while pending:
+                if db.cancel_requested():
+                    for future in pending:
+                        future.cancel()
+                    raise SunnyTaskCancelled("Task cancelled by user")
+                done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                if not done:
+                    continue
+                for future in done:
+                    try:
+                        _index, ok, account_errors, account_items = future.result()
+                    except Exception as exc:
+                        if _is_cancel_exception(exc):
+                            raise
+                        ok = 0
+                        account_items = []
+                        account_errors = [f"[{futures[future]}] AT续期并行 Worker 失败: {exc}"]
+                    completed += 1
+                    success += ok
+                    errors.extend(account_errors)
+                    items.extend(account_items)
+                    db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+    return success, errors, items
 
 
 def _acquire_refresh_tokens(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:

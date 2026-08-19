@@ -899,7 +899,15 @@ class XbovoICloudReader:
         if self.account.mailbox_channel != "xbovo":
             raise MailboxAccessError("mailbox_channel_unsupported", "暂不支持该 iCloud 邮箱渠道", self.account.mailbox_channel, terminal=True)
         self.log(f"[{self.account.email}] Connecting xbovo iCloud mailbox API for OTP")
-        self._request("/api/v1/messages", {"email": self.account.email, "limit": 1})
+        try:
+            self._request("/api/v1/messages", {"email": self.account.email, "limit": 1}, timeout=10)
+        except MailboxAccessError as exc:
+            if exc.terminal:
+                raise
+            self.log(
+                f"[{self.account.email}] xbovo iCloud 启动连通检查暂时失败，将在验证码阶段继续重试：{str(exc)[:180]}"
+            )
+            return
         self.log(f"[{self.account.email}] xbovo iCloud mailbox API connected")
 
     def close(self) -> None:
@@ -933,6 +941,7 @@ class XbovoICloudReader:
     def wait_for_code(self, min_timestamp: float, timeout: int = 180) -> str:
         started = time.monotonic()
         last_notice = 0.0
+        last_error_notice = 0.0
         while time.monotonic() - started < timeout:
             elapsed = time.monotonic() - started
             remaining = max(1, int(timeout - elapsed))
@@ -945,7 +954,16 @@ class XbovoICloudReader:
             }
             if self.seen_codes:
                 params["exclude"] = ",".join(sorted(self.seen_codes))
-            payload = self._request("/api/v1/code/wait", params, timeout=chunk + 10)
+            try:
+                payload = self._request("/api/v1/code/wait", params, timeout=chunk + 10)
+            except MailboxAccessError as exc:
+                if exc.terminal:
+                    raise
+                if time.monotonic() - last_error_notice >= 15:
+                    self.log(f"[{self.account.email}] xbovo iCloud 临时不可用，将继续等待验证码：{str(exc)[:180]}")
+                    last_error_notice = time.monotonic()
+                time.sleep(min(1.0, max(0.0, timeout - (time.monotonic() - started))))
+                continue
             code = str(payload.get("code") or "").strip()
             if re.fullmatch(r"\d{6}", code):
                 self.seen_codes.add(code)
