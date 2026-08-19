@@ -3095,11 +3095,26 @@ function PaymentMethodsBadge({ row }: { row: AnyObj }) {
 }
 function PaymentMethodFilter({t,value,options,onChange}:{t:AnyObj;value:string[];options:string[];onChange:(value:string[])=>void}) {
   const toggle=(method:string)=>onChange(value.includes(method)?value.filter((item)=>item!==method):[...value,method]);
-  return <details className="relative">
-    <summary className="sr-select-like flex min-h-10 cursor-pointer list-none items-center gap-2 whitespace-nowrap px-3"><CreditCard className="h-4 w-4"/><span>{value.length?`${t.paymentMethodFilter} (${value.length})`:t.allPaymentMethods}</span><ChevronDown className="ml-auto h-4 w-4"/></summary>
-    <div className="absolute left-0 top-[calc(100%+6px)] z-30 min-w-56 border border-[var(--border)] bg-[var(--bg-shell)] p-2 shadow-xl">
-      {options.map((method)=><label key={method} className="flex cursor-pointer items-center gap-2 px-2 py-2 text-sm"><input type="checkbox" checked={value.includes(method)} onChange={()=>toggle(method)}/><span>{paymentMethodLabel(method)}</span></label>)}
-      {value.length>0&&<button type="button" className="sr-link mt-1 w-full px-2 py-2 text-left" onClick={()=>onChange([])}>{t.clearPaymentMethods}</button>}
+  const allSelected=options.length>0 && value.length===options.length;
+  return <details className="sr-payment-filter">
+    <summary className="sr-payment-filter-trigger">
+      <CreditCard className="sr-payment-filter-icon"/>
+      {value.length===0 ? <span className="sr-payment-filter-placeholder">{t.allPaymentMethods}</span> : <span className="sr-payment-filter-chips">
+        {value.slice(0,2).map((method)=><span className="sr-payment-filter-chip" key={method}>{paymentMethodLabel(method)}</span>)}
+        {value.length>2 && <span className="sr-payment-filter-more">+{value.length-2}</span>}
+      </span>}
+      <ChevronDown className="sr-payment-filter-chevron"/>
+    </summary>
+    <div className="sr-payment-filter-menu">
+      <div className="sr-payment-filter-menu-head">
+        <span>{t.paymentMethodFilter}</span>
+        <div className="sr-payment-filter-menu-actions">
+          <button type="button" className="sr-payment-filter-action" onClick={()=>onChange(allSelected?[]:options)}><ListChecks className="h-3.5 w-3.5"/>{allSelected?t.clearPaymentMethods:t.selectAll}</button>
+        </div>
+      </div>
+      <div className="sr-payment-filter-options">
+        {options.map((method)=><label key={method} className={cn("sr-payment-filter-option",value.includes(method)&&"is-selected")}><input type="checkbox" checked={value.includes(method)} onChange={()=>toggle(method)}/><span>{paymentMethodLabel(method)}</span>{value.includes(method)&&<span className="sr-payment-filter-check">✓</span>}</label>)}
+      </div>
     </div>
   </details>;
 }
