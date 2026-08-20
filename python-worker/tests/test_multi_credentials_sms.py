@@ -360,6 +360,22 @@ def test_browser_password_login_uses_exact_imported_password() -> None:
     assert account.chatgpt_password == "Short1!"
 
 
+def test_browser_password_step_waits_for_a_transitional_readonly_input() -> None:
+    account = MailAccount("user@example.com", "mailbox-password", "client", "mail-rt", "raw")
+    messages: list[str] = []
+    flow = OpenAIEmailRegisterFlow(account, "", True, messages.append)
+    password_input = Mock()
+    password_input.is_enabled.return_value = False
+    password_input.is_editable.return_value = False
+    flow._visible_inputs = Mock(return_value=[password_input])
+    page = Mock(url="https://auth.openai.com/create-account/password")
+
+    assert flow._fill_password_step(page) is False
+    assert flow._fill_password_step(page) is False
+    assert password_input.fill.call_count == 0
+    assert messages.count("[认证] 账号需要密码步骤，准备填写 ChatGPT 密码") == 1
+
+
 def test_browser_can_switch_password_page_to_email_otp() -> None:
     account = MailAccount("user@icloud.com", "", "", "", "raw", mailbox_type="apple", mailbox_channel="url_api", access_key="https://mail.example.test")
     flow = OpenAIEmailRegisterFlow(account, "", True, None, existing_account=True)

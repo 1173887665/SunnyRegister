@@ -481,6 +481,8 @@ class OpenAIEmailRegisterFlow:
         self.browser_backend = "camoufox" if headless else "chromium"
         self.device_id = ""
         self.generated_password = ""
+        self.password_step_logged = False
+        self.password_step_wait_started_at = 0.0
         self.recent_email_code = ""
         self.recent_email_code_at = 0.0
         self.existing_session = dict(existing_session or {})
@@ -819,6 +821,9 @@ class OpenAIEmailRegisterFlow:
         about_you_validation_retries = 0
         existing_account_recovery_attempted = False
         route_error_retries = 0
+        password_step_submitted = False
+        password_step_submitted_at = 0.0
+        password_step_attempts = 0
         last_progress_signature = ""
         last_progress_at = time.time()
         passive_reload_count = 0
@@ -884,17 +889,37 @@ class OpenAIEmailRegisterFlow:
                 self._select_first_workspace(page)
                 continue
             if "password" in url and self._has_visible_password(page):
+                if password_step_submitted:
+                    # The auth SPA keeps the old password node mounted while the
+                    # request is transitioning. Do not refill it on every loop;
+                    # wait for the next route, then allow one controlled retry.
+                    if time.time() - password_step_submitted_at < 20:
+                        self._sleep_checked(1)
+                        continue
+                    elif password_step_attempts >= 2:
+                        raise TimeoutError(
+                            f"[{self.account.email}] Password step did not advance: "
+                            f"{self._page_text_summary(page, 300)}"
+                        )
+                    password_step_submitted = False
                 if ("/log-in/password" in url or self.existing_account) and not self.account.chatgpt_password:
                     if not self._switch_password_to_email_code(page):
                         raise RuntimeError("ChatGPT login requires a password or a configured email OTP endpoint")
                     email_code_submitted = False
                     about_you_submitted = False
                     continue
-                self._fill_password_step(page)
+                if not self._fill_password_step(page):
+                    self._sleep_checked(1)
+                    continue
+                password_step_attempts += 1
+                password_step_submitted = True
+                password_step_submitted_at = time.time()
                 email_code_submitted = False
                 about_you_submitted = False
                 continue
             if "about-you" in url or self._has_about_you_form(page):
+                password_step_submitted = False
+                password_step_attempts = 0
                 email_code_submitted = False
                 now = time.time()
                 if not about_you_first_seen_at:
@@ -1730,7 +1755,7 @@ class OpenAIEmailRegisterFlow:
     def _has_visible_password(self, page) -> bool:
         return bool(self._visible_inputs(page, ['input[type="password"]', 'input[name="password"]']))
 
-    def _fill_password_step(self, page) -> None:
+    def _fill_password_step(self, page) -> bool:
         login_page = "/log-in/password" in str(page.url or "") or self.existing_account
         password = self.account.chatgpt_password
         if not password and login_page:
@@ -1740,11 +1765,32 @@ class OpenAIEmailRegisterFlow:
             self.generated_password = password
         self.account.chatgpt_password = password
         self.auth_action = "login" if login_page else "register"
-        self.log("[认证] 账号需要密码步骤，已填写 ChatGPT 密码")
+        if not self.password_step_logged:
+            self.log("[认证] 账号需要密码步骤，准备填写 ChatGPT 密码")
+            self.password_step_logged = True
         inputs = self._visible_inputs(page, ['input[type="password"]', 'input[name="password"]'])
         if not inputs:
             raise RuntimeError("Entered password step but password input was not found")
+        now = time.time()
+        editable_inputs = []
         for item in inputs:
+            try:
+                if item.is_enabled(timeout=700) and item.is_editable(timeout=700):
+                    editable_inputs.append(item)
+            except Exception:
+                # Older Playwright/Camoufox drivers may not implement the
+                # editable probes consistently; let fill() perform the check.
+                editable_inputs.append(item)
+        if not editable_inputs:
+            if not self.password_step_wait_started_at:
+                self.password_step_wait_started_at = now
+            if now - self.password_step_wait_started_at < 8:
+                return False
+            # A stale React node can remain read-only after the route is ready.
+            # Use the native setter once before declaring the password step dead.
+            editable_inputs = inputs
+        targets = editable_inputs or inputs
+        for item in targets:
             try:
                 item.fill(password, timeout=5000)
             except Exception as exc:
@@ -1752,10 +1798,30 @@ class OpenAIEmailRegisterFlow:
                 # password node is still attached but disabled. Treat that
                 # transition as progress instead of waiting on a stale locator.
                 if "email-verification" in str(getattr(page, "url", "") or "") or not self._has_visible_password(page):
-                    return
-                raise RuntimeError(f"ChatGPT password field was not editable: {str(exc)[:240]}") from exc
+                    return True
+                try:
+                    forced = item.evaluate(
+                        """(el, value) => {
+                            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                            if (!setter) return false;
+                            setter.call(el, value);
+                            el.dispatchEvent(new Event('input', {bubbles:true}));
+                            el.dispatchEvent(new Event('change', {bubbles:true}));
+                            return el.value === value;
+                        }""",
+                        password,
+                    )
+                    if forced is False:
+                        raise RuntimeError("native password setter did not update the input")
+                except Exception:
+                    if not editable_inputs or time.time() - self.password_step_wait_started_at < 8:
+                        return False
+                    raise RuntimeError(f"ChatGPT password field was not editable: {str(exc)[:240]}") from exc
+        self.password_step_wait_started_at = 0.0
         if not self._click_continue(page):
             raise RuntimeError("Password has been filled, but continue button was not found")
+        self.log("[认证] 账号需要密码步骤，已填写 ChatGPT 密码")
+        return True
 
     def _switch_password_to_email_code(self, page) -> bool:
         selectors = [
