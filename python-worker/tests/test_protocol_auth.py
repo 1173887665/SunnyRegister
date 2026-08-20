@@ -114,6 +114,35 @@ def test_protocol_request_retries_transient_connection_reset() -> None:
     assert len(flow.session.requests) == 2
 
 
+def test_protocol_email_timeout_resends_once_before_validation() -> None:
+    class Flow(ProtocolRegistrationFlow):
+        def __init__(self, account, session):
+            super().__init__(account, session=session)
+            self.waits = []
+
+        def _wait_for_email_code(self, min_timestamp, *, timeout=120):
+            self.waits.append((min_timestamp, timeout))
+            if len(self.waits) == 1:
+                raise TimeoutError("mailbox timeout")
+            return "123456"
+
+    account = MailAccount("user@outlook.com", "password", "client", "refresh", "raw")
+    session = FakeSession([
+        FakeResponse(payload={}),
+        FakeResponse(payload={}),
+        FakeResponse(payload={"page": {"type": "password"}, "continue_url": "https://auth.openai.com/continue"}),
+    ])
+    flow = Flow(account, session)
+
+    result = flow._verify_email("https://auth.openai.com/email-verification", load_page=False)
+
+    assert result["page"]["type"] == "password"
+    assert [timeout for _timestamp, timeout in flow.waits] == [120, 60]
+    send_requests = [request for request in session.requests if request[1].endswith("/api/accounts/email-otp/send")]
+    assert len(send_requests) == 2
+    assert send_requests[1][2]["headers"]["referer"] == "https://auth.openai.com/email-verification"
+
+
 def test_protocol_homepage_reset_falls_back_to_lightweight_csrf() -> None:
     flow = ProtocolRegistrationFlow(
         MailAccount("user@outlook.com", "password", "client", "refresh", "raw"),

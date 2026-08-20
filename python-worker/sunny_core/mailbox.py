@@ -796,7 +796,7 @@ class HotmailReader:
                 continue
         return {"email": self.account.email, "empty": True}
 
-    def wait_for_code(self, min_timestamp: float, timeout: int = 180) -> str:
+    def wait_for_code(self, min_timestamp: float, timeout: int = 120) -> str:
         if self.imap is None and not self.graph_access_token:
             self.connect()
         started = time.time()
@@ -1020,7 +1020,7 @@ class XbovoICloudReader:
             "source": "xbovo",
         }
 
-    def wait_for_code(self, min_timestamp: float, timeout: int = 180) -> str:
+    def wait_for_code(self, min_timestamp: float, timeout: int = 120) -> str:
         started = time.monotonic()
         last_notice = 0.0
         last_error_notice = 0.0
@@ -1315,7 +1315,7 @@ class URLAPIICloudReader:
     def latest_message(self) -> dict[str, Any]:
         return self._latest()
 
-    def wait_for_code(self, min_timestamp: float, timeout: int = 180) -> str:
+    def wait_for_code(self, min_timestamp: float, timeout: int = 120) -> str:
         started = time.monotonic()
         last_notice = 0.0
         last_error_notice = 0.0

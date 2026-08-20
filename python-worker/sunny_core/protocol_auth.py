@@ -33,6 +33,8 @@ REGISTER_PASSWORD_URL = f"{AUTH_BASE_URL}/api/accounts/user/register"
 SEND_EMAIL_OTP_URL = f"{AUTH_BASE_URL}/api/accounts/email-otp/send"
 VALIDATE_EMAIL_OTP_URL = f"{AUTH_BASE_URL}/api/accounts/email-otp/validate"
 CREATE_ACCOUNT_URL = f"{AUTH_BASE_URL}/api/accounts/create_account"
+EMAIL_OTP_INITIAL_WAIT_SECONDS = 120
+EMAIL_OTP_RESEND_WAIT_SECONDS = 60
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -703,20 +705,49 @@ class ProtocolRegistrationFlow:
         self.log("[认证] 已选择首个可用 workspace")
         return result
 
-    def _wait_for_email_code(self, min_timestamp: float) -> str:
+    def _wait_for_email_code(self, min_timestamp: float, *, timeout: int = EMAIL_OTP_INITIAL_WAIT_SECONDS) -> str:
         if self.reader is None:
             if self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key:
                 raise ProtocolRegistrationError("Email OTP is required, but no url_api mail endpoint is configured")
             self.reader = create_mailbox_reader(self.account, self.log, self.mailbox_proxy_url)
             self.reader.connect()
-        deadline = time.monotonic() + 180
+        deadline = time.monotonic() + max(1, int(timeout))
         while time.monotonic() < deadline:
             self._check_cancelled()
             try:
                 return self.reader.wait_for_code(min_timestamp, timeout=10)
             except TimeoutError:
                 continue
-        raise TimeoutError("Timed out waiting for OpenAI email OTP")
+        raise TimeoutError(f"Timed out waiting for OpenAI email OTP after {int(timeout)} seconds")
+
+    def _send_email_otp(self, verification_url: str, *, resend: bool = False) -> tuple[float, str]:
+        requested_at = time.time() - 2
+        response = self._request(
+            "GET",
+            SEND_EMAIL_OTP_URL,
+            step="Resend email verification code" if resend else "Send email verification code",
+            headers={
+                "accept": "application/json, text/plain, */*",
+                "referer": verification_url,
+                "oai-device-id": self.device_id,
+                **generate_datadog_trace_headers(),
+            },
+        )
+        if response.status_code != 200:
+            raise _response_error(response, "Resend email verification code" if resend else "Send email verification code")
+        try:
+            payload = response.json()
+            payload = payload if isinstance(payload, dict) else {}
+        except Exception:
+            payload = {}
+        returned_url = str(payload.get("continue_url") or "").strip()
+        if returned_url:
+            verification_url = returned_url
+        self.log(
+            "[邮箱] 协议模式已重新发送 OpenAI 邮箱验证码"
+            if resend else "[邮箱] 协议模式已请求发送 OpenAI 邮箱验证码"
+        )
+        return requested_at, (returned_url or verification_url)
 
     def _verify_email(
         self,
@@ -740,32 +771,17 @@ class ProtocolRegistrationFlow:
             self.log("[邮箱] 邮箱验证页已由认证初始化加载，跳过重复页面请求")
         sent_at = min_timestamp or (time.time() - 5)
         if request_code:
-            sent_at = time.time() - 5
-            sent = self._request(
-                "GET",
-                SEND_EMAIL_OTP_URL,
-                step="Send email verification code",
-                headers={
-                    "accept": "application/json, text/plain, */*",
-                    "referer": verification_url,
-                    "oai-device-id": self.device_id,
-                    **generate_datadog_trace_headers(),
-                },
-            )
-            if sent.status_code != 200:
-                raise _response_error(sent, "Send email verification code")
-            try:
-                sent_payload = sent.json()
-                sent_payload = sent_payload if isinstance(sent_payload, dict) else {}
-            except Exception:
-                sent_payload = {}
-            sent_continue_url = str(sent_payload.get("continue_url") or "").strip()
-            if sent_continue_url:
-                verification_url = sent_continue_url
-            self.log("[邮箱] 协议模式已请求发送 OpenAI 邮箱验证码")
+            sent_at, verification_url = self._send_email_otp(verification_url)
         else:
             self.log("[邮箱] 认证初始化已自动发送验证码，跳过重复发码")
-        code = self._wait_for_email_code(sent_at)
+        try:
+            code = self._wait_for_email_code(sent_at)
+        except TimeoutError as exc:
+            resent_at, verification_url = self._send_email_otp(verification_url, resend=True)
+            try:
+                code = self._wait_for_email_code(resent_at, timeout=EMAIL_OTP_RESEND_WAIT_SECONDS)
+            except TimeoutError as resend_exc:
+                raise TimeoutError("重新发送协议验证码后等待 60 秒仍未收到验证码") from resend_exc
         self.recent_email_code = str(code or "").strip()
         self.recent_email_code_at = time.time()
         validated = self._request(

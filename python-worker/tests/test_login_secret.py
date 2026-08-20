@@ -1,7 +1,7 @@
 import unittest
 import time
 import json
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretSetupFlow, ProtocolLoginSecretSetupFlow, _password_already_set, _wrong_email_otp, generate_chatgpt_password
 from sunny_core.mailbox import MailAccount, extract_otp
@@ -23,6 +23,82 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(_wrong_email_otp({"data": {"code": "wrong_email_otp_code"}}))
         self.assertTrue(_wrong_email_otp({"data": {"message": "Wrong code. Please check it."}}))
         self.assertFalse(_wrong_email_otp({"data": {"code": "account_deactivated"}}))
+
+    def test_browser_reauthentication_timeout_resends_and_waits_again(self):
+        class Reader:
+            def __init__(self):
+                self.calls = []
+
+            def wait_for_code(self, timestamp, timeout):
+                self.calls.append((timestamp, timeout))
+                if len(self.calls) == 1:
+                    raise TimeoutError("mailbox timeout")
+                return "654321"
+
+        class Page:
+            def __init__(self):
+                self.url = ""
+                self.codes = []
+
+            def goto(self, url, **_kwargs):
+                self.url = url
+
+            def evaluate(self, script, code=None):
+                if "email-otp/validate" in script:
+                    self.codes.append(code)
+                    return {"ok": True, "status": 200, "data": {"continue_url": "https://chatgpt.com/api/auth/callback/openai"}}
+                if "api/auth/session" in script:
+                    return {"ok": True, "status": 200, "data": {"accessToken": "access-token"}}
+                return False
+
+        flow = LoginSecretSetupFlow(self._account(), {}, "")
+        flow.reader = Reader()
+        page = Page()
+        with patch.object(flow, "_click_resend_email_code", return_value=True) as resend:
+            result = flow._reauthenticate_with_fresh_email_code(
+                page, "https://auth.openai.com/authorize", time.time()
+            )
+        self.assertEqual(result["accessToken"], "access-token")
+        self.assertEqual(page.codes, ["654321"])
+        self.assertEqual([timeout for _timestamp, timeout in flow.reader.calls], [120, 60])
+        resend.assert_called_once_with(page)
+
+    def test_protocol_reauthentication_timeout_resends_once(self):
+        class Reader:
+            def __init__(self):
+                self.calls = []
+
+            def wait_for_code(self, timestamp, timeout):
+                self.calls.append((timestamp, timeout))
+                if len(self.calls) == 1:
+                    raise TimeoutError("mailbox timeout")
+                return "654321"
+
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def __init__(self, account):
+                super().__init__(account, {}, object())
+                self.reader = Reader()
+                self.requests = []
+
+            def _request(self, method, url, **kwargs):
+                self.requests.append((method, url, kwargs))
+                if url.endswith("/api/auth/csrf"):
+                    return 200, {"csrfToken": "csrf-token"}, ""
+                if "/api/auth/signin/openai?" in url:
+                    return 200, {"url": "https://auth.openai.com/authorize"}, ""
+                if url.endswith("/api/accounts/email-otp/validate"):
+                    return 200, {"continue_url": "https://chatgpt.com/api/auth/callback/openai"}, ""
+                if url.endswith("/api/auth/session"):
+                    return 200, {"accessToken": "access-token"}, ""
+                return 200, {}, ""
+
+        flow = Flow(self._account())
+        result = flow._reauthenticate("https://chatgpt.com/?action=add_password")
+        self.assertEqual(result["accessToken"], "access-token")
+        self.assertEqual([timeout for _timestamp, timeout in flow.reader.calls], [120, 60])
+        resend_requests = [item for item in flow.requests if item[1].endswith("/api/accounts/email-otp/send")]
+        self.assertEqual(len(resend_requests), 1)
+        self.assertEqual(resend_requests[0][2]["headers"]["referer"], "https://auth.openai.com/authorize")
 
     @staticmethod
     def _account():

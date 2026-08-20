@@ -41,6 +41,8 @@ REGISTER_DEVICE_PROFILES = [
 ]
 PROFILE_SUBMISSION_TIMEOUT_SECONDS = 300
 PROFILE_TRANSITION_TIMEOUT_MS = 5000
+EMAIL_OTP_INITIAL_WAIT_SECONDS = 120
+EMAIL_OTP_RESEND_WAIT_SECONDS = 60
 
 # Phone binding must follow the number itself. Provider country identifiers are
 # not consistent (for example FireFox uses "mys"), while the E.164 prefix is.
@@ -1235,7 +1237,19 @@ class OpenAIEmailRegisterFlow:
             self.otp_reader = create_mailbox_reader(self.account, self.log, self.mailbox_proxy_url)
             self.otp_reader.connect()
         self.log("[邮箱] 等待 OpenAI 邮箱验证码")
-        code = self.otp_reader.wait_for_code(min_timestamp, 180)
+        try:
+            code = self.otp_reader.wait_for_code(min_timestamp, EMAIL_OTP_INITIAL_WAIT_SECONDS)
+        except TimeoutError as exc:
+            requested_at = time.time() - 2
+            if not self._click_resend_email_code(page):
+                raise TimeoutError(
+                    "邮箱验证码等待 120 秒后超时，当前页面没有可用的重新发送按钮"
+                ) from exc
+            self.log("[邮箱] 120 秒未收到验证码，已重新发送 OpenAI 邮箱验证码，继续等待 60 秒")
+            try:
+                code = self.otp_reader.wait_for_code(requested_at, EMAIL_OTP_RESEND_WAIT_SECONDS)
+            except TimeoutError as resend_exc:
+                raise TimeoutError("重新发送 OpenAI 邮箱验证码后等待 60 秒仍未收到验证码") from resend_exc
         self.recent_email_code = str(code or "").strip()
         self.recent_email_code_at = time.time()
         journal, detach_journal = self._attach_email_otp_network_journal(page)
@@ -1590,7 +1604,10 @@ class OpenAIEmailRegisterFlow:
         if not self._click_resend_email_code(page):
             raise RuntimeError("邮箱验证码无效，且页面未提供可用的重新发送按钮；请等待几分钟后重新发起任务")
         self.log("[邮箱] 已请求新的 OpenAI 邮箱验证码")
-        fresh_code = self.otp_reader.wait_for_code(requested_at, 150)
+        try:
+            fresh_code = self.otp_reader.wait_for_code(requested_at, EMAIL_OTP_RESEND_WAIT_SECONDS)
+        except TimeoutError as exc:
+            raise TimeoutError("重新发送 OpenAI 邮箱验证码后等待 60 秒仍未收到验证码") from exc
         self.recent_email_code = str(fresh_code or "").strip()
         self.recent_email_code_at = time.time()
         if str(fresh_code) == str(previous_code):
