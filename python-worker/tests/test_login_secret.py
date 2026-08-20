@@ -98,6 +98,52 @@ class LoginSecretTests(unittest.TestCase):
         self.assertEqual(result["accessToken"], "access-token")
         self.assertEqual(page.codes, ["123456"])
 
+    def test_browser_login_secret_refreshes_access_token_after_security_change(self):
+        class Context:
+            def storage_state(self):
+                return {"cookies": [{"name": "session", "value": "new"}]}
+
+        class Flow(LoginSecretSetupFlow):
+            def __init__(self, account):
+                super().__init__(account, {"access_token": "old-token"}, "")
+                self.session_reads = 0
+
+            def _session_json(self, _page):
+                self.session_reads += 1
+                return {"accessToken": "old-token" if self.session_reads == 1 else "new-token"}
+
+            def _add_password(self, _page):
+                return "new-password"
+
+        account = self._account()
+        account.chatgpt_password = ""
+        account.totp_secret = "JBSWY3DPEHPK3PXP"
+        flow = Flow(account)
+        result = flow._run_on_page(Mock(), Context())
+        self.assertEqual(result["session"]["access_token"], "new-token")
+        self.assertEqual(result["session"]["session_json"]["accessToken"], "new-token")
+        self.assertEqual(flow.session_reads, 2)
+
+    def test_protocol_login_secret_refreshes_access_token_after_security_change(self):
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def __init__(self, account):
+                super().__init__(account, {"access_token": "old-token"}, object())
+                self.session_reads = 0
+
+            def _session_json(self):
+                self.session_reads += 1
+                return {"accessToken": "old-token" if self.session_reads == 1 else "new-token"}
+
+            def _add_password(self, _password):
+                return {"accessToken": "after-password"}
+
+        account = self._account()
+        account.chatgpt_password = ""
+        account.totp_secret = "JBSWY3DPEHPK3PXP"
+        result = Flow(account).run()
+        self.assertEqual(result["session"]["access_token"], "new-token")
+        self.assertEqual(result["session"]["session_json"]["accessToken"], "new-token")
+
     def test_password_reauthentication_reads_distinct_new_code_after_recent_code_rejected(self):
         class Reader:
             def __init__(self):

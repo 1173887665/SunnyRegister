@@ -169,7 +169,10 @@ class LoginSecretSetupFlow:
     def _session_json(page) -> dict[str, Any]:
         result = page.evaluate(
             """async () => {
-                const response = await fetch('https://chatgpt.com/api/auth/session', {credentials:'include'});
+                const response = await fetch('https://chatgpt.com/api/auth/session', {
+                    credentials:'include', cache:'no-store',
+                    headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}
+                });
                 const text = await response.text();
                 let data = null;
                 try { data = JSON.parse(text); } catch (_) {}
@@ -944,6 +947,12 @@ class LoginSecretSetupFlow:
                 result.update({"totp_secret": secret, "totp_added": True})
             except Exception as exc:
                 result["errors"].append(f"添加2FA失败: {exc}")
+        if result["password_added"] or result["totp_added"]:
+            try:
+                current_session = self._session_json(page)
+                self.log("[登录密钥] 已在密码与 2FA 设置完成后刷新最新 ChatGPT Access Token")
+            except Exception as exc:
+                result["errors"].append(f"刷新 ChatGPT Access Token 失败: {exc}")
         result["session"] = {
             **self.session,
             "access_token": str(current_session.get("accessToken") or current_session.get("access_token") or self.session.get("access_token") or ""),
@@ -1092,7 +1101,11 @@ class ProtocolLoginSecretSetupFlow:
         return data
 
     def _session_json(self) -> dict[str, Any]:
-        status, data, text = self._request("GET", f"{CHATGPT_BASE_URL}/api/auth/session", headers={"accept": "application/json"})
+        status, data, text = self._request(
+            "GET",
+            f"{CHATGPT_BASE_URL}/api/auth/session",
+            headers={"accept": "application/json", "cache-control": "no-cache", "pragma": "no-cache"},
+        )
         payload = self._require_ok(status, data, text, "读取 ChatGPT Session")
         if not isinstance(payload, dict) or not (payload.get("accessToken") or payload.get("access_token")):
             raise RuntimeError("ChatGPT 登录态已失效")
@@ -1314,6 +1327,12 @@ class ProtocolLoginSecretSetupFlow:
                     result.update({"totp_secret": secret, "totp_added": True})
                 except Exception as exc:
                     result["errors"].append(f"添加2FA失败: {exc}")
+            if result["password_added"] or result["totp_added"]:
+                try:
+                    current_session = self._session_json()
+                    self.log("[登录密钥] 已在密码与 2FA 设置完成后刷新最新 ChatGPT Access Token")
+                except Exception as exc:
+                    result["errors"].append(f"刷新 ChatGPT Access Token 失败: {exc}")
             result["session"] = {**self.session, "access_token": str(current_session.get("accessToken") or current_session.get("access_token") or self.session.get("access_token") or ""), "session_json": current_session, "storage_state_json": self.session.get("storage_state_json") or {}}
             result["complete"] = bool(result.get("password") and result.get("totp_secret"))
             self.on_progress("login_secret_completed" if result["complete"] else "login_secret_failed")
