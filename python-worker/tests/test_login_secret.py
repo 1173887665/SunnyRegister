@@ -184,15 +184,22 @@ class LoginSecretTests(unittest.TestCase):
                 self.scripts.append(script)
                 if "/api/auth/signin/openai" in script:
                     return {"ok": True, "status": 200, "data": {"url": "https://auth.openai.com/authorize"}}
+                if "email-otp/validate" in script:
+                    return {"ok": True, "status": 200, "data": {"continue_url": "https://chatgpt.com/api/auth/callback/openai"}}
                 raise AssertionError("unexpected browser request")
 
         class Flow(LoginSecretSetupFlow):
             def __init__(self):
                 super().__init__(self_account, {}, "")
-                self.reauth_args = None
+                self.used_code = ""
 
-            def _complete_reauthentication(self, page, min_timestamp, password, **kwargs):
-                self.reauth_args = (page, min_timestamp, password, kwargs)
+            def _reader_instance(self):
+                class Reader:
+                    def wait_for_code(inner, _min_timestamp):
+                        self.used_code = "654321"
+                        return self.used_code
+
+                return Reader()
 
             @staticmethod
             def _session_json(_page):
@@ -203,9 +210,10 @@ class LoginSecretTests(unittest.TestCase):
         flow = Flow()
         result = flow._reauth_for_password(page, "ChatGPT-password")
         self.assertEqual(result["accessToken"], "access-token")
+        self.assertEqual(flow.used_code, "654321")
         self.assertTrue(any("post_login_add_password:'true'" in script for script in page.scripts))
         self.assertTrue(any("action=add_password" in script for script in page.scripts))
-        self.assertTrue(flow.reauth_args[3]["force_fresh_email_code"])
+        self.assertTrue(any("email-otp/validate" in script for script in page.scripts))
 
     def test_totp_protocol_setup_uses_existing_session_without_reauthentication(self):
         class FakePage:

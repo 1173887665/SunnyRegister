@@ -134,7 +134,7 @@ class LoginSecretSetupFlow:
                     && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
                     && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
                 const desc = el => [el.innerText, el.textContent, el.getAttribute('aria-label'), el.title,
-                    el.getAttribute('data-testid'), el.getAttribute('data-dd-action-name'), el.id, el.name]
+                    el.getAttribute('data-testid'), el.getAttribute('data-dd-action-name'), el.getAttribute('href'), el.id, el.name]
                     .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
                 const password = /password|密码|パスワード|비밀번호/;
                 const action = /add|create|set|update|change|manage|添加|创建|设置|更新|更改|管理|追加|変更|설정|변경/;
@@ -155,6 +155,30 @@ class LoginSecretSetupFlow:
             return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
     @staticmethod
+    def _open_settings_surface(page) -> bool:
+        """Open the ChatGPT sidebar/settings surface before searching its actions."""
+        try:
+            return bool(page.evaluate(
+                r"""() => {
+                    const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+                        && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
+                        && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+                    const desc = el => [el.innerText, el.textContent, el.getAttribute('aria-label'), el.title,
+                        el.getAttribute('data-testid'), el.getAttribute('href')]
+                        .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+                    const sidebar = [...document.querySelectorAll('button,[role="button"],a')].find(el =>
+                        visible(el) && /sidebar|サイドバー|侧边栏/.test(desc(el)) && /open|開く|打开/.test(desc(el)));
+                    if (sidebar) sidebar.click();
+                    const settings = [...document.querySelectorAll('a,button,[role="button"],[role="link"],[role="tab"]')].find(el =>
+                        visible(el) && /settings|設定|设置|href=.*settings/.test(desc(el)));
+                    if (settings) { settings.scrollIntoView({block:'center'}); settings.click(); return true; }
+                    return !!sidebar;
+                }"""
+            ))
+        except Exception:
+            return False
+
+    @staticmethod
     def _click_settings_navigation(page, step: str) -> bool:
         try:
             return bool(page.evaluate(
@@ -163,7 +187,7 @@ class LoginSecretSetupFlow:
                         && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
                     const enabled = el => !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
                     const desc = el => [el.innerText, el.textContent, el.getAttribute('aria-label'), el.title,
-                        el.getAttribute('data-testid'), el.getAttribute('data-dd-action-name')]
+                        el.getAttribute('data-testid'), el.getAttribute('data-dd-action-name'), el.getAttribute('href')]
                         .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
                     const items = [...document.querySelectorAll('button,a,[role="button"],[role="link"],[role="tab"]')]
                         .filter(el => visible(el) && enabled(el));
@@ -357,7 +381,7 @@ class LoginSecretSetupFlow:
             return password
         self.log(
             "[登录密钥] 协议添加密码接口未完成，将回退账户设置页："
-            f"HTTP {protocol_result.get('status', 0)} {protocol_result.get('reason', '')}".strip()
+            f"HTTP {protocol_result.get('status', 0)} {self._protocol_error_detail(protocol_result)}".strip()
         )
         page.goto(f"{CHATGPT_BASE_URL}/#settings/Account", wait_until="domcontentloaded", timeout=60000)
         self._sleep(2)
@@ -367,6 +391,7 @@ class LoginSecretSetupFlow:
         last_result: dict[str, Any] = {}
         while time.time() < deadline:
             self._check_cancelled()
+            self._open_settings_surface(page)
             result = self._click_password_action(page)
             last_result = result if isinstance(result, dict) else {"ok": bool(result)}
             if last_result.get("ok"):
@@ -407,6 +432,41 @@ class LoginSecretSetupFlow:
             self._sleep(0.75)
         raise TimeoutError(f"添加 ChatGPT 密码超时: {self._page_state(page)}")
 
+    @staticmethod
+    def _protocol_error_detail(result: dict[str, Any]) -> str:
+        data = result.get("data") if isinstance(result, dict) else None
+        if isinstance(data, dict):
+            for key in ("error", "message", "code", "detail"):
+                value = str(data.get(key) or "").strip()
+                if value:
+                    return value[:240]
+        return str(result.get("reason", ""))[:240] if isinstance(result, dict) else ""
+
+    def _reauthenticate_with_fresh_email_code(self, page, auth_url: str, min_timestamp: float) -> dict[str, Any]:
+        """Validate the reauth OTP through the protocol and refresh the session cookie."""
+        page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
+        code = self._reader_instance().wait_for_code(min_timestamp)
+        result = page.evaluate(
+            r"""async code => {
+                const response = await fetch('https://auth.openai.com/api/accounts/email-otp/validate', {
+                    method:'POST', credentials:'include',
+                    headers:{'accept':'application/json','content-type':'application/json'},
+                    body:JSON.stringify({code})
+                });
+                const text = await response.text();
+                let data = null; try { data = JSON.parse(text); } catch (_) {}
+                return {ok:response.ok, status:response.status, data, text:text.slice(0,500)};
+            }""",
+            code,
+        ) or {"ok": False, "status": 0}
+        data = result.get("data") if isinstance(result, dict) else None
+        continue_url = str((data or {}).get("continue_url") or "") if isinstance(data, dict) else ""
+        if not result.get("ok") or not continue_url:
+            raise RuntimeError(f"邮箱重认证验证码校验失败: HTTP {result.get('status', 0)} {self._protocol_error_detail(result)}".strip())
+        page.goto(continue_url, wait_until="domcontentloaded", timeout=60000)
+        page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+        return self._session_json(page)
+
     def _reauth_for_password(self, page, password: str) -> dict[str, Any]:
         """Start the dedicated post-registration password reauthentication flow."""
         page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
@@ -440,15 +500,7 @@ class LoginSecretSetupFlow:
         # Set the lower bound before navigation because loading auth_url triggers
         # delivery of the new OTP email.
         min_timestamp = time.time()
-        page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
-        self._complete_reauthentication(
-            page,
-            min_timestamp,
-            password,
-            force_fresh_email_code=True,
-        )
-        page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
-        return self._session_json(page)
+        return self._reauthenticate_with_fresh_email_code(page, auth_url, min_timestamp)
 
     def _reauth_for_2fa(
         self,
@@ -478,17 +530,10 @@ class LoginSecretSetupFlow:
         auth_url = str(((payload or {}).get("data") or {}).get("url") or "")
         if not payload.get("ok") or not auth_url:
             raise RuntimeError(f"发起 2FA 重认证失败: HTTP {payload.get('status')}")
-        min_timestamp = time.time() - 5
-        page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
-        self._complete_reauthentication(
-            page,
-            min_timestamp,
-            password,
-            recent_email_code=recent_email_code,
-            recent_email_code_at=recent_email_code_at,
-        )
-        page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
-        return self._session_json(page)
+        min_timestamp = time.time()
+        # The reference flow validates this new OTP through the protocol and
+        # follows continue_url so pwd_auth_time is refreshed before MFA calls.
+        return self._reauthenticate_with_fresh_email_code(page, auth_url, min_timestamp)
 
     @staticmethod
     def _mfa_info(page, access_token: str) -> dict[str, Any]:
@@ -653,7 +698,7 @@ class LoginSecretSetupFlow:
                         result.update({"password": password, "password_added": True})
                     except Exception as exc:
                         result["errors"].append(f"添加密码失败: {exc}")
-                if not self.account.totp_secret and self.account.chatgpt_password:
+                if not self.account.totp_secret:
                     self._progress("login_secret_2fa")
                     try:
                         secret, current_session = self._setup_2fa(page, self.account.chatgpt_password)
