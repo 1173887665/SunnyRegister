@@ -34,6 +34,16 @@ def _password_already_set(result: dict[str, Any]) -> bool:
     return code == "password_already_set" or "already have a password" in message
 
 
+def _wrong_email_otp(result: dict[str, Any] | None, text: str = "") -> bool:
+    """Recognize an OTP rejected by OpenAI so the mailbox can be rescanned."""
+    payload = result if isinstance(result, dict) else {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    code = str((data or {}).get("code") or "").strip().lower()
+    message = str((data or {}).get("message") or "").strip().lower()
+    raw = f"{code} {message} {str(text or '').lower()}"
+    return code == "wrong_email_otp_code" or "wrong code" in raw or "incorrect code" in raw
+
+
 RECENT_EMAIL_CODE_MAX_AGE_SECONDS = 120
 
 
@@ -475,24 +485,34 @@ class LoginSecretSetupFlow:
     def _reauthenticate_with_fresh_email_code(self, page, auth_url: str, min_timestamp: float) -> dict[str, Any]:
         """Validate the reauth OTP through the protocol and refresh the session cookie."""
         page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
-        code = self._reader_instance().wait_for_code(min_timestamp)
-        result = page.evaluate(
-            r"""async code => {
-                const response = await fetch('https://auth.openai.com/api/accounts/email-otp/validate', {
-                    method:'POST', credentials:'include',
-                    headers:{'accept':'application/json','content-type':'application/json'},
-                    body:JSON.stringify({code})
-                });
-                const text = await response.text();
-                let data = null; try { data = JSON.parse(text); } catch (_) {}
-                return {ok:response.ok, status:response.status, data, text:text.slice(0,500)};
-            }""",
-            code,
-        ) or {"ok": False, "status": 0}
-        data = result.get("data") if isinstance(result, dict) else None
-        continue_url = str((data or {}).get("continue_url") or "") if isinstance(data, dict) else ""
-        if not result.get("ok") or not continue_url:
+        reader = self._reader_instance()
+        code_timestamp = min_timestamp
+        for attempt in range(2):
+            code = reader.wait_for_code(code_timestamp)
+            result = page.evaluate(
+                r"""async code => {
+                    const response = await fetch('https://auth.openai.com/api/accounts/email-otp/validate', {
+                        method:'POST', credentials:'include',
+                        headers:{'accept':'application/json','content-type':'application/json'},
+                        body:JSON.stringify({code})
+                    });
+                    const text = await response.text();
+                    let data = null; try { data = JSON.parse(text); } catch (_) {}
+                    return {ok:response.ok, status:response.status, data, text:text.slice(0,500)};
+                }""",
+                code,
+            ) or {"ok": False, "status": 0}
+            data = result.get("data") if isinstance(result, dict) else None
+            continue_url = str((data or {}).get("continue_url") or "") if isinstance(data, dict) else ""
+            if result.get("ok") and continue_url:
+                break
+            if attempt == 0 and _wrong_email_otp(result, result.get("text", "") if isinstance(result, dict) else ""):
+                self.log("[登录密钥] 重认证验证码无效，将重新读取最新邮箱验证码后重试")
+                code_timestamp = time.time()
+                continue
             raise RuntimeError(f"邮箱重认证验证码校验失败: HTTP {result.get('status', 0)} {self._protocol_error_detail(result)}".strip())
+        else:
+            raise RuntimeError("邮箱重认证验证码校验失败: 未获取到有效验证码")
         page.goto(continue_url, wait_until="domcontentloaded", timeout=60000)
         self._ensure_chatgpt_page(page)
         return self._session_json(page)
@@ -863,13 +883,25 @@ class ProtocolLoginSecretSetupFlow:
         status, _data, text = self._request("GET", auth_url, headers={"accept": "text/html,application/xhtml+xml"}, allow_redirects=True)
         if status >= 400:
             raise RuntimeError(f"加载 ChatGPT 重认证页面失败: HTTP {status} {text[:180]}")
-        code = self._reader_instance().wait_for_code(sent_at, 150)
-        status, payload, text = self._request(
-            "POST",
-            EMAIL_OTP_VALIDATE_URL,
-            headers={"accept": "application/json", "content-type": "application/json", "origin": AUTH_BASE_URL, "referer": auth_url},
-            json={"code": code},
-        )
+        reader = self._reader_instance()
+        code_timestamp = sent_at
+        for attempt in range(2):
+            code = reader.wait_for_code(code_timestamp, 150)
+            status, payload, text = self._request(
+                "POST",
+                EMAIL_OTP_VALIDATE_URL,
+                headers={"accept": "application/json", "content-type": "application/json", "origin": AUTH_BASE_URL, "referer": auth_url},
+                json={"code": code},
+            )
+            if 200 <= status < 300:
+                break
+            if attempt == 0 and _wrong_email_otp({"data": payload}, text):
+                self.log("[登录密钥] 重认证验证码无效，将重新读取最新邮箱验证码后重试")
+                code_timestamp = time.time()
+                continue
+            self._require_ok(status, payload, text, "邮箱重认证验证码校验")
+        else:
+            self._require_ok(status, payload, text, "邮箱重认证验证码校验")
         payload = self._require_ok(status, payload, text, "邮箱重认证验证码校验")
         continue_url = str((payload or {}).get("continue_url") or "") if isinstance(payload, dict) else ""
         if continue_url:

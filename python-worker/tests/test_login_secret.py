@@ -1,8 +1,9 @@
 import unittest
 import time
+import json
 from unittest.mock import patch
 
-from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretSetupFlow, ProtocolLoginSecretSetupFlow, _password_already_set, generate_chatgpt_password
+from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretSetupFlow, ProtocolLoginSecretSetupFlow, _password_already_set, _wrong_email_otp, generate_chatgpt_password
 from sunny_core.mailbox import MailAccount, extract_otp
 
 
@@ -16,6 +17,11 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(_password_already_set({"status": 400, "data": {"code": "password_already_set"}}))
         self.assertTrue(_password_already_set({"status": 400, "data": {"message": "You already have a password."}}))
         self.assertFalse(_password_already_set({"status": 400, "data": {"code": "invalid_request_error"}}))
+
+    def test_wrong_email_otp_response_is_recognized_for_retry(self):
+        self.assertTrue(_wrong_email_otp({"data": {"code": "wrong_email_otp_code"}}))
+        self.assertTrue(_wrong_email_otp({"data": {"message": "Wrong code. Please check it."}}))
+        self.assertFalse(_wrong_email_otp({"data": {"code": "account_deactivated"}}))
 
     @staticmethod
     def _account():
@@ -265,6 +271,94 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(any("post_login_add_password:'true'" in script for script in page.scripts))
         self.assertTrue(any("action=add_password" in script for script in page.scripts))
         self.assertTrue(any("email-otp/validate" in script for script in page.scripts))
+
+    def test_browser_reauthentication_reads_new_code_after_old_code_is_rejected(self):
+        class Reader:
+            def __init__(self):
+                self.codes = iter(("111111", "222222"))
+
+            def wait_for_code(self, _timestamp):
+                return next(self.codes)
+
+        class Page:
+            def __init__(self):
+                self.url = ""
+                self.codes = []
+
+            def goto(self, url, **_kwargs):
+                self.url = url
+
+            def evaluate(self, _script, code):
+                self.codes.append(code)
+                if len(self.codes) == 1:
+                    return {"ok": False, "status": 401, "data": {"code": "wrong_email_otp_code", "message": "Wrong code"}}
+                return {"ok": True, "status": 200, "data": {"continue_url": "https://chatgpt.com/api/auth/callback/openai"}}
+
+        class Flow(LoginSecretSetupFlow):
+            def __init__(self):
+                super().__init__(self_account, {}, "")
+                self.reader = Reader()
+
+            @staticmethod
+            def _session_json(_page):
+                return {"accessToken": "access-token"}
+
+        self_account = self._account()
+        page = Page()
+        result = Flow()._reauthenticate_with_fresh_email_code(page, "https://auth.openai.com/authorize", time.time())
+        self.assertEqual(result["accessToken"], "access-token")
+        self.assertEqual(page.codes, ["111111", "222222"])
+
+    def test_protocol_reauthentication_reads_new_code_after_old_code_is_rejected(self):
+        class Response:
+            def __init__(self, status, data=None):
+                self.status_code = status
+                self._data = data
+                self.text = json.dumps(data or {})
+
+            def json(self):
+                return self._data
+
+        class Reader:
+            def __init__(self):
+                self.codes = iter(("111111", "222222"))
+
+            def wait_for_code(self, _timestamp, _timeout):
+                return next(self.codes)
+
+        class Http:
+            def __init__(self):
+                self.validation_codes = []
+
+            def request(self, method, url, **kwargs):
+                if method == "GET" and url.endswith("/api/auth/csrf"):
+                    return Response(200, {"csrfToken": "csrf-token"})
+                if method == "POST" and "/api/auth/signin/openai?" in url:
+                    return Response(200, {"url": "https://auth.openai.com/authorize"})
+                if method == "GET" and "auth.openai.com/authorize" in url:
+                    return Response(200, {})
+                if method == "POST" and url.endswith("/api/accounts/email-otp/validate"):
+                    code = kwargs["json"]["code"]
+                    self.validation_codes.append(code)
+                    if len(self.validation_codes) == 1:
+                        return Response(401, {"code": "wrong_email_otp_code", "message": "Wrong code"})
+                    return Response(200, {"continue_url": "https://chatgpt.com/api/auth/callback/openai"})
+                if method == "GET" and "chatgpt.com/api/auth/callback" in url:
+                    return Response(200, {})
+                if method == "GET" and url.endswith("/api/auth/session"):
+                    return Response(200, {"accessToken": "access-token"})
+                raise AssertionError(f"unexpected request: {method} {url}")
+
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def __init__(self):
+                super().__init__(self_account, {}, http)
+                self.reader = Reader()
+
+        self_account = self._account()
+        http = Http()
+        result = Flow()._reauthenticate("https://chatgpt.com/?action=add_password")
+        self.assertEqual(result["accessToken"], "access-token")
+        self.assertEqual(http.validation_codes, ["111111", "222222"])
 
     def test_totp_protocol_setup_uses_existing_session_without_reauthentication(self):
         class FakePage:
