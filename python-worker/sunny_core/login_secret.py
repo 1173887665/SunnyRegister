@@ -283,6 +283,7 @@ class LoginSecretSetupFlow:
         *,
         recent_email_code: str = "",
         recent_email_code_at: float = 0.0,
+        force_fresh_email_code: bool = False,
     ) -> None:
         deadline = time.time() + 150
         email_code_used = False
@@ -325,7 +326,7 @@ class LoginSecretSetupFlow:
                     self._sleep(2)
                     continue
                 if not email_code_used:
-                    if self._recent_email_code_usable(recent_email_code, recent_email_code_at):
+                    if not force_fresh_email_code and self._recent_email_code_usable(recent_email_code, recent_email_code_at):
                         code = recent_email_code
                         recent_code_attempted = True
                         self.log("[登录密钥] 优先复用本次注册刚使用的邮箱验证码")
@@ -342,7 +343,15 @@ class LoginSecretSetupFlow:
 
     def _add_password(self, page) -> str:
         password = generate_chatgpt_password()
-        protocol_result = self._add_password_via_protocol(page, password)
+        protocol_result: dict[str, Any]
+        try:
+            # Password enrollment is a separate password reauthentication flow.
+            # The registration OTP is rejected by this flow, so always request a
+            # fresh mailbox code before calling the protocol endpoint.
+            self._reauth_for_password(page, password)
+            protocol_result = self._add_password_via_protocol(page, password)
+        except Exception as exc:
+            protocol_result = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
         if protocol_result.get("ok"):
             self.log("[登录密钥] 已通过 OpenAI 协议接口添加 ChatGPT 密码（内容不写日志）")
             return password
@@ -371,7 +380,7 @@ class LoginSecretSetupFlow:
             raise RuntimeError(f"账户设置中未找到添加密码入口{detail}")
         submitted = False
         disappeared_at = 0.0
-        otp_min_timestamp = time.time() - 5
+        otp_min_timestamp = time.time()
         while time.time() < deadline + 120:
             state = self._page_state(page)
             url = str(state.get("url") or "").lower()
@@ -382,6 +391,7 @@ class LoginSecretSetupFlow:
                     password,
                     recent_email_code=self.recent_email_code,
                     recent_email_code_at=self.recent_email_code_at,
+                    force_fresh_email_code=True,
                 )
                 continue
             if state.get("passwordInputs") and self._submit_password(page, password):
@@ -396,6 +406,49 @@ class LoginSecretSetupFlow:
                     return password
             self._sleep(0.75)
         raise TimeoutError(f"添加 ChatGPT 密码超时: {self._page_state(page)}")
+
+    def _reauth_for_password(self, page, password: str) -> dict[str, Any]:
+        """Start the dedicated post-registration password reauthentication flow."""
+        page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+        payload = page.evaluate(
+            """async ({email}) => {
+                const csrfResponse = await fetch('/api/auth/csrf', {credentials:'include'});
+                if (!csrfResponse.ok) return {ok:false,status:csrfResponse.status};
+                const csrf = await csrfResponse.json();
+                const query = new URLSearchParams({
+                    connection:'password', login_hint:email, reauth:'password',
+                    post_login_add_password:'true', max_age:'0'
+                });
+                const body = new URLSearchParams({
+                    callbackUrl:'https://chatgpt.com/?action=add_password',
+                    csrfToken:csrf.csrfToken, json:'true'
+                });
+                const response = await fetch('/api/auth/signin/openai?' + query.toString(), {
+                    method:'POST', credentials:'include',
+                    headers:{'content-type':'application/x-www-form-urlencoded'},
+                    body:body.toString()
+                });
+                const text = await response.text();
+                let data={}; try { data=JSON.parse(text); } catch (_) {}
+                return {ok:response.ok,status:response.status,data};
+            }""",
+            {"email": self.account.email},
+        )
+        auth_url = str(((payload or {}).get("data") or {}).get("url") or "")
+        if not payload.get("ok") or not auth_url:
+            raise RuntimeError(f"发起添加密码重认证失败: HTTP {payload.get('status')}")
+        # Set the lower bound before navigation because loading auth_url triggers
+        # delivery of the new OTP email.
+        min_timestamp = time.time()
+        page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
+        self._complete_reauthentication(
+            page,
+            min_timestamp,
+            password,
+            force_fresh_email_code=True,
+        )
+        page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+        return self._session_json(page)
 
     def _reauth_for_2fa(
         self,

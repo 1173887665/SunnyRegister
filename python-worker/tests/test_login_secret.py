@@ -113,6 +113,100 @@ class LoginSecretTests(unittest.TestCase):
         )
         self.assertEqual(Flow.instance.used_code, "123456")
 
+    def test_password_reauthentication_always_reads_a_fresh_mailbox_code(self):
+        class Reader:
+            def wait_for_code(self, min_timestamp):
+                self.min_timestamp = min_timestamp
+                return "654321"
+
+        class Flow(LoginSecretSetupFlow):
+            def __init__(self):
+                super().__init__(
+                    self_account,
+                    {},
+                    "",
+                    recent_email_code="123456",
+                    recent_email_code_at=time.time(),
+                )
+                self.reader_stub = Reader()
+                self.used_code = ""
+                self.submitted = False
+
+            @staticmethod
+            def _page_state(_page):
+                if Flow.instance.submitted:
+                    return {"url": "https://chatgpt.com/", "passwordInputs": 0, "codeInputs": 0, "text": ""}
+                return {"url": "https://auth.openai.com/email-verification", "passwordInputs": 0, "codeInputs": 1, "text": ""}
+
+            @staticmethod
+            def _session_json(_page):
+                if not Flow.instance.submitted:
+                    raise RuntimeError("not submitted")
+                return {"accessToken": "access-token"}
+
+            def _reader_instance(self):
+                return self.reader_stub
+
+            def _fill_code(self, page, code):
+                self.used_code = code
+                self.submitted = True
+                page.url = "https://chatgpt.com/"
+                return True
+
+            def _sleep(self, _seconds):
+                return None
+
+        self_account = self._account()
+        Flow.instance = Flow()
+        page = type("Page", (), {"url": "https://auth.openai.com/email-verification"})()
+        Flow.instance._complete_reauthentication(
+            page,
+            time.time(),
+            "ChatGPT-password",
+            recent_email_code="123456",
+            recent_email_code_at=time.time(),
+            force_fresh_email_code=True,
+        )
+        self.assertEqual(Flow.instance.used_code, "654321")
+        self.assertGreaterEqual(Flow.instance.reader_stub.min_timestamp, time.time() - 2)
+
+    def test_password_reauthentication_requests_post_login_add_password_flow(self):
+        class FakePage:
+            def __init__(self):
+                self.visited = []
+                self.scripts = []
+
+            def goto(self, url, **_kwargs):
+                self.visited.append(url)
+                self.url = url
+
+            def evaluate(self, script, _payload=None):
+                self.scripts.append(script)
+                if "/api/auth/signin/openai" in script:
+                    return {"ok": True, "status": 200, "data": {"url": "https://auth.openai.com/authorize"}}
+                raise AssertionError("unexpected browser request")
+
+        class Flow(LoginSecretSetupFlow):
+            def __init__(self):
+                super().__init__(self_account, {}, "")
+                self.reauth_args = None
+
+            def _complete_reauthentication(self, page, min_timestamp, password, **kwargs):
+                self.reauth_args = (page, min_timestamp, password, kwargs)
+
+            @staticmethod
+            def _session_json(_page):
+                return {"accessToken": "access-token"}
+
+        self_account = self._account()
+        page = FakePage()
+        flow = Flow()
+        result = flow._reauth_for_password(page, "ChatGPT-password")
+        self.assertEqual(result["accessToken"], "access-token")
+        self.assertTrue(any("post_login_add_password:'true'" in script for script in page.scripts))
+        self.assertTrue(any("action=add_password" in script for script in page.scripts))
+        self.assertTrue(flow.reauth_args[3]["force_fresh_email_code"])
+
     def test_totp_protocol_setup_uses_existing_session_without_reauthentication(self):
         class FakePage:
             def __init__(self):
