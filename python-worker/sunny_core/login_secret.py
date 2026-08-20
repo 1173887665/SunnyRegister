@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import secrets
 import time
 from typing import Any, Callable
@@ -15,6 +16,9 @@ from .openai_auth import CHATGPT_BASE_URL, generate_register_fingerprint
 
 class MFAReauthenticationRequired(RuntimeError):
     pass
+
+
+RECENT_EMAIL_CODE_MAX_AGE_SECONDS = 120
 
 
 def generate_chatgpt_password(length: int = 16) -> str:
@@ -44,6 +48,8 @@ class LoginSecretSetupFlow:
         mailbox_proxy_url: str | None = None,
         traffic_meter: ProxyTrafficMeter | None = None,
         on_progress: Callable[[str], None] | None = None,
+        recent_email_code: str = "",
+        recent_email_code_at: float = 0.0,
     ):
         self.account = account
         self.session = dict(session or {})
@@ -53,6 +59,8 @@ class LoginSecretSetupFlow:
         self.should_cancel = should_cancel or (lambda: False)
         self.traffic_meter = traffic_meter
         self.on_progress = on_progress or (lambda _checkpoint: None)
+        self.recent_email_code = str(recent_email_code or "").strip()
+        self.recent_email_code_at = float(recent_email_code_at or 0.0)
         self.traffic_optimizer = BrowserTrafficOptimizer(traffic_meter) if traffic_meter is not None else None
         self.reader: Any | None = None
 
@@ -253,11 +261,36 @@ class LoginSecretSetupFlow:
             code,
         ))
 
-    def _complete_reauthentication(self, page, min_timestamp: float, password: str) -> None:
+    @staticmethod
+    def _recent_email_code_usable(code: str, code_at: float, now: float | None = None) -> bool:
+        current = time.time() if now is None else float(now)
+        age = current - float(code_at or 0.0)
+        return bool(re.fullmatch(r"\d{6}", str(code or "").strip()) and 0 <= age <= RECENT_EMAIL_CODE_MAX_AGE_SECONDS)
+
+    @staticmethod
+    def _email_code_rejected(state: dict[str, Any]) -> bool:
+        text = str(state.get("text") or "").lower()
+        return any(marker in text for marker in (
+            "incorrect code", "invalid code", "wrong code", "code is incorrect", "code has expired",
+            "验证码错误", "验证码无效", "验证码已过期", "コードが正しくありません",
+        ))
+
+    def _complete_reauthentication(
+        self,
+        page,
+        min_timestamp: float,
+        password: str,
+        *,
+        recent_email_code: str = "",
+        recent_email_code_at: float = 0.0,
+    ) -> None:
         deadline = time.time() + 150
         email_code_used = False
+        recent_code_attempted = False
+        recent_code_submitted_at = 0.0
         totp_used = False
         password_used = False
+        email_code_min_timestamp = min_timestamp
         while time.time() < deadline:
             self._check_cancelled()
             url = str(page.url or "").lower()
@@ -275,6 +308,13 @@ class LoginSecretSetupFlow:
                 self._sleep(2)
                 continue
             if state.get("codeInputs"):
+                recent_code_stalled = recent_code_attempted and email_code_used and recent_code_submitted_at > 0 and time.time() - recent_code_submitted_at >= 8
+                if recent_code_attempted and email_code_used and (self._email_code_rejected(state) or recent_code_stalled):
+                    self.log("[登录密钥] 注册阶段验证码无法用于重认证，将等待新的邮箱验证码")
+                    email_code_used = False
+                    recent_code_attempted = False
+                    email_code_min_timestamp = time.time()
+                    continue
                 is_totp = "mfa" in url or "authenticator" in str(state.get("text") or "").lower()
                 if is_totp and not totp_used:
                     if not self.account.totp_secret:
@@ -285,10 +325,16 @@ class LoginSecretSetupFlow:
                     self._sleep(2)
                     continue
                 if not email_code_used:
-                    code = self._reader_instance().wait_for_code(min_timestamp)
+                    if self._recent_email_code_usable(recent_email_code, recent_email_code_at):
+                        code = recent_email_code
+                        recent_code_attempted = True
+                        self.log("[登录密钥] 优先复用本次注册刚使用的邮箱验证码")
+                    else:
+                        code = self._reader_instance().wait_for_code(email_code_min_timestamp)
                     if not self._fill_code(page, code):
                         raise RuntimeError("邮箱重认证验证码输入失败")
                     email_code_used = True
+                    recent_code_submitted_at = time.time() if recent_code_attempted else 0.0
                     self._sleep(2)
                     continue
             self._sleep(0.75)
@@ -330,7 +376,13 @@ class LoginSecretSetupFlow:
             state = self._page_state(page)
             url = str(state.get("url") or "").lower()
             if "auth.openai.com" in url and (state.get("codeInputs") or state.get("passwordInputs")):
-                self._complete_reauthentication(page, otp_min_timestamp, password)
+                self._complete_reauthentication(
+                    page,
+                    otp_min_timestamp,
+                    password,
+                    recent_email_code=self.recent_email_code,
+                    recent_email_code_at=self.recent_email_code_at,
+                )
                 continue
             if state.get("passwordInputs") and self._submit_password(page, password):
                 submitted = True
@@ -345,7 +397,14 @@ class LoginSecretSetupFlow:
             self._sleep(0.75)
         raise TimeoutError(f"添加 ChatGPT 密码超时: {self._page_state(page)}")
 
-    def _reauth_for_2fa(self, page, password: str) -> dict[str, Any]:
+    def _reauth_for_2fa(
+        self,
+        page,
+        password: str,
+        *,
+        recent_email_code: str = "",
+        recent_email_code_at: float = 0.0,
+    ) -> dict[str, Any]:
         page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
         payload = page.evaluate(
             """async ({email}) => {
@@ -368,7 +427,13 @@ class LoginSecretSetupFlow:
             raise RuntimeError(f"发起 2FA 重认证失败: HTTP {payload.get('status')}")
         min_timestamp = time.time() - 5
         page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
-        self._complete_reauthentication(page, min_timestamp, password)
+        self._complete_reauthentication(
+            page,
+            min_timestamp,
+            password,
+            recent_email_code=recent_email_code,
+            recent_email_code_at=recent_email_code_at,
+        )
         page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
         return self._session_json(page)
 
@@ -491,7 +556,12 @@ class LoginSecretSetupFlow:
             return self._setup_2fa_protocol(page, access_token)
         except MFAReauthenticationRequired:
             self.log("[登录密钥] 2FA 协议接口要求重新认证，将使用已设置密码完成一次重认证后重试")
-        session_json = self._reauth_for_2fa(page, password)
+        session_json = self._reauth_for_2fa(
+            page,
+            password,
+            recent_email_code=self.recent_email_code,
+            recent_email_code_at=self.recent_email_code_at,
+        )
         access_token = str(session_json.get("accessToken") or session_json.get("access_token") or "")
         return self._setup_2fa_protocol(page, access_token)
 
@@ -561,6 +631,8 @@ def setup_login_secret(
     mailbox_proxy_url: str | None = None,
     traffic_meter: ProxyTrafficMeter | None = None,
     on_progress: Callable[[str], None] | None = None,
+    recent_email_code: str = "",
+    recent_email_code_at: float = 0.0,
 ) -> dict[str, Any]:
     return LoginSecretSetupFlow(
         account,
@@ -571,4 +643,6 @@ def setup_login_secret(
         mailbox_proxy_url=mailbox_proxy_url,
         traffic_meter=traffic_meter,
         on_progress=on_progress,
+        recent_email_code=recent_email_code,
+        recent_email_code_at=recent_email_code_at,
     ).run()

@@ -481,6 +481,8 @@ class OpenAIEmailRegisterFlow:
         self.browser_backend = "camoufox" if headless else "chromium"
         self.device_id = ""
         self.generated_password = ""
+        self.recent_email_code = ""
+        self.recent_email_code_at = 0.0
         self.existing_session = dict(existing_session or {})
         self.traffic_meter = traffic_meter or ProxyTrafficMeter(proxy_url=proxy_url, tracked_proxy=bool(proxy_url), email=account.email, operation=self.execution_mode)
         self.traffic_optimizer = BrowserTrafficOptimizer(self.traffic_meter, traffic_config)
@@ -1133,6 +1135,8 @@ class OpenAIEmailRegisterFlow:
             self.otp_reader.connect()
         self.log("[邮箱] 等待 OpenAI 邮箱验证码")
         code = self.otp_reader.wait_for_code(min_timestamp, 180)
+        self.recent_email_code = str(code or "").strip()
+        self.recent_email_code_at = time.time()
         journal, detach_journal = self._attach_email_otp_network_journal(page)
         try:
             # Existing accounts only need a fresh authenticated session. Filling
@@ -1486,6 +1490,8 @@ class OpenAIEmailRegisterFlow:
             raise RuntimeError("邮箱验证码无效，且页面未提供可用的重新发送按钮；请等待几分钟后重新发起任务")
         self.log("[邮箱] 已请求新的 OpenAI 邮箱验证码")
         fresh_code = self.otp_reader.wait_for_code(requested_at, 150)
+        self.recent_email_code = str(fresh_code or "").strip()
+        self.recent_email_code_at = time.time()
         if str(fresh_code) == str(previous_code):
             raise RuntimeError("邮箱服务返回了与已拒绝验证码相同的内容；已停止重复提交，请稍后重新发起任务")
         self._reset_email_otp_submit_guard(page)
@@ -1495,6 +1501,12 @@ class OpenAIEmailRegisterFlow:
             raise RuntimeError("收到新邮箱验证码，但页面提交控件不可用")
         self.log("[邮箱] 已提交新获取的邮箱验证码")
         self._wait_after_otp_submit(page)
+
+    def _attach_recent_email_code(self, result: dict[str, Any]) -> dict[str, Any]:
+        if self.recent_email_code and self.recent_email_code_at > 0:
+            result["recent_email_code"] = self.recent_email_code
+            result["recent_email_code_at"] = self.recent_email_code_at
+        return result
 
     def _submit_email_code_by_keyboard(self, page) -> bool:
         try:
@@ -2483,7 +2495,7 @@ class OpenAIEmailRegisterFlow:
             self._emit_progress("registered", result)
         if not self.require_refresh_token:
             self.log("[Session] 仅注册阶段：已读取 ChatGPT Session，不执行 Codex OAuth / 不获取 Refresh Token")
-            return result
+            return self._attach_recent_email_code(result)
         try:
             record = self._authorize_rt_from_browser(context, page)
             result.update({
@@ -2515,7 +2527,7 @@ class OpenAIEmailRegisterFlow:
             self.log(f"[Session] {result['post_registration_error']}；已保留 ChatGPT Session，账号状态停留在已完成阶段")
         result["phone_bound"] = bool(result.get("phone_bound")) or self.phone_verification_completed
         result["browser_traffic"] = self._browser_traffic_snapshot()
-        return result
+        return self._attach_recent_email_code(result)
 
     def _read_chatgpt_session_json(self, context, page) -> dict[str, Any]:
         last_error = ""

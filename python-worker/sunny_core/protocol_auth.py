@@ -193,6 +193,8 @@ class ProtocolRegistrationFlow:
         self.auth_page_url = ""
         self.auth_action = "login" if existing_account else "unknown"
         self.generated_password = ""
+        self.recent_email_code = ""
+        self.recent_email_code_at = 0.0
         self.traffic = ProtocolTrafficMeter()
         self.traffic_meter = traffic_meter
         self.challenge_strategy = (
@@ -696,6 +698,8 @@ class ProtocolRegistrationFlow:
         else:
             self.log("[邮箱] 认证初始化已自动发送验证码，跳过重复发码")
         code = self._wait_for_email_code(sent_at)
+        self.recent_email_code = str(code or "").strip()
+        self.recent_email_code_at = time.time()
         validated = self._request(
             "POST",
             VALIDATE_EMAIL_OTP_URL,
@@ -814,6 +818,11 @@ class ProtocolRegistrationFlow:
             "protocol_traffic": self.traffic.snapshot(),
         }
         self._emit("registered", result)
+        # Keep the recently used OTP ephemeral. It is returned to the worker
+        # only after the registration checkpoint has been persisted.
+        if self.recent_email_code and self.recent_email_code_at > 0:
+            result["recent_email_code"] = self.recent_email_code
+            result["recent_email_code_at"] = self.recent_email_code_at
         return result
 
     def run(self) -> dict[str, Any]:

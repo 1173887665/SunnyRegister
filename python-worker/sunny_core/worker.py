@@ -1786,6 +1786,13 @@ def _run_one(
                 detail={"email": email, "scope": "selected", "credential": "chatgpt_password"},
             )
         login_secret_result: dict[str, Any] | None = None
+        recent_email_code = str(session.get("recent_email_code") or "").strip()
+        try:
+            recent_email_code_at = float(session.get("recent_email_code_at") or 0.0)
+        except (TypeError, ValueError):
+            recent_email_code_at = 0.0
+        session.pop("recent_email_code", None)
+        session.pop("recent_email_code_at", None)
         if payload.get("setup_login_secret") is True:
             db.event(
                 f"[{email}] [登录密钥] 开始补充缺失的 ChatGPT 密码与 2FA",
@@ -1800,6 +1807,8 @@ def _run_one(
                     should_cancel=db.cancel_requested,
                     mailbox_proxy_url=mailbox_proxy_url,
                     traffic_meter=traffic_meter,
+                    recent_email_code=recent_email_code,
+                    recent_email_code_at=recent_email_code_at,
                     on_progress=lambda checkpoint: _emit_registration_progress(
                         db, str(email), stage, checkpoint, setup_login_secret=True,
                     ),

@@ -1,6 +1,7 @@
 import unittest
+import time
 
-from sunny_core.login_secret import LoginSecretSetupFlow, generate_chatgpt_password
+from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretSetupFlow, generate_chatgpt_password
 from sunny_core.mailbox import MailAccount
 
 
@@ -59,6 +60,59 @@ class LoginSecretTests(unittest.TestCase):
         self.assertEqual(page.visited, ["https://auth.openai.com/reset-password/new-password"])
         self.assertEqual(page.password, "Strong-password-1!")
 
+    def test_recent_email_code_is_only_usable_for_a_short_window(self):
+        now = 1_700_000_000.0
+        self.assertTrue(LoginSecretSetupFlow._recent_email_code_usable("123456", now - 30, now))
+        self.assertTrue(LoginSecretSetupFlow._recent_email_code_usable("123456", now - RECENT_EMAIL_CODE_MAX_AGE_SECONDS, now))
+        self.assertFalse(LoginSecretSetupFlow._recent_email_code_usable("123456", now - RECENT_EMAIL_CODE_MAX_AGE_SECONDS - 1, now))
+        self.assertFalse(LoginSecretSetupFlow._recent_email_code_usable("not-code", now - 1, now))
+
+    def test_reauthentication_prefers_recent_registration_code_before_mailbox_reader(self):
+        class Flow(LoginSecretSetupFlow):
+            def __init__(self):
+                super().__init__(self_account, {}, "", recent_email_code="123456", recent_email_code_at=time.time())
+                self.submitted = False
+                self.used_code = ""
+
+            @staticmethod
+            def _page_state(_page):
+                if Flow.instance.submitted:
+                    return {"url": "https://chatgpt.com/", "passwordInputs": 0, "codeInputs": 0, "text": ""}
+                return {"url": "https://auth.openai.com/email-verification", "passwordInputs": 0, "codeInputs": 1, "text": ""}
+
+            @staticmethod
+            def _session_json(_page):
+                if not Flow.instance.submitted:
+                    raise RuntimeError("not submitted")
+                return {"accessToken": "access-token"}
+
+            def _fill_code(self, page, code):
+                self.used_code = code
+                self.submitted = True
+                page.url = "https://chatgpt.com/"
+                return True
+
+            def _reader_instance(self):
+                raise AssertionError("recent code should be used before reading the mailbox")
+
+            def _sleep(self, _seconds):
+                return None
+
+        self_account = self._account()
+        Flow.instance = Flow()
+        class Page:
+            url = "https://auth.openai.com/email-verification"
+
+        page = Page()
+        Flow.instance._complete_reauthentication(
+            page,
+            time.time(),
+            "ChatGPT-password",
+            recent_email_code="123456",
+            recent_email_code_at=time.time(),
+        )
+        self.assertEqual(Flow.instance.used_code, "123456")
+
     def test_totp_protocol_setup_uses_existing_session_without_reauthentication(self):
         class FakePage:
             def __init__(self):
@@ -88,7 +142,7 @@ class LoginSecretTests(unittest.TestCase):
             def _fresh_totp_code(self, _secret, **_kwargs):
                 return "123456"
 
-            def _reauth_for_2fa(self, _page, _password):
+            def _reauth_for_2fa(self, _page, _password, **_kwargs):
                 raise AssertionError("valid session must not be reauthenticated")
 
         page = FakePage()
@@ -130,7 +184,7 @@ class LoginSecretTests(unittest.TestCase):
             def _fresh_totp_code(self, _secret, **_kwargs):
                 return "123456"
 
-            def _reauth_for_2fa(self, page, _password):
+            def _reauth_for_2fa(self, page, _password, **_kwargs):
                 self.reauth_count += 1
                 page.authorized = True
                 return {"accessToken": "new-access-token"}
