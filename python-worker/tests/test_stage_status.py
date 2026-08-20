@@ -80,6 +80,17 @@ def mailbox(status="未注册", openai_rt="") -> dict:
 
 
 class StageStatusTests(unittest.TestCase):
+    class AboutYouControl:
+        def __init__(self, value="", **attributes):
+            self.value = value
+            self.attributes = attributes
+
+        def get_attribute(self, name):
+            return self.attributes.get(name, "")
+
+        def input_value(self, timeout=800):
+            return self.value
+
     def test_about_you_prefers_japanese_age_field_over_birth_date_switch(self):
         flow = object.__new__(OpenAIEmailRegisterFlow)
         context = (
@@ -94,6 +105,33 @@ class StageStatusTests(unittest.TestCase):
         context = "name=birthdate id=dob aria-label=生年月日 type=date __FIELD_CONTEXT_END__ 年齢"
 
         self.assertEqual(flow._about_you_second_field_kind_from_context(context), "birth_date")
+
+    def test_about_you_fills_segmented_birth_date_controls(self):
+        flow = object.__new__(OpenAIEmailRegisterFlow)
+        controls = [
+            self.AboutYouControl(name="name"),
+            self.AboutYouControl(name="month", aria_label="month"),
+            self.AboutYouControl(name="day", aria_label="day"),
+            self.AboutYouControl(name="year", aria_label="year"),
+        ]
+        with patch.object(flow, "_force_fill", side_effect=lambda control, value: setattr(control, "value", value)):
+            date_controls = flow._about_you_date_controls(controls)
+            flow._fill_about_you_date_controls(date_controls, "1995-10-11", "name=birthdate")
+        self.assertEqual([control.value for control in date_controls], ["10", "11", "1995"])
+
+    def test_about_you_current_values_accepts_valid_segmented_birth_date(self):
+        flow = object.__new__(OpenAIEmailRegisterFlow)
+        controls = [
+            self.AboutYouControl(name="name", value="Grace Clark"),
+            self.AboutYouControl(name="month", aria_label="month", value="10"),
+            self.AboutYouControl(name="day", aria_label="day", value="11"),
+            self.AboutYouControl(name="year", aria_label="year", value="1995"),
+        ]
+        page = MagicMock()
+        with patch.object(flow, "_visible_inputs", return_value=controls), patch.object(
+            flow, "_about_you_second_field_context", return_value="name=month aria-label=month __FIELD_CONTEXT_END__ 生年月日"
+        ):
+            self.assertTrue(flow._about_you_current_values_ok(page))
 
     def test_existing_account_error_recognizes_japanese_response(self):
         flow = object.__new__(OpenAIEmailRegisterFlow)

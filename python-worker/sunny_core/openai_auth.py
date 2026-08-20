@@ -1164,7 +1164,15 @@ class OpenAIEmailRegisterFlow:
         return out
 
     def _click_continue(self, page, transition_timeout_ms: int = 10000) -> bool:
-        selectors = ['button:has-text("Finish creating account")', 'button:has-text("Create account")', 'button:has-text("Continue")', 'button:has-text("Next")', 'button:has-text("继续")', 'button:has-text("完成")', 'button[type="submit"]', '[role="button"]:has-text("Continue")', '[role="button"]:has-text("继续")']
+        selectors = [
+            'button:has-text("Finish creating account")', 'button:has-text("Create account")',
+            'button:has-text("Continue")', 'button:has-text("Next")', 'button:has-text("继续")',
+            'button:has-text("完成")', 'button:has-text("続行")', 'button:has-text("次へ")',
+            'button:has-text("アカウントの作成を完了する")', 'button[type="submit"]',
+            '[role="button"]:has-text("Continue")', '[role="button"]:has-text("继续")',
+            '[role="button"]:has-text("続行")', '[role="button"]:has-text("次へ")',
+            '[role="button"]:has-text("アカウントの作成を完了する")',
+        ]
         for selector in selectors:
             try:
                 b = page.locator(selector).first
@@ -1182,7 +1190,7 @@ class OpenAIEmailRegisterFlow:
             return bool(page.evaluate("""() => {
                 const visible = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'; };
                 const buttons = Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(visible);
-                const target = buttons.find(el => !el.disabled && el.getAttribute('aria-disabled') !== 'true' && /Continue|Next|Finish|Create/i.test(`${el.value||''} ${el.textContent||''} ${el.getAttribute('aria-label')||''}`)) || buttons.find(el => (el.type||'').toLowerCase()==='submit');
+                const target = buttons.find(el => !el.disabled && el.getAttribute('aria-disabled') !== 'true' && /Continue|Next|Finish|Create|続行|次へ|完了|アカウントの作成を完了する/i.test(`${el.value||''} ${el.textContent||''} ${el.getAttribute('aria-label')||''}`)) || buttons.find(el => (el.type||'').toLowerCase()==='submit');
                 if (!target) return false; target.scrollIntoView({block:'center'}); target.click(); return true;
             }"""))
         except Exception:
@@ -2030,10 +2038,77 @@ class OpenAIEmailRegisterFlow:
         if len(controls) < 2:
             raise RuntimeError("Profile page missing name/age inputs")
         self._force_fill(controls[0], name)
-        self._force_fill(controls[1], second_value)
+        date_controls = self._about_you_date_controls(controls)
+        if second_kind == "birth_date" and date_controls:
+            self._fill_about_you_date_controls(date_controls, birthdate, second_context)
+        else:
+            self._force_fill(controls[1], second_value)
         self._sleep_checked(1.2)
         if not self._click_continue(page, transition_timeout_ms=PROFILE_TRANSITION_TIMEOUT_MS):
             raise RuntimeError("Profile filled, but finish button was not found")
+
+    @staticmethod
+    def _about_you_control_metadata(control) -> str:
+        values = []
+        for attribute in ("name", "id", "aria-label", "placeholder", "autocomplete", "inputmode", "type", "data-testid"):
+            try:
+                value = control.get_attribute(attribute)
+            except Exception:
+                value = ""
+            if value:
+                values.append(str(value))
+        return " ".join(values).lower()
+
+    @staticmethod
+    def _about_you_control_value(control) -> str:
+        try:
+            return str(control.input_value(timeout=800) or "").strip()
+        except Exception:
+            try:
+                return str(control.inner_text(timeout=800) or "").strip()
+            except Exception:
+                return ""
+
+    def _about_you_date_controls(self, controls):
+        """Return date controls without treating the age field's date switch as a field."""
+        candidates = []
+        for control in list(controls)[1:]:
+            metadata = self._about_you_control_metadata(control)
+            if re.search(
+                r"type=date|birth.?date|date.?of.?birth|\bdob\b|birth.?year|\b(year|month|day)\b|(?:aria-label|name|id|placeholder)=(?:年|月|日)|生年月日|出生日期|出生年月|年齢年月日",
+                metadata,
+                flags=re.I,
+            ):
+                candidates.append(control)
+        return candidates
+
+    @staticmethod
+    def _about_you_date_part(metadata: str) -> str | None:
+        for part, pattern in (
+            ("year", r"\byear\b|(?:aria-label|name|id|placeholder)=年"),
+            ("month", r"\bmonth\b|(?:aria-label|name|id|placeholder)=月"),
+            ("day", r"\bday\b|(?:aria-label|name|id|placeholder)=日"),
+        ):
+            if re.search(pattern, metadata, flags=re.I):
+                return part
+        return None
+
+    def _fill_about_you_date_controls(self, controls, birthdate: str, context: str) -> None:
+        year, month, day = [int(x) for x in str(birthdate).split("-")[:3]]
+        if len(controls) == 1:
+            self._force_fill(controls[0], self._format_about_you_birth_date(birthdate, context))
+            return
+        remaining = {"year": str(year), "month": f"{month:02d}", "day": f"{day:02d}"}
+        unresolved = []
+        for control in controls:
+            metadata = self._about_you_control_metadata(control)
+            matched = self._about_you_date_part(metadata)
+            if matched and matched in remaining:
+                self._force_fill(control, remaining.pop(matched))
+            else:
+                unresolved.append(control)
+        for part, control in zip(("month", "day", "year"), unresolved):
+            self._force_fill(control, remaining.pop(part, str(year)))
 
     def _about_you_second_field_context(self, page) -> str:
         try:
@@ -2152,17 +2227,42 @@ class OpenAIEmailRegisterFlow:
 
     def _about_you_current_values_ok(self, page) -> bool:
         try:
-            values = [str(x or "").strip() for x in page.evaluate("""() => Array.from(document.querySelectorAll('input,textarea,[contenteditable="true"]')).filter(el => { const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden'; }).map(el => el.isContentEditable ? el.textContent : el.value)""")]
+            controls = self._visible_inputs(page, ['input', 'textarea', '[contenteditable="true"]'])
+            values = [self._about_you_control_value(control) for control in controls]
+            if not any(values):
+                values = [str(x or "").strip() for x in page.evaluate("""() => Array.from(document.querySelectorAll('input,textarea,[contenteditable="true"]')).filter(el => { const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden'; }).map(el => el.isContentEditable ? el.textContent : el.value)""")]
             nonempty = [x for x in values if x]
             if len(nonempty) < 2:
                 return False
-            second = nonempty[1]
             kind = self._about_you_second_field_kind_from_context(self._about_you_second_field_context(page))
             if kind == "age":
+                second = nonempty[1]
                 return bool(re.fullmatch(r"\d{1,3}", second) and 13 <= int(second) <= 120)
             if kind == "birth_year":
+                second = nonempty[1]
                 return bool(re.fullmatch(r"\d{4}", second) and 1900 <= int(second) <= datetime.now(timezone.utc).year - 13)
-            return True
+            date_controls = self._about_you_date_controls(controls)
+            date_values = [self._about_you_control_value(control) for control in date_controls]
+            if len(date_values) == 1:
+                parsed = re.search(r"(\d{4})\D(\d{1,2})\D(\d{1,2})", date_values[0])
+                if not parsed:
+                    parsed = re.search(r"(\d{4})(\d{2})(\d{2})", date_values[0])
+                if not parsed:
+                    return False
+                candidate = datetime(int(parsed.group(1)), int(parsed.group(2)), int(parsed.group(3)), tzinfo=timezone.utc)
+                return candidate.year <= datetime.now(timezone.utc).year - 13
+            if len(date_values) >= 3:
+                parts = {"year": None, "month": None, "day": None}
+                for control, value in zip(date_controls, date_values):
+                    metadata = self._about_you_control_metadata(control)
+                    matched = self._about_you_date_part(metadata)
+                    if matched:
+                        parts[matched] = value
+                if not all(parts.values()):
+                    parts["month"], parts["day"], parts["year"] = date_values[:3]
+                candidate = datetime(int(parts["year"]), int(parts["month"]), int(parts["day"]), tzinfo=timezone.utc)
+                return candidate.year <= datetime.now(timezone.utc).year - 13
+            return False
         except Exception:
             return False
 
