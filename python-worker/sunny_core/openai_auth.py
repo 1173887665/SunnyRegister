@@ -883,7 +883,7 @@ class OpenAIEmailRegisterFlow:
                 continue
             if "password" in url and self._has_visible_password(page):
                 if ("/log-in/password" in url or self.existing_account) and not self.account.chatgpt_password:
-                    if not self.account.access_key or not self._switch_password_to_email_code(page):
+                    if not self._switch_password_to_email_code(page):
                         raise RuntimeError("ChatGPT login requires a password or a configured email OTP endpoint")
                     email_code_submitted = False
                     about_you_submitted = False

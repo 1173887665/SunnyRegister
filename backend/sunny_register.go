@@ -244,6 +244,7 @@ func serializeSunnyMailbox(m SunnyMailbox, groups map[uint]string, planType ...s
 		"mailbox_type": normalizeSunnyMailboxType(m.MailboxType), "mailbox_channel": normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel), "access_key": m.AccessKey,
 		"password": m.Password, "chatgpt_password": m.ChatGPTPassword, "totp_secret": m.TOTPSecret, "client_id": m.ClientID, "refresh_token": m.RefreshToken, "openai_rt": m.OpenAIRT, "access_token": accessToken,
 		"has_chatgpt_password": strings.TrimSpace(m.ChatGPTPassword) != "", "has_totp_secret": strings.TrimSpace(m.TOTPSecret) != "",
+		"has_login_secret": sunnyLoginSecretLine(m) != "", "chatgpt_password_preview": sunnyCredentialPreview(m.ChatGPTPassword), "totp_secret_preview": sunnyCredentialPreview(m.TOTPSecret),
 		"raw": m.Raw, "account_type": fallback(m.AccountType, "free"), "plan_type": plan, "trial_eligibility": trialEligibility, "status": status, "enabled": m.Enabled,
 		"chatgpt_register_traffic_bytes": m.ChatGPTRegisterTrafficBytes, "proxy_traffic_bytes": m.ProxyTrafficBytes,
 		"last_error": m.LastError, "latest_mail": jsonMap(m.LatestMailJSON),
@@ -849,6 +850,12 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				value = s.sunnyMailboxAccessTokensByEmail([]string{m.Email})[sunnyEmailKey(m.Email)]
 			case "secret_key":
 				value = sunnyMailboxCredentialLine(m)
+			case "chatgpt_password":
+				value = m.ChatGPTPassword
+			case "totp_secret":
+				value = m.TOTPSecret
+			case "login_secret":
+				value = sunnyLoginSecretLine(m)
 			default:
 				writeError(w, 400, "unsupported mailbox field")
 				return
@@ -1198,6 +1205,38 @@ func sunnyMailboxCredentialLine(mailbox SunnyMailbox) string {
 		return sunnyMicrosoftRaw(mailbox.Email, mailbox.Password, mailbox.ClientID, mailbox.RefreshToken)
 	}
 	return strings.TrimSpace(mailbox.Raw)
+}
+
+func sunnyCredentialPreview(value string) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) == 0 {
+		return ""
+	}
+	if len(runes) > 4 {
+		runes = runes[:4]
+	}
+	return string(runes) + "••••••"
+}
+
+func sunnyLoginSecretLine(mailbox SunnyMailbox) string {
+	email := strings.TrimSpace(mailbox.Email)
+	password := strings.TrimSpace(mailbox.ChatGPTPassword)
+	totp := strings.TrimSpace(mailbox.TOTPSecret)
+	if email == "" || password == "" || totp == "" {
+		return ""
+	}
+	return strings.Join([]string{email, password, totp}, "----")
+}
+
+func sunnySub2Notes(mailbox SunnyMailbox, secretKey string) string {
+	lines := []string{}
+	if value := strings.TrimSpace(secretKey); value != "" {
+		lines = append(lines, "邮箱凭证："+value)
+	}
+	if value := sunnyLoginSecretLine(mailbox); value != "" {
+		lines = append(lines, "密码2FA："+value)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func parseSunnyMailboxLineForProvider(raw, mailboxType, channel string) (map[string]string, error) {
@@ -3713,7 +3752,7 @@ func (s *Server) sunnySub2APIImport(w http.ResponseWriter, r *http.Request) {
 			skipped = append(skipped, map[string]any{"email": sess.Email, "reason": "missing access token or refresh token"})
 			continue
 		}
-		accounts = append(accounts, buildSunnySub2AccountPayload(sess, cfg))
+		accounts = append(accounts, buildSunnySub2AccountPayload(sess, cfg, mailboxRows[key]))
 		validSessions = append(validSessions, sess)
 	}
 	if len(accounts) == 0 {
@@ -3799,7 +3838,7 @@ func sunnySub2ResultIdentity(item map[string]any) (string, string) {
 	return email, remoteID
 }
 
-func buildSunnySub2AccountPayload(sess SunnySession, cfg map[string]any) map[string]any {
+func buildSunnySub2AccountPayload(sess SunnySession, cfg map[string]any, mailboxes ...SunnyMailbox) map[string]any {
 	claims := decodeJWTPayload(sess.AccessToken)
 	auth, _ := claims["https://api.openai.com/auth"].(map[string]any)
 	sessionData := jsonMap(sess.SessionJSON)
@@ -3848,8 +3887,12 @@ func buildSunnySub2AccountPayload(sess SunnySession, cfg map[string]any) map[str
 		}
 		credentials["model_mapping"] = mapping
 	}
+	mailbox := SunnyMailbox{}
+	if len(mailboxes) > 0 {
+		mailbox = mailboxes[0]
+	}
 	payload := map[string]any{
-		"name": fallback(text(cfg["name_prefix"])+sess.Email, sess.Email), "notes": strings.TrimSpace(sess.RawMailboxLine), "platform": "openai", "type": "oauth",
+		"name": fallback(text(cfg["name_prefix"])+sess.Email, sess.Email), "notes": sunnySub2Notes(mailbox, sess.RawMailboxLine), "platform": "openai", "type": "oauth",
 		"credentials": credentials,
 		"extra":       extra, "group_ids": groupIDs, "concurrency": intValue(cfg["concurrency"], 3), "priority": intValue(cfg["priority"], 50),
 		"rate_multiplier": 1, "auto_pause_on_expired": true,
@@ -3970,6 +4013,7 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 		"session_json": sess.SessionJSON, "storage_state_json": sess.StorageStateJSON,
 		"raw_mailbox_line": raw,
 		"mailbox_password": mb.Password, "mailbox_client_id": mb.ClientID, "mailbox_refresh_token": mb.RefreshToken,
+		"has_chatgpt_password": strings.TrimSpace(mb.ChatGPTPassword) != "", "has_totp_secret": strings.TrimSpace(mb.TOTPSecret) != "", "has_login_secret": sunnyLoginSecretLine(mb) != "",
 		"expires_at":      nullableTime(expiresAt.Valid, expiresAt.Time),
 		"last_refresh_at": nullableTime(sess.LastRefreshAt.Valid, sess.LastRefreshAt.Time),
 		"created_at":      formatTime(sess.CreatedAt), "updated_at": formatTime(sess.UpdatedAt),
@@ -4032,6 +4076,11 @@ type sunnySessionMailboxSummary struct {
 	TrialEligibility    string     `gorm:"column:trial_eligibility"`
 	TrialCheckedAt      *time.Time `gorm:"column:trial_checked_at"`
 	HasSecretKey        int        `gorm:"column:has_secret_key"`
+	HasChatGPTPassword  int        `gorm:"column:has_chatgpt_password"`
+	HasTOTPSecret       int        `gorm:"column:has_totp_secret"`
+	ChatGPTPassword     string     `gorm:"column:chat_gpt_password"`
+	TOTPSecret          string     `gorm:"column:totp_secret"`
+	Raw                 string     `gorm:"column:raw"`
 	GroupID             uint       `gorm:"column:group_id"`
 	GroupName           string     `gorm:"column:group_name"`
 	LastHealthCheckedAt *time.Time `gorm:"column:last_health_checked_at"`
@@ -4100,6 +4149,9 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 		"has_access_token":  row.HasAccessToken != 0 || account.HasAccessToken != 0,
 		"has_refresh_token": row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
 		"has_secret_key":    row.HasSecretKey != 0 || mailbox.HasSecretKey != 0,
+		"has_chatgpt_password": mailbox.HasChatGPTPassword != 0,
+		"has_totp_secret":      mailbox.HasTOTPSecret != 0,
+		"has_login_secret":     mailbox.HasChatGPTPassword != 0 && mailbox.HasTOTPSecret != 0,
 		"updated_at":        formatTime(row.UpdatedAt), "access_token_expires_at": nullableTime(expiresAt.Valid, expiresAt.Time), "last_health_checked_at": lastHealthText,
 		"access_token_status": fallback(row.AccessTokenStatus, "unknown"), "access_token_error": row.AccessTokenError,
 		"access_token_checked_at": nullableTime(row.AccessTokenCheckedAt != nil, sunnyTimePointerValue(row.AccessTokenCheckedAt)),
@@ -4157,13 +4209,15 @@ func (s *Server) sunnySessionListSidecars(rows []sunnySessionListRow) (map[strin
 	}
 	var mailboxRows []sunnySessionMailboxSummary
 	s.db.Model(&SunnyMailbox{}).Select(`sunny_mailboxes.id, sunny_mailboxes.email, sunny_mailboxes.status, sunny_mailboxes.account_type, sunny_mailboxes.trial_eligibility, sunny_mailboxes.trial_checked_at,
-		sunny_mailboxes.group_id, sunny_mailboxes.last_health_checked_at, sunny_mailbox_groups.name AS group_name,
+		sunny_mailboxes.group_id, sunny_mailboxes.last_health_checked_at, sunny_mailbox_groups.name AS group_name, sunny_mailboxes.chat_gpt_password, sunny_mailboxes.totp_secret, sunny_mailboxes.raw,
 		CASE
 			WHEN LOWER(sunny_mailboxes.mailbox_type) IN ('apple', 'icloud') AND LOWER(sunny_mailboxes.mailbox_channel) IN ('url_api', 'url-api') AND sunny_mailboxes.email <> '' THEN 1
 			WHEN LOWER(sunny_mailboxes.mailbox_type) IN ('apple', 'icloud') AND sunny_mailboxes.email <> '' AND sunny_mailboxes.access_key <> '' THEN 1
 			WHEN sunny_mailboxes.email <> '' AND sunny_mailboxes.password <> '' AND sunny_mailboxes.client_id <> '' AND sunny_mailboxes.refresh_token <> '' THEN 1
 			ELSE 0
-		END AS has_secret_key`).
+		END AS has_secret_key,
+		CASE WHEN coalesce(sunny_mailboxes.chat_gpt_password,'') <> '' THEN 1 ELSE 0 END AS has_chatgpt_password,
+		CASE WHEN coalesce(sunny_mailboxes.totp_secret,'') <> '' THEN 1 ELSE 0 END AS has_totp_secret`).
 		Joins("LEFT JOIN sunny_mailbox_groups ON sunny_mailbox_groups.id = sunny_mailboxes.group_id").
 		Where("sunny_mailboxes.email IN ?", emails).Find(&mailboxRows)
 	for _, mailbox := range mailboxRows {
@@ -4209,6 +4263,22 @@ func (s *Server) sunnySessionFieldValue(id uint, field string) (string, error) {
 			}
 		}
 		return sess.RawMailboxLine, nil
+	case "chatgpt_password", "totp_secret", "login_secret":
+		if err := query.Select("id", "email").First(&sess).Error; err != nil {
+			return "", fmt.Errorf("session not found")
+		}
+		var mailbox SunnyMailbox
+		if err := s.db.Where("email = ?", sess.Email).First(&mailbox).Error; err != nil {
+			return "", fmt.Errorf("mailbox not found")
+		}
+		switch field {
+		case "chatgpt_password":
+			return mailbox.ChatGPTPassword, nil
+		case "totp_secret":
+			return mailbox.TOTPSecret, nil
+		default:
+			return sunnyLoginSecretLine(mailbox), nil
+		}
 	default:
 		return "", fmt.Errorf("unsupported session field")
 	}
@@ -4557,6 +4627,15 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 
 func (s *Server) sunnyExportSessions(w http.ResponseWriter, rows []SunnySession, format string) {
 	switch format {
+	case "ls":
+		lines := []string{}
+		_, mailboxes := s.sunnySessionSidecars(rows)
+		for _, row := range rows {
+			if line := sunnyLoginSecretLine(mailboxes[sunnyEmailKey(row.Email)]); line != "" {
+				lines = append(lines, line)
+			}
+		}
+		writeTextFile(w, sunnyAccountExportName("LS", len(lines), "txt"), "text/plain; charset=utf-8", []byte(strings.Join(lines, "\n")+"\n"))
 	case "at":
 		lines := []string{}
 		accounts, _ := s.sunnySessionSidecars(rows)
@@ -4590,7 +4669,7 @@ func (s *Server) sunnyExportSessions(w http.ResponseWriter, rows []SunnySession,
 			if strings.TrimSpace(row.AccessToken) == "" {
 				continue
 			}
-			exportedAccounts = append(exportedAccounts, buildSunnySub2AccountPayload(row, cfg))
+			exportedAccounts = append(exportedAccounts, buildSunnySub2AccountPayload(row, cfg, mailboxes[key]))
 		}
 		payload := map[string]any{"exported_at": formatTime(time.Now()), "proxies": []any{}, "accounts": exportedAccounts}
 		writeTextFile(w, sunnyAccountExportName("SUB", len(exportedAccounts), "json"), "application/json", []byte(dumpJSONPretty(payload)+"\n"))
@@ -4637,7 +4716,7 @@ func (s *Server) sunnyExportSessions(w http.ResponseWriter, rows []SunnySession,
 		_, mailboxes := s.sunnySessionSidecars(rows)
 		for _, r := range rows {
 			r.RawMailboxLine = sunnySessionSecretKey(r, mailboxes[sunnyEmailKey(r.Email)])
-			arr = append(arr, buildSunnySub2AccountPayload(r, cfg))
+			arr = append(arr, buildSunnySub2AccountPayload(r, cfg, mailboxes[sunnyEmailKey(r.Email)]))
 		}
 		writeTextFile(w, timestampName("sub2api", "json"), "application/json", []byte(dumpJSONPretty(map[string]any{"accounts": arr})+"\n"))
 	default:
@@ -4686,7 +4765,7 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 		return
 	}
 	body, _ := parseBody(r)
-	typemap := map[string]string{"register": "sunny_register", "login": "sunny_login", "refresh-session": "sunny_refresh_session", "acquire-rt": "sunny_acquire_rt"}
+	typemap := map[string]string{"register": "sunny_register", "login": "sunny_login", "refresh-session": "sunny_refresh_session", "acquire-rt": "sunny_acquire_rt", "add-ls": "sunny_add_ls"}
 	typ := typemap[parts[0]]
 	if typ == "" {
 		writeError(w, 404, "not found")
@@ -4698,7 +4777,7 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 			return
 		}
 	}
-	if typ == "sunny_refresh_session" || typ == "sunny_acquire_rt" {
+	if typ == "sunny_refresh_session" || typ == "sunny_acquire_rt" || typ == "sunny_add_ls" {
 		accountIDs := uintSlice(body["account_ids"])
 		if len(accountIDs) == 0 {
 			sessionIDs := uintSlice(body["session_ids"])
@@ -4727,6 +4806,8 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 			message := "请选择需要刷新 AT 的账户"
 			if typ == "sunny_acquire_rt" {
 				message = "请选择需要获取 RT 的账户"
+			} else if typ == "sunny_add_ls" {
+				message = "请选择需要添加 LS 的账户"
 			}
 			writeError(w, http.StatusBadRequest, message)
 			return

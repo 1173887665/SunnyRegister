@@ -780,7 +780,7 @@ func (s *Server) executeTask(taskID string) {
 func pythonWorkerTypes() map[string]bool {
 	raw := strings.TrimSpace(os.Getenv("PYTHON_TASK_TYPES"))
 	if raw == "" {
-		raw = "sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt,register,account_check,account_check_all,platform_action,phone_bind,codex_oauth,get_rt,get_rt_bypass,gopay_pay_chatgpt,gopay_register_account"
+		raw = "sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt,sunny_add_ls,register,account_check,account_check_all,platform_action,phone_bind,codex_oauth,get_rt,get_rt_bypass,gopay_pay_chatgpt,gopay_register_account"
 	}
 	out := map[string]bool{}
 	for _, item := range strings.Split(raw, ",") {
@@ -795,6 +795,7 @@ func pythonWorkerTypes() map[string]bool {
 	out["sunny_login"] = true
 	out["sunny_refresh_session"] = true
 	out["sunny_acquire_rt"] = true
+	out["sunny_add_ls"] = true
 	return out
 }
 

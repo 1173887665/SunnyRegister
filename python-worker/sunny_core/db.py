@@ -1091,6 +1091,15 @@ class SunnyDB:
         )
         self.conn.commit()
 
+    def save_totp_secret(self, mailbox_id: int, secret: str) -> None:
+        if mailbox_id <= 0 or not secret:
+            return
+        self.conn.execute(
+            "update sunny_mailboxes set totp_secret=?, updated_at=? where id=?",
+            (secret, now_sql(), mailbox_id),
+        )
+        self.conn.commit()
+
     def record_proxy_traffic(
         self,
         email: str,

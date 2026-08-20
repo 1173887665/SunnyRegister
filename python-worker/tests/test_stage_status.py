@@ -472,7 +472,7 @@ class StageStatusTests(unittest.TestCase):
         self.assertTrue(payload["update_existing"])
         self.assertEqual(len(payload["contents"]), 1)
         imported_auth = __import__("json").loads(payload["contents"][0])
-        self.assertEqual(imported_auth["notes"], "user@example.com----password----client-id----outlook-refresh-token")
+        self.assertEqual(imported_auth["notes"], "邮箱凭证：user@example.com----password----client-id----outlook-refresh-token")
         self.assertEqual(imported_auth["auth_mode"], "agentIdentity")
         self.assertEqual(imported_auth["agent_identity"]["agent_runtime_id"], "runtime-id")
 
@@ -1275,6 +1275,20 @@ class BrowserEmailOTPSubmitTests(unittest.TestCase):
             self.assertTrue(flow._submit_email_code_form(Page()))
 
 class Sub2APIImportPayloadTests(unittest.TestCase):
+    def test_sub2api_notes_include_login_secret_when_available(self):
+        db = Mock()
+        db.fetch_mailbox_by_email.return_value = {
+            "raw": "user@example.com----password----client-id----refresh-token",
+            "chat_gpt_password": "ChatGPT-password",
+            "totp_secret": "JBSWY3DPEHPK3PXP",
+        }
+        notes = worker._sub2api_notes(db, "user@example.com", {})
+        self.assertEqual(
+            notes,
+            "邮箱凭证：user@example.com----password----client-id----refresh-token\n"
+            "密码2FA：user@example.com----ChatGPT-password----JBSWY3DPEHPK3PXP",
+        )
+
     def test_oauth_protocol_fields_are_forwarded_to_sub2api(self):
         db = Mock()
         db.task_id = "test-task"
@@ -1315,7 +1329,7 @@ class Sub2APIImportPayloadTests(unittest.TestCase):
         self.assertEqual(payload["credentials"]["organization_id"], "org-id")
         self.assertEqual(payload["credentials"]["plan_type"], "plus")
         self.assertEqual(payload["credentials"]["expires_at"], 123456789)
-        self.assertEqual(payload["notes"], "user@example.com----password----client-id----outlook-refresh-token")
+        self.assertEqual(payload["notes"], "邮箱凭证：user@example.com----password----client-id----outlook-refresh-token")
         self.assertIn("gpt-5.6-sol", payload["credentials"]["model_mapping"])
         self.assertEqual(payload["extra"]["import_source"], "sunnyregister_oauth_code")
         self.assertTrue(post.call_args.kwargs["headers"]["Idempotency-Key"].startswith("sunny-test-task-7-"))

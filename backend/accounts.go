@@ -924,7 +924,7 @@ func (s *Server) sub2APIAccountNotes(item AccountRecord) string {
 	if s != nil && s.db != nil && strings.TrimSpace(item.Email) != "" {
 		s.db.Where("LOWER(email) = LOWER(?)", item.Email).Limit(1).Find(&mailbox)
 		s.db.Where("LOWER(email) = LOWER(?)", item.Email).Limit(1).Find(&session)
-		if notes := sunnySessionSecretKey(session, mailbox); notes != "" {
+		if notes := sunnySub2Notes(mailbox, sunnySessionSecretKey(session, mailbox)); notes != "" {
 			return notes
 		}
 	}
@@ -936,7 +936,12 @@ func (s *Server) sub2APIAccountNotes(item AccountRecord) string {
 		metadata, _ := provider["metadata"].(map[string]any)
 		for _, key := range []string{"raw", "raw_mailbox_line", "mailbox_raw", "secret_key", "sk"} {
 			if notes := firstText(text(credentials[key]), text(metadata[key])); notes != "" {
-				return notes
+				mailbox := SunnyMailbox{
+					Email:           firstText(text(provider["login_identifier"]), text(credentials["email"]), item.Email),
+					ChatGPTPassword: firstText(text(credentials["chatgpt_password"]), text(credentials["chat_gpt_password"]), text(metadata["chatgpt_password"])),
+					TOTPSecret:      firstText(text(credentials["totp_secret"]), text(metadata["totp_secret"])),
+				}
+				return sunnySub2Notes(mailbox, notes)
 			}
 		}
 		value := func(keys ...string) string {
@@ -958,7 +963,7 @@ func (s *Server) sub2APIAccountNotes(item AccountRecord) string {
 			ChatGPTPassword: value("chatgpt_password", "chat_gpt_password"),
 			TOTPSecret:      value("totp_secret", "totpSecret"),
 		}
-		if notes := sunnyMailboxCredentialLine(mailbox); notes != "" {
+		if notes := sunnySub2Notes(mailbox, sunnyMailboxCredentialLine(mailbox)); notes != "" {
 			return notes
 		}
 	}

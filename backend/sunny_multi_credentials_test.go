@@ -125,7 +125,7 @@ func TestSunnySub2APIOptionsAndBatchImport(t *testing.T) {
 			account, _ := accounts[0].(map[string]any)
 			credentials, _ := account["credentials"].(map[string]any)
 			mapping, _ := credentials["model_mapping"].(map[string]any)
-			if account["notes"] != "session@example.com----mailbox-password----client-id----mailbox-refresh-token" || intValue(account["proxy_id"], 0) != 9 || intValue(account["load_factor"], 0) != 80 || mapping["gpt-5.6-sol"] != "gpt-5.6-sol" {
+			if account["notes"] != "邮箱凭证：session@example.com----mailbox-password----client-id----mailbox-refresh-token" || intValue(account["proxy_id"], 0) != 9 || intValue(account["load_factor"], 0) != 80 || mapping["gpt-5.6-sol"] != "gpt-5.6-sol" {
 				t.Fatalf("unexpected account payload: %#v", account)
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -176,7 +176,7 @@ func TestSub2APIGenericPayloadUsesMatchingMailboxSecretKey(t *testing.T) {
 		7,
 		map[string]any{"notes": "legacy-shared-note"},
 	)
-	if payload["notes"] != "session@example.com----mailbox-password----client-id----mailbox-refresh-token" {
+	if payload["notes"] != "邮箱凭证：session@example.com----mailbox-password----client-id----mailbox-refresh-token" {
 		t.Fatalf("generic sub2api notes = %q", payload["notes"])
 	}
 	preview := maskSub2APIPayload(map[string]any{"accounts": []any{payload}})
@@ -201,8 +201,18 @@ func TestSub2APIGenericPayloadUsesMatchingMailboxSecretKey(t *testing.T) {
 		7,
 		map[string]any{},
 	)
-	if legacyPayload["notes"] != "legacy@example.com----mail-password----mail-client----mail-refresh" {
+	if legacyPayload["notes"] != "邮箱凭证：legacy@example.com----mail-password----mail-client----mail-refresh" {
 		t.Fatalf("legacy sub2api notes = %q", legacyPayload["notes"])
+	}
+}
+
+func TestSunnySub2NotesIncludesLoginSecretLine(t *testing.T) {
+	mailbox := SunnyMailbox{Email: "ls@example.com", ChatGPTPassword: "ChatGPT-pass", TOTPSecret: "JBSWY3DPEHPK3PXP"}
+	if got := sunnySub2Notes(mailbox, "sk@example.com----mail----client----refresh"); got != "邮箱凭证：sk@example.com----mail----client----refresh\n密码2FA：ls@example.com----ChatGPT-pass----JBSWY3DPEHPK3PXP" {
+		t.Fatalf("unexpected combined sub2api notes: %q", got)
+	}
+	if got := sunnySub2Notes(mailbox, ""); got != "密码2FA：ls@example.com----ChatGPT-pass----JBSWY3DPEHPK3PXP" {
+		t.Fatalf("unexpected LS-only sub2api notes: %q", got)
 	}
 }
 

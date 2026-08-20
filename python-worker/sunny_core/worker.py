@@ -23,6 +23,7 @@ from .mailbox import account_from_row, parse_account_line
 from .openai_auth import TaskCancelledError, login_or_register, refresh_openai_access_token
 from .phone_pool import read_sms_candidates, wait_sms_code
 from .protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationError, login_or_register_protocol
+from .login_secret import setup_login_secret
 from .proxy import build_proxy, proxy_target_tls_check, redact_proxy_url
 from .smsbower import SMSBowerClient
 from .smspool import SMSPOOL_CODE_TIMEOUT_SECONDS, SMSPoolClient
@@ -1051,6 +1052,17 @@ def _sub2api_secret_key(db: SunnyDB, email: str, session: dict[str, Any]) -> str
     return str(session.get("raw_mailbox_line") or session.get("mailbox_raw") or "").strip()
 
 
+def _sub2api_notes(db: SunnyDB, email: str, session: dict[str, Any]) -> str:
+    lines: list[str] = []
+    secret_key = _sub2api_secret_key(db, email, session)
+    if secret_key:
+        lines.append(f"邮箱凭证：{secret_key}")
+    login_secret = _sub2api_login_secret(db, email, session)
+    if login_secret:
+        lines.append(f"密码2FA：{login_secret}")
+    return "\n".join(lines)
+
+
 def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str, Any], proxy_url: str = "") -> dict[str, Any]:
     cfg, base_url, token = _sub2api_config(db)
     access_token = str(session.get("access_token") or "").strip()
@@ -1085,7 +1097,7 @@ def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str,
         credentials["model_mapping"] = model_mapping
     account_payload = {
         "name": f"{str(cfg.get('name_prefix') or '')}{email}",
-        "notes": _sub2api_secret_key(db, email, session),
+        "notes": _sub2api_notes(db, email, session),
         "platform": "openai",
         "type": "oauth",
         "credentials": credentials,
@@ -1153,6 +1165,15 @@ def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str,
     return data
 
 
+def _sub2api_login_secret(db: SunnyDB, email: str, session: dict[str, Any]) -> str:
+    mailbox = db.fetch_mailbox_by_email(email) or {}
+    password = str(mailbox.get("chat_gpt_password") or mailbox.get("chatgpt_password") or "").strip()
+    totp = str(mailbox.get("totp_secret") or "").strip()
+    if password and totp:
+        return f"{email}----{password}----{totp}"
+    return ""
+
+
 def _import_sub2api_agent_identity(
     db: SunnyDB,
     email: str,
@@ -1193,7 +1214,7 @@ def _import_sub2api_agent_identity(
         if _is_cancel_exception(exc):
             raise
         raise RuntimeError(f"Agent Identity 凭证创建失败: {exc}") from exc
-    auth_json["notes"] = _sub2api_secret_key(db, email, session)
+    auth_json["notes"] = _sub2api_notes(db, email, session)
     auth_content = json.dumps(auth_json, ensure_ascii=False, separators=(",", ":"))
     payload = {
         "contents": [auth_content],
@@ -1753,6 +1774,41 @@ def _run_one(
                 f"[{email}] [认证] 已保存本次注册生成的 ChatGPT 密码",
                 detail={"email": email, "scope": "selected", "credential": "chatgpt_password"},
             )
+        login_secret_result: dict[str, Any] | None = None
+        if payload.get("setup_login_secret") is True:
+            db.event(
+                f"[{email}] [登录密钥] 开始补充缺失的 ChatGPT 密码与 2FA",
+                detail={"email": email, "scope": "selected", "setup_login_secret": True},
+            )
+            try:
+                login_secret_result = setup_login_secret(
+                    account,
+                    session,
+                    proxies["register"],
+                    lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
+                    should_cancel=db.cancel_requested,
+                    mailbox_proxy_url=mailbox_proxy_url,
+                    traffic_meter=traffic_meter,
+                )
+                if login_secret_result.get("password_added"):
+                    db.save_chatgpt_password(mailbox_id, str(login_secret_result.get("password") or ""))
+                if login_secret_result.get("totp_added"):
+                    db.save_totp_secret(mailbox_id, str(login_secret_result.get("totp_secret") or ""))
+                if isinstance(login_secret_result.get("session"), dict):
+                    session = login_secret_result["session"]
+                if login_secret_result.get("complete"):
+                    db.event(f"[{email}] [登录密钥] ChatGPT 密码与 2FA 已设置完成", detail={"email": email, "scope": "selected", "login_secret_complete": True})
+                else:
+                    db.event(
+                        f"[{email}] [登录密钥] 账户已注册，但登录密钥未全部完成：{'；'.join(login_secret_result.get('errors') or ['未知原因'])}",
+                        "warning",
+                        detail={"email": email, "scope": "selected", "login_secret_complete": False},
+                    )
+            except Exception as exc:
+                if _is_cancel_exception(exc):
+                    raise
+                login_secret_result = {"complete": False, "errors": [str(exc)]}
+                db.event(f"[{email}] [登录密钥] 账户已注册，但添加密码与 2FA 失败: {exc}", "warning", detail={"email": email, "scope": "selected", "login_secret_complete": False})
         if session.get("phone_binding_skipped_reason"):
             phone_skipped_reason = str(session.get("phone_binding_skipped_reason") or "")
         rt_value = session.get("refresh_token") or session.get("openai_rt") or account.openai_rt
@@ -1789,6 +1845,9 @@ def _run_one(
             "stage_complete": stage == REGISTER_ONLY or (stage == CODEX_PHONE_BIND and has_rt),
             "phone_skipped_reason": phone_skipped_reason,
         }
+        if login_secret_result is not None:
+            result["login_secret_complete"] = bool(login_secret_result.get("complete"))
+            result["login_secret_errors"] = list(login_secret_result.get("errors") or [])
         if isinstance(session.get("protocol_traffic"), dict):
             result["protocol_traffic"] = session["protocol_traffic"]
         if session.get("protocol_fallback"):
@@ -2240,6 +2299,109 @@ def _acquire_refresh_tokens(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, 
     return ok, errors, items
 
 
+def _add_login_secrets(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
+    accounts = db.fetch_accounts(_ids(payload.get("account_ids")) or None)
+    success = 0
+    errors: list[str] = []
+    items: list[dict[str, Any]] = []
+    for idx, account_row in enumerate(accounts, start=1):
+        db.ensure_not_cancelled()
+        email = str(account_row.get("email") or "").strip()
+        mailbox = db.fetch_mailbox_by_email(email)
+        if not mailbox:
+            error = f"[{email}] 找不到对应的邮箱凭证"
+            errors.append(error)
+            db.event(error, "error", detail={"email": email, "scope": "selected"})
+            db.update_task(progress_current=idx, success_count=success, error_count=len(errors))
+            continue
+        chatgpt_password = str(mailbox.get("chat_gpt_password") or "").strip()
+        totp_secret = str(mailbox.get("totp_secret") or "").strip()
+        if chatgpt_password and totp_secret:
+            success += 1
+            items.append({"email": email, "status": "skipped", "login_secret_complete": True})
+            db.event(f"[{email}] [登录密钥] 已存在完整 LS，跳过重复设置", detail={"email": email, "scope": "selected"})
+            db.update_task(progress_current=idx, success_count=success, error_count=len(errors))
+            continue
+        try:
+            proxies = _prepare_register_proxy(db, payload, email, idx - 1)
+            auxiliary_proxy = _auxiliary_proxy(payload, proxies)
+            account = account_from_row(mailbox)
+            mailbox_proxy_url = _mailbox_proxy_for_task(payload, proxies, auxiliary_proxy, account.mailbox_type)
+            session = db.fetch_session_by_email(email) or {}
+            meter = ProxyTrafficMeter(
+                proxy_url=str(proxies.get("register") or ""),
+                tracked_proxy=str(proxies.get("mode") or "") == "proxy_pool",
+                email=email,
+                operation="sunny_add_ls",
+            )
+            try:
+                result = setup_login_secret(
+                    account,
+                    session,
+                    str(proxies.get("register") or ""),
+                    lambda message: db.event(message, detail={"email": email, "scope": "selected"}),
+                    should_cancel=db.cancel_requested,
+                    mailbox_proxy_url=mailbox_proxy_url,
+                    traffic_meter=meter,
+                )
+            except RuntimeError as exc:
+                if "登录态" not in str(exc):
+                    raise
+                db.event(f"[{email}] [登录密钥] 现有 Session 不可复用，先重新登录账户", "warning", detail={"email": email, "scope": "selected"})
+                session = login_or_register(
+                    account,
+                    str(proxies.get("register") or ""),
+                    True,
+                    lambda message: db.event(message, detail={"email": email, "scope": "selected"}),
+                    existing_account=True,
+                    require_refresh_token=False,
+                    should_cancel=db.cancel_requested,
+                    execution_mode="background",
+                    mailbox_proxy_url=mailbox_proxy_url,
+                    traffic_meter=meter,
+                    traffic_config=payload.get("browser_traffic_optimization"),
+                )
+                result = setup_login_secret(
+                    account,
+                    session,
+                    str(proxies.get("register") or ""),
+                    lambda message: db.event(message, detail={"email": email, "scope": "selected"}),
+                    should_cancel=db.cancel_requested,
+                    mailbox_proxy_url=mailbox_proxy_url,
+                    traffic_meter=meter,
+                )
+            if result.get("password_added"):
+                db.save_chatgpt_password(int(mailbox.get("id") or 0), str(result.get("password") or ""))
+            if result.get("totp_added"):
+                db.save_totp_secret(int(mailbox.get("id") or 0), str(result.get("totp_secret") or ""))
+            refreshed_session = result.get("session") if isinstance(result.get("session"), dict) else session
+            if refreshed_session:
+                db.upsert_session(email, int(account_row.get("id") or 0), refreshed_session, str(mailbox.get("raw") or ""))
+                access_token = str(refreshed_session.get("access_token") or "")
+                if access_token:
+                    db.upsert_account(email, access_token=access_token, last_error="")
+            complete = bool(result.get("complete"))
+            items.append({"email": email, "status": "success" if complete else "partial", "login_secret_complete": complete, "errors": list(result.get("errors") or [])})
+            if complete:
+                success += 1
+                db.event(f"[{email}] [登录密钥] LS 添加完成", detail={"email": email, "scope": "selected"})
+            else:
+                message = "；".join(result.get("errors") or ["登录密钥未完整设置"])
+                errors.append(f"[{email}] {message}")
+                db.event(f"[{email}] [登录密钥] 部分设置未完成: {message}", "warning", detail={"email": email, "scope": "selected"})
+            snapshot = meter.snapshot()
+            db.record_proxy_traffic(email, int(mailbox.get("id") or 0), int(snapshot.get("total_bytes") or 0))
+        except Exception as exc:
+            if _is_cancel_exception(exc):
+                raise
+            error = f"[{email}] 添加 LS 失败: {exc}"
+            errors.append(error)
+            items.append({"email": email, "status": "failed", "login_secret_complete": False, "error": str(exc)})
+            db.event(error, "error", detail={"email": email, "scope": "selected"})
+        db.update_task(progress_current=idx, success_count=success, error_count=len(errors))
+    return success, errors, items
+
+
 def run_sunny_task(task_id: str) -> None:
     db = SunnyDB(task_id)
     try:
@@ -2264,6 +2426,16 @@ def run_sunny_task(task_id: str) -> None:
             db.ensure_not_cancelled()
             status = "succeeded" if ok else "failed"
             db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps({"success": ok, "errors": errors, "items": items}, ensure_ascii=False), error="; ".join(errors[:3]) if not ok else "", finished_at=now_sql())
+            return
+        if task_type == "sunny_add_ls":
+            ok, errors, items = _add_login_secrets(db, payload)
+            db.ensure_not_cancelled()
+            skipped = len([item for item in items if item.get("status") == "skipped"])
+            partial = len([item for item in items if item.get("status") == "partial"])
+            status = "succeeded" if ok else "failed"
+            result = {"success": ok, "failed": len(errors), "skipped": skipped, "partial": partial, "errors": errors, "items": items}
+            db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps(result, ensure_ascii=False), error="; ".join(errors[:3]) if not ok else "", finished_at=now_sql())
+            db.event(f"添加 LS 任务总结：成功 {ok}，跳过 {skipped}，部分完成 {partial}，失败 {len(errors)}", "info" if ok else "error", detail={"scope": "global", **result})
             return
 
         mailboxes = _choose_mailboxes(db, payload)

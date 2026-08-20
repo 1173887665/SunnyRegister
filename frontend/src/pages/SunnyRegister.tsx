@@ -2,7 +2,7 @@ import { Fragment, useDeferredValue, useEffect, useLayoutEffect, useRef, useStat
 import type { Dispatch, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
-import { Activity, ArrowLeft, ArrowRight, ChevronDown, CircleHelp, CreditCard, Crown, Download, Globe2, Inbox, ListChecks, Loader2, Pencil, Plus, RefreshCw, RotateCw, Save, Search, Settings2, Sparkles, Trash2, Upload, X } from "lucide-react";
+import { Activity, ArrowLeft, ArrowRight, ChevronDown, CircleHelp, CreditCard, Crown, Download, Eye, EyeOff, Globe2, Inbox, ListChecks, Loader2, Pencil, Plus, RefreshCw, RotateCw, Save, Search, Settings2, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -22,7 +22,7 @@ const DATA_TABLE_COLUMNS: Record<string, DataTableColumn[]> = {
   ],
   mailboxes: [
     { width: 44, minWidth: 44, maxWidth: 72 }, { width: 300, minWidth: 180 }, { width: 160, minWidth: 110 },
-    { width: 110, minWidth: 88 }, { width: 110, minWidth: 88 }, { width: 80, minWidth: 64 }, { width: 80, minWidth: 64 },
+    { width: 110, minWidth: 88 }, { width: 110, minWidth: 88 }, { width: 80, minWidth: 64 }, { width: 120, minWidth: 96 }, { width: 100, minWidth: 80 }, { width: 80, minWidth: 64 },
     { width: 100, minWidth: 82 }, { width: 150, minWidth: 120 }, { width: 190, minWidth: 150 }, { width: 200, minWidth: 150, maxWidth: 520 },
   ],
   phones: [
@@ -35,7 +35,7 @@ const DATA_TABLE_COLUMNS: Record<string, DataTableColumn[]> = {
   ],
   sessions: [
     { width: 44, minWidth: 44, maxWidth: 72 }, { width: 280, minWidth: 180 }, { width: 150, minWidth: 100 },
-    { width: 110, minWidth: 88 }, { width: 110, minWidth: 88 }, { width: 72, minWidth: 60 }, { width: 72, minWidth: 60 },
+    { width: 110, minWidth: 88 }, { width: 110, minWidth: 88 }, { width: 72, minWidth: 60 }, { width: 72, minWidth: 60 }, { width: 72, minWidth: 60 },
     { width: 130, minWidth: 100 }, { width: 150, minWidth: 100 }, { width: 150, minWidth: 100 }, { width: 130, minWidth: 100 },
     { width: 190, minWidth: 120 }, { width: 190, minWidth: 150 }, { width: 320, minWidth: 260, maxWidth: 640 },
   ],
@@ -248,7 +248,7 @@ function useCachedState<T>(key: string, initial: T | (() => T)): [T, Dispatch<Se
   return [value, setCachedValue];
 }
 
-type PersistentSessionTaskKind = "refresh-at" | "acquire-rt" | "trial-check" | "payment-probe" | "access-token-check" | "health-check" | "subscription-check" | "sub2-import";
+type PersistentSessionTaskKind = "refresh-at" | "acquire-rt" | "trial-check" | "payment-probe" | "access-token-check" | "health-check" | "subscription-check" | "sub2-import" | "add-ls";
 type SessionTaskState = "running" | "succeeded" | "failed" | "cancelled";
 type SessionRenewalProgress = {
   email: string;
@@ -633,6 +633,19 @@ const en = Object.assign({
 }, accountDetectionSummaryCopy.en);
 
 Object.assign(zh, {
+  addPassword2FA: "添加密码2FA",
+  chatgptPasswordColumn: "密码",
+  twoFactorColumn: "2FA",
+  loginSecret: "登录密钥",
+  addLoginSecret: "添加LS",
+  addingLoginSecret: "添加中...",
+  addLoginSecretNoSelection: "请选择需要添加 LS 的账户",
+  addLoginSecretSummary: "LS 添加完成：成功 {success} 个，跳过 {skipped} 个，部分完成 {partial} 个，失败 {failed} 个",
+  addLoginSecretDone: "账户 {email} 的 LS 已添加",
+  addLoginSecretFailed: "账户 {email} 的 LS 添加失败",
+  showCredential: "显示明文",
+  hideCredential: "隐藏明文",
+  exportLS: "导出LS",
   protocolMode: "协议模式注册",
   backgroundMode: "无头浏览器注册",
   visibleMode: "可视浏览器注册",
@@ -649,6 +662,19 @@ Object.assign(zh, {
   allPaymentMethods: "全部支付方式", paymentMethodFilter: "支付方式筛选（同时满足）", clearPaymentMethods: "清除支付方式筛选",
 });
 Object.assign(en, {
+  addPassword2FA: "Add Password 2FA",
+  chatgptPasswordColumn: "Password",
+  twoFactorColumn: "2FA",
+  loginSecret: "Login Secret",
+  addLoginSecret: "Add LS",
+  addingLoginSecret: "Adding...",
+  addLoginSecretNoSelection: "Select accounts to add LS",
+  addLoginSecretSummary: "LS setup complete: {success} succeeded, {skipped} skipped, {partial} partial, {failed} failed",
+  addLoginSecretDone: "LS added for {email}",
+  addLoginSecretFailed: "Failed to add LS for {email}",
+  showCredential: "Show plaintext",
+  hideCredential: "Hide plaintext",
+  exportLS: "Export LS",
   protocolMode: "Protocol Registration",
   backgroundMode: "Headless Browser Registration",
   visibleMode: "Visible Browser Registration",
@@ -1000,6 +1026,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const [mode, setMode] = useCachedState<"protocol" | "background" | "visible">("workbench.mode", "visible");
   const [protocolChallengeStrategy, setProtocolChallengeStrategy] = useCachedState<ProtocolChallengeStrategy>("workbench.protocolChallengeStrategy", "native_headless");
   const [stage, setStage] = useCachedState<RegisterStage>("workbench.stage", "register_only");
+  const [setupLoginSecret, setSetupLoginSecret] = useCachedState("workbench.setupLoginSecret", false);
   const [allTrafficProxyPool, setAllTrafficProxyPool] = useState(false);
   const [globalLogs, setGlobalLogs] = useCachedState<LogEntry[]>("workbench.globalLogs", []);
   const [selectedLogs, setSelectedLogs] = useCachedState<LogEntry[]>("workbench.selectedLogs", []);
@@ -1093,7 +1120,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     setGlobalLogs((old) => [localLog(`${t.createTaskLog} ${ids.length}`), sep, ...old]);
     setSelectedLogs((old) => [sep, ...old]);
     try {
-      const res = await apiFetch("/sunny/tasks/register", { method: "POST", body: JSON.stringify({ mailbox_ids: ids, count: ids.length, concurrency: Math.max(1, Math.min(Number(modalConcurrency) || 1, ids.length)), identity, execution_mode: mode, protocol_challenge_strategy: protocolChallengeStrategy, registration_stage: stage, proxy_all_traffic: allTrafficProxyPool }) });
+      const res = await apiFetch("/sunny/tasks/register", { method: "POST", body: JSON.stringify({ mailbox_ids: ids, count: ids.length, concurrency: Math.max(1, Math.min(Number(modalConcurrency) || 1, ids.length)), identity, execution_mode: mode, protocol_challenge_strategy: protocolChallengeStrategy, registration_stage: stage, proxy_all_traffic: allTrafficProxyPool, setup_login_secret: setupLoginSecret }) });
       notify("ok", t.taskSubmitted);
       setGlobalLogs((old) => [localLog(t.taskSubmitted), ...old].slice(0, 160));
       const taskId = String(res.id || res.task_id || "");
@@ -1439,11 +1466,11 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       <ResizableDataTable tableKey="workbench" columns={DATA_TABLE_COLUMNS.workbench} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>selectCurrentPage(e.target.checked)}/>,t.email,t.mailboxGroup,t.status,t.planType,<SortTimeHeader label={t.statusChangedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.operation]}><tbody>{rows.length ? pagedRows.map((r) => <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} onChange={(e)=>selectRow(r,e.target.checked)}/></td><td title={r.email}>{r.email}</td><td title={r.group_name || t.defaultGroup}>{r.group_name || t.defaultGroup}</td><td><StatusBadge t={t} status={r.status || "未注册"} /></td><td><PlanTypeBadge value={r.account?.plan_type || r.plan_type} /></td><td>{formatDateTime(r.status_changed_at)}</td><td><button className="sr-link inline-flex items-center gap-1" title={t.refreshStatus} disabled={busy} onClick={()=>refreshAccountStatus(r)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button></td></tr>) : <tr><td colSpan={7}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.noDataDesc}</p></div></td></tr>}</tbody></ResizableDataTable>
       <PaginationBar t={t} total={total} page={safePageNo} pageSize={pageSize} setPage={setPageNo} setPageSize={setPageSize} />
     </Card>
-    {autoOpen && <AutoRegisterModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} selectedNeedPhone={selectedRows.some((m)=>m.has_openai_rt !== true)} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} identity={identity} setIdentity={setIdentity} mode={mode} setMode={setMode} protocolChallengeStrategy={protocolChallengeStrategy} setProtocolChallengeStrategy={setProtocolChallengeStrategy} stage={stage} setStage={setStage} allTrafficProxyPool={allTrafficProxyPool} setAllTrafficProxyPool={setAllTrafficProxyPool} onClose={()=>setAutoOpen(false)} onStart={()=>createRegisterTask()} notify={notify} />}
+    {autoOpen && <AutoRegisterModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} selectedNeedPhone={selectedRows.some((m)=>m.has_openai_rt !== true)} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} identity={identity} setIdentity={setIdentity} mode={mode} setMode={setMode} protocolChallengeStrategy={protocolChallengeStrategy} setProtocolChallengeStrategy={setProtocolChallengeStrategy} stage={stage} setStage={setStage} allTrafficProxyPool={allTrafficProxyPool} setAllTrafficProxyPool={setAllTrafficProxyPool} setupLoginSecret={setupLoginSecret} setSetupLoginSecret={setSetupLoginSecret} onClose={()=>setAutoOpen(false)} onStart={()=>createRegisterTask()} notify={notify} />}
   </div>;
 }
 
-function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurrency, setConcurrency, identity, setIdentity, mode, setMode, protocolChallengeStrategy, setProtocolChallengeStrategy, stage, setStage, allTrafficProxyPool, setAllTrafficProxyPool, onClose, onStart, notify }: { t: typeof zh; busy: boolean; selectedEmails: string[]; selectedNeedPhone: boolean; concurrency: number; setConcurrency: (v:number)=>void; identity: "system"|"google"|"microsoft"; setIdentity: (v:"system"|"google"|"microsoft")=>void; mode: "protocol"|"background"|"visible"; setMode:(v:"protocol"|"background"|"visible")=>void; protocolChallengeStrategy: ProtocolChallengeStrategy; setProtocolChallengeStrategy:(v:ProtocolChallengeStrategy)=>void; stage: RegisterStage; setStage:(v:RegisterStage)=>void; allTrafficProxyPool: boolean; setAllTrafficProxyPool: (v:boolean)=>void; onClose:()=>void; onStart:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
+function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurrency, setConcurrency, identity, setIdentity, mode, setMode, protocolChallengeStrategy, setProtocolChallengeStrategy, stage, setStage, allTrafficProxyPool, setAllTrafficProxyPool, setupLoginSecret, setSetupLoginSecret, onClose, onStart, notify }: { t: typeof zh; busy: boolean; selectedEmails: string[]; selectedNeedPhone: boolean; concurrency: number; setConcurrency: (v:number)=>void; identity: "system"|"google"|"microsoft"; setIdentity: (v:"system"|"google"|"microsoft")=>void; mode: "protocol"|"background"|"visible"; setMode:(v:"protocol"|"background"|"visible")=>void; protocolChallengeStrategy: ProtocolChallengeStrategy; setProtocolChallengeStrategy:(v:ProtocolChallengeStrategy)=>void; stage: RegisterStage; setStage:(v:RegisterStage)=>void; allTrafficProxyPool: boolean; setAllTrafficProxyPool: (v:boolean)=>void; setupLoginSecret: boolean; setSetupLoginSecret: (v:boolean)=>void; onClose:()=>void; onStart:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
 	const mailboxVerificationDescription = t === zh
 		? "系统将按邮箱类型自动选择 Microsoft OAuth 或 Apple iCloud 渠道完成邮箱验证。"
 		: "The system automatically selects Microsoft OAuth or the Apple iCloud channel based on each mailbox type.";
@@ -1525,7 +1552,7 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
         <Choice disabled={agentIdentityDisabled} disabledMessage={t.registerStageUnavailable} active={!agentIdentityDisabled && stage===AGENT_IDENTITY_REVERSE_PROXY} title={t.agentIdentityReverseProxy} desc={t.agentIdentityReverseProxyDesc + "\n" + reverseHint + (agentIdentityDisabled ? " · " + t.stageDisabledTip : "")} onClick={()=>setStage(AGENT_IDENTITY_REVERSE_PROXY)} onDisabledClick={(msg)=>notify("fail", msg)} />
       </div>
       <div className="sr-summary sr-register-summary"><div><b>{t.identityLabel}</b><span>{identityText}</span></div><div><b>{t.modeLabel}</b><span>{modeText}</span></div><div><b>{t.stageLabel}</b><span>{stageText}</span></div><div><b>{t.registerAccounts}</b><span>{selectedEmails.length}</span></div><div><b>{t.concurrency}</b><input className="sr-concurrency-input" type="number" min={1} max={Math.max(1, selectedEmails.length)} value={safeConcurrency} onChange={(e)=>setConcurrency(Math.max(1, Math.min(Number(e.target.value || 1), Math.max(1, selectedEmails.length))))}/></div><div className="sr-register-account-list">{selectedEmails.map((email)=><div key={email}>{email}</div>)}</div></div>
-      <div className="sr-register-actions"><label className="mr-3 flex min-h-12 items-center gap-2 whitespace-nowrap text-sm text-slate-600" title={t.allTrafficProxyPoolTip}><input type="checkbox" checked={allTrafficProxyPool} onChange={(e)=>setAllTrafficProxyPool(e.target.checked)} disabled={busy}/><span>{t.allTrafficProxyPool}</span></label><Button className="h-12 flex-1 rounded-xl bg-blue-600 text-lg text-white hover:bg-blue-700" disabled={startDisabled} onClick={onStart}>{busy ? <Loader2 className="mr-2 h-5 w-5 animate-spin"/> : null}{t.startAutoRegister}</Button><button className="sr-register-cancel" onClick={onClose}>{t.cancel}</button></div>
+      <div className="sr-register-actions"><label className="mr-3 flex min-h-12 items-center gap-2 whitespace-nowrap text-sm text-slate-600" title={t.allTrafficProxyPoolTip}><input type="checkbox" checked={allTrafficProxyPool} onChange={(e)=>setAllTrafficProxyPool(e.target.checked)} disabled={busy}/><span>{t.allTrafficProxyPool}</span></label><label className="mr-3 flex min-h-12 items-center gap-2 whitespace-nowrap text-sm text-slate-600"><input type="checkbox" checked={setupLoginSecret} onChange={(e)=>setSetupLoginSecret(e.target.checked)} disabled={busy}/><span>{t.addPassword2FA}</span></label><Button className="h-12 flex-1 rounded-xl bg-blue-600 text-lg text-white hover:bg-blue-700" disabled={startDisabled} onClick={onStart}>{busy ? <Loader2 className="mr-2 h-5 w-5 animate-spin"/> : null}{t.startAutoRegister}</Button><button className="sr-register-cancel" onClick={onClose}>{t.cancel}</button></div>
     </div>
   </div></div>;
 }
@@ -1581,6 +1608,8 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   const [mailboxForMail,setMailboxForMail]=useState<AnyObj|null>(null);
   const [mailboxCfg,setMailboxCfg]=useCachedState<AnyObj>("mailbox.config",{pool_enabled:true});
   const [fieldLoading,setFieldLoading]=useState<Record<string,boolean>>({});
+  const [credentialVisible,setCredentialVisible]=useState<Record<string,boolean>>({});
+  const [credentialValues,setCredentialValues]=useState<Record<string,string>>({});
   const { loading: listLoading, track: trackListLoad } = useLoadingTracker();
   const load=()=>trackListLoad(async()=>{
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
@@ -1619,6 +1648,28 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   useEffect(()=>{setPage(1)},[query, groupFilter, statusFilter, planFilter, timeSort, pageSize]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
   async function run(label:string, fn:()=>Promise<any>){try{await fn();notify("ok",label);void load();void loadGroups().catch(()=>{})}catch(e:any){notify("fail",e.message||String(e))}}
+  async function toggleMailboxCredential(m: AnyObj, field: "chatgpt_password" | "totp_secret") {
+    const key = `${m.id}:${field}`;
+    if (credentialVisible[key]) {
+      setCredentialVisible((old)=>({...old,[key]:false}));
+      return;
+    }
+    if (!credentialValues[key]) {
+      setFieldLoading((old)=>({...old,[key]:true}));
+      try {
+        const result = await apiFetch(`/sunny/mailboxes/${m.id}/field?name=${field}`);
+        const value = String(result.value || "").trim();
+        if (!value) throw new Error(t.sessionFieldEmpty.replace("{field}", field === "chatgpt_password" ? t.chatgptPasswordColumn : t.twoFactorColumn));
+        setCredentialValues((old)=>({...old,[key]:value}));
+      } catch (e: any) {
+        notify("fail", e.message || String(e));
+        return;
+      } finally {
+        setFieldLoading((old)=>({...old,[key]:false}));
+      }
+    }
+    setCredentialVisible((old)=>({...old,[key]:true}));
+  }
   async function deleteMailbox(m: AnyObj) {
     await run(t.done,()=>apiFetch(`/sunny/mailboxes/${m.id}`,{method:"DELETE"}));
   }
@@ -1708,7 +1759,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
         </div>
         <div className="sr-table-card sr-mailbox-table-panel overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
           <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
-          <ResizableDataTable tableKey="mailboxes" columns={DATA_TABLE_COLUMNS.mailboxes} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/>,t.mailbox,t.mailboxGroup,t.status,t.planType,"AT","SK",t.enabled,t.trafficUsage,<SortTimeHeader label={t.updatedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.actions]}>
+          <ResizableDataTable tableKey="mailboxes" columns={DATA_TABLE_COLUMNS.mailboxes} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/>,t.mailbox,t.mailboxGroup,t.status,t.planType,"AT","SK",t.chatgptPasswordColumn,t.twoFactorColumn,t.enabled,t.trafficUsage,<SortTimeHeader label={t.updatedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.actions]}>
             <tbody>{items.length ? items.map((m)=><tr key={m.id}>
               <td><input type="checkbox" checked={selected.includes(m.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,m.id])) : selected.filter((id)=>id!==m.id))}/></td>
               <td title={m.email}><div className="font-semibold">{m.email}</div></td>
@@ -1717,11 +1768,13 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
               <td><PlanTypeBadge value={m.plan_type} /></td>
               <td>{m.has_access_token ? <button className="sr-session-field-button" title={t.copy} disabled={fieldLoading[`${m.id}:access_token`]} onClick={()=>void copyMailboxField(m,"access_token")}>{fieldLoading[`${m.id}:access_token`] ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td>
               <td><button className="sr-session-field-button" title={t.copy} disabled={fieldLoading[`${m.id}:secret_key`]} onClick={()=>void copyMailboxField(m,"secret_key")}>{fieldLoading[`${m.id}:secret_key`] ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button></td>
+              <td>{m.has_chatgpt_password ? <span className="inline-flex items-center gap-1"><span className="text-xs font-mono">{credentialVisible[`${m.id}:chatgpt_password`] ? (credentialValues[`${m.id}:chatgpt_password`] || "-") : (m.chatgpt_password_preview || "••••••")}</span><button type="button" className="sr-icon-command" title={credentialVisible[`${m.id}:chatgpt_password`] ? t.hideCredential : t.showCredential} onClick={()=>void toggleMailboxCredential(m,"chatgpt_password")}>{fieldLoading[`${m.id}:chatgpt_password`] ? <Loader2 className="h-3.5 w-3.5 animate-spin"/> : credentialVisible[`${m.id}:chatgpt_password`] ? <EyeOff className="h-3.5 w-3.5"/> : <Eye className="h-3.5 w-3.5"/>}</button></span> : "-"}</td>
+              <td>{m.has_totp_secret ? <span className="inline-flex items-center gap-1"><span className="text-xs font-mono">{credentialVisible[`${m.id}:totp_secret`] ? (credentialValues[`${m.id}:totp_secret`] || "-") : (m.totp_secret_preview || "••••••")}</span><button type="button" className="sr-icon-command" title={credentialVisible[`${m.id}:totp_secret`] ? t.hideCredential : t.showCredential} onClick={()=>void toggleMailboxCredential(m,"totp_secret")}>{fieldLoading[`${m.id}:totp_secret`] ? <Loader2 className="h-3.5 w-3.5 animate-spin"/> : credentialVisible[`${m.id}:totp_secret`] ? <EyeOff className="h-3.5 w-3.5"/> : <Eye className="h-3.5 w-3.5"/>}</button></span> : "-"}</td>
               <td><button className={cn("sr-toggle", m.enabled && "on")} onClick={()=>run(t.done,()=>apiFetch(`/sunny/mailboxes/${m.id}`,{method:"PUT",body:JSON.stringify({enabled:!m.enabled})}))}>{m.enabled ? "ON" : "OFF"}</button></td>
               <td className="whitespace-nowrap text-xs tabular-nums" title={`${t.trafficUsageTip}: ${formatTrafficUsage(m)}`}>{formatTrafficUsage(m)}</td>
               <td>{formatDateTime(m.updated_at)}</td>
               <td><div className="flex flex-wrap gap-2"><button className="sr-link" onClick={()=>void openMailboxMail(m)}>{t.queryMail}</button><button className="sr-link" onClick={()=>void openMailboxEditor(m)}>{t.edit}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={m.email || ""} onConfirm={()=>deleteMailbox(m)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td>
-			</tr>) : <tr><td colSpan={11}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noMailbox}</div><p className="mt-2 text-sm text-slate-400">{emptyMailboxDescription}</p></div></td></tr>}</tbody>
+            </tr>) : <tr><td colSpan={13}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noMailbox}</div><p className="mt-2 text-sm text-slate-400">{emptyMailboxDescription}</p></div></td></tr>}</tbody>
           </ResizableDataTable>
           <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
         </div>
@@ -3155,8 +3208,8 @@ function PaymentMethodFilter({t,value,options,onChange}:{t:AnyObj;value:string[]
 }
 void CheckoutBadge;
 void PaymentMethodsBadge;
-type SessionFieldName = "access_token" | "refresh_token" | "secret_key";
-const SESSION_FIELD_LABELS: Record<SessionFieldName, string> = { access_token: "AT", refresh_token: "RT", secret_key: "SK" };
+type SessionFieldName = "access_token" | "refresh_token" | "secret_key" | "login_secret";
+const SESSION_FIELD_LABELS: Record<SessionFieldName, string> = { access_token: "AT", refresh_token: "RT", secret_key: "SK", login_secret: "LS" };
 
 function renewalViewForSession(tasks: PersistentSessionTask[], row: AnyObj) {
   const task = [...tasks].reverse().find((item) => (item.kind === "refresh-at" || item.kind === "acquire-rt")
@@ -3210,6 +3263,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const paymentProbingSessionIds = sessionIdsForKind("payment-probe");
   const atCheckingSessionIds = sessionIdsForKind("access-token-check");
   const sub2ImportingSessionIds = sessionIdsForKind("sub2-import");
+  const addingLoginSecretSessionIds = sessionIdsForKind("add-ls");
   const healthBusy = activeTaskForKind("health-check").length > 0;
   const batchHealthBusy = activeTaskForKind("health-check").some((task)=>task.isBatch);
   const batchSubscriptionBusy = activeTaskForKind("subscription-check").some((task)=>task.isBatch);
@@ -3217,6 +3271,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const batchPaymentProbeBusy = activeTaskForKind("payment-probe").some((task)=>task.isBatch);
   const batchATCheckBusy = activeTaskForKind("access-token-check").some((task)=>task.isBatch);
   const batchSub2Busy = activeTaskForKind("sub2-import").some((task)=>task.isBatch);
+  const batchAddLoginSecretBusy = activeTaskForKind("add-ls").some((task)=>task.isBatch);
   const activeRenewalTasks = persistentTasks.filter((task)=>task.kind==="refresh-at" && task.state==="running" && task.taskId);
   const [stoppingRenewalTaskIds,setStoppingRenewalTaskIds]=useState<string[]>([]);
   const stoppingRenewal = activeRenewalTasks.some((task)=>stoppingRenewalTaskIds.includes(task.taskId));
@@ -3270,7 +3325,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   useEffect(()=>{setPage(1)},[sortBy, timeSort, pageSize, query, status, plan, trialEligibility, checkoutKind, paymentMethods, group]);
   useEffect(()=>{apiFetch("/sunny/mailbox-groups").then((res)=>setGroups(sortMailboxGroups(res.items||[]))).catch(()=>setGroups([]));},[]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
-  const exportFormat = ["sk", "at", "sub"].includes(fmt) ? fmt : "sk";
+  const exportFormat = ["ls", "sk", "at", "sub"].includes(fmt) ? fmt : "sk";
   const allChecked = items.length > 0 && items.every((x)=>selected.includes(x.id));
   const paymentMethodOptions=Array.from(new Set([...PAYMENT_METHOD_OPTIONS,...paymentMethods,...items.flatMap((item)=>Array.isArray(item.payment_methods)?item.payment_methods:[])])).map(String);
   async function exp(ids?: number[], format = exportFormat){
@@ -3472,6 +3527,26 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       }
     } catch(e:any) { notify("fail", e.message || t.acquireRTFailed); }
   }
+  async function addLoginSecrets(ids: number[], row?: AnyObj) {
+    const targetIds = Array.from(new Set(ids.map(Number).filter(Boolean)));
+    if (!targetIds.length) { notify("fail", t.addLoginSecretNoSelection); return; }
+    try {
+      const task = await runPersistentSessionTask("add-ls", targetIds, row?.email, () => apiFetch("/sunny/tasks/add-ls", { method:"POST", body:JSON.stringify({ session_ids: targetIds, execution_mode:"background", concurrency: Math.max(1, Math.min(3, targetIds.length)) }) }));
+      const result = task.result || {};
+      const success = Number(result.success || task.success_count || 0);
+      const skipped = Number(result.skipped || 0);
+      const partial = Number(result.partial || 0);
+      const failed = Number(result.failed || task.error_count || 0);
+      if (row) {
+        const item = (result.items || []).find((entry: AnyObj)=>String(entry.email).toLowerCase() === String(row.email).toLowerCase());
+        if (item?.status === "success" || item?.status === "skipped") notify("ok", template(t.addLoginSecretDone,{email:row.email}));
+        else notify("fail", item?.error || template(t.addLoginSecretFailed,{email:row.email}));
+      } else {
+        notify(failed > 0 && success === 0 ? "fail" : "ok", template(t.addLoginSecretSummary,{success,skipped,partial,failed}));
+      }
+      await load();
+    } catch(e:any) { notify("fail", e.message || String(e)); }
+  }
   async function importSub2API(ids: number[], row?: AnyObj) {
     const targetIds=Array.from(new Set(ids.map(Number).filter(Boolean)));
     if (!targetIds.length) { notify("fail",t.sub2NoSelection); return; }
@@ -3495,7 +3570,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
       <div className="flex items-center gap-2"><h2 className="text-xl font-bold">{t.session}</h2><button type="button" className="sr-icon-command" title={t.maintenanceSettings} onClick={()=>setMaintenanceOpen(true)}><Settings2 className="h-4 w-4"/></button></div>
       <div className="flex flex-wrap items-center gap-2">
-        <SelectBox className="sr-select-like" value={exportFormat} onChange={(v)=>setFmt(String(v))} options={[{value:"sk",label:t.exportSK},{value:"at",label:t.exportAT},{value:"sub",label:t.exportSUB}]} />
+        <SelectBox className="sr-select-like" value={exportFormat} onChange={(v)=>setFmt(String(v))} options={[{value:"ls",label:t.exportLS},{value:"sk",label:t.exportSK},{value:"at",label:t.exportAT},{value:"sub",label:t.exportSUB}]} />
         <Button className="rounded-full" onClick={()=>exp()}><Download className="mr-2 h-4 w-4"/>{t.export}</Button>
       </div>
     </div>
@@ -3511,6 +3586,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
         {activeRenewalTasks.length > 0 && <button className={cn("sr-text-btn sr-action-danger",stoppingRenewal&&"is-running")} aria-busy={stoppingRenewal} disabled={stoppingRenewal} title={t.stopRenewalTip} onClick={()=>void stopRenewalTasks()}>{stoppingRenewal ? <Loader2 className="h-4 w-4 animate-spin"/> : <X className="h-4 w-4"/>}{stoppingRenewal ? t.stoppingRenewal : t.stopRenewal}</button>}
         <button className={cn("sr-text-btn sr-action-info",batchSub2Busy&&"is-running")} aria-busy={batchSub2Busy} disabled={batchSub2Busy || selected.length===0} title={selected.length===0?t.sub2NoSelection:t.importSub2API} onClick={()=>void importSub2API(selected)}>{batchSub2Busy?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>}{batchSub2Busy?t.importingSub2API:"反代"}</button>
+        <button className={cn("sr-text-btn sr-action-info",batchAddLoginSecretBusy&&"is-running")} aria-busy={batchAddLoginSecretBusy} disabled={batchAddLoginSecretBusy || selected.length === 0} title={selected.length === 0 ? t.addLoginSecretNoSelection : t.addLoginSecret} onClick={()=>void addLoginSecrets(selected)}>{batchAddLoginSecretBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Plus className="h-4 w-4"/>}{batchAddLoginSecretBusy ? t.addingLoginSecret : t.addLoginSecret}</button>
         <button className={cn("sr-text-btn sr-action-info",batchTrialBusy&&"is-running")} aria-busy={batchTrialBusy} disabled={batchTrialBusy || selected.length === 0} title={selected.length === 0 ? t.trialNoSelection : t.trialCheck} onClick={()=>runTrialCheck(selected)}>{batchTrialBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{batchTrialBusy ? t.trialChecking : t.trialCheck}</button>
         <button className={cn("sr-text-btn sr-action-info",batchPaymentProbeBusy&&"is-running")} aria-busy={batchPaymentProbeBusy} disabled={batchPaymentProbeBusy || selected.length === 0} title={selected.length === 0 ? t.paymentProbeNoSelection : t.paymentProbe} onClick={()=>runPaymentProbe(selected)}>{batchPaymentProbeBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <CreditCard className="h-4 w-4"/>}{batchPaymentProbeBusy ? t.paymentProbing : t.paymentProbe}</button>
         <button className={cn("sr-text-btn sr-action-info",batchATCheckBusy&&"is-running")} aria-busy={batchATCheckBusy} disabled={batchATCheckBusy || selected.length === 0 || selected.some((id)=>atCheckingSessionIds.includes(id)||refreshingSessionIds.includes(id))} title={selected.length === 0 ? t.refreshATNoSelection : t.refreshAT} onClick={()=>refreshAccessTokens(selected)}>{batchATCheckBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{batchATCheckBusy ? t.refreshingAT : t.refreshAT}</button>
@@ -3520,7 +3596,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       </div>
     </div>
     <div className="sr-table-scroll">
-      <ResizableDataTable tableKey="sessions-v2" columns={DATA_TABLE_COLUMNS.sessions} className="sr-session-table" headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/>,t.email,t.groupFilter,t.status,t.planType,"SK","AT","RT",t.trialEligibility,t.checkoutKind,t.paymentMethods,<SortTimeHeader label={t.atExpiresAt} order={sortBy==="access_token_expires_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("access_token_expires_at")}/>,<SortTimeHeader label={t.lastHealthCheckedAt} order={sortBy==="last_health_checked_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("last_health_checked_at")}/>,t.operation]}>
+      <ResizableDataTable tableKey="sessions-v2" columns={DATA_TABLE_COLUMNS.sessions} className="sr-session-table" headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/>,t.email,t.groupFilter,t.status,t.planType,t.loginSecret,"SK","AT","RT",t.trialEligibility,t.checkoutKind,t.paymentMethods,<SortTimeHeader label={t.atExpiresAt} order={sortBy==="access_token_expires_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("access_token_expires_at")}/>,<SortTimeHeader label={t.lastHealthCheckedAt} order={sortBy==="last_health_checked_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("last_health_checked_at")}/>,t.operation]}>
         <tbody>{items.length ? items.map((s)=>{
           const refreshing=refreshingSessionIds.includes(s.id);
           const checkingAT=atCheckingSessionIds.includes(s.id);
@@ -3529,17 +3605,19 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
           const checkingTrial=trialCheckingSessionIds.includes(s.id);
           const probingPayment=paymentProbingSessionIds.includes(s.id);
           const importingSub2=sub2ImportingSessionIds.includes(s.id);
+          const addingLS=addingLoginSecretSessionIds.includes(s.id);
           const acquiringRT=acquiringRTSessionIds.includes(s.id);
           const skLoading=fieldLoading[`${s.id}:secret_key`];
+          const lsLoading=fieldLoading[`${s.id}:login_secret`];
           const atLoading=fieldLoading[`${s.id}:access_token`];
           const rtLoading=fieldLoading[`${s.id}:refresh_token`];
           const renewalView=renewalViewForSession(persistentTasks,s);
           const renewalPercent=renewalView ? Math.min(100, Math.max(0, (renewalView.progress.current / renewalView.progress.total) * 100)) : 0;
           return <Fragment key={s.id}>
-            <tr><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td title={s.email}>{s.email}</td><td title={s.group_name || "-"}>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td><TrialEligibilityBadge t={t} row={s}/></td><td><CheckoutBadge t={t} row={s}/></td><td><PaymentMethodsBadge row={s}/></td><td>{s.access_token_status === "renewal_failed" ? <FailureState label={t.atRenewalFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "invalid" ? <FailureState label={t.atInvalidOrExpired} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_blocked" ? <FailureState label={t.atProbeBlocked} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_failed" ? <FailureState label={t.atProbeFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : formatDateTime(s.access_token_expires_at)}</td><td>{s.health_check_status === "failed" ? <FailureState label={t.accountHealthCheckFailed} detail={s.health_check_error} onOpen={setFailureDetail}/> : formatDateTime(s.last_health_checked_at)}</td><td><div className="flex flex-wrap gap-2"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><button className="sr-link inline-flex items-center gap-1" disabled={!trialCheckable(s) || checkingTrial} title={!trialCheckable(s) ? t.trialUnavailable : t.trialCheck} onClick={()=>runTrialCheck([s.id],s)}>{checkingTrial ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{checkingTrial ? t.trialChecking : t.trialCheck}</button><button className="sr-link inline-flex items-center gap-1" disabled={!s.has_access_token || probingPayment} title={!s.has_access_token?t.paymentProbeUnavailable:t.paymentProbe} onClick={()=>runPaymentProbe([s.id],s)}>{probingPayment?<Loader2 className="h-4 w-4 animate-spin"/>:<CreditCard className="h-4 w-4"/>}{probingPayment?t.paymentProbing:t.paymentProbe}</button><button className="sr-link inline-flex items-center gap-1" disabled={importingSub2} onClick={()=>void importSub2API([s.id],s)}>{importingSub2?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>}{importingSub2?t.importingSub2API:"反代"}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing || checkingAT} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing || checkingAT ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link inline-flex items-center gap-1" disabled={checkingHealth} onClick={()=>runHealthCheck([s.id],s)}>{checkingHealth ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Activity className="inline h-4 w-4"/>}{checkingHealth ? t.healthChecking : t.healthCheck}</button><button className="sr-link" disabled={subscriptionCheckingSessionIds.length > 0} onClick={()=>runSubscriptionCheck([s.id],s)}>{checkingSubscription ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Crown className="inline h-4 w-4"/>}{checkingSubscription ? t.subscriptionChecking : t.subscriptionCheck}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>
+            <tr><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td title={s.email}>{s.email}</td><td title={s.group_name || "-"}>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_login_secret ? <button className="sr-session-field-button" disabled={lsLoading} onClick={()=>void copySessionField(s,"login_secret")}>{lsLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "LS"}</button> : "-"}</td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td><TrialEligibilityBadge t={t} row={s}/></td><td><CheckoutBadge t={t} row={s}/></td><td><PaymentMethodsBadge row={s}/></td><td>{s.access_token_status === "renewal_failed" ? <FailureState label={t.atRenewalFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "invalid" ? <FailureState label={t.atInvalidOrExpired} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_blocked" ? <FailureState label={t.atProbeBlocked} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_failed" ? <FailureState label={t.atProbeFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : formatDateTime(s.access_token_expires_at)}</td><td>{s.health_check_status === "failed" ? <FailureState label={t.accountHealthCheckFailed} detail={s.health_check_error} onOpen={setFailureDetail}/> : formatDateTime(s.last_health_checked_at)}</td><td><div className="flex flex-wrap gap-2"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link inline-flex items-center gap-1" disabled={addingLS || s.has_login_secret} onClick={()=>void addLoginSecrets([s.id],s)}>{addingLS ? <Loader2 className="h-4 w-4 animate-spin"/> : <Plus className="h-4 w-4"/>}{addingLS ? t.addingLoginSecret : t.addLoginSecret}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><button className="sr-link inline-flex items-center gap-1" disabled={!trialCheckable(s) || checkingTrial} title={!trialCheckable(s) ? t.trialUnavailable : t.trialCheck} onClick={()=>runTrialCheck([s.id],s)}>{checkingTrial ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{checkingTrial ? t.trialChecking : t.trialCheck}</button><button className="sr-link inline-flex items-center gap-1" disabled={!s.has_access_token || probingPayment} title={!s.has_access_token?t.paymentProbeUnavailable:t.paymentProbe} onClick={()=>runPaymentProbe([s.id],s)}>{probingPayment?<Loader2 className="h-4 w-4 animate-spin"/>:<CreditCard className="h-4 w-4"/>}{probingPayment?t.paymentProbing:t.paymentProbe}</button><button className="sr-link inline-flex items-center gap-1" disabled={importingSub2} onClick={()=>void importSub2API([s.id],s)}>{importingSub2?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>}{importingSub2?t.importingSub2API:"反代"}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing || checkingAT} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing || checkingAT ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link inline-flex items-center gap-1" disabled={checkingHealth} onClick={()=>runHealthCheck([s.id],s)}>{checkingHealth ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Activity className="inline h-4 w-4"/>}{checkingHealth ? t.healthChecking : t.healthCheck}</button><button className="sr-link" disabled={subscriptionCheckingSessionIds.length > 0} onClick={()=>runSubscriptionCheck([s.id],s)}>{checkingSubscription ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Crown className="inline h-4 w-4"/>}{checkingSubscription ? t.subscriptionChecking : t.subscriptionCheck}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>
             {renewalView && <tr className="sr-renewal-progress-row"><td/><td colSpan={13}><div className={cn("sr-renewal-progress",`is-${renewalView.progress.state}`)}><strong className="sr-renewal-progress-count">{renewalView.progress.current}/{renewalView.progress.total}</strong><div className="sr-renewal-progress-main"><div className="sr-renewal-progress-label">{renewalStepLabel(t,renewalView.progress.checkpoint)}</div><div className="sr-renewal-progress-track"><span style={{width:`${renewalPercent}%`}}/></div>{renewalView.progress.error && <div className="sr-renewal-progress-error">{renewalView.progress.error}</div>}</div><button className="sr-renewal-progress-close" title={t.closeRenewalProgress} onClick={()=>dismissSessionRenewal(renewalView.task.clientId,s.email)}><X className="h-4 w-4"/></button></div></td></tr>}
           </Fragment>;
-        }) : <tr><td colSpan={14}><div className="sr-empty !min-h-[260px]"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><p className="mt-3 text-sm text-slate-400">{t.noData}</p></div></td></tr>}</tbody>
+        }) : <tr><td colSpan={15}><div className="sr-empty !min-h-[260px]"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><p className="mt-3 text-sm text-slate-400">{t.noData}</p></div></td></tr>}</tbody>
       </ResizableDataTable>
     </div>
     <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
