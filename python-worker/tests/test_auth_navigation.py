@@ -4,7 +4,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from sunny_core.openai_auth import _goto_auth_page, _goto_chatgpt_page
+from sunny_core.mailbox import MailAccount
+from sunny_core.openai_auth import OpenAIEmailRegisterFlow, _goto_auth_page, _goto_chatgpt_page
 
 
 def test_auth_navigation_accepts_ns_binding_aborted_after_redirect() -> None:
@@ -78,3 +79,38 @@ def test_auth_navigation_preserves_unrelated_failures() -> None:
 
     with pytest.raises(RuntimeError, match="ERR_CONNECTION_RESET"):
         _goto_auth_page(page, "https://auth.openai.com/api/accounts/authorize")
+
+
+def test_email_step_waits_when_prefilled_input_is_disabled() -> None:
+    logs: list[str] = []
+    account = MailAccount("user@icloud.com", "", "", "", "raw")
+    flow = OpenAIEmailRegisterFlow(account, "", True, logs.append)
+    email_input = Mock()
+    email_input.input_value.return_value = account.email
+    email_input.is_enabled.return_value = False
+    email_input.is_editable.return_value = False
+    flow._visible_inputs = Mock(return_value=[email_input])
+    flow._click_continue = Mock()
+
+    assert flow._fill_email_if_visible(Mock()) is False
+    assert flow._fill_email_if_visible(Mock()) is False
+
+    email_input.fill.assert_not_called()
+    flow._click_continue.assert_not_called()
+    assert sum("邮箱已提交" in message for message in logs) == 1
+
+
+def test_email_step_skips_duplicate_fill_for_matching_editable_value() -> None:
+    account = MailAccount("user@icloud.com", "", "", "", "raw")
+    flow = OpenAIEmailRegisterFlow(account, "", True, None)
+    email_input = Mock()
+    email_input.input_value.return_value = account.email
+    email_input.is_enabled.return_value = True
+    email_input.is_editable.return_value = True
+    flow._visible_inputs = Mock(return_value=[email_input])
+    flow._click_continue = Mock(return_value=True)
+
+    assert flow._fill_email_if_visible(Mock()) is True
+
+    email_input.fill.assert_not_called()
+    flow._click_continue.assert_called_once()

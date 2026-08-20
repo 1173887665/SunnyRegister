@@ -477,6 +477,7 @@ class OpenAIEmailRegisterFlow:
         self.auth_action = "login" if existing_account else "unknown"
         self.require_refresh_token = require_refresh_token
         self.phone_verification_completed = False
+        self.email_transition_wait_logged = False
         self.browser_backend = "camoufox" if headless else "chromium"
         self.device_id = ""
         self.generated_password = ""
@@ -1096,8 +1097,25 @@ class OpenAIEmailRegisterFlow:
         inputs = self._visible_inputs(page, ['input[type="email"]', 'input[name="email"]', 'input[name="username"]', 'input[autocomplete="email"]'])
         if not inputs:
             return False
+        email_input = inputs[0]
+        try:
+            current_value = str(email_input.input_value(timeout=700) or "").strip()
+        except Exception:
+            current_value = ""
+        try:
+            enabled = bool(email_input.is_enabled(timeout=700))
+            editable = bool(email_input.is_editable(timeout=700))
+        except Exception:
+            enabled = editable = True
+        if not enabled or not editable:
+            if current_value.casefold() == self.account.email.strip().casefold() and not self.email_transition_wait_logged:
+                self.log("[认证] 邮箱已提交，输入框暂时不可编辑，等待认证页面继续跳转")
+                self.email_transition_wait_logged = True
+            return False
+        self.email_transition_wait_logged = False
         self.log("[认证] 填写邮箱并继续")
-        inputs[0].fill(self.account.email)
+        if current_value.casefold() != self.account.email.strip().casefold():
+            email_input.fill(self.account.email, timeout=5000)
         self._click_continue(page)
         self._emit_progress("email_submitted")
         return True

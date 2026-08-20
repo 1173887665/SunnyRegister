@@ -16,7 +16,8 @@ import time
 from datetime import datetime
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
-from html import unescape
+from html import escape, unescape
+from html.parser import HTMLParser
 from typing import Any, Callable
 from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse
 
@@ -283,6 +284,8 @@ def _url_api_strategy(value: str) -> str:
     hostname = (urlparse(str(value or "")).hostname or "").lower().rstrip(".")
     if hostname == "mail.mczero.top" or hostname.endswith(".mail.mczero.top"):
         return "mczero"
+    if hostname == "mail.ai1998.xyz" or hostname.endswith(".mail.ai1998.xyz"):
+        return "ai1998"
     return "generic"
 
 
@@ -292,6 +295,84 @@ def _html_to_text(value: str) -> str:
     raw = re.sub(r"(?s)<[^>]+>", " ", raw)
     lines = [re.sub(r"\s+", " ", unescape(line)).strip() for line in raw.splitlines()]
     return "\n".join(line for line in lines if line)
+
+
+class _AI1998LatestMailParser(HTMLParser):
+    """Extract the first mail card, which mail.ai1998.xyz defines as latest."""
+
+    _FIELDS = ("subject", "date", "meta", "body")
+    _VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.in_card = False
+        self.card_complete = False
+        self.card_depth = 0
+        self.field_stack: list[str] = []
+        self.parts: dict[str, list[str]] = {field: [] for field in self._FIELDS}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {str(key).lower(): str(value or "") for key, value in attrs}
+        classes = set(attributes.get("class", "").split())
+        if not self.in_card:
+            if not self.card_complete and tag.lower() == "article" and "mail-card" in classes:
+                self.in_card = True
+                self.card_depth = 1
+                self.field_stack.append("")
+            return
+        inherited = self.field_stack[-1] if self.field_stack else ""
+        selected = next((field for field in self._FIELDS if field in classes), inherited)
+        if tag.lower() in self._VOID_TAGS:
+            if selected and attributes.get("value"):
+                self.parts[selected].append(attributes["value"])
+            return
+        self.card_depth += 1
+        self.field_stack.append(selected)
+
+    def handle_startendtag(self, _tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if not self.in_card:
+            return
+        attributes = {str(key).lower(): str(value or "") for key, value in attrs}
+        classes = set(attributes.get("class", "").split())
+        selected = next((field for field in self._FIELDS if field in classes), self.field_stack[-1] if self.field_stack else "")
+        if selected and attributes.get("value"):
+            self.parts[selected].append(attributes["value"])
+
+    def handle_endtag(self, _tag: str) -> None:
+        if not self.in_card:
+            return
+        if self.field_stack:
+            self.field_stack.pop()
+        self.card_depth -= 1
+        if self.card_depth <= 0:
+            self.in_card = False
+            self.card_complete = True
+
+    def handle_data(self, data: str) -> None:
+        if self.in_card and self.field_stack and self.field_stack[-1] and data.strip():
+            self.parts[self.field_stack[-1]].append(data)
+
+
+def _ai1998_latest_mail_html(raw_html: str) -> str:
+    parser = _AI1998LatestMailParser()
+    try:
+        parser.feed(str(raw_html or ""))
+        parser.close()
+    except Exception:
+        return str(raw_html or "")
+    if not parser.card_complete:
+        return str(raw_html or "")
+    fields = {
+        key: re.sub(r"\s+", " ", " ".join(value)).strip()
+        for key, value in parser.parts.items()
+    }
+    if not any(fields.values()):
+        return str(raw_html or "")
+    return "".join(
+        f'<div class="{field}">{escape(fields[field])}</div>'
+        for field in parser._FIELDS
+        if fields[field]
+    )
 
 
 TOKEN_ENDPOINTS = [
@@ -991,7 +1072,7 @@ class URLAPIICloudReader:
         self.seen_candidate_keys: set[str] = set()
         self.candidate_counts: dict[str, int] = {}
 
-    def _latest_generic(self, timeout: int = URL_API_REQUEST_TIMEOUT) -> dict[str, Any]:
+    def _latest_generic(self, timeout: int = URL_API_REQUEST_TIMEOUT, *, latest_card_only: bool = False) -> dict[str, Any]:
         response = None
         target = self.url
         for redirect_count in range(URL_API_MAX_REDIRECTS + 1):
@@ -1050,12 +1131,13 @@ class URLAPIICloudReader:
                 raise MailboxAccessError("mailbox_response_too_large", "url_api 取码接口返回内容过大", terminal=True)
         finally:
             response.close()
-        plain = _html_to_text(raw_html)
+        candidate_html = _ai1998_latest_mail_html(raw_html) if latest_card_only else raw_html
+        plain = _html_to_text(candidate_html)
         relevant = bool(re.search(r"openai|chatgpt", plain, flags=re.I))
-        candidates = extract_otp_candidates(raw_html)
+        candidates = extract_otp_candidates(candidate_html)
         candidate = candidates[0] if candidates else None
         otp = str(candidate.get("code") or "") if candidate else ""
-        heading = re.search(r"(?is)<h[1-4]\b[^>]*>(.*?)</h[1-4]>", raw_html)
+        heading = re.search(r"(?is)<h[1-4]\b[^>]*>(.*?)</h[1-4]>", candidate_html)
         subject = _html_to_text(heading.group(1)) if heading else ""
         if not re.search(r"openai|chatgpt", subject, flags=re.I) or "@" in subject:
             subject = next(
@@ -1166,7 +1248,7 @@ class URLAPIICloudReader:
         selected = strategy or getattr(self, "strategy", "generic")
         if selected == "mczero":
             return self._latest_mczero(timeout)
-        return self._latest_generic(timeout)
+        return self._latest_generic(timeout, latest_card_only=selected == "ai1998")
 
     def _request_url(
         self,
@@ -1242,8 +1324,9 @@ class URLAPIICloudReader:
         while time.monotonic() - started < timeout:
             remaining = max(1, int(timeout - (time.monotonic() - started)))
             use_specialized = specialized and time.monotonic() - started < fallback_at
+            selected_strategy = "mczero" if use_specialized else ("generic" if specialized else getattr(self, "strategy", "generic"))
             try:
-                message = self._latest(timeout=max(URL_API_REQUEST_TIMEOUT, remaining), strategy="mczero" if use_specialized else "generic")
+                message = self._latest(timeout=max(URL_API_REQUEST_TIMEOUT, remaining), strategy=selected_strategy)
             except MailboxAccessError as exc:
                 if exc.terminal:
                     raise

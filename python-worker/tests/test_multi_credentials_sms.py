@@ -8,7 +8,14 @@ import pytest
 import sunny_core.mailbox as mailbox_module
 from sunny_core.auth_challenges import generate_totp, normalize_totp_secret
 from sunny_core.luban_sms import LubanSMSClient, LubanSMSError
-from sunny_core.mailbox import MailAccount, URLAPIICloudReader, account_from_row
+from sunny_core.mailbox import (
+    URL_API_REQUEST_TIMEOUT,
+    MailAccount,
+    URLAPIICloudReader,
+    _ai1998_latest_mail_html,
+    _url_api_strategy,
+    account_from_row,
+)
 from sunny_core.openai_auth import OpenAIEmailRegisterFlow
 from sunny_core.otp_candidates import extract_otp_candidates
 from sunny_core.protocol_auth import ProtocolRegistrationFlow
@@ -59,6 +66,44 @@ def test_url_api_html_prefers_mail_body_code_over_sender_suffix_and_date() -> No
     scores = {item["code"]: item["score"] for item in candidates}
     assert scores["721508"] < 0
     assert "202608" not in scores
+
+
+def test_ai1998_url_api_uses_only_first_latest_mail_card() -> None:
+    payload = """
+    <html><body>
+      <article class="mail-card"><details open>
+        <summary><span class="subject">ChatGPT temporary login code</span><span class="date">2026-08-20 10:36:05</span></summary>
+        <div class="meta">sender: noreply_at_tm_openai_com_602613@icloud.com</div>
+        <div class="body body-rich">Your temporary verification code is: 904540</div>
+      </details></article>
+      <article class="mail-card"><details>
+        <summary><span class="subject">ChatGPT old code</span><span class="date">2026-08-20 09:15:00</span></summary>
+        <div class="body body-rich">Verification code: 111111</div>
+      </details></article>
+    </body></html>
+    """
+
+    latest = _ai1998_latest_mail_html(payload)
+    candidates = extract_otp_candidates(latest)
+
+    assert _url_api_strategy("https://mail.ai1998.xyz/messages/key/user%40icloud.com") == "ai1998"
+    assert candidates[0]["code"] == "904540"
+    assert "111111" not in latest
+    assert "602613" in latest
+    assert next(item for item in candidates if item["code"] == "602613")["score"] < 0
+
+
+def test_ai1998_reader_dispatches_latest_card_strategy() -> None:
+    account = MailAccount(
+        "user@icloud.com", "", "", "", "raw",
+        mailbox_type="apple", mailbox_channel="url_api",
+        access_key="https://mail.ai1998.xyz/messages/key/user%40icloud.com",
+    )
+    reader = URLAPIICloudReader(account, None)
+    reader._latest_generic = Mock(return_value={"otp": "904540"})
+
+    assert reader._latest()["otp"] == "904540"
+    reader._latest_generic.assert_called_once_with(URL_API_REQUEST_TIMEOUT, latest_card_only=True)
 
 
 def test_url_api_html_extracts_standalone_code_and_rejects_rfc_mail_date() -> None:

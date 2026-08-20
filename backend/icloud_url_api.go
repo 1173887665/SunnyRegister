@@ -18,6 +18,8 @@ var (
 	urlAPITagPattern           = regexp.MustCompile(`(?s)<[^>]+>`)
 	urlAPIScriptPattern        = regexp.MustCompile(`(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)>`)
 	urlAPIHeadingPattern       = regexp.MustCompile(`(?is)<h[1-4]\b[^>]*>(.*?)</h[1-4]>`)
+	urlAPIMailCardPattern      = regexp.MustCompile(`(?is)<article\b[^>]*class\s*=\s*["'][^"']*\bmail-card\b[^"']*["'][^>]*>.*?</article\s*>`)
+	urlAPIMailBodyPattern      = regexp.MustCompile(`(?is)<div\b[^>]*class\s*=\s*["'][^"']*\bbody\b[^"']*["'][^>]*>(.*?)</div\s*>`)
 	urlAPIOpenAIPattern        = regexp.MustCompile(`(?i)openai|chatgpt`)
 	urlAPIOTPPattern           = regexp.MustCompile(`(?:^|\D)(\d{6})(?:\D|$)`)
 	urlAPISourceScriptPattern  = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script\s*>`)
@@ -38,7 +40,33 @@ func urlAPIDomainStrategy(raw string) string {
 	if host == "mail.mczero.top" || strings.HasSuffix(host, ".mail.mczero.top") {
 		return "mczero"
 	}
+	if host == "mail.ai1998.xyz" || strings.HasSuffix(host, ".mail.ai1998.xyz") {
+		return "ai1998"
+	}
 	return "generic"
+}
+
+func urlAPILatestMessageHTML(strategy, rawHTML string) string {
+	if strategy == "ai1998" {
+		if match := urlAPIMailCardPattern.FindString(rawHTML); strings.TrimSpace(match) != "" {
+			return match
+		}
+	}
+	return rawHTML
+}
+
+func urlAPILatestOTP(strategy, messageHTML, plain string) string {
+	if strategy == "ai1998" {
+		if match := urlAPIMailBodyPattern.FindStringSubmatch(messageHTML); len(match) > 1 {
+			if otp := urlAPIOTPPattern.FindStringSubmatch(urlAPIText(match[1])); len(otp) > 1 {
+				return otp[1]
+			}
+		}
+	}
+	if match := urlAPIOTPPattern.FindStringSubmatch(plain); len(match) > 1 {
+		return match[1]
+	}
+	return ""
 }
 
 func validateURLAPIMailAddress(raw string) (string, error) {
@@ -282,15 +310,15 @@ func fetchURLAPIGenericLatestMail(email, accessURL string, limit int, proxyURL s
 		return nil, err
 	}
 	rawHTML := string(raw)
-	plain := urlAPIText(rawHTML)
+	strategy := urlAPIDomainStrategy(accessURL)
+	messageHTML := urlAPILatestMessageHTML(strategy, rawHTML)
+	plain := urlAPIText(messageHTML)
 	relevant := urlAPIOpenAIPattern.MatchString(plain)
 	otp := ""
 	if relevant {
-		if match := urlAPIOTPPattern.FindStringSubmatch(plain); len(match) > 1 {
-			otp = match[1]
-		}
+		otp = urlAPILatestOTP(strategy, messageHTML, plain)
 	}
-	subject := urlAPISubject(rawHTML, plain)
+	subject := urlAPISubject(messageHTML, plain)
 	if subject == "" && relevant {
 		subject = "ChatGPT"
 	}

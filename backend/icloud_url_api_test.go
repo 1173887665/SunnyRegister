@@ -91,6 +91,26 @@ func TestURLAPIDomainStrategy(t *testing.T) {
 	if got := urlAPIDomainStrategy("https://mail.example.test/latest"); got != "generic" {
 		t.Fatalf("expected generic strategy, got %q", got)
 	}
+	if got := urlAPIDomainStrategy("https://mail.ai1998.xyz/messages/key/user%40icloud.com"); got != "ai1998" {
+		t.Fatalf("expected ai1998 strategy, got %q", got)
+	}
+}
+
+func TestURLAPIAI1998UsesFirstLatestMailCard(t *testing.T) {
+	raw := `<html><body>
+<article class="mail-card"><span class="subject">ChatGPT latest</span><span class="date">2026-08-20 10:36:05</span><div class="meta">sender: noreply_602613@icloud.com</div><div class="body body-rich">Verification code: 904540</div></article>
+<article class="mail-card"><span class="subject">ChatGPT old</span><div class="body body-rich">Verification code: 111111</div></article>
+</body></html>`
+	latest := urlAPILatestMessageHTML("ai1998", raw)
+	if !strings.Contains(latest, "904540") || strings.Contains(latest, "111111") {
+		t.Fatalf("unexpected latest mail card: %s", latest)
+	}
+	if got := urlAPILatestMessageHTML("generic", raw); got != raw {
+		t.Fatal("generic strategy must preserve the complete response")
+	}
+	if got := urlAPILatestOTP("ai1998", latest, urlAPIText(latest)); got != "904540" {
+		t.Fatalf("expected body OTP 904540 instead of sender noise, got %q", got)
+	}
 }
 
 func TestURLAPISubjectSkipsMailboxHeading(t *testing.T) {
