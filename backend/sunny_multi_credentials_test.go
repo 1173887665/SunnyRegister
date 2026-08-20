@@ -63,6 +63,30 @@ func TestSunnyURLAPIReimportUpdatesCredentialsAndPreservesLifecycle(t *testing.T
 	if got := sunnyMailboxCredentialLine(updated); got != body["lines"] {
 		t.Fatalf("canonical export=%q want=%q", got, body["lines"])
 	}
+
+	listRecorder := httptest.NewRecorder()
+	s.sunnyMailboxes(listRecorder, httptest.NewRequest(http.MethodGet, "/sunny/mailboxes?summary=true&page=1&page_size=10", nil), nil)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("summary list status=%d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	var listPayload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &listPayload); err != nil || len(listPayload.Items) != 1 {
+		t.Fatalf("decode summary list: items=%d err=%v body=%s", len(listPayload.Items), err, listRecorder.Body.String())
+	}
+	listed := listPayload.Items[0]
+	if listed["has_chatgpt_password"] != true || listed["has_totp_secret"] != true || listed["has_login_secret"] != true {
+		t.Fatalf("summary endpoint omitted credential flags: %#v", listed)
+	}
+	if listed["chatgpt_password_preview"] != "new-••••••" || listed["totp_secret_preview"] != "JBSW••••••" {
+		t.Fatalf("summary endpoint returned unexpected previews: %#v", listed)
+	}
+	for _, key := range []string{"chatgpt_password", "totp_secret"} {
+		if _, exists := listed[key]; exists {
+			t.Fatalf("summary endpoint leaked sensitive field %q", key)
+		}
+	}
 }
 
 func TestSunnyMailboxCredentialEditRequiresExplicitClear(t *testing.T) {
