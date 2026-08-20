@@ -60,6 +60,19 @@ class ProtocolChallengeRequired(ProtocolRegistrationError):
     pass
 
 
+class ProtocolLoginSecretRejected(ProtocolRegistrationError):
+    """The configured ChatGPT password/TOTP was rejected by the auth flow."""
+
+
+def _is_login_secret_rejection(error: BaseException) -> bool:
+    if isinstance(error, ProtocolChallengeRequired) or _is_transient_transport_error(error):
+        return False
+    message = str(error or "").lower()
+    if "account_deactivated" in message or "deleted or deactivated" in message:
+        return False
+    return any(marker in message for marker in ("http 400", "http 401", "http 422", "invalid", "incorrect", "wrong"))
+
+
 @dataclass
 class ProtocolTrafficMeter:
     requests: int = 0
@@ -579,12 +592,27 @@ class ProtocolRegistrationFlow:
         password = str(self.account.chatgpt_password or "")
         if not password:
             raise ProtocolRegistrationError("ChatGPT password login is required, but no ChatGPT password is configured")
-        result = self._auth_json_post(
-            "/api/accounts/password/verify",
-            {"password": password},
+        response = self._request(
+            "POST",
+            f"{AUTH_BASE_URL}/api/accounts/password/verify",
             step="Verify ChatGPT password",
-            referer=referer,
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "origin": AUTH_BASE_URL,
+                "referer": referer or self.auth_page_url or AUTH_BASE_URL,
+                "oai-device-id": self.device_id,
+                **self._sentinel_headers("password_verify"),
+                **generate_datadog_trace_headers(),
+            },
+            data=json.dumps({"password": password}, separators=(",", ":")),
         )
+        if response.status_code != 200:
+            error = _response_error(response, "Verify ChatGPT password")
+            if _is_login_secret_rejection(error):
+                raise ProtocolLoginSecretRejected(str(error)) from error
+            raise error
+        result = _json_response(response, "Verify ChatGPT password")
         self.log("[认证] ChatGPT 密码验证成功")
         return result
 
@@ -610,23 +638,50 @@ class ProtocolRegistrationFlow:
                 factors.extend(item for item in value if isinstance(item, dict))
         factor = next((item for item in factors if item.get("factor_type") == "totp" and item.get("id")), None)
         if not factor:
-            raise ProtocolRegistrationError("2FA is required, but no TOTP factor was returned")
+            raise ProtocolLoginSecretRejected("2FA is required, but no TOTP factor was returned")
         if not self.account.totp_secret:
             raise ProtocolRegistrationError("2FA is required, but no TOTP secret is configured")
-        self._auth_json_post(
-            "/api/accounts/mfa/issue_challenge",
-            {"type": "totp", "id": factor["id"], "force_fresh_challenge": False},
-            step="Issue TOTP challenge",
-            referer=continue_url,
-        )
-        result = self._auth_json_post(
-            "/api/accounts/mfa/verify",
-            {"type": "totp", "id": factor["id"], "code": generate_totp(self.account.totp_secret)},
-            step="Verify TOTP challenge",
-            referer=continue_url,
-        )
+        try:
+            self._auth_json_post(
+                "/api/accounts/mfa/issue_challenge",
+                {"type": "totp", "id": factor["id"], "force_fresh_challenge": False},
+                step="Issue TOTP challenge",
+                referer=continue_url,
+            )
+            result = self._auth_json_post(
+                "/api/accounts/mfa/verify",
+                {"type": "totp", "id": factor["id"], "code": generate_totp(self.account.totp_secret)},
+                step="Verify TOTP challenge",
+                referer=continue_url,
+            )
+        except ProtocolRegistrationError as exc:
+            if _is_login_secret_rejection(exc):
+                raise ProtocolLoginSecretRejected(str(exc)) from exc
+            raise
+        except (ValueError, TypeError) as exc:
+            raise ProtocolLoginSecretRejected(f"TOTP credential is invalid: {exc}") from exc
         self.log("[认证] 2FA TOTP 验证成功")
         return result
+
+    def _restart_with_email_login(self, auth_started_at: float) -> dict[str, Any]:
+        """Start one fresh authorization state and force the mailbox OTP route."""
+        self._start_next_auth()
+        initial_path = urlsplit(self.auth_page_url).path.rstrip("/")
+        initial_otp_redirect = initial_path == "/email-verification"
+        if initial_otp_redirect:
+            state = {"page": {"type": "email_otp_verification"}, "continue_url": self.auth_page_url}
+        else:
+            state = self._authorize_email()
+        continue_url = self._continue_url(state)
+        state = self._verify_email(
+            continue_url,
+            request_code=not initial_otp_redirect,
+            load_page=not initial_otp_redirect,
+            min_timestamp=auth_started_at,
+        )
+        if self._page_type(state) in {"email_otp_verification", "email_otp_send"}:
+            state = self._verify_email(self._continue_url(state) or continue_url, min_timestamp=auth_started_at)
+        return state
 
     def _select_workspace(self, payload: dict[str, Any]) -> dict[str, Any]:
         page_type = self._page_type(payload)
@@ -844,6 +899,11 @@ class ProtocolRegistrationFlow:
             self.log("[认证] 协议模式使用 Sentinel 协议运行时；仅证明生成可能启动窄范围 Camoufox")
         else:
             self.log("[认证] 协议模式使用本项目原生挑战接管策略")
+        if self.existing_account:
+            if self.account.has_login_secret:
+                self.log("[认证] 检测到完整 LS，协议登录优先使用 ChatGPT 密码与 2FA")
+            else:
+                self.log("[认证] 未检测到完整 LS，协议登录使用邮箱凭证")
         try:
             self._check_cancelled()
             if not (self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key):
@@ -868,15 +928,23 @@ class ProtocolRegistrationFlow:
             self.log(f"[认证] 协议认证状态：{page_type or 'unknown'}")
 
             credential_complete = False
+            login_secret_attempted = False
             if page_type in {"password", "create_account_password"}:
                 state = self._submit_password()
                 page_type = str((state.get("page") or {}).get("type") or page_type)
                 continue_url = str(state.get("continue_url") or continue_url)
             elif page_type in {"login_password"}:
                 self.auth_action = "login"
-                if self.account.chatgpt_password:
-                    state = self._verify_login_password(continue_url or self.auth_page_url)
+                if self.account.has_login_secret:
+                    try:
+                        state = self._verify_login_password(continue_url or self.auth_page_url)
+                        login_secret_attempted = True
+                    except ProtocolLoginSecretRejected as exc:
+                        self.log(f"[认证] LS 密码验证失败，将改用邮箱凭证登录重试：{str(exc)[:220]}")
+                        state = self._verify_email(continue_url, min_timestamp=auth_started_at)
                 else:
+                    if self.account.chatgpt_password or self.account.totp_secret:
+                        self.log("[认证] 登录密钥不完整，本次继续使用邮箱凭证登录")
                     state = self._verify_email(continue_url, min_timestamp=auth_started_at)
                 credential_complete = True
             elif page_type in {"email_otp_verification", "email_otp_send"}:
@@ -903,7 +971,13 @@ class ProtocolRegistrationFlow:
                     min_timestamp=auth_started_at,
                 )
 
-            state = self._complete_mfa(state)
+            try:
+                state = self._complete_mfa(state)
+            except ProtocolLoginSecretRejected as exc:
+                if not login_secret_attempted:
+                    raise
+                self.log(f"[认证] LS 2FA 验证失败，将重新初始化并使用邮箱凭证登录：{str(exc)[:220]}")
+                state = self._restart_with_email_login(time.time() - 5)
             page_type = str((state.get("page") or {}).get("type") or "")
             continue_url = str(state.get("continue_url") or continue_url)
             if page_type in {"about_you", "create_account", "name_and_birthdate"} or self.auth_action == "register":

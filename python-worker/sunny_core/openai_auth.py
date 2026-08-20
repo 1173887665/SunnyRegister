@@ -67,6 +67,10 @@ class SessionReauthenticationRequired(RuntimeError):
     pass
 
 
+class LoginSecretAuthenticationError(RuntimeError):
+    """A complete LS was rejected; the caller may retry with mailbox OTP."""
+
+
 _DRIVER_DISCONNECTED_MARKERS = (
     "connection closed while reading from the driver",
     "target page, context or browser has been closed",
@@ -461,7 +465,7 @@ def _should_retry_phone_send_without_channel(result: dict[str, Any]) -> bool:
 class OpenAIEmailRegisterFlow:
     """SunnyRegister in-project email register/login flow, following the original register-or-login implementation."""
 
-    def __init__(self, account: MailAccount, proxy_url: str, headless: bool, log: Callable[[str], None] | None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None, mailbox_proxy_url: str | None = None, existing_session: dict[str, Any] | None = None, traffic_meter: ProxyTrafficMeter | None = None, traffic_config: BrowserTrafficConfig | dict[str, Any] | None = None, post_registration_callback: Callable[[Any, Any, dict[str, Any]], dict[str, Any] | None] | None = None):
+    def __init__(self, account: MailAccount, proxy_url: str, headless: bool, log: Callable[[str], None] | None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None, mailbox_proxy_url: str | None = None, existing_session: dict[str, Any] | None = None, traffic_meter: ProxyTrafficMeter | None = None, traffic_config: BrowserTrafficConfig | dict[str, Any] | None = None, post_registration_callback: Callable[[Any, Any, dict[str, Any]], dict[str, Any] | None] | None = None, prefer_login_secret: bool = True):
         self.account = account
         self.proxy_url = proxy_url
         self.mailbox_proxy_url = proxy_url if mailbox_proxy_url is None else mailbox_proxy_url
@@ -483,6 +487,9 @@ class OpenAIEmailRegisterFlow:
         self.generated_password = ""
         self.password_step_logged = False
         self.password_step_wait_started_at = 0.0
+        self.prefer_login_secret = bool(prefer_login_secret)
+        self.login_secret_stage = ""
+        self.login_secret_submitted_at = 0.0
         self.recent_email_code = ""
         self.recent_email_code_at = 0.0
         self.existing_session = dict(existing_session or {})
@@ -553,11 +560,20 @@ class OpenAIEmailRegisterFlow:
         try:
             self._check_cancelled()
             reusable_storage_state = self._existing_storage_state() if self.require_refresh_token else None
-            if reusable_storage_state is None and not (self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key):
+            if (
+                reusable_storage_state is None
+                and not self._uses_login_secret()
+                and not (self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key)
+            ):
                 self._preconnect_otp_reader()
             self._check_cancelled()
             mode_label = "后台浏览器自动（Camoufox Headless，无窗口）" if self.headless else "可视浏览器自动（Chromium Visible，有窗口）"
             self.log(f"[认证] 执行方式：{mode_label}")
+            if self.existing_account:
+                if self._uses_login_secret():
+                    self.log("[认证] 检测到完整 LS，本次优先使用 ChatGPT 密码与 2FA 登录")
+                else:
+                    self.log("[认证] 未检测到完整 LS，本次使用邮箱凭证登录")
             with open_registration_browser(
                 headless=self.headless,
                 proxy_url=self.proxy_url,
@@ -854,6 +870,10 @@ class OpenAIEmailRegisterFlow:
             if self._has_chatgpt_session(page):
                 self._emit_progress("auth_completed")
                 return
+            login_secret_error = self._login_secret_rejection(page)
+            if login_secret_error:
+                credential_label = "密码" if self.login_secret_stage == "password" else "2FA"
+                raise LoginSecretAuthenticationError(f"ChatGPT {credential_label}验证失败: {login_secret_error}")
             signature = self._progress_signature(page)
             if signature and signature != last_progress_signature:
                 last_progress_signature = signature
@@ -905,7 +925,19 @@ class OpenAIEmailRegisterFlow:
                     continue
                 raise RuntimeError("Phone verification required, but no usable phone pool is configured")
             if self._has_totp_challenge(page):
-                self._submit_totp_challenge(page)
+                if self.login_secret_stage == "totp":
+                    if time.time() - self.login_secret_submitted_at < 20:
+                        self._sleep_checked(1)
+                        continue
+                    raise LoginSecretAuthenticationError("ChatGPT 2FA 提交后认证页面未继续")
+                try:
+                    self._submit_totp_challenge(page)
+                except (TaskCancelledError, BrowserDriverDisconnectedError):
+                    raise
+                except Exception as exc:
+                    if self._uses_login_secret():
+                        raise LoginSecretAuthenticationError(f"ChatGPT 2FA 登录未完成: {exc}") from exc
+                    raise
                 continue
             if self._has_workspace_selection(page):
                 self._select_first_workspace(page)
@@ -918,19 +950,33 @@ class OpenAIEmailRegisterFlow:
                     if time.time() - password_step_submitted_at < 20:
                         self._sleep_checked(1)
                         continue
+                    if self._uses_login_secret():
+                        raise LoginSecretAuthenticationError(
+                            f"[{self.account.email}] ChatGPT 密码提交后认证页面未继续"
+                        )
                     elif password_step_attempts >= 2:
-                        raise TimeoutError(
+                        raise LoginSecretAuthenticationError(
                             f"[{self.account.email}] Password step did not advance: "
                             f"{self._page_text_summary(page, 300)}"
                         )
                     password_step_submitted = False
-                if ("/log-in/password" in url or self.existing_account) and not self.account.chatgpt_password:
+                if ("/log-in/password" in url or self.existing_account) and not self._uses_login_secret():
                     if not self._switch_password_to_email_code(page):
                         raise RuntimeError("ChatGPT login requires a password or a configured email OTP endpoint")
+                    if self.account.chatgpt_password or self.account.totp_secret:
+                        self.log("[认证] 登录密钥不完整或已切换回退，本次使用邮箱凭证登录")
                     email_code_submitted = False
                     about_you_submitted = False
                     continue
-                if not self._fill_password_step(page):
+                try:
+                    password_filled = self._fill_password_step(page)
+                except (TaskCancelledError, BrowserDriverDisconnectedError):
+                    raise
+                except Exception as exc:
+                    if self._uses_login_secret():
+                        raise LoginSecretAuthenticationError(f"ChatGPT 密码登录未完成: {exc}") from exc
+                    raise
+                if not password_filled:
                     self._sleep_checked(1)
                     continue
                 password_step_attempts += 1
@@ -1777,11 +1823,32 @@ class OpenAIEmailRegisterFlow:
     def _has_visible_password(self, page) -> bool:
         return bool(self._visible_inputs(page, ['input[type="password"]', 'input[name="password"]']))
 
+    def _uses_login_secret(self) -> bool:
+        return bool(self.existing_account and self.prefer_login_secret and self.account.has_login_secret)
+
+    def _login_secret_rejection(self, page) -> str:
+        if not self.login_secret_stage:
+            return ""
+        try:
+            text = re.sub(r"\s+", " ", page.locator("body").inner_text(timeout=700)).strip().lower()
+        except Exception:
+            return ""
+        password_markers = (
+            "incorrect password", "wrong password", "invalid password", "password is incorrect",
+            "密码不正确", "密码错误", "パスワードが正しく", "パスワードが違", "비밀번호가 올바르지",
+        )
+        code_markers = (
+            "incorrect code", "wrong code", "invalid code", "code is incorrect",
+            "验证码不正确", "验证码错误", "コードが正しく", "コードが違", "잘못된 코드",
+        )
+        markers = password_markers if self.login_secret_stage == "password" else code_markers
+        return text[:300] if any(marker in text for marker in markers) else ""
+
     def _fill_password_step(self, page) -> bool:
         login_page = "/log-in/password" in str(page.url or "") or self.existing_account
         password = self.account.chatgpt_password
-        if not password and login_page:
-            raise RuntimeError("ChatGPT password login is required, but no ChatGPT password is configured")
+        if login_page and not self._uses_login_secret():
+            raise RuntimeError("ChatGPT LS login is unavailable; mailbox OTP must be used")
         if not password:
             password = self._generate_password()
             self.generated_password = password
@@ -1842,6 +1909,9 @@ class OpenAIEmailRegisterFlow:
         self.password_step_wait_started_at = 0.0
         if not self._click_continue(page):
             raise RuntimeError("Password has been filled, but continue button was not found")
+        if login_page:
+            self.login_secret_stage = "password"
+            self.login_secret_submitted_at = time.time()
         self.log("[认证] 账号需要密码步骤，已填写 ChatGPT 密码")
         return True
 
@@ -1850,6 +1920,8 @@ class OpenAIEmailRegisterFlow:
             'button:has-text("Email code")', 'button:has-text("verification code")',
             '[role="button"]:has-text("Email code")', 'a:has-text("Email code")',
             'button:has-text("邮箱验证码")', 'a:has-text("邮箱验证码")',
+            'button:has-text("メールコード")', 'button:has-text("メールで")',
+            'a:has-text("メールコード")', 'button:has-text("이메일 코드")',
         ]
         for selector in selectors:
             try:
@@ -1860,6 +1932,24 @@ class OpenAIEmailRegisterFlow:
                     return True
             except Exception:
                 continue
+        try:
+            switched = bool(page.evaluate(
+                r"""() => {
+                    const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+                        && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+                    const label = el => `${el.innerText || ''} ${el.textContent || ''} ${el.getAttribute('aria-label') || ''}`
+                        .replace(/\s+/g, ' ').trim().toLowerCase();
+                    const candidates = [...document.querySelectorAll('button,a,[role="button"],[role="link"]')].filter(visible);
+                    const target = candidates.find(el => /email (code|verification)|verification code|邮箱验证码|郵箱驗證碼|メール.*コード|メールで|이메일.*코드/.test(label(el)));
+                    if (!target) return false;
+                    target.scrollIntoView({block:'center'}); target.click(); return true;
+                }"""
+            ))
+            if switched:
+                self.log("[认证] 已切换为邮箱验证码登录")
+                return True
+        except Exception:
+            pass
         return False
 
     def _generate_password(self) -> str:
@@ -1882,6 +1972,8 @@ class OpenAIEmailRegisterFlow:
         inputs[0].fill(generate_totp(self.account.totp_secret))
         if not self._click_continue(page):
             raise RuntimeError("TOTP was filled, but the verify button was not found")
+        self.login_secret_stage = "totp"
+        self.login_secret_submitted_at = time.time()
         self.log("[认证] 已提交 2FA TOTP 验证码")
 
     def _has_workspace_selection(self, page) -> bool:
@@ -2926,4 +3018,27 @@ def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool 
         if on_progress:
             on_progress("phone_bound", session)
         return session
-    return OpenAIEmailRegisterFlow(account, proxy_url, headless, log, phone_provider=phone_provider, existing_account=existing_account, require_refresh_token=require_refresh_token, should_cancel=should_cancel, execution_mode=execution_mode, on_progress=on_progress, mailbox_proxy_url=mailbox_proxy_url, existing_session=existing_session, traffic_meter=traffic_meter, traffic_config=traffic_config, post_registration_callback=post_registration_callback).run()
+    flow_kwargs = {
+        "phone_provider": phone_provider,
+        "existing_account": existing_account,
+        "require_refresh_token": require_refresh_token,
+        "should_cancel": should_cancel,
+        "execution_mode": execution_mode,
+        "on_progress": on_progress,
+        "mailbox_proxy_url": mailbox_proxy_url,
+        "existing_session": existing_session,
+        "traffic_meter": traffic_meter,
+        "traffic_config": traffic_config,
+        "post_registration_callback": post_registration_callback,
+    }
+    try:
+        return OpenAIEmailRegisterFlow(
+            account, proxy_url, headless, log, prefer_login_secret=True, **flow_kwargs,
+        ).run()
+    except LoginSecretAuthenticationError as exc:
+        if not existing_account or not account.has_login_secret:
+            raise
+        _emit(log, f"[认证] LS 凭证登录失败，将使用邮箱凭证建立新的隔离登录会话重试：{str(exc)[:240]}")
+        return OpenAIEmailRegisterFlow(
+            account, proxy_url, headless, log, prefer_login_secret=False, **flow_kwargs,
+        ).run()

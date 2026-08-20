@@ -16,7 +16,7 @@ from sunny_core.mailbox import (
     _url_api_strategy,
     account_from_row,
 )
-from sunny_core.openai_auth import OpenAIEmailRegisterFlow
+from sunny_core.openai_auth import LoginSecretAuthenticationError, OpenAIEmailRegisterFlow, login_or_register
 from sunny_core.otp_candidates import extract_otp_candidates
 from sunny_core.protocol_auth import ProtocolRegistrationFlow
 
@@ -347,7 +347,10 @@ def test_luban_sms_extracts_nested_code() -> None:
 
 
 def test_browser_password_login_uses_exact_imported_password() -> None:
-    account = MailAccount("user@example.com", "mailbox-password", "client", "mail-rt", "raw", chatgpt_password="Short1!")
+    account = MailAccount(
+        "user@example.com", "mailbox-password", "client", "mail-rt", "raw",
+        chatgpt_password="Short1!", totp_secret="JBSWY3DPEHPK3PXP",
+    )
     flow = OpenAIEmailRegisterFlow(account, "", True, None, existing_account=True)
     password_input = Mock()
     flow._visible_inputs = Mock(return_value=[password_input])
@@ -358,6 +361,47 @@ def test_browser_password_login_uses_exact_imported_password() -> None:
 
     password_input.fill.assert_called_once_with("Short1!", timeout=5000)
     assert account.chatgpt_password == "Short1!"
+
+
+def test_browser_password_login_requires_complete_login_secret() -> None:
+    password_only = MailAccount(
+        "user@example.com", "mailbox-password", "client", "mail-rt", "raw",
+        chatgpt_password="Short1!",
+    )
+    totp_only = MailAccount(
+        "user@example.com", "mailbox-password", "client", "mail-rt", "raw",
+        totp_secret="JBSWY3DPEHPK3PXP",
+    )
+
+    assert OpenAIEmailRegisterFlow(password_only, "", True, None, existing_account=True)._uses_login_secret() is False
+    assert OpenAIEmailRegisterFlow(totp_only, "", True, None, existing_account=True)._uses_login_secret() is False
+
+
+@pytest.mark.parametrize(("headless", "execution_mode"), [(True, "background"), (False, "visible")])
+def test_browser_login_secret_failure_retries_same_mode_with_mailbox_otp(headless, execution_mode) -> None:
+    account = MailAccount(
+        "user@example.com", "mailbox-password", "client", "mail-rt", "raw",
+        chatgpt_password="Short1!", totp_secret="JBSWY3DPEHPK3PXP",
+    )
+    first = Mock()
+    first.run.side_effect = LoginSecretAuthenticationError("wrong password")
+    second = Mock()
+    second.run.return_value = {"access_token": "access-token"}
+
+    with patch("sunny_core.openai_auth.OpenAIEmailRegisterFlow", side_effect=[first, second]) as flow_class:
+        result = login_or_register(
+            account,
+            headless=headless,
+            existing_account=True,
+            require_refresh_token=False,
+            execution_mode=execution_mode,
+        )
+
+    assert result["access_token"] == "access-token"
+    assert flow_class.call_args_list[0].args[2] is headless
+    assert flow_class.call_args_list[1].args[2] is headless
+    assert flow_class.call_args_list[0].kwargs["prefer_login_secret"] is True
+    assert flow_class.call_args_list[1].kwargs["prefer_login_secret"] is False
 
 
 def test_browser_password_step_waits_for_a_transitional_readonly_input() -> None:

@@ -143,6 +143,10 @@ class MailAccount:
     chatgpt_password: str = ""
     totp_secret: str = ""
 
+    @property
+    def has_login_secret(self) -> bool:
+        return bool(str(self.chatgpt_password or "").strip() and str(self.totp_secret or "").strip())
+
 
 _MICROSOFT_CLIENT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 

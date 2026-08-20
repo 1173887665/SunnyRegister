@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sunny_core.browser_traffic import ProxyTrafficMeter
 from sunny_core.mailbox import MailAccount
 from sunny_core.protocol_auth import (
     ProtocolChallengeRequired,
+    ProtocolLoginSecretRejected,
     ProtocolRegistrationError,
     ProtocolRegistrationFlow,
     _response_error,
@@ -319,3 +320,106 @@ def test_verify_email_can_reuse_page_loaded_by_auth_redirect() -> None:
     assert result["page"]["type"] == "about_you"
     assert len(session.requests) == 1
     assert session.requests[0][1].endswith("/api/accounts/email-otp/validate")
+
+
+def test_protocol_password_verification_uses_har_sentinel_flow() -> None:
+    flow = ProtocolRegistrationFlow(
+        MailAccount(
+            "user@outlook.com", "mail-password", "client", "refresh", "raw",
+            chatgpt_password="ChatGPT-password", totp_secret="JBSWY3DPEHPK3PXP",
+        ),
+        session=FakeSession([FakeResponse(payload={"page": {"type": "mfa_challenge"}})]),
+    )
+    flow.device_id = "device-id"
+    with patch.object(flow, "_sentinel_headers", return_value={"openai-sentinel-token": "proof"}) as sentinel:
+        result = flow._verify_login_password("https://auth.openai.com/log-in/password")
+
+    assert result["page"]["type"] == "mfa_challenge"
+    sentinel.assert_called_once_with("password_verify")
+    request = flow.session.requests[0]
+    assert request[2]["headers"]["openai-sentinel-token"] == "proof"
+    assert json.loads(request[2]["data"]) == {"password": "ChatGPT-password"}
+
+
+def test_protocol_incomplete_login_secret_uses_mailbox_otp() -> None:
+    account = MailAccount(
+        "user@outlook.com", "mail-password", "client", "refresh", "raw",
+        chatgpt_password="ChatGPT-password",
+    )
+    flow = ProtocolRegistrationFlow(account, existing_account=True, session=FakeSession([]))
+    flow.auth_page_url = "https://auth.openai.com/log-in/password"
+    flow._start_next_auth = lambda: None
+    flow._authorize_email = lambda: {
+        "page": {"type": "login_password"},
+        "continue_url": "https://auth.openai.com/log-in/password",
+    }
+    flow._verify_email = Mock(return_value={"page": {"type": "login_success"}, "continue_url": "https://chatgpt.com/callback"})
+    flow._finish_session = lambda _url: {
+        "access_token": "access", "session_json": {"accessToken": "access"},
+        "auth_action": "login", "protocol_traffic": flow.traffic.snapshot(),
+    }
+
+    with patch("sunny_core.protocol_auth.create_mailbox_reader", FakeReader):
+        result = flow.run()
+
+    assert result["access_token"] == "access"
+    flow._verify_email.assert_called_once()
+
+
+def test_protocol_rejected_password_falls_back_to_mailbox_otp() -> None:
+    account = MailAccount(
+        "user@outlook.com", "mail-password", "client", "refresh", "raw",
+        chatgpt_password="ChatGPT-password", totp_secret="JBSWY3DPEHPK3PXP",
+    )
+    flow = ProtocolRegistrationFlow(account, existing_account=True, session=FakeSession([]))
+    flow.auth_page_url = "https://auth.openai.com/log-in/password"
+    flow._start_next_auth = lambda: None
+    flow._authorize_email = lambda: {
+        "page": {"type": "login_password"},
+        "continue_url": "https://auth.openai.com/log-in/password",
+    }
+    flow._verify_login_password = Mock(side_effect=ProtocolLoginSecretRejected("HTTP 401 wrong password"))
+    flow._verify_email = Mock(return_value={"page": {"type": "login_success"}, "continue_url": "https://chatgpt.com/callback"})
+    flow._finish_session = lambda _url: {
+        "access_token": "access", "session_json": {"accessToken": "access"},
+        "auth_action": "login", "protocol_traffic": flow.traffic.snapshot(),
+    }
+
+    with patch("sunny_core.protocol_auth.create_mailbox_reader", FakeReader):
+        result = flow.run()
+
+    assert result["access_token"] == "access"
+    flow._verify_login_password.assert_called_once()
+    flow._verify_email.assert_called_once()
+
+
+def test_protocol_rejected_totp_restarts_with_mailbox_otp() -> None:
+    account = MailAccount(
+        "user@outlook.com", "mail-password", "client", "refresh", "raw",
+        chatgpt_password="ChatGPT-password", totp_secret="JBSWY3DPEHPK3PXP",
+    )
+    flow = ProtocolRegistrationFlow(account, existing_account=True, session=FakeSession([]))
+    flow.auth_page_url = "https://auth.openai.com/log-in/password"
+    flow._start_next_auth = lambda: None
+    flow._authorize_email = lambda: {
+        "page": {"type": "login_password"},
+        "continue_url": "https://auth.openai.com/log-in/password",
+    }
+    flow._verify_login_password = Mock(return_value={
+        "page": {"type": "mfa_challenge"},
+        "continue_url": "https://auth.openai.com/mfa-challenge/factor",
+    })
+    flow._complete_mfa = Mock(side_effect=ProtocolLoginSecretRejected("HTTP 401 wrong code"))
+    flow._restart_with_email_login = Mock(return_value={
+        "page": {"type": "login_success"}, "continue_url": "https://chatgpt.com/callback",
+    })
+    flow._finish_session = lambda _url: {
+        "access_token": "access", "session_json": {"accessToken": "access"},
+        "auth_action": "login", "protocol_traffic": flow.traffic.snapshot(),
+    }
+
+    with patch("sunny_core.protocol_auth.create_mailbox_reader", FakeReader):
+        result = flow.run()
+
+    assert result["access_token"] == "access"
+    flow._restart_with_email_login.assert_called_once()
