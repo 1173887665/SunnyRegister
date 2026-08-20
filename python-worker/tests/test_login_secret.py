@@ -16,6 +16,7 @@ class LoginSecretTests(unittest.TestCase):
     def test_password_already_set_response_is_detected_without_accepting_unknown_password(self):
         self.assertTrue(_password_already_set({"status": 400, "data": {"code": "password_already_set"}}))
         self.assertTrue(_password_already_set({"status": 400, "data": {"message": "You already have a password."}}))
+        self.assertTrue(_password_already_set({"status": 409, "data": {"error": {"type": "password_exists"}}}))
         self.assertFalse(_password_already_set({"status": 400, "data": {"code": "invalid_request_error"}}))
 
     def test_wrong_email_otp_response_is_recognized_for_retry(self):
@@ -98,6 +99,20 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(page.visited, ["https://auth.openai.com/reset-password/new-password"])
         self.assertEqual(page.password, "Strong-password-1!")
+
+    def test_settings_surface_opens_profile_menu_before_searching_settings(self):
+        class FakePage:
+            def __init__(self):
+                self.script = ""
+
+            def evaluate(self, script):
+                self.script = script
+                return True
+
+        page = FakePage()
+        self.assertTrue(LoginSecretSetupFlow._open_settings_surface(page))
+        self.assertIn("accounts-profile-button", page.script)
+        self.assertIn("settings|設定|设置", page.script)
 
     def test_chatgpt_page_is_reused_during_login_secret_steps(self):
         class Page:

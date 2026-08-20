@@ -26,12 +26,20 @@ class MFAReauthenticationRequired(RuntimeError):
 
 
 def _password_already_set(result: dict[str, Any]) -> bool:
-    data = result.get("data") if isinstance(result, dict) else None
-    if not isinstance(data, dict):
+    if not isinstance(result, dict):
         return False
-    code = str(data.get("code") or "").strip().lower()
-    message = str(data.get("message") or "").strip().lower()
-    return code == "password_already_set" or "already have a password" in message
+    candidates = [result, result.get("data"), result.get("error")]
+    data = result.get("data")
+    if isinstance(data, dict):
+        candidates.append(data.get("error"))
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        code = str(candidate.get("code") or candidate.get("type") or "").strip().lower()
+        message = str(candidate.get("message") or candidate.get("detail") or "").strip().lower()
+        if code in {"password_already_set", "password_exists", "already_set"} or "already have a password" in message or "password already exists" in message:
+            return True
+    return False
 
 
 def _wrong_email_otp(result: dict[str, Any] | None, text: str = "") -> bool:
@@ -210,7 +218,10 @@ class LoginSecretSetupFlow:
                     const settings = [...document.querySelectorAll('a,button,[role="button"],[role="link"],[role="tab"]')].find(el =>
                         visible(el) && /settings|設定|设置|href=.*settings/.test(desc(el)));
                     if (settings) { settings.scrollIntoView({block:'center'}); settings.click(); return true; }
-                    return !!sidebar;
+                    const profile = [...document.querySelectorAll('button,[role="button"],a')].find(el =>
+                        visible(el) && /accounts-profile-button|profile menu|プロファイルメニュー|账户菜单|个人资料/.test(desc(el)));
+                    if (profile) profile.click();
+                    return !!sidebar || !!profile;
                 }"""
             ))
         except Exception:
@@ -405,15 +416,23 @@ class LoginSecretSetupFlow:
 
     def _add_password(self, page) -> str:
         password = generate_chatgpt_password()
-        protocol_result: dict[str, Any]
-        try:
-            # Password enrollment is a separate password reauthentication flow.
-            # The registration OTP is rejected by this flow, so always request a
-            # fresh mailbox code before calling the protocol endpoint.
-            self._reauth_for_password(page, password)
-            protocol_result = self._add_password_via_protocol(page, password)
-        except Exception as exc:
-            protocol_result = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+        protocol_result: dict[str, Any] = {"ok": False, "status": 0}
+        for attempt in range(2):
+            try:
+                # Password enrollment is a separate password reauthentication flow.
+                # The registration OTP is rejected by this flow, so always request a
+                # fresh mailbox code before calling the protocol endpoint.
+                self._reauth_for_password(page, password)
+                protocol_result = self._add_password_via_protocol(page, password)
+            except Exception as exc:
+                protocol_result = {"ok": False, "status": 0, "reason": f"{type(exc).__name__}: {exc}"}
+            if protocol_result.get("ok") or _password_already_set(protocol_result):
+                break
+            if attempt == 0 and int(protocol_result.get("status") or 0) in {401, 403, 409}:
+                self.log("[登录密钥] 密码协议接口处于认证/状态同步窗口，将重新认证后重试")
+                self._sleep(1.5)
+                continue
+            break
         if protocol_result.get("ok"):
             self.log("[登录密钥] 已通过 OpenAI 协议接口添加 ChatGPT 密码（内容不写日志）")
             return password
@@ -909,18 +928,25 @@ class ProtocolLoginSecretSetupFlow:
         return self._session_json()
 
     def _add_password(self, password: str) -> dict[str, Any]:
-        self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=add_password")
-        status, data, text = self._request(
-            "POST",
-            PASSWORD_ADD_URL,
-            headers={"accept": "application/json", "content-type": "application/json", "origin": AUTH_BASE_URL},
-            json={"password": password},
-        )
-        if _password_already_set({"status": status, "data": data}):
-            raise RuntimeError("远端 ChatGPT 已存在密码，但本地没有密码凭证，无法恢复原密码；请在账户管理中手动录入或重置后重试")
-        self._require_ok(status, data, text, "添加 ChatGPT 密码")
-        self.log("[登录密钥] 已通过同一协议登录态添加 ChatGPT 密码（内容不写日志）")
-        return self._session_json()
+        for attempt in range(2):
+            self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=add_password")
+            status, data, text = self._request(
+                "POST",
+                PASSWORD_ADD_URL,
+                headers={"accept": "application/json", "content-type": "application/json", "origin": AUTH_BASE_URL},
+                json={"password": password},
+            )
+            result = {"status": status, "data": data, "error": data.get("error") if isinstance(data, dict) else None}
+            if _password_already_set(result):
+                raise RuntimeError("远端 ChatGPT 已存在密码，但本地没有密码凭证，无法恢复原密码；请在账户管理中手动录入或重置后重试")
+            if 200 <= status < 300:
+                self.log("[登录密钥] 已通过同一协议登录态添加 ChatGPT 密码（内容不写日志）")
+                return self._session_json()
+            if attempt == 0 and status in {401, 403, 409}:
+                self.log("[登录密钥] 密码协议接口处于认证/状态同步窗口，将重新认证后重试")
+                continue
+            self._require_ok(status, data, text, "添加 ChatGPT 密码")
+        raise RuntimeError("添加 ChatGPT 密码失败: 未获得有效响应")
 
     @staticmethod
     def _auth_headers(access_token: str, *, json_body: bool = False) -> dict[str, str]:
