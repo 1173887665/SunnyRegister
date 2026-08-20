@@ -13,6 +13,10 @@ from .mailbox import MailAccount, create_mailbox_reader
 from .openai_auth import CHATGPT_BASE_URL, generate_register_fingerprint
 
 
+class MFAReauthenticationRequired(RuntimeError):
+    pass
+
+
 def generate_chatgpt_password(length: int = 16) -> str:
     length = max(12, int(length or 16))
     groups = (
@@ -39,6 +43,7 @@ class LoginSecretSetupFlow:
         should_cancel: Callable[[], bool] | None = None,
         mailbox_proxy_url: str | None = None,
         traffic_meter: ProxyTrafficMeter | None = None,
+        on_progress: Callable[[str], None] | None = None,
     ):
         self.account = account
         self.session = dict(session or {})
@@ -47,6 +52,7 @@ class LoginSecretSetupFlow:
         self.log = log or (lambda _message: None)
         self.should_cancel = should_cancel or (lambda: False)
         self.traffic_meter = traffic_meter
+        self.on_progress = on_progress or (lambda _checkpoint: None)
         self.traffic_optimizer = BrowserTrafficOptimizer(traffic_meter) if traffic_meter is not None else None
         self.reader: Any | None = None
 
@@ -112,21 +118,91 @@ class LoginSecretSetupFlow:
             return {"url": str(getattr(page, "url", "") or ""), "text": "", "passwordInputs": 0, "codeInputs": 0}
 
     @staticmethod
-    def _click_password_action(page) -> bool:
-        return bool(page.evaluate(
+    def _click_password_action(page) -> dict[str, Any]:
+        try:
+            return page.evaluate(
             r"""() => {
                 const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
                     && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
                     && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
-                const desc = el => [el.innerText, el.textContent, el.getAttribute('aria-label'), el.title, el.getAttribute('data-testid')]
+                const desc = el => [el.innerText, el.textContent, el.getAttribute('aria-label'), el.title,
+                    el.getAttribute('data-testid'), el.getAttribute('data-dd-action-name'), el.id, el.name]
                     .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
-                const items = [...document.querySelectorAll('button,a,[role="button"],[role="link"]')].filter(visible);
-                const hit = items.find(el => /password|密码|パスワード|비밀번호/.test(desc(el))
-                    && /add|create|set|update|change|manage|添加|创建|设置|更新|更改|管理|追加|変更|설정|변경/.test(desc(el)));
-                if (!hit) return false;
-                hit.scrollIntoView({block:'center'}); hit.click(); return true;
+                const password = /password|密码|パスワード|비밀번호/;
+                const action = /add|create|set|update|change|manage|添加|创建|设置|更新|更改|管理|追加|変更|설정|변경/;
+                const items = [...document.querySelectorAll('button,a,[role="button"],[role="link"],[role="tab"]')].filter(visible);
+                const hit = items.find(el => {
+                    const own = desc(el);
+                    if (password.test(own) && action.test(own)) return true;
+                    if (!password.test(own)) return false;
+                    const parent = el.closest('li,section,form,[role="dialog"],div');
+                    return action.test(desc(parent || el));
+                }) || items.find(el => /password/.test(String(el.getAttribute('data-testid') || '').toLowerCase()));
+                if (!hit) return {ok:false, reason:'password_action_missing', samples:items.map(desc).filter(Boolean).slice(0,40)};
+                hit.scrollIntoView({block:'center'}); hit.click();
+                return {ok:true, detail:desc(hit).slice(0,180)};
             }"""
-        ))
+            ) or {"ok": False, "reason": "empty_result"}
+        except Exception as exc:
+            return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+    @staticmethod
+    def _click_settings_navigation(page, step: str) -> bool:
+        try:
+            return bool(page.evaluate(
+                r"""step => {
+                    const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+                        && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+                    const enabled = el => !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+                    const desc = el => [el.innerText, el.textContent, el.getAttribute('aria-label'), el.title,
+                        el.getAttribute('data-testid'), el.getAttribute('data-dd-action-name')]
+                        .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+                    const items = [...document.querySelectorAll('button,a,[role="button"],[role="link"],[role="tab"]')]
+                        .filter(el => visible(el) && enabled(el));
+                    const patterns = {
+                        account: /^(account|账户|アカウント|계정)$/,
+                        settings: /settings|设置|設定|설정/,
+                        profile: /profile|account menu|user menu|个人资料|账户菜单|プロフィール|프로필/
+                    };
+                    const hit = items.find(el => patterns[String(step || '')]?.test(desc(el)));
+                    if (!hit) return false;
+                    hit.scrollIntoView({block:'center'}); hit.click(); return true;
+                }""",
+                step,
+            ))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _add_password_via_protocol(page, password: str) -> dict[str, Any]:
+        """Add a password through the authenticated OpenAI account endpoint.
+
+        The reset-password page accepts the existing browser login state and is
+        more stable than depending on the ChatGPT settings SPA's button labels.
+        """
+        try:
+            page.goto("https://auth.openai.com/reset-password/new-password", wait_until="domcontentloaded", timeout=60000)
+            return page.evaluate(
+                r"""async password => {
+                    const response = await fetch('https://auth.openai.com/api/accounts/password/add', {
+                        method: 'POST', credentials: 'include',
+                        headers: {'accept':'application/json', 'content-type':'application/json'},
+                        body: JSON.stringify({password})
+                    });
+                    const text = await response.text();
+                    let data = null; try { data = JSON.parse(text); } catch (_) {}
+                    return {ok: response.ok && (!data || data.success !== false), status: response.status, data, text: text.slice(0, 500)};
+                }""",
+                password,
+            ) or {"ok": False, "reason": "empty_result"}
+        except Exception as exc:
+            return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+    def _progress(self, checkpoint: str) -> None:
+        try:
+            self.on_progress(checkpoint)
+        except Exception:
+            pass
 
     @staticmethod
     def _submit_password(page, password: str) -> bool:
@@ -220,15 +296,33 @@ class LoginSecretSetupFlow:
 
     def _add_password(self, page) -> str:
         password = generate_chatgpt_password()
+        protocol_result = self._add_password_via_protocol(page, password)
+        if protocol_result.get("ok"):
+            self.log("[登录密钥] 已通过 OpenAI 协议接口添加 ChatGPT 密码（内容不写日志）")
+            return password
+        self.log(
+            "[登录密钥] 协议添加密码接口未完成，将回退账户设置页："
+            f"HTTP {protocol_result.get('status', 0)} {protocol_result.get('reason', '')}".strip()
+        )
         page.goto(f"{CHATGPT_BASE_URL}/#settings/Account", wait_until="domcontentloaded", timeout=60000)
-        deadline = time.time() + 45
+        self._sleep(2)
+        deadline = time.time() + 60
+        navigation_steps = ("account", "settings", "profile")
+        navigation_index = 0
+        last_result: dict[str, Any] = {}
         while time.time() < deadline:
             self._check_cancelled()
-            if self._click_password_action(page):
+            result = self._click_password_action(page)
+            last_result = result if isinstance(result, dict) else {"ok": bool(result)}
+            if last_result.get("ok"):
                 break
+            if navigation_index < len(navigation_steps) and self._click_settings_navigation(page, navigation_steps[navigation_index]):
+                navigation_index += 1
             self._sleep(1)
         else:
-            raise RuntimeError("账户设置中未找到添加密码入口")
+            samples = " | ".join(str(item) for item in (last_result.get("samples") or [])[:8])
+            detail = f"；可见控件: {samples}" if samples else ""
+            raise RuntimeError(f"账户设置中未找到添加密码入口{detail}")
         submitted = False
         disappeared_at = 0.0
         otp_min_timestamp = time.time() - 5
@@ -278,39 +372,128 @@ class LoginSecretSetupFlow:
         page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
         return self._session_json(page)
 
-    def _setup_2fa(self, page, password: str) -> tuple[str, dict[str, Any]]:
-        session_json = self._reauth_for_2fa(page, password)
-        access_token = str(session_json.get("accessToken") or session_json.get("access_token") or "")
-        result = page.evaluate(
+    @staticmethod
+    def _mfa_info(page, access_token: str) -> dict[str, Any]:
+        return page.evaluate(
             """async token => {
-                const headers = {'accept':'application/json','content-type':'application/json','authorization':'Bearer '+token};
-                const enroll = await fetch('/backend-api/accounts/mfa/enroll', {method:'POST',credentials:'include',headers,body:JSON.stringify({factor_type:'totp'})});
-                const enrollText = await enroll.text(); let enrollData={}; try { enrollData=JSON.parse(enrollText); } catch (_) {}
-                return {ok:enroll.ok,status:enroll.status,data:enrollData,text:enrollText};
+                const headers = {'accept':'application/json'};
+                if (token) headers.authorization = 'Bearer ' + token;
+                const response = await fetch('/backend-api/accounts/mfa_info', {credentials:'include',headers});
+                const text=await response.text(); let data={}; try { data=JSON.parse(text); } catch (_) {}
+                return {ok:response.ok,status:response.status,data,text:text.slice(0,500)};
             }""",
             access_token,
         )
-        enroll = result.get("data") if isinstance(result, dict) else {}
-        secret = str((enroll or {}).get("secret") or "").strip()
-        session_id = str((enroll or {}).get("session_id") or "").strip()
-        if not result.get("ok") or not secret or not session_id:
-            raise RuntimeError(f"2FA enroll 失败: HTTP {result.get('status')}")
-        activation = page.evaluate(
+
+    @staticmethod
+    def _enroll_totp(page, access_token: str) -> dict[str, Any]:
+        return page.evaluate(
+            """async token => {
+                const headers = {'accept':'application/json','content-type':'application/json'};
+                if (token) headers.authorization = 'Bearer ' + token;
+                const response = await fetch('/backend-api/accounts/mfa/enroll', {
+                    method:'POST',credentials:'include',headers,body:JSON.stringify({factor_type:'totp'})
+                });
+                const text=await response.text(); let data={}; try { data=JSON.parse(text); } catch (_) {}
+                return {ok:response.ok,status:response.status,data,text:text.slice(0,500)};
+            }""",
+            access_token,
+        )
+
+    @staticmethod
+    def _activate_totp(page, access_token: str, code: str, session_id: str) -> dict[str, Any]:
+        return page.evaluate(
             """async ({token,code,sessionId}) => {
+                const headers = {'accept':'application/json','content-type':'application/json'};
+                if (token) headers.authorization = 'Bearer ' + token;
                 const response = await fetch('/backend-api/accounts/mfa/user/activate_enrollment', {
-                    method:'POST',credentials:'include',
-                    headers:{'accept':'application/json','content-type':'application/json','authorization':'Bearer '+token},
+                    method:'POST',credentials:'include',headers,
                     body:JSON.stringify({code,factor_type:'totp',session_id:sessionId})
                 });
                 const text=await response.text(); let data={}; try { data=JSON.parse(text); } catch (_) {}
-                return {ok:response.ok,status:response.status,data,text};
+                return {ok:response.ok,status:response.status,data,text:text.slice(0,500)};
             }""",
-            {"token": access_token, "code": generate_totp(secret), "sessionId": session_id},
+            {"token": access_token, "code": code, "sessionId": session_id},
         )
-        if not activation.get("ok") or (activation.get("data") or {}).get("success") is not True:
-            raise RuntimeError(f"2FA activate 失败: HTTP {activation.get('status')}")
+
+    @staticmethod
+    def _totp_factors(info: dict[str, Any]) -> list[dict[str, Any]]:
+        data = info.get("data") if isinstance(info, dict) else {}
+        factors = (data or {}).get("factors") if isinstance(data, dict) else {}
+        items = (factors or {}).get("totp") if isinstance(factors, dict) else []
+        return [item for item in (items or []) if isinstance(item, dict)]
+
+    def _fresh_totp_code(self, secret: str, *, force_next_window: bool = False) -> str:
+        remaining = 30 - (time.time() % 30)
+        if force_next_window or remaining <= 5:
+            self._sleep(remaining + 0.25)
+        return generate_totp(secret)
+
+    @staticmethod
+    def _require_mfa_response(result: dict[str, Any], operation: str) -> None:
+        status = int(result.get("status") or 0) if isinstance(result, dict) else 0
+        if status in {401, 403}:
+            raise MFAReauthenticationRequired(f"{operation}要求重新认证: HTTP {status}")
+        if not isinstance(result, dict) or not result.get("ok"):
+            raise RuntimeError(f"{operation}失败: HTTP {status}")
+
+    def _setup_2fa_protocol(self, page, access_token: str) -> tuple[str, dict[str, Any]]:
+        info_before = self._mfa_info(page, access_token)
+        self._require_mfa_response(info_before, "查询 2FA 状态")
+        info_data = info_before.get("data") or {}
+        if not isinstance(info_data, dict):
+            raise RuntimeError("查询 2FA 状态失败: 响应不是有效 JSON 对象")
+        if info_data.get("mfa_enabled") is True or self._totp_factors(info_before):
+            raise RuntimeError("ChatGPT 已启用 TOTP，但本地没有对应 2FA 密钥，无法恢复原密钥")
+
+        result = self._enroll_totp(page, access_token)
+        self._require_mfa_response(result, "2FA enroll")
+        enroll = result.get("data") if isinstance(result, dict) else {}
+        secret = str((enroll or {}).get("secret") or "").strip()
+        session_id = str((enroll or {}).get("session_id") or "").strip()
+        factor_id = str(((enroll or {}).get("factor") or {}).get("id") or "").strip()
+        if not secret or not session_id:
+            raise RuntimeError("2FA enroll 响应缺少 secret 或 session_id")
+
+        activation: dict[str, Any] = {}
+        for attempt in range(2):
+            code = self._fresh_totp_code(secret, force_next_window=attempt > 0)
+            activation = self._activate_totp(page, access_token, code, session_id)
+            status = int((activation or {}).get("status") or 0)
+            if status in {401, 403}:
+                raise MFAReauthenticationRequired(f"2FA activate 要求重新认证: HTTP {status}")
+            activation_data = activation.get("data") if isinstance(activation, dict) else {}
+            if isinstance(activation, dict) and activation.get("ok") and isinstance(activation_data, dict) and activation_data.get("success") is True:
+                break
+        else:
+            status = activation.get("status") if isinstance(activation, dict) else 0
+            raise RuntimeError(f"2FA activate 失败: HTTP {status}")
+
+        info_after = self._mfa_info(page, access_token)
+        self._require_mfa_response(info_after, "确认 2FA 状态")
+        info_after_data = info_after.get("data") or {}
+        if not isinstance(info_after_data, dict):
+            raise RuntimeError("确认 2FA 状态失败: 响应不是有效 JSON 对象")
+        confirmed_factors = self._totp_factors(info_after)
+        confirmed = bool(info_after_data.get("mfa_enabled") is True and confirmed_factors)
+        if factor_id:
+            confirmed = confirmed and any(str(item.get("id") or "") == factor_id for item in confirmed_factors)
+        if not confirmed:
+            raise RuntimeError("2FA activate 返回成功，但 mfa_info 未确认 TOTP 已启用")
         self.account.totp_secret = secret
         return secret, self._session_json(page)
+
+    def _setup_2fa(self, page, password: str) -> tuple[str, dict[str, Any]]:
+        page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+        session_json = self._session_json(page)
+        access_token = str(session_json.get("accessToken") or session_json.get("access_token") or "")
+        try:
+            return self._setup_2fa_protocol(page, access_token)
+        except MFAReauthenticationRequired:
+            self.log("[登录密钥] 2FA 协议接口要求重新认证，将使用已设置密码完成一次重认证后重试")
+        session_json = self._reauth_for_2fa(page, password)
+        access_token = str(session_json.get("accessToken") or session_json.get("access_token") or "")
+        return self._setup_2fa_protocol(page, access_token)
 
     def run(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -324,6 +507,7 @@ class LoginSecretSetupFlow:
             result["skipped"] = True
             result["complete"] = True
             return result
+        self._progress("login_secret_started")
         try:
             with open_registration_browser(
                 headless=True,
@@ -339,6 +523,7 @@ class LoginSecretSetupFlow:
                 page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
                 current_session = self._session_json(page)
                 if not self.account.chatgpt_password:
+                    self._progress("login_secret_password")
                     try:
                         password = self._add_password(page)
                         self.account.chatgpt_password = password
@@ -346,6 +531,7 @@ class LoginSecretSetupFlow:
                     except Exception as exc:
                         result["errors"].append(f"添加密码失败: {exc}")
                 if not self.account.totp_secret and self.account.chatgpt_password:
+                    self._progress("login_secret_2fa")
                     try:
                         secret, current_session = self._setup_2fa(page, self.account.chatgpt_password)
                         result.update({"totp_secret": secret, "totp_added": True})
@@ -358,6 +544,7 @@ class LoginSecretSetupFlow:
                     "storage_state_json": context.storage_state(),
                 }
                 result["complete"] = bool(result.get("password") and result.get("totp_secret"))
+                self._progress("login_secret_completed" if result["complete"] else "login_secret_failed")
                 return result
         finally:
             if self.reader:
@@ -373,6 +560,7 @@ def setup_login_secret(
     should_cancel: Callable[[], bool] | None = None,
     mailbox_proxy_url: str | None = None,
     traffic_meter: ProxyTrafficMeter | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     return LoginSecretSetupFlow(
         account,
@@ -382,4 +570,5 @@ def setup_login_secret(
         should_cancel=should_cancel,
         mailbox_proxy_url=mailbox_proxy_url,
         traffic_meter=traffic_meter,
+        on_progress=on_progress,
     ).run()

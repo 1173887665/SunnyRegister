@@ -49,6 +49,11 @@ _REGISTRATION_PROGRESS_STEPS = {
     "reverse_imported": 12,
     "agent_identity_importing": 8,
     "agent_identity_imported": 9,
+    "login_secret_started": 1,
+    "login_secret_password": 2,
+    "login_secret_2fa": 3,
+    "login_secret_completed": 4,
+    "login_secret_failed": 4,
 }
 
 _REGISTRATION_STAGE_TOTALS = {
@@ -186,9 +191,14 @@ def _emit_registration_progress(
     *,
     state: str = "running",
     error: str = "",
+    setup_login_secret: bool = False,
 ) -> None:
-    total = _registration_stage_total(stage)
-    current = min(total, max(0, _REGISTRATION_PROGRESS_STEPS.get(checkpoint, 0)))
+    base_total = _registration_stage_total(stage)
+    total = base_total + (4 if setup_login_secret else 0)
+    if setup_login_secret and checkpoint.startswith("login_secret_"):
+        current = base_total + min(4, max(0, _REGISTRATION_PROGRESS_STEPS.get(checkpoint, 0)))
+    else:
+        current = min(base_total, max(0, _REGISTRATION_PROGRESS_STEPS.get(checkpoint, 0)))
     db.event(
         f"[{email}] registration progress {current}/{total}: {checkpoint}",
         level="error" if state == "abnormal" else "info",
@@ -1415,8 +1425,9 @@ def _run_one(
     db.ensure_not_cancelled()
     email = mailbox.get("email") or f"mailbox-{index}"
     stage = _stage(payload)
+    setup_login_secret_enabled = payload.get("setup_login_secret") is True
     explicit_rt_acquire = task_type == "sunny_acquire_rt"
-    _emit_registration_progress(db, str(email), stage, "initializing")
+    _emit_registration_progress(db, str(email), stage, "initializing", setup_login_secret=setup_login_secret_enabled)
     try:
         proxies = _prepare_register_proxy(db, payload, str(email), index - 1)
     except Exception as exc:
@@ -1438,7 +1449,7 @@ def _run_one(
             "error",
             detail={"email": email, "scope": "selected", "proxy_pool_exhausted": True, "traceback": traceback.format_exc()[-3000:]},
         )
-        _emit_registration_progress(db, str(email), stage, "failed", state="abnormal", error=err_text)
+        _emit_registration_progress(db, str(email), stage, "failed", state="abnormal", error=err_text, setup_login_secret=setup_login_secret_enabled)
         return False, err
     auxiliary_proxy = _auxiliary_proxy(payload, proxies)
     chatgpt_proxy_label = redact_proxy_url(str(proxies.get("register") or ""))
@@ -1540,11 +1551,11 @@ def _run_one(
             db.event(f"[{email}] [代理] 注册/登录流量使用代理池代理: {proxy_label}（代理池检测为轻量 TCP 连通检测，不等同于目标站点可访问）", detail={"email": email, "scope": "selected", "proxy": proxy_label, "proxy_mode": "proxy_pool"})
     else:
         db.event(f"[{email}] [代理] 注册/登录流量使用服务器系统网络直连出口", detail={"email": email, "scope": "selected", "proxy": "", "proxy_mode": "direct"})
-    _emit_registration_progress(db, str(email), stage, "proxy_ready")
+    _emit_registration_progress(db, str(email), stage, "proxy_ready", setup_login_secret=setup_login_secret_enabled)
     db.mark_mailbox(mailbox_id, "登录刷新" if is_registered_mailbox else "注册中")
 
     def save_progress(checkpoint: str, snapshot: dict[str, Any]) -> None:
-        _emit_registration_progress(db, str(email), stage, checkpoint)
+        _emit_registration_progress(db, str(email), stage, checkpoint, setup_login_secret=setup_login_secret_enabled)
         if checkpoint in {"registered", "phone_bound"}:
             _persist_registration_checkpoint(
                 db,
@@ -1789,6 +1800,9 @@ def _run_one(
                     should_cancel=db.cancel_requested,
                     mailbox_proxy_url=mailbox_proxy_url,
                     traffic_meter=traffic_meter,
+                    on_progress=lambda checkpoint: _emit_registration_progress(
+                        db, str(email), stage, checkpoint, setup_login_secret=True,
+                    ),
                 )
                 if login_secret_result.get("password_added"):
                     db.save_chatgpt_password(mailbox_id, str(login_secret_result.get("password") or ""))
@@ -1845,9 +1859,13 @@ def _run_one(
             "stage_complete": stage == REGISTER_ONLY or (stage == CODEX_PHONE_BIND and has_rt),
             "phone_skipped_reason": phone_skipped_reason,
         }
+        base_stage_complete = bool(result["stage_complete"])
         if login_secret_result is not None:
             result["login_secret_complete"] = bool(login_secret_result.get("complete"))
             result["login_secret_errors"] = list(login_secret_result.get("errors") or [])
+            if not result["login_secret_complete"]:
+                login_secret_error = "；".join(result["login_secret_errors"] or ["密码与 2FA 未全部完成"])
+                result["stage_error"] = "; ".join(filter(None, [str(result.get("stage_error") or ""), login_secret_error]))
         if isinstance(session.get("protocol_traffic"), dict):
             result["protocol_traffic"] = session["protocol_traffic"]
         if session.get("protocol_fallback"):
@@ -1870,14 +1888,14 @@ def _run_one(
                 )
             else:
                 try:
-                    _emit_registration_progress(db, str(email), stage, "reverse_importing")
+                    _emit_registration_progress(db, str(email), stage, "reverse_importing", setup_login_secret=setup_login_secret_enabled)
                     result["sub2api"] = _import_sub2api(db, email, account_id, session, proxy_url=auxiliary_proxy)
                     mailbox_status = _highest_mailbox_progress(mailbox_status, "已反代")
                     db.mark_mailbox(mailbox_id, mailbox_status, openai_rt=rt_value)
                     db.upsert_account(email, mailbox_id=mailbox_id, status="reverse_proxied", last_error="")
                     result["completed_status"] = mailbox_status
                     result["stage_complete"] = True
-                    _emit_registration_progress(db, str(email), stage, "reverse_imported")
+                    _emit_registration_progress(db, str(email), stage, "reverse_imported", setup_login_secret=setup_login_secret_enabled)
                 except Exception as exc:
                     stage_error = str(exc)
                     result["stage_complete"] = False
@@ -1888,7 +1906,7 @@ def _run_one(
                     db.event(f"[{email}] [反代] 导入 sub2api 失败，账号保留为{mailbox_status}: {stage_error}", "error", detail={"email": email, "scope": "selected", "completed_status": mailbox_status})
         elif stage == AGENT_IDENTITY_REVERSE_PROXY:
             try:
-                _emit_registration_progress(db, str(email), stage, "agent_identity_importing")
+                _emit_registration_progress(db, str(email), stage, "agent_identity_importing", setup_login_secret=setup_login_secret_enabled)
                 import_result = _import_sub2api_agent_identity(
                     db,
                     email,
@@ -1905,7 +1923,7 @@ def _run_one(
                 result["stage_complete"] = True
                 result["agent_identity"] = import_mode == "agent_identity"
                 result["agent_identity_fallback"] = import_mode != "agent_identity"
-                _emit_registration_progress(db, str(email), stage, "agent_identity_imported")
+                _emit_registration_progress(db, str(email), stage, "agent_identity_imported", setup_login_secret=setup_login_secret_enabled)
             except Exception as exc:
                 if _is_cancel_exception(exc):
                     raise
@@ -1927,6 +1945,14 @@ def _run_one(
             db.upsert_account(email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(mailbox_status), last_error=stage_error)
             db.mark_mailbox(mailbox_id, mailbox_status, stage_error, openai_rt=rt_value)
             db.event(f"[{email}] [接码] 后续接码阶段未完成，账号保留为{mailbox_status}: {stage_error}", "warning", detail={"email": email, "scope": "selected", "completed_status": mailbox_status})
+        if login_secret_result is not None:
+            # LS is an optional post-registration phase. Keep the account and its
+            # base registration result, but mark the task progress partial when
+            # either password or TOTP setup did not finish.
+            base_stage_complete = bool(result.get("stage_complete"))
+            result["stage_complete"] = bool(result.get("stage_complete") and login_secret_result.get("complete"))
+        elif setup_login_secret_enabled:
+            result["stage_complete"] = False
         result["has_access_token"] = bool(result.pop("access_token", ""))
         result["has_refresh_token"] = bool(result.pop("refresh_token", ""))
         terminal_checkpoint = {
@@ -1935,13 +1961,23 @@ def _run_one(
             IMPORT_REVERSE_PROXY: "reverse_imported",
             AGENT_IDENTITY_REVERSE_PROXY: "agent_identity_imported",
         }.get(stage, "registered")
+        terminal_checkpoint = (
+            "login_secret_completed"
+            if setup_login_secret_enabled and result.get("stage_complete")
+            else "login_secret_failed"
+            if setup_login_secret_enabled and base_stage_complete
+            else terminal_checkpoint
+        )
         _emit_registration_progress(
             db,
             str(email),
             stage,
-            terminal_checkpoint if result.get("stage_complete") else "stage_incomplete",
+            terminal_checkpoint
+            if result.get("stage_complete") or (setup_login_secret_enabled and base_stage_complete)
+            else "stage_incomplete",
             state="completed" if result.get("stage_complete") else "abnormal",
             error=str(result.get("stage_error") or ""),
+            setup_login_secret=setup_login_secret_enabled,
         )
         result["proxy_traffic"] = finalize_traffic(True)
         return True, result
@@ -1983,7 +2019,7 @@ def _run_one(
             error_detail["protocol_traffic"] = traffic
         error_detail["proxy_traffic"] = traffic_snapshot
         db.event(err, "error", detail=error_detail)
-        _emit_registration_progress(db, str(email), stage, "failed", state="abnormal", error=err_text)
+        _emit_registration_progress(db, str(email), stage, "failed", state="abnormal", error=err_text, setup_login_secret=setup_login_secret_enabled)
         return False, err
 
 

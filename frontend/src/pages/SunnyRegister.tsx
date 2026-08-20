@@ -159,6 +159,7 @@ type AccountRegistrationProgress = {
 type RegistrationTaskProgress = {
   taskId: string;
   stage: RegisterStage;
+  setupLoginSecret: boolean;
   accounts: Record<string, AccountRegistrationProgress>;
   order: string[];
 };
@@ -167,16 +168,18 @@ const CODEX_PHONE_BIND: RegisterStage = "codex_phone_bind";
 const IMPORT_REVERSE_PROXY: RegisterStage = "import_reverse_proxy";
 const AGENT_IDENTITY_REVERSE_PROXY: RegisterStage = "agent_identity_reverse_proxy";
 
-function registrationStageTotal(stage: RegisterStage): number {
-  return stage === IMPORT_REVERSE_PROXY ? 12 : stage === CODEX_PHONE_BIND ? 10 : stage === AGENT_IDENTITY_REVERSE_PROXY ? 9 : 7;
+function registrationStageTotal(stage: RegisterStage, setupLoginSecret = false): number {
+  const base = stage === IMPORT_REVERSE_PROXY ? 12 : stage === CODEX_PHONE_BIND ? 10 : stage === AGENT_IDENTITY_REVERSE_PROXY ? 9 : 7;
+  return base + (setupLoginSecret ? 4 : 0);
 }
 
-function createRegistrationTaskProgress(taskId: string, stage: RegisterStage, emails: string[]): RegistrationTaskProgress {
+function createRegistrationTaskProgress(taskId: string, stage: RegisterStage, emails: string[], setupLoginSecret = false): RegistrationTaskProgress {
   const normalized = Array.from(new Set(emails.map((email) => String(email || "").trim()).filter(Boolean)));
-  const total = registrationStageTotal(stage);
+  const total = registrationStageTotal(stage, setupLoginSecret);
   return {
     taskId,
     stage,
+    setupLoginSecret,
     order: normalized,
     accounts: Object.fromEntries(normalized.map((email) => [email.toLowerCase(), {
       email,
@@ -691,6 +694,21 @@ Object.assign(en, {
   allPaymentMethods: "All Payment Methods", paymentMethodFilter: "Payment methods (match all)", clearPaymentMethods: "Clear payment method filters",
 });
 
+Object.assign(zh.progressSteps, {
+  login_secret_started: "开始补充登录密钥",
+  login_secret_password: "正在添加 ChatGPT 密码",
+  login_secret_2fa: "正在绑定 ChatGPT 2FA",
+  login_secret_completed: "登录密钥已完成",
+  login_secret_failed: "登录密钥未全部完成",
+});
+Object.assign(en.progressSteps, {
+  login_secret_started: "Starting Login Secret setup",
+  login_secret_password: "Adding ChatGPT password",
+  login_secret_2fa: "Binding ChatGPT 2FA",
+  login_secret_completed: "Login Secret completed",
+  login_secret_failed: "Login Secret setup incomplete",
+});
+
 const MAILBOX_STATUSES = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "登录刷新", "失败"];
 const PLAN_TYPE_OPTIONS = ["free", "plus", "k12", "team", "pro"];
 const HEALTH_CHECKABLE_STATUSES = new Set(["已注册", "已接码", "已反代", "PLUS试用中", "需二验", "registered", "phone_bound", "reverse_proxied"]);
@@ -1115,7 +1133,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     setAutoOpen(false);
     const availableRows = [...rows, ...Object.values(selectedRowCache)];
     const taskEmails = ids.map((mailboxId) => String(availableRows.find((row) => Number(row.id) === mailboxId)?.email || "")).filter(Boolean);
-    setRegistrationProgress(createRegistrationTaskProgress("", stage, taskEmails));
+    setRegistrationProgress(createRegistrationTaskProgress("", stage, taskEmails, setupLoginSecret));
     const sep = batchSeparatorLog(`========= SunnyRegister ${t.autoRegister} · ${formatDateTime(new Date())} =========`);
     setGlobalLogs((old) => [localLog(`${t.createTaskLog} ${ids.length}`), sep, ...old]);
     setSelectedLogs((old) => [sep, ...old]);
@@ -1125,7 +1143,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       setGlobalLogs((old) => [localLog(t.taskSubmitted), ...old].slice(0, 160));
       const taskId = String(res.id || res.task_id || "");
       if (!taskId) throw new Error(t.taskFailed);
-      setRegistrationProgress((old) => old ? { ...old, taskId } : createRegistrationTaskProgress(taskId, stage, taskEmails));
+      setRegistrationProgress((old) => old ? { ...old, taskId } : createRegistrationTaskProgress(taskId, stage, taskEmails, setupLoginSecret));
       taskEventCursorRef.current = { taskId, last: 0 };
       setTaskEventCursor(taskEventCursorRef.current);
       setActiveTaskId(taskId);
@@ -1180,14 +1198,14 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       const eventStage = ([REGISTER_ONLY, CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY, AGENT_IDENTITY_REVERSE_PROXY].includes(firstDetail.stage) ? firstDetail.stage : stage) as RegisterStage;
       const next: RegistrationTaskProgress = old && (!old.taskId || old.taskId === taskId)
         ? { ...old, taskId, accounts: { ...old.accounts }, order: [...old.order] }
-        : createRegistrationTaskProgress(taskId, eventStage, []);
+        : createRegistrationTaskProgress(taskId, eventStage, [], old?.setupLoginSecret ?? setupLoginSecret);
       for (const event of events) {
         const detail = event.detail || {};
         const email = String(detail.email || event.email || "").trim();
         if (!email) continue;
         const key = email.toLowerCase();
         const accountStage = ([REGISTER_ONLY, CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY, AGENT_IDENTITY_REVERSE_PROXY].includes(detail.stage) ? detail.stage : next.stage) as RegisterStage;
-        const total = Math.max(1, Number(detail.total || registrationStageTotal(accountStage)));
+        const total = Math.max(1, Number(detail.total || registrationStageTotal(accountStage, next.setupLoginSecret)));
         const previous = next.accounts[key] || { email, stage: accountStage, checkpoint: "queued", current: 0, total, state: "pending", updatedAt: 0 };
         const state = (["pending", "running", "completed", "abnormal"].includes(detail.state) ? detail.state : "running") as RegistrationProgressState;
         const current = state === "completed" ? total : Math.min(total, Math.max(Number(previous.current || 0), Number(detail.current || 0)));
@@ -1216,7 +1234,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
         const email = String(item.email || "").trim();
         if (!email) continue;
         const key = email.toLowerCase();
-        const previous = next.accounts[key] || { email, stage: next.stage, checkpoint: "queued", current: 0, total: registrationStageTotal(next.stage), state: "pending", updatedAt: 0 };
+        const previous = next.accounts[key] || { email, stage: next.stage, checkpoint: "queued", current: 0, total: registrationStageTotal(next.stage, next.setupLoginSecret), state: "pending", updatedAt: 0 };
         const complete = item.stage_complete !== false;
         next.accounts[key] = { ...previous, email, state: complete ? "completed" : "abnormal", current: complete ? previous.total : previous.current, checkpoint: complete ? ({ register_only: "registered", codex_phone_bind: "phone_bound", import_reverse_proxy: "reverse_imported", agent_identity_reverse_proxy: "agent_identity_imported" }[previous.stage] || "registered") : "stage_incomplete", error: String(item.stage_error || previous.error || ""), updatedAt: Date.now() };
         if (!next.order.some((value) => value.toLowerCase() === key)) next.order.push(email);

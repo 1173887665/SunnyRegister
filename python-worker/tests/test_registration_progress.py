@@ -61,3 +61,36 @@ def test_abnormal_progress_exposes_only_bounded_error_summary() -> None:
     assert event["level"] == "error"
     assert event["detail"]["state"] == "abnormal"
     assert len(event["detail"]["error"]) == 500
+
+
+def test_login_secret_progress_extends_total_after_base_registration() -> None:
+    recorder = EventRecorder()
+    _emit_registration_progress(
+        recorder,
+        "user@example.com",
+        REGISTER_ONLY,
+        "login_secret_2fa",
+        setup_login_secret=True,
+    )
+
+    event = recorder.events[0]
+    assert event["detail"]["current"] == 10
+    assert event["detail"]["total"] == 11
+
+
+def test_login_secret_failure_keeps_an_abnormal_terminal_progress() -> None:
+    recorder = EventRecorder()
+    _emit_registration_progress(
+        recorder,
+        "user@example.com",
+        REGISTER_ONLY,
+        "login_secret_failed",
+        setup_login_secret=True,
+        state="abnormal",
+        error="password setup failed",
+    )
+
+    event = recorder.events[0]
+    assert event["detail"]["current"] == 11
+    assert event["detail"]["total"] == 11
+    assert event["detail"]["state"] == "abnormal"
