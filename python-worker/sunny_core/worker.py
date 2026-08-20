@@ -1611,6 +1611,8 @@ def _run_one(
             lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
             should_cancel=db.cancel_requested,
             mailbox_proxy_url=mailbox_proxy_url,
+            recent_email_code=str(base_session.get("recent_email_code") or ""),
+            recent_email_code_at=float(base_session.get("recent_email_code_at") or 0.0),
             on_progress=lambda checkpoint: _emit_registration_progress(
                 db, str(email), stage, checkpoint, setup_login_secret=True,
             ),

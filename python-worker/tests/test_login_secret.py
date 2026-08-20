@@ -63,6 +63,83 @@ class LoginSecretTests(unittest.TestCase):
         self.assertEqual([timeout for _timestamp, timeout in flow.reader.calls], [120, 60])
         resend.assert_called_once_with(page)
 
+    def test_password_reauthentication_tries_recent_registration_code_before_mailbox(self):
+        class Reader:
+            def wait_for_code(self, *_args):
+                raise AssertionError("the recent registration code should be tried first")
+
+        class Page:
+            def __init__(self):
+                self.url = ""
+                self.codes = []
+
+            def goto(self, url, **_kwargs):
+                self.url = url
+
+            def evaluate(self, script, code=None):
+                if "email-otp/validate" in script:
+                    self.codes.append(code)
+                    return {"ok": True, "status": 200, "data": {"continue_url": "https://chatgpt.com/api/auth/callback/openai"}}
+                if "api/auth/session" in script:
+                    return {"ok": True, "status": 200, "data": {"accessToken": "access-token"}}
+                return False
+
+        flow = LoginSecretSetupFlow(self._account(), {}, "")
+        flow.reader = Reader()
+        page = Page()
+        result = flow._reauthenticate_with_fresh_email_code(
+            page,
+            "https://auth.openai.com/authorize",
+            time.time(),
+            recent_email_code="123456",
+            recent_email_code_at=time.time(),
+            prefer_recent_email_code=True,
+        )
+        self.assertEqual(result["accessToken"], "access-token")
+        self.assertEqual(page.codes, ["123456"])
+
+    def test_password_reauthentication_reads_distinct_new_code_after_recent_code_rejected(self):
+        class Reader:
+            def __init__(self):
+                self.calls = []
+
+            def wait_for_code(self, _timestamp, timeout):
+                self.calls.append(timeout)
+                return "654321"
+
+        class Page:
+            def __init__(self):
+                self.url = ""
+                self.codes = []
+
+            def goto(self, url, **_kwargs):
+                self.url = url
+
+            def evaluate(self, script, code=None):
+                if "email-otp/validate" in script:
+                    self.codes.append(code)
+                    if len(self.codes) == 1:
+                        return {"ok": False, "status": 401, "data": {"code": "wrong_email_otp_code", "message": "Wrong code"}}
+                    return {"ok": True, "status": 200, "data": {"continue_url": "https://chatgpt.com/api/auth/callback/openai"}}
+                if "api/auth/session" in script:
+                    return {"ok": True, "status": 200, "data": {"accessToken": "access-token"}}
+                return False
+
+        flow = LoginSecretSetupFlow(self._account(), {}, "")
+        flow.reader = Reader()
+        page = Page()
+        result = flow._reauthenticate_with_fresh_email_code(
+            page,
+            "https://auth.openai.com/authorize",
+            time.time(),
+            recent_email_code="123456",
+            recent_email_code_at=time.time(),
+            prefer_recent_email_code=True,
+        )
+        self.assertEqual(result["accessToken"], "access-token")
+        self.assertEqual(page.codes, ["123456", "654321"])
+        self.assertEqual(flow.reader.calls, [10])
+
     def test_protocol_reauthentication_timeout_resends_once(self):
         class Reader:
             def __init__(self):
@@ -99,6 +176,51 @@ class LoginSecretTests(unittest.TestCase):
         resend_requests = [item for item in flow.requests if item[1].endswith("/api/accounts/email-otp/send")]
         self.assertEqual(len(resend_requests), 1)
         self.assertEqual(resend_requests[0][2]["headers"]["referer"], "https://auth.openai.com/authorize")
+
+    def test_protocol_password_reauthentication_tries_recent_code_then_distinct_code(self):
+        class Reader:
+            def __init__(self):
+                self.calls = []
+
+            def wait_for_code(self, _timestamp, timeout):
+                self.calls.append(timeout)
+                return "654321"
+
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def __init__(self, account):
+                super().__init__(
+                    account,
+                    {},
+                    object(),
+                    recent_email_code="123456",
+                    recent_email_code_at=time.time(),
+                )
+                self.reader = Reader()
+                self.codes = []
+
+            def _request(self, method, url, **kwargs):
+                if url.endswith("/api/auth/csrf"):
+                    return 200, {"csrfToken": "csrf-token"}, ""
+                if "/api/auth/signin/openai?" in url:
+                    return 200, {"url": "https://auth.openai.com/authorize"}, ""
+                if url.endswith("/api/accounts/email-otp/validate"):
+                    code = kwargs.get("json", {}).get("code")
+                    self.codes.append(code)
+                    if len(self.codes) == 1:
+                        return 401, {"code": "wrong_email_otp_code", "message": "Wrong code"}, "Wrong code"
+                    return 200, {"continue_url": "https://chatgpt.com/api/auth/callback/openai"}, ""
+                if url.endswith("/api/auth/session"):
+                    return 200, {"accessToken": "access-token"}, ""
+                return 200, {}, ""
+
+        flow = Flow(self._account())
+        result = flow._reauthenticate(
+            "https://chatgpt.com/?action=add_password",
+            prefer_recent_email_code=True,
+        )
+        self.assertEqual(result["accessToken"], "access-token")
+        self.assertEqual(flow.codes, ["123456", "654321"])
+        self.assertEqual(flow.reader.calls, [10])
 
     @staticmethod
     def _account():

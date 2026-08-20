@@ -141,6 +141,30 @@ class LoginSecretSetupFlow:
                 raise
             return reader.wait_for_code(min_timestamp)
 
+    def _wait_for_distinct_code(
+        self,
+        reader,
+        min_timestamp: float,
+        excluded_codes: set[str],
+        timeout: int,
+    ) -> str:
+        """Ignore a stale mailbox API result until a different six-digit code arrives."""
+        deadline = time.monotonic() + max(1, int(timeout))
+        cursor = min_timestamp
+        while time.monotonic() < deadline:
+            remaining = max(1, min(10, int(deadline - time.monotonic())))
+            try:
+                code = str(self._wait_for_code(reader, cursor, remaining) or "").strip()
+            except TimeoutError:
+                continue
+            if re.fullmatch(r"\d{6}", code) and code not in excluded_codes:
+                return code
+            if code:
+                self.log("[邮箱] 邮箱 API 返回了历史验证码，继续等待不同的新验证码")
+            cursor = time.time()
+            self._sleep(0.25)
+        raise TimeoutError(f"在 {int(timeout)} 秒内未获取到不同的新邮箱验证码")
+
     @staticmethod
     def _session_json(page) -> dict[str, Any]:
         result = page.evaluate(
@@ -595,23 +619,60 @@ class LoginSecretSetupFlow:
                     return value[:240]
         return str(result.get("reason", ""))[:240] if isinstance(result, dict) else ""
 
-    def _reauthenticate_with_fresh_email_code(self, page, auth_url: str, min_timestamp: float) -> dict[str, Any]:
-        """Validate the reauth OTP through the protocol and refresh the session cookie."""
+    def _reauthenticate_with_fresh_email_code(
+        self,
+        page,
+        auth_url: str,
+        min_timestamp: float,
+        *,
+        recent_email_code: str = "",
+        recent_email_code_at: float = 0.0,
+        prefer_recent_email_code: bool = False,
+    ) -> dict[str, Any]:
+        """Validate reauth OTP, optionally trying the just-used registration code first."""
         page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
         reader = self._reader_instance()
         code_timestamp = min_timestamp
+        recent_code_attempted = False
+        resend_attempted = False
+        rejected_codes: set[str] = set()
         for attempt in range(2):
-            try:
-                code = self._wait_for_code(reader, code_timestamp, EMAIL_OTP_INITIAL_WAIT_SECONDS)
-            except TimeoutError as exc:
-                if attempt > 0 or not self._click_resend_email_code(page):
-                    raise TimeoutError("邮箱验证码等待 120 秒后超时，重新发送验证码不可用") from exc
-                code_timestamp = time.time() - 2
-                self.log("[邮箱] 120 秒未收到重认证验证码，已重新发送，继续等待 60 秒")
+            if (
+                prefer_recent_email_code
+                and not recent_code_attempted
+                and self._recent_email_code_usable(recent_email_code, recent_email_code_at)
+            ):
+                code = str(recent_email_code).strip()
+                recent_code_attempted = True
+                self.log("[登录密钥] 优先复用注册/登录阶段刚使用的邮箱验证码进行密码重认证")
+            else:
                 try:
-                    code = self._wait_for_code(reader, code_timestamp, EMAIL_OTP_RESEND_WAIT_SECONDS)
-                except TimeoutError as resend_exc:
-                    raise TimeoutError("重新发送重认证验证码后等待 60 秒仍未收到验证码") from resend_exc
+                    if attempt > 0 and rejected_codes:
+                        code = self._wait_for_distinct_code(
+                            reader,
+                            code_timestamp,
+                            rejected_codes,
+                            EMAIL_OTP_INITIAL_WAIT_SECONDS,
+                        )
+                    else:
+                        code = self._wait_for_code(reader, code_timestamp, EMAIL_OTP_INITIAL_WAIT_SECONDS)
+                except TimeoutError as exc:
+                    if resend_attempted or not self._click_resend_email_code(page):
+                        raise TimeoutError("邮箱验证码等待 120 秒后超时，重新发送验证码不可用") from exc
+                    resend_attempted = True
+                    code_timestamp = time.time() - 2
+                    self.log("[邮箱] 120 秒未收到重认证验证码，已重新发送，继续等待 60 秒")
+                    try:
+                        code = self._wait_for_distinct_code(
+                            reader,
+                            code_timestamp,
+                            rejected_codes,
+                            EMAIL_OTP_RESEND_WAIT_SECONDS,
+                        ) if rejected_codes else self._wait_for_code(
+                            reader, code_timestamp, EMAIL_OTP_RESEND_WAIT_SECONDS
+                        )
+                    except TimeoutError as resend_exc:
+                        raise TimeoutError("重新发送重认证验证码后等待 60 秒仍未收到验证码") from resend_exc
             result = page.evaluate(
                 r"""async code => {
                     const response = await fetch('https://auth.openai.com/api/accounts/email-otp/validate', {
@@ -630,7 +691,11 @@ class LoginSecretSetupFlow:
             if result.get("ok") and continue_url:
                 break
             if attempt == 0 and _wrong_email_otp(result, result.get("text", "") if isinstance(result, dict) else ""):
-                self.log("[登录密钥] 重认证验证码无效，将重新读取最新邮箱验证码后重试")
+                rejected_codes.add(str(code).strip())
+                if recent_code_attempted:
+                    self.log("[登录密钥] 注册/登录阶段验证码未通过密码重认证，将读取邮箱 API 中的新验证码后重试")
+                else:
+                    self.log("[登录密钥] 重认证验证码无效，将重新读取最新邮箱验证码后重试")
                 code_timestamp = time.time()
                 continue
             raise RuntimeError(f"邮箱重认证验证码校验失败: HTTP {result.get('status', 0)} {self._protocol_error_detail(result)}".strip())
@@ -677,7 +742,14 @@ class LoginSecretSetupFlow:
         # Set the lower bound before navigation because loading auth_url triggers
         # delivery of the new OTP email.
         min_timestamp = time.time()
-        return self._reauthenticate_with_fresh_email_code(page, auth_url, min_timestamp)
+        return self._reauthenticate_with_fresh_email_code(
+            page,
+            auth_url,
+            min_timestamp,
+            recent_email_code=self.recent_email_code,
+            recent_email_code_at=self.recent_email_code_at,
+            prefer_recent_email_code=True,
+        )
 
     def _reauth_for_2fa(
         self,
@@ -942,6 +1014,8 @@ class ProtocolLoginSecretSetupFlow:
         should_cancel: Callable[[], bool] | None = None,
         mailbox_proxy_url: str | None = None,
         on_progress: Callable[[str], None] | None = None,
+        recent_email_code: str = "",
+        recent_email_code_at: float = 0.0,
     ):
         self.account = account
         self.session = dict(session or {})
@@ -950,6 +1024,8 @@ class ProtocolLoginSecretSetupFlow:
         self.should_cancel = should_cancel or (lambda: False)
         self.mailbox_proxy_url = mailbox_proxy_url or ""
         self.on_progress = on_progress or (lambda _checkpoint: None)
+        self.recent_email_code = str(recent_email_code or "").strip()
+        self.recent_email_code_at = float(recent_email_code_at or 0.0)
         self.reader: Any | None = None
 
     def _check_cancelled(self) -> None:
@@ -964,6 +1040,8 @@ class ProtocolLoginSecretSetupFlow:
             self.reader.connect()
         return self.reader
 
+    _recent_email_code_usable = staticmethod(LoginSecretSetupFlow._recent_email_code_usable)
+
     @staticmethod
     def _wait_for_code(reader, min_timestamp: float, timeout: int) -> str:
         try:
@@ -972,6 +1050,29 @@ class ProtocolLoginSecretSetupFlow:
             if "positional" not in str(exc) and "argument" not in str(exc):
                 raise
             return reader.wait_for_code(min_timestamp)
+
+    def _wait_for_distinct_code(
+        self,
+        reader,
+        min_timestamp: float,
+        excluded_codes: set[str],
+        timeout: int,
+    ) -> str:
+        deadline = time.monotonic() + max(1, int(timeout))
+        cursor = min_timestamp
+        while time.monotonic() < deadline:
+            remaining = max(1, min(10, int(deadline - time.monotonic())))
+            try:
+                code = str(self._wait_for_code(reader, cursor, remaining) or "").strip()
+            except TimeoutError:
+                continue
+            if re.fullmatch(r"\d{6}", code) and code not in excluded_codes:
+                return code
+            if code:
+                self.log("[邮箱] 邮箱 API 返回了历史验证码，继续等待不同的新验证码")
+            cursor = time.time()
+            time.sleep(0.25)
+        raise TimeoutError(f"在 {int(timeout)} 秒内未获取到不同的新邮箱验证码")
 
     def _request(self, method: str, url: str, **kwargs) -> tuple[int, Any, str]:
         self._check_cancelled()
@@ -997,7 +1098,7 @@ class ProtocolLoginSecretSetupFlow:
             raise RuntimeError("ChatGPT 登录态已失效")
         return payload
 
-    def _reauthenticate(self, callback_url: str) -> dict[str, Any]:
+    def _reauthenticate(self, callback_url: str, *, prefer_recent_email_code: bool = False) -> dict[str, Any]:
         status, csrf, text = self._request("GET", f"{CHATGPT_BASE_URL}/api/auth/csrf", headers={"accept": "application/json"})
         csrf = self._require_ok(status, csrf, text, "读取 ChatGPT CSRF")
         csrf_token = str((csrf or {}).get("csrfToken") or "") if isinstance(csrf, dict) else ""
@@ -1023,32 +1124,59 @@ class ProtocolLoginSecretSetupFlow:
             raise RuntimeError(f"加载 ChatGPT 重认证页面失败: HTTP {status} {text[:180]}")
         reader = self._reader_instance()
         code_timestamp = sent_at
+        recent_code_attempted = False
+        rejected_codes: set[str] = set()
+        resend_attempted = False
         for attempt in range(2):
-            try:
-                code = self._wait_for_code(reader, code_timestamp, EMAIL_OTP_INITIAL_WAIT_SECONDS)
-            except TimeoutError as exc:
-                if attempt > 0:
-                    raise TimeoutError("邮箱验证码等待 120 秒后超时，重认证重发次数已用尽") from exc
-                sent_at = time.time() - 2
-                resend_status, _resend_payload, resend_text = self._request(
-                    "GET",
-                    f"{AUTH_BASE_URL}/api/accounts/email-otp/send",
-                    headers={
-                        "accept": "application/json, text/plain, */*",
-                        "origin": AUTH_BASE_URL,
-                        "referer": auth_url,
-                    },
-                )
-                if resend_status != 200:
-                    raise RuntimeError(
-                        f"重新发送 OpenAI 邮箱验证码失败: HTTP {resend_status} {resend_text[:180]}"
-                    ) from exc
-                self.log("[邮箱] 120 秒未收到协议重认证验证码，已重新发送，继续等待 60 秒")
-                code_timestamp = sent_at
+            if (
+                prefer_recent_email_code
+                and not recent_code_attempted
+                and self._recent_email_code_usable(self.recent_email_code, self.recent_email_code_at)
+            ):
+                code = self.recent_email_code
+                recent_code_attempted = True
+                self.log("[登录密钥] 优先复用注册/登录阶段刚使用的邮箱验证码进行密码重认证")
+            else:
                 try:
-                    code = self._wait_for_code(reader, code_timestamp, EMAIL_OTP_RESEND_WAIT_SECONDS)
-                except TimeoutError as resend_exc:
-                    raise TimeoutError("重新发送协议重认证验证码后等待 60 秒仍未收到验证码") from resend_exc
+                    code = self._wait_for_distinct_code(
+                        reader,
+                        code_timestamp,
+                        rejected_codes,
+                        EMAIL_OTP_INITIAL_WAIT_SECONDS,
+                    ) if rejected_codes else self._wait_for_code(
+                        reader, code_timestamp, EMAIL_OTP_INITIAL_WAIT_SECONDS
+                    )
+                except TimeoutError as exc:
+                    if resend_attempted:
+                        raise TimeoutError("邮箱验证码等待 120 秒后超时，重认证重发次数已用尽") from exc
+                    sent_at = time.time() - 2
+                    resend_status, _resend_payload, resend_text = self._request(
+                        "GET",
+                        f"{AUTH_BASE_URL}/api/accounts/email-otp/send",
+                        headers={
+                            "accept": "application/json, text/plain, */*",
+                            "origin": AUTH_BASE_URL,
+                            "referer": auth_url,
+                        },
+                    )
+                    if resend_status != 200:
+                        raise RuntimeError(
+                            f"重新发送 OpenAI 邮箱验证码失败: HTTP {resend_status} {resend_text[:180]}"
+                        ) from exc
+                    resend_attempted = True
+                    self.log("[邮箱] 120 秒未收到协议重认证验证码，已重新发送，继续等待 60 秒")
+                    code_timestamp = sent_at
+                    try:
+                        code = self._wait_for_distinct_code(
+                            reader,
+                            code_timestamp,
+                            rejected_codes,
+                            EMAIL_OTP_RESEND_WAIT_SECONDS,
+                        ) if rejected_codes else self._wait_for_code(
+                            reader, code_timestamp, EMAIL_OTP_RESEND_WAIT_SECONDS
+                        )
+                    except TimeoutError as resend_exc:
+                        raise TimeoutError("重新发送协议重认证验证码后等待 60 秒仍未收到验证码") from resend_exc
             status, payload, text = self._request(
                 "POST",
                 EMAIL_OTP_VALIDATE_URL,
@@ -1058,7 +1186,11 @@ class ProtocolLoginSecretSetupFlow:
             if 200 <= status < 300:
                 break
             if attempt == 0 and _wrong_email_otp({"data": payload}, text):
-                self.log("[登录密钥] 重认证验证码无效，将重新读取最新邮箱验证码后重试")
+                rejected_codes.add(str(code).strip())
+                if recent_code_attempted:
+                    self.log("[登录密钥] 注册/登录阶段验证码未通过密码重认证，将读取邮箱 API 中的新验证码后重试")
+                else:
+                    self.log("[登录密钥] 重认证验证码无效，将重新读取最新邮箱验证码后重试")
                 code_timestamp = time.time()
                 continue
             self._require_ok(status, payload, text, "邮箱重认证验证码校验")
@@ -1071,7 +1203,7 @@ class ProtocolLoginSecretSetupFlow:
         return self._session_json()
 
     def _add_password(self, password: str) -> dict[str, Any]:
-        self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=add_password")
+        self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=add_password", prefer_recent_email_code=True)
         for attempt in range(2):
             status, data, text = self._request(
                 "POST",
@@ -1229,6 +1361,8 @@ def setup_login_secret_protocol(
     should_cancel: Callable[[], bool] | None = None,
     mailbox_proxy_url: str | None = None,
     on_progress: Callable[[str], None] | None = None,
+    recent_email_code: str = "",
+    recent_email_code_at: float = 0.0,
 ) -> dict[str, Any]:
     return ProtocolLoginSecretSetupFlow(
         account,
@@ -1238,4 +1372,6 @@ def setup_login_secret_protocol(
         should_cancel=should_cancel,
         mailbox_proxy_url=mailbox_proxy_url,
         on_progress=on_progress,
+        recent_email_code=recent_email_code,
+        recent_email_code_at=recent_email_code_at,
     ).run()
