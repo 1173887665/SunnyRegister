@@ -248,7 +248,7 @@ function useCachedState<T>(key: string, initial: T | (() => T)): [T, Dispatch<Se
   return [value, setCachedValue];
 }
 
-type PersistentSessionTaskKind = "refresh-at" | "acquire-rt";
+type PersistentSessionTaskKind = "refresh-at" | "acquire-rt" | "trial-check" | "payment-probe" | "access-token-check" | "health-check" | "subscription-check" | "sub2-import";
 type SessionTaskState = "running" | "succeeded" | "failed" | "cancelled";
 type SessionRenewalProgress = {
   email: string;
@@ -268,6 +268,8 @@ type PersistentSessionTask = {
   state: SessionTaskState;
   progress: Record<string, SessionRenewalProgress>;
   dismissedEmails: string[];
+  isBatch?: boolean;
+  localOnly?: boolean;
   error?: string;
 };
 type PersistentSessionTaskSnapshot = { tasks: PersistentSessionTask[] };
@@ -294,7 +296,7 @@ function publishSessionTasks(tasks: PersistentSessionTask[]) {
   sessionTaskSnapshot = { tasks };
   try {
     window.localStorage.setItem(SESSION_TASK_STORAGE_KEY, JSON.stringify(tasks
-      .filter((task) => task.taskId && task.state === "running")
+      .filter((task) => task.taskId && task.state === "running" && !task.localOnly)
       .map((task) => ({ ...task, dismissedEmails: [] }))));
   } catch { /* in-memory state remains available */ }
   sessionTaskListeners.forEach((listener) => listener());
@@ -463,7 +465,7 @@ async function runPersistentSessionTask(
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random()}`;
   clearPreviousSessionTaskResults(kind, sessionIds);
-  const pending: PersistentSessionTask = { clientId, taskId: "", kind, sessionIds, email, state: "running", progress: {}, dismissedEmails: [] };
+  const pending: PersistentSessionTask = { clientId, taskId: "", kind, sessionIds, email, isBatch: !email, state: "running", progress: {}, dismissedEmails: [] };
   upsertSessionTask(pending);
   try {
     const created = await createTask();
@@ -477,11 +479,44 @@ async function runPersistentSessionTask(
   }
 }
 
+async function runPersistentLocalSessionTask(
+  kind: PersistentSessionTaskKind,
+  sessionIds: number[],
+  email: string | undefined,
+  work: () => Promise<AnyObj>,
+) {
+  const clientId = typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random()}`;
+  clearPreviousSessionTaskResults(kind, sessionIds);
+  const pending: PersistentSessionTask = {
+    clientId,
+    taskId: `local:${clientId}`,
+    kind,
+    sessionIds,
+    email,
+    isBatch: !email,
+    localOnly: true,
+    state: "running",
+    progress: {},
+    dismissedEmails: [],
+  };
+  upsertSessionTask(pending);
+  try {
+    const result = await work();
+    updateSessionTask(clientId, (task) => ({ ...task, state: "succeeded" }));
+    return result;
+  } catch (error) {
+    updateSessionTask(clientId, (task) => ({ ...task, state: "failed", error: error instanceof Error ? error.message : String(error) }));
+    throw error;
+  }
+}
+
 function usePersistentSessionTasks() {
   const snapshot = useSyncExternalStore(subscribeSessionTasks, () => sessionTaskSnapshot, () => sessionTaskSnapshot);
   useEffect(() => {
     snapshot.tasks.forEach((task) => {
-      if (task.taskId && task.state === "running") void ensureSessionTaskPolling(task).catch(() => undefined);
+      if (task.taskId && task.state === "running" && !task.localOnly) void ensureSessionTaskPolling(task).catch(() => undefined);
     });
   }, [snapshot]);
   return snapshot.tasks;
@@ -3163,20 +3198,25 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const [editing,setEditing]=useCachedState<AnyObj|null>("session.editing",null);
   const [fieldLoading,setFieldLoading]=useState<Record<string,boolean>>({});
   const [mailboxForMail,setMailboxForMail]=useState<AnyObj|null>(null);
-  const [healthBusy,setHealthBusy]=useState(false);
-  const [subscriptionCheckingSessionIds,setSubscriptionCheckingSessionIds]=useState<number[]>([]);
-  const [batchSubscriptionBusy,setBatchSubscriptionBusy]=useState(false);
-  const [trialCheckingSessionIds,setTrialCheckingSessionIds]=useState<number[]>([]);
-  const [batchTrialBusy,setBatchTrialBusy]=useState(false);
-  const [paymentProbingSessionIds,setPaymentProbingSessionIds]=useState<number[]>([]);
-  const [batchPaymentProbeBusy,setBatchPaymentProbeBusy]=useState(false);
-  const [atCheckingSessionIds,setATCheckingSessionIds]=useState<number[]>([]);
-  const [batchATCheckBusy,setBatchATCheckBusy]=useState(false);
-  const [sub2ImportingSessionIds,setSub2ImportingSessionIds]=useState<number[]>([]);
-  const [batchSub2Busy,setBatchSub2Busy]=useState(false);
   const [maintenanceOpen,setMaintenanceOpen]=useState(false);
   const [failureDetail,setFailureDetail]=useState<{title:string;content:string}|null>(null);
   const persistentTasks = usePersistentSessionTasks();
+  const activeSessionTasks = persistentTasks.filter((task)=>task.state === "running");
+  const activeTaskForKind = (kind: PersistentSessionTaskKind) => activeSessionTasks.filter((task)=>task.kind === kind);
+  const sessionIdsForKind = (kind: PersistentSessionTaskKind) => Array.from(new Set(activeTaskForKind(kind).flatMap((task)=>task.sessionIds.map(Number))));
+  const healthCheckingSessionIds = sessionIdsForKind("health-check");
+  const subscriptionCheckingSessionIds = sessionIdsForKind("subscription-check");
+  const trialCheckingSessionIds = sessionIdsForKind("trial-check");
+  const paymentProbingSessionIds = sessionIdsForKind("payment-probe");
+  const atCheckingSessionIds = sessionIdsForKind("access-token-check");
+  const sub2ImportingSessionIds = sessionIdsForKind("sub2-import");
+  const healthBusy = activeTaskForKind("health-check").length > 0;
+  const batchHealthBusy = activeTaskForKind("health-check").some((task)=>task.isBatch);
+  const batchSubscriptionBusy = activeTaskForKind("subscription-check").some((task)=>task.isBatch);
+  const batchTrialBusy = activeTaskForKind("trial-check").some((task)=>task.isBatch);
+  const batchPaymentProbeBusy = activeTaskForKind("payment-probe").some((task)=>task.isBatch);
+  const batchATCheckBusy = activeTaskForKind("access-token-check").some((task)=>task.isBatch);
+  const batchSub2Busy = activeTaskForKind("sub2-import").some((task)=>task.isBatch);
   const activeRenewalTasks = persistentTasks.filter((task)=>task.kind==="refresh-at" && task.state==="running" && task.taskId);
   const [stoppingRenewalTaskIds,setStoppingRenewalTaskIds]=useState<string[]>([]);
   const stoppingRenewal = activeRenewalTasks.some((task)=>stoppingRenewalTaskIds.includes(task.taskId));
@@ -3247,21 +3287,12 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     try { await load(); notify("ok", t.refreshDone); }
     catch(e:any){ notify("fail", e.message || String(e)); }
   }
-  async function pollAccountDetectionTask(initialTask: AnyObj, interval: number) {
-    let task = initialTask;
-    while (!task.terminal) {
-      await new Promise((resolve)=>setTimeout(resolve,interval));
-      task = await apiFetch(`/tasks/${task.id}`);
-    }
-    return task;
-  }
   async function runHealthCheck(ids: number[], row?: AnyObj) {
     if (row && !HEALTH_CHECKABLE_STATUSES.has(String(row.status || ""))) { notify("ok", t.alreadyBanned); return; }
     if (!ids.length) { notify("fail", t.healthNoSelection); return; }
-    setHealthBusy(true);
     try {
-      const initialTask = await apiFetch("/sunny/sessions/health-check", { method:"POST", body:JSON.stringify({ session_ids: ids }) });
-      const task = await pollAccountDetectionTask(initialTask,1200);
+      const targetIds=Array.from(new Set(ids.map(Number).filter(Boolean)));
+      const task = await runPersistentSessionTask("health-check", targetIds, row?.email, () => apiFetch("/sunny/sessions/health-check", { method:"POST", body:JSON.stringify({ session_ids: targetIds }) }));
       const result = task.result || {};
       if (row) {
         const item = (result.items || []).find((entry: AnyObj)=>String(entry.email).toLowerCase() === String(row.email).toLowerCase());
@@ -3273,16 +3304,12 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       }
       await load();
     } catch(e:any) { notify("fail", e.message || String(e)); }
-    finally { setHealthBusy(false); }
   }
   async function runSubscriptionCheck(ids: number[], row?: AnyObj) {
     if (!ids.length) { notify("fail", t.subscriptionNoSelection); return; }
     const targetIds=Array.from(new Set(ids.map(Number).filter(Boolean)));
-    setSubscriptionCheckingSessionIds(targetIds);
-    if (!row) setBatchSubscriptionBusy(true);
     try {
-      const initialTask = await apiFetch("/sunny/sessions/subscription-check", { method:"POST", body:JSON.stringify({ session_ids:targetIds }) });
-      const task = await pollAccountDetectionTask(initialTask,1200);
+      const task = await runPersistentSessionTask("subscription-check", targetIds, row?.email, () => apiFetch("/sunny/sessions/subscription-check", { method:"POST", body:JSON.stringify({ session_ids:targetIds }) }));
       const result = task.result || {};
       if (row) {
         const item = (result.items || []).find((entry:AnyObj)=>String(entry.email).toLowerCase()===String(row.email).toLowerCase());
@@ -3297,20 +3324,13 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       }
       await load();
     } catch(e:any) { notify("fail", e.message || String(e)); }
-    finally {
-      setSubscriptionCheckingSessionIds([]);
-      if (!row) setBatchSubscriptionBusy(false);
-    }
   }
   async function runTrialCheck(ids: number[], row?: AnyObj) {
     if (row && !trialCheckable(row)) { notify("fail", t.trialUnavailable); return; }
     if (!ids.length) { notify("fail", t.trialNoSelection); return; }
     const targetIds=Array.from(new Set(ids.map(Number).filter(Boolean)));
-    setTrialCheckingSessionIds((old)=>Array.from(new Set([...old,...targetIds])));
-    if (!row) setBatchTrialBusy(true);
     try {
-      const initialTask = await apiFetch("/sunny/sessions/trial-check", { method:"POST", body:JSON.stringify({ session_ids:targetIds }) });
-      const task = await pollAccountDetectionTask(initialTask,900);
+      const task = await runPersistentSessionTask("trial-check", targetIds, row?.email, () => apiFetch("/sunny/sessions/trial-check", { method:"POST", body:JSON.stringify({ session_ids:targetIds }) }));
       await load();
       const result = task.result || {};
       const renewalTaskId = String(result.renewal_task_id || "");
@@ -3331,20 +3351,13 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
           .catch((e:any)=>notify("fail",e.message||String(e)));
       }
     } catch(e:any) { notify("fail", e.message || String(e)); }
-    finally {
-      setTrialCheckingSessionIds((old)=>old.filter((id)=>!targetIds.includes(id)));
-      if (!row) setBatchTrialBusy(false);
-    }
   }
   async function runPaymentProbe(ids: number[], row?: AnyObj) {
     if (row && !row.has_access_token) { notify("fail", t.paymentProbeUnavailable); return; }
     if (!ids.length) { notify("fail", t.paymentProbeNoSelection); return; }
     const targetIds=Array.from(new Set(ids.map(Number).filter(Boolean)));
-    setPaymentProbingSessionIds((old)=>Array.from(new Set([...old,...targetIds])));
-    if (!row) setBatchPaymentProbeBusy(true);
     try {
-      const initialTask=await apiFetch("/sunny/sessions/payment-probe",{method:"POST",body:JSON.stringify({session_ids:targetIds})});
-      const task=await pollAccountDetectionTask(initialTask,1200);
+      const task=await runPersistentSessionTask("payment-probe", targetIds, row?.email, () => apiFetch("/sunny/sessions/payment-probe",{method:"POST",body:JSON.stringify({session_ids:targetIds})}));
       const result=task.result||{};
       if (row) {
         const item=(result.items||[]).find((entry:AnyObj)=>Number(entry.session_id)===Number(row.id));
@@ -3355,10 +3368,6 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       }
       await load();
     } catch(e:any) { notify("fail",e.message||String(e)); }
-    finally {
-      setPaymentProbingSessionIds((old)=>old.filter((id)=>!targetIds.includes(id)));
-      if (!row) setBatchPaymentProbeBusy(false);
-    }
   }
   function toggleTimeSort(field: string) {
     if (sortBy === field) setTimeSort(nextSortOrder(timeSort));
@@ -3388,11 +3397,8 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   async function refreshAccessTokens(ids: number[], row?: AnyObj) {
     if (!ids.length) { notify("fail", t.refreshATNoSelection); return; }
     const targetIds=Array.from(new Set(ids.map(Number).filter(Boolean)));
-    setATCheckingSessionIds((old)=>Array.from(new Set([...old,...targetIds])));
-    if (!row) setBatchATCheckBusy(true);
     try {
-      const initialTask = await apiFetch("/sunny/sessions/access-token-check", { method:"POST", body:JSON.stringify({ session_ids:ids }) });
-      const task = await pollAccountDetectionTask(initialTask,900);
+      const task = await runPersistentSessionTask("access-token-check", targetIds, row?.email, () => apiFetch("/sunny/sessions/access-token-check", { method:"POST", body:JSON.stringify({ session_ids:targetIds }) }));
       const result = task.result || {};
       const valid = Number(result.valid || 0);
       const invalid = Number(result.invalid || 0);
@@ -3416,10 +3422,6 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       }
       await load();
     } catch(e:any) { notify("fail", e.message || String(e)); }
-    finally {
-      setATCheckingSessionIds((old)=>old.filter((id)=>!targetIds.includes(id)));
-      if (!row) setBatchATCheckBusy(false);
-    }
   }
   async function stopRenewalTasks() {
     const tasks = activeRenewalTasks.filter((task)=>!stoppingRenewalTaskIds.includes(task.taskId));
@@ -3473,11 +3475,9 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   async function importSub2API(ids: number[], row?: AnyObj) {
     const targetIds=Array.from(new Set(ids.map(Number).filter(Boolean)));
     if (!targetIds.length) { notify("fail",t.sub2NoSelection); return; }
-    setSub2ImportingSessionIds((old)=>Array.from(new Set([...old,...targetIds])));
-    if (!row) setBatchSub2Busy(true);
     try {
       const accountIds=Array.from(new Set(items.filter((item)=>targetIds.includes(Number(item.id))).map((item)=>Number(item.account_id)).filter(Boolean)));
-      const result=await apiFetch("/sunny/sub2api/import",{method:"POST",body:JSON.stringify({session_ids:targetIds,account_ids:accountIds})});
+      const result=await runPersistentLocalSessionTask("sub2-import", targetIds, row?.email, () => apiFetch("/sunny/sub2api/import",{method:"POST",body:JSON.stringify({session_ids:targetIds,account_ids:accountIds})}));
       const skipped=Array.isArray(result.skipped)?result.skipped:[];
       const selectedCount=Number(result.selected||targetIds.length);
       const uploaded=Number(result.uploaded||0);
@@ -3489,10 +3489,6 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       }
       await load();
     } catch(e:any) { notify("fail",e.message||String(e)); }
-    finally {
-      setSub2ImportingSessionIds((old)=>old.filter((id)=>!targetIds.includes(id)));
-      if (!row) setBatchSub2Busy(false);
-    }
   }
   return <Card className="relative overflow-hidden rounded-[30px] p-5" aria-busy={listLoading}>
     <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
@@ -3518,7 +3514,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
         <button className={cn("sr-text-btn sr-action-info",batchTrialBusy&&"is-running")} aria-busy={batchTrialBusy} disabled={batchTrialBusy || selected.length === 0} title={selected.length === 0 ? t.trialNoSelection : t.trialCheck} onClick={()=>runTrialCheck(selected)}>{batchTrialBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{batchTrialBusy ? t.trialChecking : t.trialCheck}</button>
         <button className={cn("sr-text-btn sr-action-info",batchPaymentProbeBusy&&"is-running")} aria-busy={batchPaymentProbeBusy} disabled={batchPaymentProbeBusy || selected.length === 0} title={selected.length === 0 ? t.paymentProbeNoSelection : t.paymentProbe} onClick={()=>runPaymentProbe(selected)}>{batchPaymentProbeBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <CreditCard className="h-4 w-4"/>}{batchPaymentProbeBusy ? t.paymentProbing : t.paymentProbe}</button>
         <button className={cn("sr-text-btn sr-action-info",batchATCheckBusy&&"is-running")} aria-busy={batchATCheckBusy} disabled={batchATCheckBusy || selected.length === 0 || selected.some((id)=>atCheckingSessionIds.includes(id)||refreshingSessionIds.includes(id))} title={selected.length === 0 ? t.refreshATNoSelection : t.refreshAT} onClick={()=>refreshAccessTokens(selected)}>{batchATCheckBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{batchATCheckBusy ? t.refreshingAT : t.refreshAT}</button>
-        <button className={cn("sr-text-btn sr-action-health",healthBusy&&"is-running")} aria-busy={healthBusy} disabled={healthBusy || selected.length === 0} title={selected.length === 0 ? t.healthNoSelection : t.healthCheck} onClick={()=>runHealthCheck(selected)}>{healthBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Activity className="h-4 w-4"/>}{healthBusy ? t.healthChecking : t.healthCheck}</button>
+        <button className={cn("sr-text-btn sr-action-health",batchHealthBusy&&"is-running")} aria-busy={batchHealthBusy} disabled={healthBusy || selected.length === 0} title={selected.length === 0 ? t.healthNoSelection : t.healthCheck} onClick={()=>runHealthCheck(selected)}>{batchHealthBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Activity className="h-4 w-4"/>}{batchHealthBusy ? t.healthChecking : t.healthCheck}</button>
         <button className={cn("sr-text-btn sr-action-health",batchSubscriptionBusy&&"is-running")} aria-busy={batchSubscriptionBusy} disabled={subscriptionCheckingSessionIds.length > 0 || selected.length === 0} title={selected.length === 0 ? t.subscriptionNoSelection : t.subscriptionCheck} onClick={()=>runSubscriptionCheck(selected)}>{batchSubscriptionBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Crown className="h-4 w-4"/>}{batchSubscriptionBusy ? t.subscriptionChecking : t.subscriptionCheck}</button>
         <button className="sr-text-btn sr-action-refresh" disabled={healthBusy} onClick={refreshSessionList}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
       </div>
@@ -3528,6 +3524,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
         <tbody>{items.length ? items.map((s)=>{
           const refreshing=refreshingSessionIds.includes(s.id);
           const checkingAT=atCheckingSessionIds.includes(s.id);
+          const checkingHealth=healthCheckingSessionIds.includes(s.id);
           const checkingSubscription=subscriptionCheckingSessionIds.includes(s.id);
           const checkingTrial=trialCheckingSessionIds.includes(s.id);
           const probingPayment=paymentProbingSessionIds.includes(s.id);
@@ -3539,7 +3536,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
           const renewalView=renewalViewForSession(persistentTasks,s);
           const renewalPercent=renewalView ? Math.min(100, Math.max(0, (renewalView.progress.current / renewalView.progress.total) * 100)) : 0;
           return <Fragment key={s.id}>
-            <tr><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td title={s.email}>{s.email}</td><td title={s.group_name || "-"}>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td><TrialEligibilityBadge t={t} row={s}/></td><td><CheckoutBadge t={t} row={s}/></td><td><PaymentMethodsBadge row={s}/></td><td>{s.access_token_status === "renewal_failed" ? <FailureState label={t.atRenewalFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "invalid" ? <FailureState label={t.atInvalidOrExpired} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_blocked" ? <FailureState label={t.atProbeBlocked} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_failed" ? <FailureState label={t.atProbeFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : formatDateTime(s.access_token_expires_at)}</td><td>{s.health_check_status === "failed" ? <FailureState label={t.accountHealthCheckFailed} detail={s.health_check_error} onOpen={setFailureDetail}/> : formatDateTime(s.last_health_checked_at)}</td><td><div className="flex flex-wrap gap-2"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><button className="sr-link inline-flex items-center gap-1" disabled={!trialCheckable(s) || checkingTrial} title={!trialCheckable(s) ? t.trialUnavailable : t.trialCheck} onClick={()=>runTrialCheck([s.id],s)}>{checkingTrial ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{checkingTrial ? t.trialChecking : t.trialCheck}</button><button className="sr-link inline-flex items-center gap-1" disabled={!s.has_access_token || probingPayment} title={!s.has_access_token?t.paymentProbeUnavailable:t.paymentProbe} onClick={()=>runPaymentProbe([s.id],s)}>{probingPayment?<Loader2 className="h-4 w-4 animate-spin"/>:<CreditCard className="h-4 w-4"/>}{probingPayment?t.paymentProbing:t.paymentProbe}</button><button className="sr-link inline-flex items-center gap-1" disabled={importingSub2} onClick={()=>void importSub2API([s.id],s)}>{importingSub2?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>}{importingSub2?t.importingSub2API:"反代"}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing || checkingAT} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing || checkingAT ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link" disabled={healthBusy} onClick={()=>runHealthCheck([s.id],s)}><Activity className="inline h-4 w-4"/>{t.healthCheck}</button><button className="sr-link" disabled={subscriptionCheckingSessionIds.length > 0} onClick={()=>runSubscriptionCheck([s.id],s)}>{checkingSubscription ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Crown className="inline h-4 w-4"/>}{checkingSubscription ? t.subscriptionChecking : t.subscriptionCheck}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>
+            <tr><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td title={s.email}>{s.email}</td><td title={s.group_name || "-"}>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td><TrialEligibilityBadge t={t} row={s}/></td><td><CheckoutBadge t={t} row={s}/></td><td><PaymentMethodsBadge row={s}/></td><td>{s.access_token_status === "renewal_failed" ? <FailureState label={t.atRenewalFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "invalid" ? <FailureState label={t.atInvalidOrExpired} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_blocked" ? <FailureState label={t.atProbeBlocked} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_failed" ? <FailureState label={t.atProbeFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : formatDateTime(s.access_token_expires_at)}</td><td>{s.health_check_status === "failed" ? <FailureState label={t.accountHealthCheckFailed} detail={s.health_check_error} onOpen={setFailureDetail}/> : formatDateTime(s.last_health_checked_at)}</td><td><div className="flex flex-wrap gap-2"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><button className="sr-link inline-flex items-center gap-1" disabled={!trialCheckable(s) || checkingTrial} title={!trialCheckable(s) ? t.trialUnavailable : t.trialCheck} onClick={()=>runTrialCheck([s.id],s)}>{checkingTrial ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{checkingTrial ? t.trialChecking : t.trialCheck}</button><button className="sr-link inline-flex items-center gap-1" disabled={!s.has_access_token || probingPayment} title={!s.has_access_token?t.paymentProbeUnavailable:t.paymentProbe} onClick={()=>runPaymentProbe([s.id],s)}>{probingPayment?<Loader2 className="h-4 w-4 animate-spin"/>:<CreditCard className="h-4 w-4"/>}{probingPayment?t.paymentProbing:t.paymentProbe}</button><button className="sr-link inline-flex items-center gap-1" disabled={importingSub2} onClick={()=>void importSub2API([s.id],s)}>{importingSub2?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>}{importingSub2?t.importingSub2API:"反代"}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing || checkingAT} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing || checkingAT ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link inline-flex items-center gap-1" disabled={checkingHealth} onClick={()=>runHealthCheck([s.id],s)}>{checkingHealth ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Activity className="inline h-4 w-4"/>}{checkingHealth ? t.healthChecking : t.healthCheck}</button><button className="sr-link" disabled={subscriptionCheckingSessionIds.length > 0} onClick={()=>runSubscriptionCheck([s.id],s)}>{checkingSubscription ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Crown className="inline h-4 w-4"/>}{checkingSubscription ? t.subscriptionChecking : t.subscriptionCheck}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td></tr>
             {renewalView && <tr className="sr-renewal-progress-row"><td/><td colSpan={13}><div className={cn("sr-renewal-progress",`is-${renewalView.progress.state}`)}><strong className="sr-renewal-progress-count">{renewalView.progress.current}/{renewalView.progress.total}</strong><div className="sr-renewal-progress-main"><div className="sr-renewal-progress-label">{renewalStepLabel(t,renewalView.progress.checkpoint)}</div><div className="sr-renewal-progress-track"><span style={{width:`${renewalPercent}%`}}/></div>{renewalView.progress.error && <div className="sr-renewal-progress-error">{renewalView.progress.error}</div>}</div><button className="sr-renewal-progress-close" title={t.closeRenewalProgress} onClick={()=>dismissSessionRenewal(renewalView.task.clientId,s.email)}><X className="h-4 w-4"/></button></div></td></tr>}
           </Fragment>;
         }) : <tr><td colSpan={14}><div className="sr-empty !min-h-[260px]"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><p className="mt-3 text-sm text-slate-400">{t.noData}</p></div></td></tr>}</tbody>
