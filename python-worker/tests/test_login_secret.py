@@ -93,6 +93,24 @@ class LoginSecretTests(unittest.TestCase):
         self.assertEqual(page.visited, ["https://auth.openai.com/reset-password/new-password"])
         self.assertEqual(page.password, "Strong-password-1!")
 
+    def test_chatgpt_page_is_reused_during_login_secret_steps(self):
+        class Page:
+            url = "https://chatgpt.com/"
+
+            def __init__(self):
+                self.visited = []
+
+            def goto(self, url, **_kwargs):
+                self.visited.append(url)
+                self.url = url
+
+        page = Page()
+        LoginSecretSetupFlow._ensure_chatgpt_page(page)
+        self.assertEqual(page.visited, [])
+        page.url = "https://auth.openai.com/authorize"
+        LoginSecretSetupFlow._ensure_chatgpt_page(page)
+        self.assertEqual(page.visited, ["https://chatgpt.com"])
+
     def test_recent_email_code_is_only_usable_for_a_short_window(self):
         now = 1_700_000_000.0
         self.assertTrue(LoginSecretSetupFlow._recent_email_code_usable("123456", now - 30, now))

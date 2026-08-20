@@ -126,6 +126,18 @@ class LoginSecretSetupFlow:
         return data
 
     @staticmethod
+    def _is_chatgpt_page(page) -> bool:
+        try:
+            return str(getattr(page, "url", "") or "").lower().startswith(f"{CHATGPT_BASE_URL}/")
+        except Exception:
+            return False
+
+    @classmethod
+    def _ensure_chatgpt_page(cls, page) -> None:
+        if not cls._is_chatgpt_page(page):
+            page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+
+    @staticmethod
     def _page_state(page) -> dict[str, Any]:
         try:
             return page.evaluate(
@@ -482,12 +494,12 @@ class LoginSecretSetupFlow:
         if not result.get("ok") or not continue_url:
             raise RuntimeError(f"邮箱重认证验证码校验失败: HTTP {result.get('status', 0)} {self._protocol_error_detail(result)}".strip())
         page.goto(continue_url, wait_until="domcontentloaded", timeout=60000)
-        page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+        self._ensure_chatgpt_page(page)
         return self._session_json(page)
 
     def _reauth_for_password(self, page, password: str) -> dict[str, Any]:
         """Start the dedicated post-registration password reauthentication flow."""
-        page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+        self._ensure_chatgpt_page(page)
         payload = page.evaluate(
             """async ({email}) => {
                 const csrfResponse = await fetch('/api/auth/csrf', {credentials:'include'});
@@ -528,7 +540,7 @@ class LoginSecretSetupFlow:
         recent_email_code: str = "",
         recent_email_code_at: float = 0.0,
     ) -> dict[str, Any]:
-        page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+        self._ensure_chatgpt_page(page)
         payload = page.evaluate(
             """async ({email}) => {
                 const csrfResponse = await fetch('/api/auth/csrf', {credentials:'include'});
@@ -665,7 +677,7 @@ class LoginSecretSetupFlow:
         return secret, self._session_json(page)
 
     def _setup_2fa(self, page, password: str) -> tuple[str, dict[str, Any]]:
-        page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+        self._ensure_chatgpt_page(page)
         session_json = self._session_json(page)
         access_token = str(session_json.get("accessToken") or session_json.get("access_token") or "")
         try:
@@ -694,7 +706,7 @@ class LoginSecretSetupFlow:
             result["complete"] = True
             return result
         self._progress("login_secret_started")
-        page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+        self._ensure_chatgpt_page(page)
         current_session = self._session_json(page)
         if not self.account.chatgpt_password:
             self._progress("login_secret_password")

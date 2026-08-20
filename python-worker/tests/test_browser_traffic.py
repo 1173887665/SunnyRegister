@@ -94,6 +94,8 @@ def test_browser_optimizer_session_only_suppresses_chatgpt_shell() -> None:
     assert not optimizer._should_block("https://chatgpt.com/api/auth/csrf", "xhr", "GET")
     assert not optimizer._should_block("https://chatgpt.com/backend-api/accounts/mfa_info", "fetch", "GET")
     assert not optimizer._should_block("https://auth.openai.com/oauth/authorize", "document", "GET")
+    assert not optimizer._should_block("https://auth.openai.com/assets/app.js", "script", "GET")
+    assert optimizer._should_block("https://auth.openai.com/api/feature-flags", "xhr", "GET")
 
 
 def test_browser_static_cache_writes_separate_files_and_excludes_replay_from_proxy_meter(tmp_path) -> None:

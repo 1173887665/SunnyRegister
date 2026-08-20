@@ -453,6 +453,13 @@ class BrowserTrafficOptimizer:
             if resource_type == "document" or path.startswith(self._session_paths):
                 return ""
             return f"post_auth_{resource_type or 'other'}"
+        if self.session_only and _host_matches(host, {"auth.openai.com"}):
+            # The post-registration LS flow only needs the auth document and
+            # its static shell. Its GET/XHR bootstrap data is not needed after
+            # the browser has already established the account session.
+            if resource_type in {"document", "script", "stylesheet"}:
+                return ""
+            return f"post_auth_{resource_type or 'other'}"
         return ""
 
     def _is_security(self, url: str) -> bool:
