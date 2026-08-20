@@ -2,11 +2,21 @@ import unittest
 import time
 from unittest.mock import patch
 
-from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretSetupFlow, ProtocolLoginSecretSetupFlow, generate_chatgpt_password
-from sunny_core.mailbox import MailAccount
+from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretSetupFlow, ProtocolLoginSecretSetupFlow, _password_already_set, generate_chatgpt_password
+from sunny_core.mailbox import MailAccount, extract_otp
 
 
 class LoginSecretTests(unittest.TestCase):
+    def test_mailbox_otp_requires_six_digits(self):
+        self.assertEqual(extract_otp("Your OpenAI code is 123456"), "123456")
+        self.assertEqual(extract_otp("Your OpenAI code is 1234"), "")
+        self.assertEqual(extract_otp("Reference 12345; code 1234567"), "")
+
+    def test_password_already_set_response_is_detected_without_accepting_unknown_password(self):
+        self.assertTrue(_password_already_set({"status": 400, "data": {"code": "password_already_set"}}))
+        self.assertTrue(_password_already_set({"status": 400, "data": {"message": "You already have a password."}}))
+        self.assertFalse(_password_already_set({"status": 400, "data": {"code": "invalid_request_error"}}))
+
     @staticmethod
     def _account():
         return MailAccount(

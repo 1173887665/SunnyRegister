@@ -252,11 +252,8 @@ def account_from_row(row: dict[str, Any]) -> MailAccount:
 
 def extract_otp(text: str) -> str:
     normalized = re.sub(r"\s+", " ", str(text or ""))
-    for pattern in (r"(?<!\d)(\d{6})(?!\d)", r"(?<!\d)(\d{5})(?!\d)", r"(?<!\d)(\d{4})(?!\d)"):
-        match = re.search(pattern, normalized)
-        if match:
-            return match.group(1)
-    return ""
+    match = re.search(r"(?<!\d)(\d{6})(?!\d)", normalized)
+    return match.group(1) if match else ""
 
 
 def _validate_url_api_address(value: str) -> str:

@@ -25,6 +25,15 @@ class MFAReauthenticationRequired(RuntimeError):
     pass
 
 
+def _password_already_set(result: dict[str, Any]) -> bool:
+    data = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(data, dict):
+        return False
+    code = str(data.get("code") or "").strip().lower()
+    message = str(data.get("message") or "").strip().lower()
+    return code == "password_already_set" or "already have a password" in message
+
+
 RECENT_EMAIL_CODE_MAX_AGE_SECONDS = 120
 
 
@@ -386,6 +395,8 @@ class LoginSecretSetupFlow:
         if protocol_result.get("ok"):
             self.log("[登录密钥] 已通过 OpenAI 协议接口添加 ChatGPT 密码（内容不写日志）")
             return password
+        if _password_already_set(protocol_result):
+            raise RuntimeError("远端 ChatGPT 已存在密码，但本地没有密码凭证，无法恢复原密码；请在账户管理中手动录入或重置后重试")
         self.log(
             "[登录密钥] 协议添加密码接口未完成，将回退账户设置页："
             f"HTTP {protocol_result.get('status', 0)} {self._protocol_error_detail(protocol_result)}".strip()
@@ -861,6 +872,8 @@ class ProtocolLoginSecretSetupFlow:
             headers={"accept": "application/json", "content-type": "application/json", "origin": AUTH_BASE_URL},
             json={"password": password},
         )
+        if _password_already_set({"status": status, "data": data}):
+            raise RuntimeError("远端 ChatGPT 已存在密码，但本地没有密码凭证，无法恢复原密码；请在账户管理中手动录入或重置后重试")
         self._require_ok(status, data, text, "添加 ChatGPT 密码")
         self.log("[登录密钥] 已通过同一协议登录态添加 ChatGPT 密码（内容不写日志）")
         return self._session_json()
