@@ -156,6 +156,28 @@ class LoginSecretSetupFlow:
             page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
 
     @staticmethod
+    def _dismiss_continue_gate(page) -> bool:
+        """Advance the post-login SPA gate before looking for settings/password UI."""
+        try:
+            return bool(page.evaluate(
+                r"""() => {
+                    const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+                        && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
+                        && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+                    const describe = el => [...new Set([el.innerText || el.textContent, el.getAttribute('aria-label'), el.value]
+                        .filter(Boolean).map(value => String(value).replace(/\s+/g, ' ').trim()))].join(' ');
+                    const buttons = [...document.querySelectorAll('button,[role="button"],input[type="submit"]')].filter(visible);
+                    const exact = /^(continue|next|finish|继续|続行|次へ|完了|確認|アカウントの作成を完了する)$/i;
+                    const target = buttons.find(el => exact.test(describe(el)))
+                        || (buttons.length === 1 && /continue|next|finish|继续|続行|次へ|完了|確認/i.test(describe(buttons[0])) ? buttons[0] : null);
+                    if (!target) return false;
+                    target.scrollIntoView({block:'center'}); target.click(); return true;
+                }"""
+            ))
+        except Exception:
+            return False
+
+    @staticmethod
     def _page_state(page) -> dict[str, Any]:
         try:
             return page.evaluate(
@@ -417,22 +439,26 @@ class LoginSecretSetupFlow:
     def _add_password(self, page) -> str:
         password = generate_chatgpt_password()
         protocol_result: dict[str, Any] = {"ok": False, "status": 0}
-        for attempt in range(2):
-            try:
-                # Password enrollment is a separate password reauthentication flow.
-                # The registration OTP is rejected by this flow, so always request a
-                # fresh mailbox code before calling the protocol endpoint.
-                self._reauth_for_password(page, password)
-                protocol_result = self._add_password_via_protocol(page, password)
-            except Exception as exc:
-                protocol_result = {"ok": False, "status": 0, "reason": f"{type(exc).__name__}: {exc}"}
-            if protocol_result.get("ok") or _password_already_set(protocol_result):
-                break
-            if attempt == 0 and int(protocol_result.get("status") or 0) in {401, 403, 409}:
-                self.log("[登录密钥] 密码协议接口处于认证/状态同步窗口，将重新认证后重试")
-                self._sleep(1.5)
-                continue
-            break
+        try:
+            # Password enrollment is a separate password reauthentication flow.
+            # The registration OTP is rejected by this flow, so always request a
+            # fresh mailbox code before calling the protocol endpoint.
+            self._dismiss_continue_gate(page)
+            self._reauth_for_password(page, password)
+            protocol_result = self._add_password_via_protocol(page, password)
+            status = int(protocol_result.get("status") or 0)
+            if not protocol_result.get("ok") and not _password_already_set(protocol_result):
+                if status == 409:
+                    self.log("[登录密钥] 密码协议接口正在同步认证状态，将保持当前登录态后重试")
+                    self._sleep(1.5)
+                    protocol_result = self._add_password_via_protocol(page, password)
+                elif status in {401, 403}:
+                    self.log("[登录密钥] 密码协议接口要求重新认证，将最多重认证一次后重试")
+                    self._sleep(1.5)
+                    self._reauth_for_password(page, password)
+                    protocol_result = self._add_password_via_protocol(page, password)
+        except Exception as exc:
+            protocol_result = {"ok": False, "status": 0, "reason": f"{type(exc).__name__}: {exc}"}
         if protocol_result.get("ok"):
             self.log("[登录密钥] 已通过 OpenAI 协议接口添加 ChatGPT 密码（内容不写日志）")
             return password
@@ -443,6 +469,8 @@ class LoginSecretSetupFlow:
             f"HTTP {protocol_result.get('status', 0)} {self._protocol_error_detail(protocol_result)}".strip()
         )
         page.goto(f"{CHATGPT_BASE_URL}/#settings/Account", wait_until="domcontentloaded", timeout=60000)
+        if self._dismiss_continue_gate(page):
+            self._sleep(1)
         self._sleep(2)
         deadline = time.time() + 60
         navigation_steps = ("account", "settings", "profile")
@@ -534,11 +562,15 @@ class LoginSecretSetupFlow:
             raise RuntimeError("邮箱重认证验证码校验失败: 未获取到有效验证码")
         page.goto(continue_url, wait_until="domcontentloaded", timeout=60000)
         self._ensure_chatgpt_page(page)
+        if self._dismiss_continue_gate(page):
+            self._sleep(1)
         return self._session_json(page)
 
     def _reauth_for_password(self, page, password: str) -> dict[str, Any]:
         """Start the dedicated post-registration password reauthentication flow."""
         self._ensure_chatgpt_page(page)
+        if self._dismiss_continue_gate(page):
+            self._sleep(1)
         payload = page.evaluate(
             """async ({email}) => {
                 const csrfResponse = await fetch('/api/auth/csrf', {credentials:'include'});
@@ -746,6 +778,8 @@ class LoginSecretSetupFlow:
             return result
         self._progress("login_secret_started")
         self._ensure_chatgpt_page(page)
+        if self._dismiss_continue_gate(page):
+            self._sleep(1)
         current_session = self._session_json(page)
         if not self.account.chatgpt_password:
             self._progress("login_secret_password")
@@ -928,8 +962,8 @@ class ProtocolLoginSecretSetupFlow:
         return self._session_json()
 
     def _add_password(self, password: str) -> dict[str, Any]:
+        self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=add_password")
         for attempt in range(2):
-            self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=add_password")
             status, data, text = self._request(
                 "POST",
                 PASSWORD_ADD_URL,
@@ -942,8 +976,13 @@ class ProtocolLoginSecretSetupFlow:
             if 200 <= status < 300:
                 self.log("[登录密钥] 已通过同一协议登录态添加 ChatGPT 密码（内容不写日志）")
                 return self._session_json()
-            if attempt == 0 and status in {401, 403, 409}:
-                self.log("[登录密钥] 密码协议接口处于认证/状态同步窗口，将重新认证后重试")
+            if attempt == 0 and status == 409:
+                self.log("[登录密钥] 密码协议接口正在同步认证状态，将保持当前登录态后重试")
+                time.sleep(1.5)
+                continue
+            if attempt == 0 and status in {401, 403}:
+                self.log("[登录密钥] 密码协议接口要求重新认证，将最多重认证一次后重试")
+                self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=add_password")
                 continue
             self._require_ok(status, data, text, "添加 ChatGPT 密码")
         raise RuntimeError("添加 ChatGPT 密码失败: 未获得有效响应")

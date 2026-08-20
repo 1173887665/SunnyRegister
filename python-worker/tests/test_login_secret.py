@@ -114,6 +114,17 @@ class LoginSecretTests(unittest.TestCase):
         self.assertIn("accounts-profile-button", page.script)
         self.assertIn("settings|設定|设置", page.script)
 
+    def test_continue_gate_accepts_single_continue_button(self):
+        class FakePage:
+            def evaluate(self, script):
+                self.script = script
+                return True
+
+        page = FakePage()
+        self.assertTrue(LoginSecretSetupFlow._dismiss_continue_gate(page))
+        self.assertIn("buttons.length === 1", page.script)
+        self.assertIn("continue|next|finish", page.script)
+
     def test_chatgpt_page_is_reused_during_login_secret_steps(self):
         class Page:
             url = "https://chatgpt.com/"
