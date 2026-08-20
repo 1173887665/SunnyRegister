@@ -284,7 +284,14 @@ class BrowserTrafficOptimizer:
     _heavy_types = {"image", "font", "media", "manifest"}
     _telemetry_markers = ("/telemetry", "/analytics", "/rum", "/events")
     _service_worker_names = {"service-worker.js", "service_worker.js", "sw.js"}
-    _session_paths = ("/api/auth/callback/", "/api/auth/session", "/api/accounts/check", "/backend-api/accounts/check")
+    _session_paths = (
+        "/api/auth/callback/",
+        "/api/auth/csrf",
+        "/api/auth/session",
+        "/api/accounts/check",
+        "/backend-api/accounts/check",
+        "/backend-api/accounts/mfa_info",
+    )
 
     def __init__(self, meter: ProxyTrafficMeter, config: BrowserTrafficConfig | dict[str, Any] | None = None):
         self.meter = meter

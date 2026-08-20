@@ -91,6 +91,8 @@ def test_browser_optimizer_session_only_suppresses_chatgpt_shell() -> None:
     assert optimizer._should_block("https://chatgpt.com/_next/static/app.js", "script", "GET")
     assert optimizer._should_block("https://chatgpt.com/backend-api/models", "xhr", "GET")
     assert not optimizer._should_block("https://chatgpt.com/api/auth/session", "xhr", "GET")
+    assert not optimizer._should_block("https://chatgpt.com/api/auth/csrf", "xhr", "GET")
+    assert not optimizer._should_block("https://chatgpt.com/backend-api/accounts/mfa_info", "fetch", "GET")
     assert not optimizer._should_block("https://auth.openai.com/oauth/authorize", "document", "GET")
 
 
