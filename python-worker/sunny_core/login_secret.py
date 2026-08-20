@@ -13,6 +13,13 @@ from .browser_traffic import BrowserTrafficOptimizer, ProxyTrafficMeter
 from .mailbox import MailAccount, create_mailbox_reader
 from .openai_auth import CHATGPT_BASE_URL, generate_register_fingerprint
 
+AUTH_BASE_URL = "https://auth.openai.com"
+PASSWORD_ADD_URL = f"{AUTH_BASE_URL}/api/accounts/password/add"
+EMAIL_OTP_VALIDATE_URL = f"{AUTH_BASE_URL}/api/accounts/email-otp/validate"
+MFA_INFO_URL = f"{CHATGPT_BASE_URL}/backend-api/accounts/mfa_info"
+MFA_ENROLL_URL = f"{CHATGPT_BASE_URL}/backend-api/accounts/mfa/enroll"
+MFA_ACTIVATE_URL = f"{CHATGPT_BASE_URL}/backend-api/accounts/mfa/user/activate_enrollment"
+
 
 class MFAReauthenticationRequired(RuntimeError):
     pass
@@ -663,7 +670,7 @@ class LoginSecretSetupFlow:
         access_token = str(session_json.get("accessToken") or session_json.get("access_token") or "")
         return self._setup_2fa_protocol(page, access_token)
 
-    def run(self) -> dict[str, Any]:
+    def _run_on_page(self, page, context) -> dict[str, Any]:
         result: dict[str, Any] = {
             "password": self.account.chatgpt_password,
             "totp_secret": self.account.totp_secret,
@@ -676,6 +683,57 @@ class LoginSecretSetupFlow:
             result["complete"] = True
             return result
         self._progress("login_secret_started")
+        page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+        current_session = self._session_json(page)
+        if not self.account.chatgpt_password:
+            self._progress("login_secret_password")
+            try:
+                password = self._add_password(page)
+                self.account.chatgpt_password = password
+                result.update({"password": password, "password_added": True})
+            except Exception as exc:
+                result["errors"].append(f"添加密码失败: {exc}")
+        if not self.account.totp_secret:
+            self._progress("login_secret_2fa")
+            try:
+                secret, current_session = self._setup_2fa(page, self.account.chatgpt_password)
+                result.update({"totp_secret": secret, "totp_added": True})
+            except Exception as exc:
+                result["errors"].append(f"添加2FA失败: {exc}")
+        result["session"] = {
+            **self.session,
+            "access_token": str(current_session.get("accessToken") or current_session.get("access_token") or self.session.get("access_token") or ""),
+            "session_json": current_session,
+            "storage_state_json": context.storage_state(),
+        }
+        result["complete"] = bool(result.get("password") and result.get("totp_secret"))
+        self._progress("login_secret_completed" if result["complete"] else "login_secret_failed")
+        return result
+
+    def run(self, *, browser_page=None, browser_context=None) -> dict[str, Any]:
+        """Set up LS, reusing an active registration browser when supplied.
+
+        The registration flow owns the browser in that case. Standalone add-LS
+        tasks continue to use an isolated Camoufox context as before.
+        """
+        if browser_page is not None or browser_context is not None:
+            if browser_page is None or browser_context is None:
+                raise ValueError("browser_page and browser_context must be supplied together")
+            try:
+                return self._run_on_page(browser_page, browser_context)
+            finally:
+                if self.reader:
+                    self.reader.close()
+        if self.account.chatgpt_password and self.account.totp_secret:
+            return {
+                "password": self.account.chatgpt_password,
+                "totp_secret": self.account.totp_secret,
+                "password_added": False,
+                "totp_added": False,
+                "skipped": True,
+                "complete": True,
+                "errors": [],
+            }
         try:
             with open_registration_browser(
                 headless=True,
@@ -688,32 +746,215 @@ class LoginSecretSetupFlow:
                 if self.traffic_optimizer is not None:
                     self.traffic_optimizer.attach(context)
                 page = context.new_page()
-                page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
-                current_session = self._session_json(page)
-                if not self.account.chatgpt_password:
-                    self._progress("login_secret_password")
-                    try:
-                        password = self._add_password(page)
-                        self.account.chatgpt_password = password
-                        result.update({"password": password, "password_added": True})
-                    except Exception as exc:
-                        result["errors"].append(f"添加密码失败: {exc}")
-                if not self.account.totp_secret:
-                    self._progress("login_secret_2fa")
-                    try:
-                        secret, current_session = self._setup_2fa(page, self.account.chatgpt_password)
-                        result.update({"totp_secret": secret, "totp_added": True})
-                    except Exception as exc:
-                        result["errors"].append(f"添加2FA失败: {exc}")
-                result["session"] = {
-                    **self.session,
-                    "access_token": str(current_session.get("accessToken") or current_session.get("access_token") or self.session.get("access_token") or ""),
-                    "session_json": current_session,
-                    "storage_state_json": context.storage_state(),
-                }
-                result["complete"] = bool(result.get("password") and result.get("totp_secret"))
-                self._progress("login_secret_completed" if result["complete"] else "login_secret_failed")
-                return result
+                return self._run_on_page(page, context)
+        finally:
+            if self.reader:
+                self.reader.close()
+
+
+class ProtocolLoginSecretSetupFlow:
+    """Set up LS through the protocol session that completed registration.
+
+    This flow deliberately does not create a Playwright/Camoufox context. The
+    protocol registration cookie jar is kept alive by ProtocolRegistrationFlow
+    until this callback returns.
+    """
+
+    def __init__(
+        self,
+        account: MailAccount,
+        session: dict[str, Any],
+        protocol_session: Any,
+        log: Callable[[str], None] | None = None,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+        mailbox_proxy_url: str | None = None,
+        on_progress: Callable[[str], None] | None = None,
+    ):
+        self.account = account
+        self.session = dict(session or {})
+        self.http = protocol_session
+        self.log = log or (lambda _message: None)
+        self.should_cancel = should_cancel or (lambda: False)
+        self.mailbox_proxy_url = mailbox_proxy_url or ""
+        self.on_progress = on_progress or (lambda _checkpoint: None)
+        self.reader: Any | None = None
+
+    def _check_cancelled(self) -> None:
+        if self.should_cancel():
+            from .openai_auth import TaskCancelledError
+
+            raise TaskCancelledError("Task cancelled by user")
+
+    def _reader_instance(self):
+        if self.reader is None:
+            self.reader = create_mailbox_reader(self.account, self.log, self.mailbox_proxy_url)
+            self.reader.connect()
+        return self.reader
+
+    def _request(self, method: str, url: str, **kwargs) -> tuple[int, Any, str]:
+        self._check_cancelled()
+        kwargs.setdefault("timeout", 30)
+        response = self.http.request(method, url, **kwargs)
+        text = str(getattr(response, "text", "") or "")
+        try:
+            data = response.json()
+        except Exception:
+            data = None
+        return int(getattr(response, "status_code", 0) or 0), data, text[:800]
+
+    @staticmethod
+    def _require_ok(status: int, data: Any, text: str, operation: str) -> Any:
+        if status < 200 or status >= 300:
+            raise RuntimeError(f"{operation}失败: HTTP {status} {text[:240]}")
+        return data
+
+    def _session_json(self) -> dict[str, Any]:
+        status, data, text = self._request("GET", f"{CHATGPT_BASE_URL}/api/auth/session", headers={"accept": "application/json"})
+        payload = self._require_ok(status, data, text, "读取 ChatGPT Session")
+        if not isinstance(payload, dict) or not (payload.get("accessToken") or payload.get("access_token")):
+            raise RuntimeError("ChatGPT 登录态已失效")
+        return payload
+
+    def _reauthenticate(self, callback_url: str) -> dict[str, Any]:
+        status, csrf, text = self._request("GET", f"{CHATGPT_BASE_URL}/api/auth/csrf", headers={"accept": "application/json"})
+        csrf = self._require_ok(status, csrf, text, "读取 ChatGPT CSRF")
+        csrf_token = str((csrf or {}).get("csrfToken") or "") if isinstance(csrf, dict) else ""
+        if not csrf_token:
+            raise RuntimeError("ChatGPT CSRF 响应缺少 csrfToken")
+        from urllib.parse import urlencode
+
+        query = urlencode({"connection": "password", "login_hint": self.account.email, "reauth": "password", "max_age": "0"})
+        body = urlencode({"callbackUrl": callback_url, "csrfToken": csrf_token, "json": "true"})
+        status, payload, text = self._request(
+            "POST",
+            f"{CHATGPT_BASE_URL}/api/auth/signin/openai?{query}",
+            headers={"accept": "application/json", "content-type": "application/x-www-form-urlencoded"},
+            data=body,
+        )
+        payload = self._require_ok(status, payload, text, "发起 ChatGPT 重认证")
+        auth_url = str(((payload or {}).get("url") or ((payload or {}).get("data") or {}).get("url") or "")) if isinstance(payload, dict) else ""
+        if not auth_url:
+            raise RuntimeError("ChatGPT 重认证响应缺少认证地址")
+        sent_at = time.time()
+        status, _data, text = self._request("GET", auth_url, headers={"accept": "text/html,application/xhtml+xml"}, allow_redirects=True)
+        if status >= 400:
+            raise RuntimeError(f"加载 ChatGPT 重认证页面失败: HTTP {status} {text[:180]}")
+        code = self._reader_instance().wait_for_code(sent_at, 150)
+        status, payload, text = self._request(
+            "POST",
+            EMAIL_OTP_VALIDATE_URL,
+            headers={"accept": "application/json", "content-type": "application/json", "origin": AUTH_BASE_URL, "referer": auth_url},
+            json={"code": code},
+        )
+        payload = self._require_ok(status, payload, text, "邮箱重认证验证码校验")
+        continue_url = str((payload or {}).get("continue_url") or "") if isinstance(payload, dict) else ""
+        if continue_url:
+            self._request("GET", continue_url, headers={"accept": "text/html,application/xhtml+xml"}, allow_redirects=True)
+        return self._session_json()
+
+    def _add_password(self, password: str) -> dict[str, Any]:
+        self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=add_password")
+        status, data, text = self._request(
+            "POST",
+            PASSWORD_ADD_URL,
+            headers={"accept": "application/json", "content-type": "application/json", "origin": AUTH_BASE_URL},
+            json={"password": password},
+        )
+        self._require_ok(status, data, text, "添加 ChatGPT 密码")
+        self.log("[登录密钥] 已通过同一协议登录态添加 ChatGPT 密码（内容不写日志）")
+        return self._session_json()
+
+    @staticmethod
+    def _auth_headers(access_token: str, *, json_body: bool = False) -> dict[str, str]:
+        headers = {"accept": "application/json"}
+        if json_body:
+            headers["content-type"] = "application/json"
+        if access_token:
+            headers["authorization"] = f"Bearer {access_token}"
+        return headers
+
+    def _mfa_request(self, method: str, url: str, access_token: str, **kwargs) -> tuple[int, Any, str]:
+        kwargs["headers"] = {**self._auth_headers(access_token, json_body=method.upper() == "POST"), **(kwargs.get("headers") or {})}
+        return self._request(method, url, **kwargs)
+
+    @staticmethod
+    def _totp_factors(data: Any) -> list[dict[str, Any]]:
+        factors = data.get("factors") if isinstance(data, dict) else {}
+        items = factors.get("totp") if isinstance(factors, dict) else []
+        return [item for item in (items or []) if isinstance(item, dict)]
+
+    def _setup_2fa(self, access_token: str) -> tuple[str, dict[str, Any]]:
+        status, info, text = self._mfa_request("GET", MFA_INFO_URL, access_token)
+        if status in {401, 403}:
+            session_json = self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=enable&factor=totp")
+            access_token = str(session_json.get("accessToken") or session_json.get("access_token") or "")
+            status, info, text = self._mfa_request("GET", MFA_INFO_URL, access_token)
+        info = self._require_ok(status, info, text, "查询 2FA 状态")
+        info_data = info if isinstance(info, dict) else {}
+        if info_data.get("mfa_enabled") is True or self._totp_factors(info_data):
+            raise RuntimeError("ChatGPT 已启用 TOTP，但本地没有对应 2FA 密钥，无法恢复原密钥")
+        status, enrolled, text = self._mfa_request("POST", MFA_ENROLL_URL, access_token, json={"factor_type": "totp"})
+        enrolled = self._require_ok(status, enrolled, text, "2FA enroll")
+        secret = str((enrolled or {}).get("secret") or "") if isinstance(enrolled, dict) else ""
+        session_id = str((enrolled or {}).get("session_id") or "") if isinstance(enrolled, dict) else ""
+        factor_id = str(((enrolled or {}).get("factor") or {}).get("id") or "") if isinstance(enrolled, dict) else ""
+        if not secret or not session_id:
+            raise RuntimeError("2FA enroll 响应缺少 secret 或 session_id")
+        activation = None
+        for attempt in range(2):
+            remaining = 30 - (time.time() % 30)
+            if attempt > 0 or remaining <= 5:
+                time.sleep(remaining + 0.25)
+            code = generate_totp(secret)
+            status, activation, text = self._mfa_request(
+                "POST", MFA_ACTIVATE_URL, access_token,
+                json={"code": code, "factor_type": "totp", "session_id": session_id},
+            )
+            data = activation if isinstance(activation, dict) else {}
+            if status == 200 and data.get("success") is True:
+                break
+        else:
+            raise RuntimeError(f"2FA activate 失败: HTTP {status}")
+        status, confirmed, text = self._mfa_request("GET", MFA_INFO_URL, access_token)
+        confirmed = self._require_ok(status, confirmed, text, "确认 2FA 状态")
+        confirmed_factors = self._totp_factors(confirmed)
+        confirmed_ok = bool(isinstance(confirmed, dict) and confirmed.get("mfa_enabled") is True and confirmed_factors)
+        if factor_id:
+            confirmed_ok = confirmed_ok and any(str(item.get("id") or "") == factor_id for item in confirmed_factors)
+        if not confirmed_ok:
+            raise RuntimeError("2FA activate 返回成功，但 mfa_info 未确认 TOTP 已启用")
+        return secret, self._session_json()
+
+    def run(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"password": self.account.chatgpt_password, "totp_secret": self.account.totp_secret, "password_added": False, "totp_added": False, "errors": []}
+        if result["password"] and result["totp_secret"]:
+            result.update({"skipped": True, "complete": True})
+            return result
+        self.on_progress("login_secret_started")
+        try:
+            current_session = self._session_json()
+            if not self.account.chatgpt_password:
+                self.on_progress("login_secret_password")
+                try:
+                    password = generate_chatgpt_password()
+                    current_session = self._add_password(password)
+                    self.account.chatgpt_password = password
+                    result.update({"password": password, "password_added": True})
+                except Exception as exc:
+                    result["errors"].append(f"添加密码失败: {exc}")
+            if not self.account.totp_secret:
+                self.on_progress("login_secret_2fa")
+                try:
+                    access_token = str(current_session.get("accessToken") or current_session.get("access_token") or self.session.get("access_token") or "")
+                    secret, current_session = self._setup_2fa(access_token)
+                    result.update({"totp_secret": secret, "totp_added": True})
+                except Exception as exc:
+                    result["errors"].append(f"添加2FA失败: {exc}")
+            result["session"] = {**self.session, "access_token": str(current_session.get("accessToken") or current_session.get("access_token") or self.session.get("access_token") or ""), "session_json": current_session, "storage_state_json": self.session.get("storage_state_json") or {}}
+            result["complete"] = bool(result.get("password") and result.get("totp_secret"))
+            self.on_progress("login_secret_completed" if result["complete"] else "login_secret_failed")
+            return result
         finally:
             if self.reader:
                 self.reader.close()
@@ -731,6 +972,8 @@ def setup_login_secret(
     on_progress: Callable[[str], None] | None = None,
     recent_email_code: str = "",
     recent_email_code_at: float = 0.0,
+    browser_page=None,
+    browser_context=None,
 ) -> dict[str, Any]:
     return LoginSecretSetupFlow(
         account,
@@ -743,4 +986,25 @@ def setup_login_secret(
         on_progress=on_progress,
         recent_email_code=recent_email_code,
         recent_email_code_at=recent_email_code_at,
+    ).run(browser_page=browser_page, browser_context=browser_context)
+
+
+def setup_login_secret_protocol(
+    account: MailAccount,
+    session: dict[str, Any],
+    protocol_session: Any,
+    log: Callable[[str], None] | None = None,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+    mailbox_proxy_url: str | None = None,
+    on_progress: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    return ProtocolLoginSecretSetupFlow(
+        account,
+        session,
+        protocol_session,
+        log,
+        should_cancel=should_cancel,
+        mailbox_proxy_url=mailbox_proxy_url,
+        on_progress=on_progress,
     ).run()

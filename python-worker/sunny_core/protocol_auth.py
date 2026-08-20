@@ -158,6 +158,17 @@ def _is_transient_transport_error(error: BaseException) -> bool:
     return any(marker in message for marker in _TRANSIENT_TRANSPORT_MARKERS)
 
 
+class _ProtocolCallbackSession:
+    """Expose the active protocol request path to post-registration steps."""
+
+    def __init__(self, flow: "ProtocolRegistrationFlow"):
+        self._flow = flow
+
+    def request(self, method: str, url: str, **kwargs):
+        path = urlsplit(str(url)).path or "/"
+        return self._flow._request(method, url, step=f"Post-registration {path}", **kwargs)
+
+
 class ProtocolRegistrationFlow:
     """ChatGPT email registration/login through HTTP requests only.
 
@@ -178,6 +189,7 @@ class ProtocolRegistrationFlow:
         challenge_strategy: str = "native_headless",
         mailbox_proxy_url: str | None = None,
         traffic_meter: ProxyTrafficMeter | None = None,
+        post_registration_callback: Callable[[Any, dict[str, Any]], dict[str, Any] | None] | None = None,
     ):
         self.account = account
         self.proxy_url = normalize_proxy_url(proxy_url)
@@ -197,6 +209,7 @@ class ProtocolRegistrationFlow:
         self.recent_email_code_at = 0.0
         self.traffic = ProtocolTrafficMeter()
         self.traffic_meter = traffic_meter
+        self.post_registration_callback = post_registration_callback
         self.challenge_strategy = (
             challenge_strategy if challenge_strategy in {"native_headless", "sentinel_protocol"} else "native_headless"
         )
@@ -901,6 +914,30 @@ class ProtocolRegistrationFlow:
             state = self._select_workspace(state)
             continue_url = str(state.get("continue_url") or continue_url)
             result = self._finish_session(continue_url)
+            if self.post_registration_callback is not None and not self.existing_account:
+                try:
+                    callback_result = self.post_registration_callback(_ProtocolCallbackSession(self), dict(result)) or {}
+                except Exception as exc:
+                    if self.should_cancel():
+                        raise
+                    callback_result = {"complete": False, "errors": [str(exc)]}
+                    self.log(f"[认证] 协议注册后附加步骤失败，保留当前协议登录态：{str(exc)[:300]}")
+                result["login_secret_result"] = callback_result
+                refreshed = callback_result.get("session") if isinstance(callback_result, dict) else None
+                if isinstance(refreshed, dict):
+                    try:
+                        refreshed["storage_state_json"] = {
+                            "cookies": [
+                                {"name": item.name, "value": item.value, "domain": item.domain, "path": item.path}
+                                for item in self.session.cookies.jar
+                            ],
+                            "origins": [],
+                        }
+                    except Exception:
+                        pass
+                    for key in ("access_token", "session_json", "storage_state_json"):
+                        if key in refreshed:
+                            result[key] = refreshed[key]
             if self.generated_password:
                 result["generated_chatgpt_password"] = self.generated_password
             self.log("[认证] 纯协议注册/登录完成，已读取 ChatGPT Session")
@@ -943,6 +980,7 @@ def login_or_register_protocol(
     challenge_strategy: str = "native_headless",
     mailbox_proxy_url: str | None = None,
     traffic_meter: ProxyTrafficMeter | None = None,
+    post_registration_callback: Callable[[Any, dict[str, Any]], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     return ProtocolRegistrationFlow(
         account,
@@ -954,4 +992,5 @@ def login_or_register_protocol(
         challenge_strategy=challenge_strategy,
         mailbox_proxy_url=mailbox_proxy_url,
         traffic_meter=traffic_meter,
+        post_registration_callback=post_registration_callback,
     ).run()

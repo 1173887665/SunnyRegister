@@ -1,7 +1,8 @@
 import unittest
 import time
+from unittest.mock import patch
 
-from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretSetupFlow, generate_chatgpt_password
+from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretSetupFlow, ProtocolLoginSecretSetupFlow, generate_chatgpt_password
 from sunny_core.mailbox import MailAccount
 
 
@@ -39,6 +40,28 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(result["skipped"])
         self.assertEqual(result["password"], "ChatGPT-password")
         self.assertEqual(result["totp_secret"], "JBSWY3DPEHPK3PXP")
+
+    def test_registration_browser_context_is_reused_for_login_secret(self):
+        account = self._account()
+        account.chatgpt_password = ""
+        account.totp_secret = ""
+        flow = LoginSecretSetupFlow(account, {"storage_state_json": {"cookies": []}}, "")
+        page = object()
+        context = object()
+        expected = {"complete": False, "errors": ["stub"]}
+        with patch.object(flow, "_run_on_page", return_value=expected) as run_on_page:
+            with patch("sunny_core.login_secret.open_registration_browser", side_effect=AssertionError("unexpected second browser")):
+                result = flow.run(browser_page=page, browser_context=context)
+        self.assertIs(result, expected)
+        run_on_page.assert_called_once_with(page, context)
+
+    def test_protocol_login_secret_skips_complete_credentials_without_network(self):
+        account = self._account()
+        account.totp_secret = "JBSWY3DPEHPK3PXP"
+        flow = ProtocolLoginSecretSetupFlow(account, {}, object())
+        result = flow.run()
+        self.assertTrue(result["skipped"])
+        self.assertTrue(result["complete"])
 
     def test_password_protocol_endpoint_uses_existing_auth_state(self):
         class FakePage:

@@ -461,7 +461,7 @@ def _should_retry_phone_send_without_channel(result: dict[str, Any]) -> bool:
 class OpenAIEmailRegisterFlow:
     """SunnyRegister in-project email register/login flow, following the original register-or-login implementation."""
 
-    def __init__(self, account: MailAccount, proxy_url: str, headless: bool, log: Callable[[str], None] | None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None, mailbox_proxy_url: str | None = None, existing_session: dict[str, Any] | None = None, traffic_meter: ProxyTrafficMeter | None = None, traffic_config: BrowserTrafficConfig | dict[str, Any] | None = None):
+    def __init__(self, account: MailAccount, proxy_url: str, headless: bool, log: Callable[[str], None] | None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None, mailbox_proxy_url: str | None = None, existing_session: dict[str, Any] | None = None, traffic_meter: ProxyTrafficMeter | None = None, traffic_config: BrowserTrafficConfig | dict[str, Any] | None = None, post_registration_callback: Callable[[Any, Any, dict[str, Any]], dict[str, Any] | None] | None = None):
         self.account = account
         self.proxy_url = proxy_url
         self.mailbox_proxy_url = proxy_url if mailbox_proxy_url is None else mailbox_proxy_url
@@ -486,6 +486,7 @@ class OpenAIEmailRegisterFlow:
         self.recent_email_code = ""
         self.recent_email_code_at = 0.0
         self.existing_session = dict(existing_session or {})
+        self.post_registration_callback = post_registration_callback
         self.traffic_meter = traffic_meter or ProxyTrafficMeter(proxy_url=proxy_url, tracked_proxy=bool(proxy_url), email=account.email, operation=self.execution_mode)
         self.traffic_optimizer = BrowserTrafficOptimizer(self.traffic_meter, traffic_config)
 
@@ -527,6 +528,25 @@ class OpenAIEmailRegisterFlow:
         snapshot = self.traffic_meter.snapshot()
         snapshot["optimization"] = self.traffic_optimizer.snapshot()
         return snapshot
+
+    def _apply_post_registration_callback(self, context, page, result: dict[str, Any]) -> dict[str, Any]:
+        callback = self.post_registration_callback
+        if callback is None or self.existing_account:
+            return result
+        try:
+            callback_result = callback(context, page, dict(result)) or {}
+        except (TaskCancelledError, BrowserDriverDisconnectedError):
+            raise
+        except Exception as exc:
+            callback_result = {"complete": False, "errors": [str(exc)]}
+            self.log(f"[认证] 注册后附加步骤失败，保留当前浏览器登录态：{str(exc)[:300]}")
+        result["login_secret_result"] = callback_result
+        refreshed = callback_result.get("session") if isinstance(callback_result, dict) else None
+        if isinstance(refreshed, dict):
+            for key in ("access_token", "session_json", "storage_state_json"):
+                if key in refreshed:
+                    result[key] = refreshed[key]
+        return result
 
     def run(self) -> dict[str, Any]:
         self.log(f"[认证] 开始注册或登录: {self.account.email}")
@@ -609,8 +629,10 @@ class OpenAIEmailRegisterFlow:
                     if self.generated_password:
                         result["generated_chatgpt_password"] = self.generated_password
                     self.log("[认证] ChatGPT 注册/登录已经完成，但手机号阶段无法继续；已保存 Session 并保留已注册状态")
+                    result = self._apply_post_registration_callback(context, page, result)
                     return result
                 result = self._extract_session_info(context, page)
+                result = self._apply_post_registration_callback(context, page, result)
                 result["browser_traffic"] = self._browser_traffic_snapshot()
                 result["auth_action"] = self.auth_action if self.auth_action != "unknown" else "login"
                 if self.generated_password:
@@ -2884,7 +2906,7 @@ class OpenAIEmailRegisterFlow:
             return str(page.url)
 
 
-def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool = True, log: Callable[[str], None] | None = None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None, mailbox_proxy_url: str | None = None, existing_session: dict[str, Any] | None = None, traffic_meter: ProxyTrafficMeter | None = None, traffic_config: BrowserTrafficConfig | dict[str, Any] | None = None) -> dict[str, Any]:
+def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool = True, log: Callable[[str], None] | None = None, phone_provider=None, existing_account: bool = False, require_refresh_token: bool = True, should_cancel: Callable[[], bool] | None = None, execution_mode: str = "", on_progress: Callable[[str, dict[str, Any]], None] | None = None, mailbox_proxy_url: str | None = None, existing_session: dict[str, Any] | None = None, traffic_meter: ProxyTrafficMeter | None = None, traffic_config: BrowserTrafficConfig | dict[str, Any] | None = None, post_registration_callback: Callable[[Any, Any, dict[str, Any]], dict[str, Any] | None] | None = None) -> dict[str, Any]:
     if should_cancel and should_cancel():
         raise TaskCancelledError("Task cancelled by user")
     if account.openai_rt and require_refresh_token:
@@ -2904,4 +2926,4 @@ def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool 
         if on_progress:
             on_progress("phone_bound", session)
         return session
-    return OpenAIEmailRegisterFlow(account, proxy_url, headless, log, phone_provider=phone_provider, existing_account=existing_account, require_refresh_token=require_refresh_token, should_cancel=should_cancel, execution_mode=execution_mode, on_progress=on_progress, mailbox_proxy_url=mailbox_proxy_url, existing_session=existing_session, traffic_meter=traffic_meter, traffic_config=traffic_config).run()
+    return OpenAIEmailRegisterFlow(account, proxy_url, headless, log, phone_provider=phone_provider, existing_account=existing_account, require_refresh_token=require_refresh_token, should_cancel=should_cancel, execution_mode=execution_mode, on_progress=on_progress, mailbox_proxy_url=mailbox_proxy_url, existing_session=existing_session, traffic_meter=traffic_meter, traffic_config=traffic_config, post_registration_callback=post_registration_callback).run()

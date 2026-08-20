@@ -23,7 +23,7 @@ from .mailbox import account_from_row, parse_account_line
 from .openai_auth import TaskCancelledError, login_or_register, refresh_openai_access_token
 from .phone_pool import read_sms_candidates, wait_sms_code
 from .protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationError, login_or_register_protocol
-from .login_secret import setup_login_secret
+from .login_secret import setup_login_secret, setup_login_secret_protocol
 from .proxy import build_proxy, proxy_target_tls_check, redact_proxy_url
 from .smsbower import SMSBowerClient
 from .smspool import SMSPOOL_CODE_TIMEOUT_SECONDS, SMSPoolClient
@@ -1566,6 +1566,56 @@ def _run_one(
                 original_mailbox_status,
             )
 
+    def setup_login_secret_in_browser(context, page, base_session: dict[str, Any]) -> dict[str, Any]:
+        """Run optional LS setup inside the registration browser session.
+
+        The browser flow owns this context and keeps its fingerprint/cookies
+        alive until this callback returns; no second Camoufox instance is
+        created for a freshly registered account.
+        """
+        if not setup_login_secret_enabled:
+            return {}
+        db.event(
+            f"[{email}] [登录密钥] 在当前注册浏览器中补充缺失的 ChatGPT 密码与 2FA",
+            detail={"email": email, "scope": "selected", "setup_login_secret": True, "browser_reused": True},
+        )
+        return setup_login_secret(
+            account,
+            base_session,
+            proxies["register"],
+            lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
+            should_cancel=db.cancel_requested,
+            mailbox_proxy_url=mailbox_proxy_url,
+            traffic_meter=traffic_meter,
+            recent_email_code=str(base_session.get("recent_email_code") or ""),
+            recent_email_code_at=float(base_session.get("recent_email_code_at") or 0.0),
+            browser_page=page,
+            browser_context=context,
+            on_progress=lambda checkpoint: _emit_registration_progress(
+                db, str(email), stage, checkpoint, setup_login_secret=True,
+            ),
+        )
+
+    def setup_login_secret_in_protocol(protocol_client, base_session: dict[str, Any]) -> dict[str, Any]:
+        """Run LS setup through the protocol registration cookie jar."""
+        if not setup_login_secret_enabled:
+            return {}
+        db.event(
+            f"[{email}] [登录密钥] 在当前协议登录态中补充缺失的 ChatGPT 密码与 2FA",
+            detail={"email": email, "scope": "selected", "setup_login_secret": True, "protocol_session_reused": True},
+        )
+        return setup_login_secret_protocol(
+            account,
+            base_session,
+            protocol_client,
+            lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
+            should_cancel=db.cancel_requested,
+            mailbox_proxy_url=mailbox_proxy_url,
+            on_progress=lambda checkpoint: _emit_registration_progress(
+                db, str(email), stage, checkpoint, setup_login_secret=True,
+            ),
+        )
+
     wants_rt = stage in {CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY} or explicit_rt_acquire
     phone_provider = None
     require_refresh_token = False
@@ -1639,6 +1689,7 @@ def _run_one(
                 mailbox_proxy_url=mailbox_proxy_url,
                 traffic_meter=traffic_meter,
                 traffic_config=payload.get("browser_traffic_optimization"),
+                post_registration_callback=setup_login_secret_in_browser if setup_login_secret_enabled else None,
             )
             session["requested_execution_mode"] = "protocol"
             session["execution_mode"] = "protocol_headless_fallback"
@@ -1655,6 +1706,7 @@ def _run_one(
                     challenge_strategy=protocol_challenge_strategy,
                     mailbox_proxy_url=mailbox_proxy_url,
                     traffic_meter=traffic_meter,
+                    post_registration_callback=setup_login_secret_in_protocol if setup_login_secret_enabled else None,
                 )
             except (ProtocolChallengeRequired, ProtocolRegistrationError) as protocol_error:
                 is_challenge = isinstance(protocol_error, ProtocolChallengeRequired)
@@ -1706,6 +1758,7 @@ def _run_one(
                     mailbox_proxy_url=mailbox_proxy_url,
                     traffic_meter=traffic_meter,
                     traffic_config=payload.get("browser_traffic_optimization"),
+                    post_registration_callback=setup_login_secret_in_browser if setup_login_secret_enabled else None,
                 )
                 session["requested_execution_mode"] = "protocol"
                 session["execution_mode"] = "protocol_headless_fallback"
@@ -1745,6 +1798,7 @@ def _run_one(
                             existing_session=protocol_session,
                             traffic_meter=traffic_meter,
                             traffic_config=payload.get("browser_traffic_optimization"),
+                            post_registration_callback=setup_login_secret_in_browser if setup_login_secret_enabled else None,
                         )
                         session["requested_execution_mode"] = "protocol"
                         session["execution_mode"] = "protocol_post_stage"
@@ -1775,6 +1829,7 @@ def _run_one(
                 mailbox_proxy_url=mailbox_proxy_url,
                 traffic_meter=traffic_meter,
                 traffic_config=payload.get("browser_traffic_optimization"),
+                post_registration_callback=setup_login_secret_in_browser if setup_login_secret_enabled else None,
             )
         db.ensure_not_cancelled()
         generated_password = str(session.pop("generated_chatgpt_password", "") or "")
@@ -1785,7 +1840,8 @@ def _run_one(
                 f"[{email}] [认证] 已保存本次注册生成的 ChatGPT 密码",
                 detail={"email": email, "scope": "selected", "credential": "chatgpt_password"},
             )
-        login_secret_result: dict[str, Any] | None = None
+        login_secret_result: dict[str, Any] | None = session.pop("login_secret_result", None)
+        login_secret_from_browser = login_secret_result is not None
         recent_email_code = str(session.get("recent_email_code") or "").strip()
         try:
             recent_email_code_at = float(session.get("recent_email_code_at") or 0.0)
@@ -1793,7 +1849,7 @@ def _run_one(
             recent_email_code_at = 0.0
         session.pop("recent_email_code", None)
         session.pop("recent_email_code_at", None)
-        if payload.get("setup_login_secret") is True:
+        if payload.get("setup_login_secret") is True and login_secret_result is None:
             db.event(
                 f"[{email}] [登录密钥] 开始补充缺失的 ChatGPT 密码与 2FA",
                 detail={"email": email, "scope": "selected", "setup_login_secret": True},
@@ -1832,6 +1888,21 @@ def _run_one(
                     raise
                 login_secret_result = {"complete": False, "errors": [str(exc)]}
                 db.event(f"[{email}] [登录密钥] 账户已注册，但添加密码与 2FA 失败: {exc}", "warning", detail={"email": email, "scope": "selected", "login_secret_complete": False})
+        if login_secret_from_browser and login_secret_result is not None:
+            if login_secret_result.get("password_added"):
+                db.save_chatgpt_password(mailbox_id, str(login_secret_result.get("password") or ""))
+            if login_secret_result.get("totp_added"):
+                db.save_totp_secret(mailbox_id, str(login_secret_result.get("totp_secret") or ""))
+            if isinstance(login_secret_result.get("session"), dict):
+                session = login_secret_result["session"]
+            if login_secret_result.get("complete"):
+                db.event(f"[{email}] [登录密钥] ChatGPT 密码与 2FA 已设置完成", detail={"email": email, "scope": "selected", "login_secret_complete": True})
+            else:
+                db.event(
+                    f"[{email}] [登录密钥] 账户已注册，但登录密钥未全部完成：{'；'.join(login_secret_result.get('errors') or ['未知原因'])}",
+                    "warning",
+                    detail={"email": email, "scope": "selected", "login_secret_complete": False},
+                )
         if session.get("phone_binding_skipped_reason"):
             phone_skipped_reason = str(session.get("phone_binding_skipped_reason") or "")
         rt_value = session.get("refresh_token") or session.get("openai_rt") or account.openai_rt
