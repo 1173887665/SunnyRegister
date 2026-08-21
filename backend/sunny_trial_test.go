@@ -239,6 +239,31 @@ func TestSunnyTrialEligibilityCanBeEditedFromSessionAndMailbox(t *testing.T) {
 	}
 }
 
+func TestSunnyMailboxTrialEligibilityFilterUsesLinkedDataAndPaginates(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	prepareSunnyTrialAccount(t, s)
+	if err := s.db.Model(&SunnyAccount{}).Where("email = ?", "session@example.com").Update("trial_eligibility", sunnyTrialEligible).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/sunny/mailboxes?summary=true&trial_eligibility=eligible&page=1&page_size=1", nil)
+	s.sunnyMailboxes(recorder, request, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("mailbox filter status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Items []map[string]any `json:"items"`
+		Total int              `json:"total"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode mailbox response: %v", err)
+	}
+	if response.Total != 1 || len(response.Items) != 1 || text(response.Items[0]["trial_eligibility"]) != sunnyTrialEligible {
+		t.Fatalf("unexpected mailbox filter response: %#v", response)
+	}
+}
+
 func TestSunnyTrialRouteCreatesLocalTask(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	session := prepareSunnyTrialAccount(t, s)

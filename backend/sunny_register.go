@@ -562,11 +562,13 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		if kw := strings.TrimSpace(q.Get("q")); kw != "" {
 			query = query.Where("email LIKE ?", "%"+kw+"%")
 		}
-		if planFilter := normalizeSunnyPlanType(q.Get("plan_type")); planFilter != "" {
+		planFilter := normalizeSunnyPlanType(q.Get("plan_type"))
+		trialFilter := normalizeSunnyTrialFilter(q.Get("trial_eligibility"))
+		if planFilter != "" || trialFilter != "" {
 			var allRows []SunnyMailbox
 			allQuery := query
 			if summary {
-				allQuery = allQuery.Select("id", "group_id", "email", "mailbox_type", "mailbox_channel", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
+				allQuery = allQuery.Select("id", "group_id", "email", "mailbox_type", "mailbox_channel", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
 			}
 			allQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "status_changed_at": "status_changed_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Find(&allRows)
 			gm := s.sunnyGroupMap()
@@ -579,13 +581,21 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			for _, m := range allRows {
 				key := sunnyEmailKey(m.Email)
 				plan := sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists)
-				if normalizeSunnyPlanType(plan) == planFilter {
-					item := serializeSunnyMailboxList(m, gm, plan, linked.accessTokens[key], linked.accountIDs[key], linked.trialEligibility[key], summary)
-					if summary && strings.TrimSpace(linked.accountRTs[key]) != "" {
-						item["has_openai_rt"] = true
-					}
-					filtered = append(filtered, item)
+				if planFilter != "" && normalizeSunnyPlanType(plan) != planFilter {
+					continue
 				}
+				trialEligibility := linked.trialEligibility[key]
+				if trialEligibility == "" {
+					trialEligibility = m.TrialEligibility
+				}
+				if trialFilter != "" && (!sunnyTrialApplies(m.Status, plan) || normalizeSunnyTrialEligibility(trialEligibility) != trialFilter) {
+					continue
+				}
+				item := serializeSunnyMailboxList(m, gm, plan, linked.accessTokens[key], linked.accountIDs[key], linked.trialEligibility[key], summary)
+				if summary && strings.TrimSpace(linked.accountRTs[key]) != "" {
+					item["has_openai_rt"] = true
+				}
+				filtered = append(filtered, item)
 			}
 			total := int64(len(filtered))
 			if selectionOnly {
@@ -633,7 +643,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		var rows []SunnyMailbox
 		listQuery := query
 		if summary {
-			listQuery = listQuery.Select("id", "group_id", "email", "mailbox_type", "mailbox_channel", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
+			listQuery = listQuery.Select("id", "group_id", "email", "mailbox_type", "mailbox_channel", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
 		}
 		listQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "status_changed_at": "status_changed_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Offset((page - 1) * size).Limit(size).Find(&rows)
 		gm := s.sunnyGroupMap()

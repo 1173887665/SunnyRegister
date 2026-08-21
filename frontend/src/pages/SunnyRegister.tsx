@@ -18,7 +18,7 @@ type DataTableColumn = { width: number; minWidth: number; maxWidth?: number };
 const DATA_TABLE_COLUMNS: Record<string, DataTableColumn[]> = {
   workbench: [
     { width: 44, minWidth: 44, maxWidth: 72 }, { width: 300, minWidth: 180 }, { width: 160, minWidth: 110 },
-    { width: 120, minWidth: 90 }, { width: 120, minWidth: 90 }, { width: 190, minWidth: 150 }, { width: 110, minWidth: 88, maxWidth: 320 },
+    { width: 120, minWidth: 90 }, { width: 120, minWidth: 90 }, { width: 130, minWidth: 100 }, { width: 190, minWidth: 150 }, { width: 110, minWidth: 88, maxWidth: 320 },
   ],
   mailboxes: [
     { width: 44, minWidth: 44, maxWidth: 72 }, { width: 300, minWidth: 180 }, { width: 160, minWidth: 110 },
@@ -1027,6 +1027,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const debouncedQuery = useDebouncedValue(query);
   const [status, setStatus] = useCachedState("workbench.status", "");
   const [planFilter, setPlanFilter] = useCachedState("workbench.planFilter", "");
+  const [trialFilter, setTrialFilter] = useCachedState("workbench.trialFilter", "");
   const [groupFilter, setGroupFilter] = useCachedState("workbench.groupFilter", 0);
   const [pageNo, setPageNo] = useCachedState("workbench.page", 1);
   const [pageSize, setPageSize] = useCachedState("workbench.pageSize", 10);
@@ -1067,6 +1068,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     if (groupFilter) params.set("group_id", String(groupFilter));
     if (status) params.set("status", status);
     if (planFilter) params.set("plan_type", planFilter);
+    if (trialFilter) params.set("trial_eligibility", trialFilter);
     const m = await apiFetch(`/sunny/mailboxes?${params.toString()}`);
     setMailboxes(m.items || []);
     setTotal(Number(m.total || 0));
@@ -1087,6 +1089,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       if (groupFilter) params.set("group_id", String(groupFilter));
       if (status) params.set("status", status);
       if (planFilter) params.set("plan_type", planFilter);
+      if (trialFilter) params.set("trial_eligibility", trialFilter);
       const result = await apiFetch(`/sunny/mailboxes?${allSelectionParams(params).toString()}`);
       const ids = selectionIDs(result);
       const selectionItems = Array.isArray(result.items) ? result.items : [];
@@ -1099,7 +1102,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       setSelectingAll(false);
     }
   };
-  useEffect(() => { void load(); }, [pageNo, pageSize, debouncedQuery, status, planFilter, groupFilter, timeSort]);
+  useEffect(() => { void load(); }, [pageNo, pageSize, debouncedQuery, status, planFilter, trialFilter, groupFilter, timeSort]);
   useEffect(() => { void apiFetch("/sunny/mailbox-groups").then((g) => setGroups(sortMailboxGroups(g.items || []))).catch(() => {}); }, []);
   const rows: AnyObj[] = mailboxes
     .map((m: AnyObj) => ({ ...m, account: { id: Number(m.account_id || 0) } }) as AnyObj);
@@ -1120,7 +1123,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       return changed ? next : old;
     });
   }, [mailboxes, selected]);
-  useEffect(()=>{setPageNo(1)},[query, status, planFilter, groupFilter, pageSize, timeSort]);
+  useEffect(()=>{setPageNo(1)},[query, status, planFilter, trialFilter, groupFilter, pageSize, timeSort]);
   useEffect(()=>{if (pageNo !== safePageNo) setPageNo(safePageNo)},[pageNo, safePageNo]);
   async function createRegisterTask(directIds?: number[]) {
     if (busy || activeTaskId) { notify("fail", t.registerTaskRunning); return; }
@@ -1474,6 +1477,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
             <SelectBox searchable searchPlaceholder={t.groupSearch} noResultsLabel={t.groupNoResults} className="sr-select-like" value={groupFilter} onChange={(v)=>setGroupFilter(Number(v))} options={[{value:0,label:t.allGroups,searchText:t.allGroups}, ...mailboxGroupOptions(t,groups)]} />
             <SelectBox className="sr-select-like" value={status} onChange={(v)=>setStatus(String(v))} options={[{value:"",label:t.allStatus}, ...MAILBOX_STATUSES.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))]} />
             <SelectBox className="sr-select-like" value={planFilter} onChange={(v)=>setPlanFilter(String(v))} options={[{value:"",label:t.allPlanTypes}, ...PLAN_TYPE_OPTIONS.map((p)=>({value:p,label:formatPlanType(p)}))]} />
+            <SelectBox className="sr-select-like" value={trialFilter} onChange={(v)=>setTrialFilter(String(v))} options={[{value:"",label:t.allTrialEligibility}, ...TRIAL_ELIGIBILITY_OPTIONS.map((value)=>({value,label:trialEligibilityLabel(t,value)}))]} />
           </div>
           <button className="sr-text-btn sr-action-refresh" title={t.refreshList} onClick={refreshList}><RefreshCw className="h-5 w-5"/></button>
         </div>
@@ -1481,7 +1485,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     </Card>
     <Card className="sr-table-card overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
       <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
-      <ResizableDataTable tableKey="workbench" columns={DATA_TABLE_COLUMNS.workbench} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>selectCurrentPage(e.target.checked)}/>,t.email,t.mailboxGroup,t.status,t.planType,<SortTimeHeader label={t.statusChangedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.operation]}><tbody>{rows.length ? pagedRows.map((r) => <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} onChange={(e)=>selectRow(r,e.target.checked)}/></td><td title={r.email}>{r.email}</td><td title={r.group_name || t.defaultGroup}>{r.group_name || t.defaultGroup}</td><td><StatusBadge t={t} status={r.status || "未注册"} /></td><td><PlanTypeBadge value={r.account?.plan_type || r.plan_type} /></td><td>{formatDateTime(r.status_changed_at)}</td><td><button className="sr-link inline-flex items-center gap-1" title={t.refreshStatus} disabled={busy} onClick={()=>refreshAccountStatus(r)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button></td></tr>) : <tr><td colSpan={7}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.noDataDesc}</p></div></td></tr>}</tbody></ResizableDataTable>
+      <ResizableDataTable tableKey="workbench" columns={DATA_TABLE_COLUMNS.workbench} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>selectCurrentPage(e.target.checked)}/>,t.email,t.mailboxGroup,t.status,t.planType,t.trialEligibility,<SortTimeHeader label={t.statusChangedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.operation]}><tbody>{rows.length ? pagedRows.map((r) => <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} onChange={(e)=>selectRow(r,e.target.checked)}/></td><td title={r.email}>{r.email}</td><td title={r.group_name || t.defaultGroup}>{r.group_name || t.defaultGroup}</td><td><StatusBadge t={t} status={r.status || "未注册"} /></td><td><PlanTypeBadge value={r.account?.plan_type || r.plan_type} /></td><td><TrialEligibilityBadge t={t} row={r}/></td><td>{formatDateTime(r.status_changed_at)}</td><td><button className="sr-link inline-flex items-center gap-1" title={t.refreshStatus} disabled={busy} onClick={()=>refreshAccountStatus(r)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button></td></tr>) : <tr><td colSpan={8}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.noDataDesc}</p></div></td></tr>}</tbody></ResizableDataTable>
       <PaginationBar t={t} total={total} page={safePageNo} pageSize={pageSize} setPage={setPageNo} setPageSize={setPageSize} />
     </Card>
     {autoOpen && <AutoRegisterModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} selectedNeedPhone={selectedRows.some((m)=>m.has_openai_rt !== true)} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} identity={identity} setIdentity={setIdentity} mode={mode} setMode={setMode} protocolChallengeStrategy={protocolChallengeStrategy} setProtocolChallengeStrategy={setProtocolChallengeStrategy} stage={stage} setStage={setStage} allTrafficProxyPool={allTrafficProxyPool} setAllTrafficProxyPool={setAllTrafficProxyPool} setupLoginSecret={setupLoginSecret} setSetupLoginSecret={setSetupLoginSecret} onClose={()=>setAutoOpen(false)} onStart={()=>createRegisterTask()} notify={notify} />}
