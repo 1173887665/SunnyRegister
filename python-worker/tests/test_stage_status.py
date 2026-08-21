@@ -1419,10 +1419,37 @@ class BrowserEmailOTPSubmitTests(unittest.TestCase):
             next_url = flow._validate_email_code_api(page, "123456")
 
         self.assertEqual(next_url, "https://auth.openai.com/about-you")
-        build_token.assert_called_once_with(page, "device-id", "email_otp_validate", "Mozilla/5.0 Firefox/135.0")
+        build_token.assert_called_once_with(
+            page,
+            "device-id",
+            "email_otp_validate",
+            "Mozilla/5.0 Firefox/135.0",
+            timeout_ms=60000,
+        )
         headers = fetch.call_args.kwargs["headers"]
         self.assertEqual(headers["openai-sentinel-token"], "sentinel-token")
         self.assertEqual(headers["oai-device-id"], "device-id")
+
+    def test_email_otp_api_retries_aborted_browser_fetch(self):
+        account = MailAccount("user@example.com", "password", "client-id", "mail-rt", "raw")
+        flow = OpenAIEmailRegisterFlow(account, "", True, lambda _message: None)
+        page = Mock()
+        page.url = "https://auth.openai.com/email-verification"
+        page.evaluate.return_value = "Mozilla/5.0 Firefox/135.0"
+        aborted = {"ok": False, "status": 0, "text": "The operation was aborted."}
+        success = {"ok": True, "status": 200, "text": "{}", "data": {"continue_url": "https://auth.openai.com/about-you"}}
+
+        with (
+            patch("sunny_core.openai_auth.build_sentinel_token", return_value="sentinel-token"),
+            patch("sunny_core.openai_auth.browser_fetch", side_effect=[aborted, success]) as fetch,
+            patch.object(flow, "_sleep_checked") as sleep_checked,
+        ):
+            next_url = flow._validate_email_code_api(page, "608426")
+
+        self.assertEqual(next_url, "https://auth.openai.com/about-you")
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual([call.kwargs["timeout_ms"] for call in fetch.call_args_list], [60000, 60000])
+        sleep_checked.assert_called_once_with(1.5)
 
     def test_native_otp_submit_uses_stable_identifiers_and_clicks_submitter(self):
         account = MailAccount("user@example.com", "password", "client-id", "mail-rt", "raw")

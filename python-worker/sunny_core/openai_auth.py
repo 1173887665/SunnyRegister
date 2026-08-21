@@ -1698,7 +1698,13 @@ class OpenAIEmailRegisterFlow:
             self.device_id = device_id
             sentinel_token = ""
             try:
-                sentinel_token = build_sentinel_token(page, device_id, "email_otp_validate", user_agent)
+                sentinel_token = build_sentinel_token(
+                    page,
+                    device_id,
+                    "email_otp_validate",
+                    user_agent,
+                    timeout_ms=60000,
+                )
             except Exception as exc:
                 self.log(f"[认证] Sentinel token 生成失败，将保留页面原生会话继续校验：{str(exc)[:220]}")
             headers = {
@@ -1718,6 +1724,7 @@ class OpenAIEmailRegisterFlow:
                 method="POST",
                 headers=headers,
                 body=json.dumps({"code": code}),
+                timeout_ms=60000,
             )
             if result.get("ok"):
                 payload = result.get("data") or {}
@@ -1734,6 +1741,10 @@ class OpenAIEmailRegisterFlow:
                 or "验证码错误" in last_detail
             ):
                 raise RuntimeError("邮箱验证码被 OpenAI 拒绝；系统已停止重复提交该验证码")
+            if int(result.get("status") or 0) == 0 and attempt < 2:
+                self.log("[认证] EmailOtpValidate 浏览器请求被中止，将保持当前验证码并重试")
+                self._sleep_checked(1.5 * (attempt + 1))
+                continue
             if self._is_cloudflare_challenge(last_detail) and attempt < 2:
                 self.log("[认证] EmailOtpValidate 触发 Cloudflare challenge，打开验证页")
                 self._handle_cloudflare_challenge(page, last_detail)

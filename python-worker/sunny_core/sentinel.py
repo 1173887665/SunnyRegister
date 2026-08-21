@@ -367,7 +367,14 @@ def browser_fetch(
     )
 
 
-def build_sentinel_token(page, device_id: str, flow: str, user_agent: str) -> str:
+def build_sentinel_token(
+    page,
+    device_id: str,
+    flow: str,
+    user_agent: str,
+    *,
+    timeout_ms: int = 60000,
+) -> str:
     generator = SentinelTokenGenerator(device_id, user_agent)
     request_body = json.dumps(
         {"p": generator.requirements_token(), "id": device_id, "flow": flow},
@@ -385,6 +392,7 @@ def build_sentinel_token(page, device_id: str, flow: str, user_agent: str) -> st
             "referer": SENTINEL_FRAME_URL,
         },
         body=request_body,
+        timeout_ms=timeout_ms,
     )
     data = result.get("data") if isinstance(result, dict) else None
     data = data if isinstance(data, dict) else {}
