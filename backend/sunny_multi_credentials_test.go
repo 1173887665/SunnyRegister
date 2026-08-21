@@ -121,6 +121,82 @@ func TestSunnyMailboxCredentialEditRequiresExplicitClear(t *testing.T) {
 	}
 }
 
+func TestSunnyXbovoMailboxCredentialEditPreservesPasswordAndTOTP(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var mailbox SunnyMailbox
+	if err := s.db.Where("email = ?", "session@example.com").First(&mailbox).Error; err != nil {
+		t.Fatalf("load mailbox: %v", err)
+	}
+	if err := s.db.Model(&mailbox).Updates(map[string]any{
+		"mailbox_type": "apple", "mailbox_channel": "xbovo", "access_key": "xbovo-key",
+		"chat_gpt_password": "old-password", "totp_secret": "JBSWY3DPEHPK3PXP",
+	}).Error; err != nil {
+		t.Fatalf("prepare xbovo mailbox: %v", err)
+	}
+	update := func(payload map[string]any) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(payload)
+		recorder := httptest.NewRecorder()
+		s.sunnyMailboxes(recorder, httptest.NewRequest(http.MethodPut, "/sunny/mailboxes", bytes.NewReader(raw)), []string{strings.TrimSpace(text(mailbox.ID))})
+		return recorder
+	}
+	if recorder := update(map[string]any{
+		"mailbox_type": "apple", "mailbox_channel": "xbovo", "access_key": "xbovo-key",
+		"chatgpt_password": "new-password", "totp_secret": "MZXW6YTBMZXW6YTB",
+	}); recorder.Code != http.StatusOK {
+		t.Fatalf("credential edit status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if err := s.db.First(&mailbox, mailbox.ID).Error; err != nil || mailbox.ChatGPTPassword != "new-password" || mailbox.TOTPSecret != "MZXW6YTBMZXW6YTB" || mailbox.Raw != "session@example.com----xbovo-key" {
+		t.Fatalf("xbovo credentials not saved: %#v err=%v", mailbox, err)
+	}
+	if recorder := update(map[string]any{
+		"mailbox_type": "apple", "mailbox_channel": "xbovo", "access_key": "xbovo-key",
+		"chatgpt_password": "", "totp_secret": "",
+	}); recorder.Code != http.StatusOK {
+		t.Fatalf("empty credential edit status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if err := s.db.First(&mailbox, mailbox.ID).Error; err != nil || mailbox.ChatGPTPassword != "new-password" || mailbox.TOTPSecret != "MZXW6YTBMZXW6YTB" {
+		t.Fatalf("empty xbovo edit changed credentials: %#v err=%v", mailbox, err)
+	}
+}
+
+func TestSunnyMicrosoftMailboxCredentialEditPreservesPasswordAndTOTP(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var mailbox SunnyMailbox
+	if err := s.db.Where("email = ?", "session@example.com").First(&mailbox).Error; err != nil {
+		t.Fatalf("load mailbox: %v", err)
+	}
+	update := func(payload map[string]any) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(payload)
+		recorder := httptest.NewRecorder()
+		s.sunnyMailboxes(recorder, httptest.NewRequest(http.MethodPut, "/sunny/mailboxes", bytes.NewReader(raw)), []string{strings.TrimSpace(text(mailbox.ID))})
+		return recorder
+	}
+	if recorder := update(map[string]any{
+		"mailbox_type": "microsoft", "mailbox_channel": "outlook", "password": "new-mail-password",
+		"client_id": "new-client-id", "refresh_token": "new-refresh-token",
+		"chatgpt_password": "new-password", "totp_secret": "MZXW6YTBMZXW6YTB",
+	}); recorder.Code != http.StatusOK {
+		t.Fatalf("credential edit status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if err := s.db.First(&mailbox, mailbox.ID).Error; err != nil || mailbox.Password != "new-mail-password" || mailbox.ChatGPTPassword != "new-password" || mailbox.TOTPSecret != "MZXW6YTBMZXW6YTB" {
+		t.Fatalf("microsoft credentials not saved: %#v err=%v", mailbox, err)
+	}
+	if recorder := update(map[string]any{
+		"mailbox_type": "microsoft", "mailbox_channel": "outlook", "chatgpt_password": "", "totp_secret": "",
+	}); recorder.Code != http.StatusOK {
+		t.Fatalf("empty credential edit status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if err := s.db.First(&mailbox, mailbox.ID).Error; err != nil || mailbox.ChatGPTPassword != "new-password" || mailbox.TOTPSecret != "MZXW6YTBMZXW6YTB" {
+		t.Fatalf("empty microsoft edit changed credentials: %#v err=%v", mailbox, err)
+	}
+	if recorder := update(map[string]any{"mailbox_type": "microsoft", "mailbox_channel": "outlook", "clear_chatgpt_password": true, "clear_totp_secret": true}); recorder.Code != http.StatusOK {
+		t.Fatalf("clear credential edit status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if err := s.db.First(&mailbox, mailbox.ID).Error; err != nil || mailbox.ChatGPTPassword != "" || mailbox.TOTPSecret != "" {
+		t.Fatalf("microsoft explicit clear failed: %#v err=%v", mailbox, err)
+	}
+}
+
 func TestSunnySub2APIOptionsAndBatchImport(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	var batchCalls atomic.Int32

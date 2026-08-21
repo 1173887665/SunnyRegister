@@ -772,12 +772,10 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				if mailboxChannel == "url_api" {
 					m.Raw = sunnyURLAPIRaw(m.Email, m.ChatGPTPassword, m.AccessKey, m.TOTPSecret)
 				} else {
-					m.ChatGPTPassword, m.TOTPSecret = "", ""
 					m.Raw = strings.Join([]string{strings.TrimSpace(m.Email), strings.TrimSpace(m.AccessKey)}, "----")
 				}
 			} else {
 				m.AccessKey = ""
-				m.ChatGPTPassword, m.TOTPSecret = "", ""
 				m.Raw = sunnyMicrosoftRaw(m.Email, m.Password, m.ClientID, m.RefreshToken)
 			}
 			if gid := uint(intValue(body["group_id"], 0)); gid > 0 {
