@@ -2068,7 +2068,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   max-width: none;
 }
 .sunny-page { width: 100%; min-width: 0; }
-.sunny-page .sr-table-card { overflow-x: auto !important; }
+.sunny-page .sr-table-card { overflow-x: visible !important; }
 .sunny-page .sr-table-card > .sr-account-table,
 .sunny-page .sr-table-scroll > .sr-account-table { min-width: 980px; }
 .sr-table-scroll {
