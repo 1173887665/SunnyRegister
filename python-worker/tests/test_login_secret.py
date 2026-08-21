@@ -133,6 +133,10 @@ class LoginSecretTests(unittest.TestCase):
                 self.session_reads += 1
                 return {"accessToken": "new-token"}
 
+            @staticmethod
+            def _access_token_is_valid(_page, token):
+                return token == "new-token"
+
         account = self._account()
         account.chatgpt_password = ""
         account.totp_secret = "JBSWY3DPEHPK3PXP"
@@ -161,6 +165,10 @@ class LoginSecretTests(unittest.TestCase):
             def _add_password(self, _password):
                 return {"accessToken": "after-password"}
 
+            @staticmethod
+            def _access_token_is_valid(token):
+                return token == "new-token"
+
         account = self._account()
         account.chatgpt_password = ""
         account.totp_secret = "JBSWY3DPEHPK3PXP"
@@ -169,6 +177,83 @@ class LoginSecretTests(unittest.TestCase):
         self.assertEqual(result["session"]["session_json"]["accessToken"], "new-token")
         self.assertTrue(result["access_token_refreshed"])
         self.assertNotIn("expires_at", result["session"])
+
+    def test_browser_valid_access_token_skips_login_secret_refresh(self):
+        class Context:
+            @staticmethod
+            def storage_state():
+                return {"cookies": []}
+
+        class Flow(LoginSecretSetupFlow):
+            def _session_json(self, _page):
+                return {"accessToken": "current-token"}
+
+            def _access_token_is_valid(self, _page, token):
+                return token == "current-token"
+
+            def _refresh_session_with_login_secret(self, _page):
+                raise AssertionError("有效 AT 不应重新登录")
+
+        account = self._account()
+        account.chatgpt_password = "ChatGPT-password"
+        account.totp_secret = "JBSWY3DPEHPK3PXP"
+        result = Flow(
+            account,
+            {"access_token": "old-token"},
+            "",
+            force_access_token_refresh=True,
+        )._run_on_page(Mock(), Context())
+
+        self.assertTrue(result["complete"])
+        self.assertTrue(result["access_token_refreshed"])
+        self.assertEqual(result["session"]["access_token"], "current-token")
+
+    def test_browser_at_refresh_rejects_email_fallback(self):
+        class Flow(LoginSecretSetupFlow):
+            def _page_state(self, _page):
+                return {
+                    "url": "https://auth.openai.com/email-verification",
+                    "passwordInputs": 0,
+                    "codeInputs": 1,
+                    "text": "email verification",
+                }
+
+            def _reader_instance(self):
+                raise AssertionError("AT 刷新禁止读取邮箱验证码")
+
+            def _sleep(self, _seconds):
+                return None
+
+        page = type("Page", (), {"url": "https://auth.openai.com/email-verification"})()
+        with self.assertRaisesRegex(RuntimeError, "禁止回退邮箱验证码"):
+            Flow(self._account(), {}, "")._complete_reauthentication(
+                page,
+                time.time(),
+                "ChatGPT-password",
+                allow_email_fallback=False,
+            )
+
+    def test_protocol_valid_access_token_skips_login_secret_refresh(self):
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def _session_json(self):
+                return {"accessToken": "current-token"}
+
+            def _access_token_is_valid(self, token):
+                return token == "current-token"
+
+            def _refresh_session_with_login_secret(self):
+                raise AssertionError("有效 AT 不应重新登录")
+
+        account = self._account()
+        account.chatgpt_password = ""
+        account.totp_secret = "JBSWY3DPEHPK3PXP"
+        flow = Flow(account, {"access_token": "old-token"}, object())
+        flow._add_password = lambda _password: {"accessToken": "current-token"}
+        result = flow.run()
+
+        self.assertTrue(result["complete"])
+        self.assertTrue(result["access_token_refreshed"])
+        self.assertEqual(result["session"]["access_token"], "current-token")
 
     def test_browser_partial_security_change_skips_access_token_refresh(self):
         class Flow(LoginSecretSetupFlow):
@@ -583,6 +668,10 @@ class LoginSecretTests(unittest.TestCase):
 
             def _refresh_session_with_login_secret(self, _page):
                 return {"accessToken": "new-token"}
+
+            @staticmethod
+            def _access_token_is_valid(_page, token):
+                return token == "new-token"
 
         account = self._account()
         account.chatgpt_password = "ChatGPT-password"

@@ -495,3 +495,28 @@ def test_protocol_security_change_refresh_reuses_cookie_session_and_ls() -> None
     flow._verify_login_password.assert_called_once()
     flow._complete_mfa.assert_called_once_with(after_password)
     flow._finish_session.assert_called_once_with("https://chatgpt.com/callback")
+
+
+def test_protocol_at_refresh_rejects_email_otp_route() -> None:
+    account = MailAccount(
+        "user@outlook.com", "mail-password", "client", "refresh", "raw",
+        chatgpt_password="ChatGPT-password", totp_secret="JBSWY3DPEHPK3PXP",
+    )
+    flow = ProtocolRegistrationFlow(account, existing_account=True, session=FakeSession([]))
+    flow.auth_page_url = "https://auth.openai.com/log-in/password"
+    flow._start_next_auth = Mock()
+    flow._authorize_email = Mock(return_value={
+        "page": {"type": "email_otp_verification"},
+        "continue_url": "https://auth.openai.com/email-verification",
+    })
+    flow._verify_email = Mock(side_effect=AssertionError("AT 刷新不得调用邮箱验证码"))
+
+    with patch("sunny_core.protocol_auth.create_mailbox_reader", FakeReader):
+        try:
+            flow._refresh_session_with_login_secret()
+        except ProtocolChallengeRequired as exc:
+            assert "禁止使用邮箱验证码" in str(exc)
+        else:
+            raise AssertionError("协议 AT 刷新应拒绝邮箱验证码路由")
+
+    flow._verify_email.assert_not_called()

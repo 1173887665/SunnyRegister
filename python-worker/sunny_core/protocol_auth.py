@@ -929,11 +929,12 @@ class ProtocolRegistrationFlow:
         if page_type == "login_password":
             state = self._verify_login_password(continue_url)
         elif page_type in {"email_otp_verification", "email_otp_send"}:
-            state = self._verify_email(
-                continue_url,
-                request_code=not initial_otp_redirect,
-                load_page=not initial_otp_redirect,
-                min_timestamp=auth_started_at,
+            raise ProtocolChallengeRequired(
+                "AT 刷新未进入密码登录步骤，已禁止使用邮箱验证码；需要重新建立密码与 2FA 登录事务"
+            )
+        if self._page_type(state) in {"email_otp_verification", "email_otp_send"}:
+            raise ProtocolChallengeRequired(
+                "密码验证后未进入 TOTP 步骤，已禁止使用邮箱验证码刷新 AT"
             )
         state = self._complete_mfa(state)
         state = self._select_workspace(state)

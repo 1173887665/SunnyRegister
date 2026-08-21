@@ -136,6 +136,7 @@ class LoginSecretSetupFlow:
         self.on_progress = on_progress or (lambda _checkpoint: None)
         self.recent_email_code = str(recent_email_code or "").strip()
         self.recent_email_code_at = float(recent_email_code_at or 0.0)
+        self.recent_email_code_attempted = False
         self.force_access_token_refresh = bool(force_access_token_refresh)
         self.traffic_optimizer = BrowserTrafficOptimizer(traffic_meter) if traffic_meter is not None else None
         self.reader: Any | None = None
@@ -223,6 +224,32 @@ class LoginSecretSetupFlow:
             raise RuntimeError(f"ChatGPT 登录态已失效: HTTP {result.get('status') if isinstance(result, dict) else 0}")
         return data
 
+    @staticmethod
+    def _access_token_is_valid(page, access_token: str) -> bool:
+        token = str(access_token or "").strip()
+        if not token:
+            return False
+        try:
+            result = page.evaluate(
+                """async token => {
+                    const headers = {accept:'application/json', authorization:'Bearer ' + token};
+                    const response = await fetch('https://chatgpt.com/backend-api/models', {
+                        credentials:'include', cache:'no-store', headers
+                    });
+                    const text = await response.text();
+                    let data = null; try { data = JSON.parse(text); } catch (_) {}
+                    return {status: response.status, data};
+                }""",
+                token,
+            ) or {}
+        except Exception:
+            return False
+        status = int(result.get("status") or 0) if isinstance(result, dict) else 0
+        if status == 429:
+            return True
+        data = result.get("data") if isinstance(result, dict) else None
+        return 200 <= status < 300 and isinstance(data, dict) and "models" in data
+
     def _refresh_session_with_login_secret(self, page) -> dict[str, Any]:
         """Refresh the AT by reauthenticating in the active registration page."""
         self._ensure_chatgpt_page(page)
@@ -261,8 +288,7 @@ class LoginSecretSetupFlow:
             page,
             started_at,
             self.account.chatgpt_password,
-            recent_email_code=self.recent_email_code,
-            recent_email_code_at=self.recent_email_code_at,
+            allow_email_fallback=False,
         )
         current_session = self._session_json(page)
         previous_token = str(self.session.get("access_token") or "")
@@ -557,11 +583,11 @@ class LoginSecretSetupFlow:
         recent_email_code: str = "",
         recent_email_code_at: float = 0.0,
         force_fresh_email_code: bool = False,
+        allow_email_fallback: bool = True,
     ) -> None:
         deadline = time.time() + EMAIL_OTP_INITIAL_WAIT_SECONDS + EMAIL_OTP_RESEND_WAIT_SECONDS
         resend_attempted = False
         email_code_used = False
-        recent_code_attempted = False
         recent_code_submitted_at = 0.0
         submitted_email_code = ""
         submitted_recent_code = False
@@ -621,22 +647,26 @@ class LoginSecretSetupFlow:
                     self._sleep(2)
                     continue
                 if not email_code_used:
+                    if not allow_email_fallback:
+                        raise RuntimeError(
+                            "AT 刷新登录未进入密码与 2FA 验证步骤，已禁止回退邮箱验证码"
+                        )
                     use_recent_code = bool(
                         not force_fresh_email_code
-                        and not recent_code_attempted
+                        and not self.recent_email_code_attempted
                         and self._recent_email_code_usable(recent_email_code, recent_email_code_at)
                     )
                     if use_recent_code:
                         code = recent_email_code
-                        recent_code_attempted = True
+                        self.recent_email_code_attempted = True
                         self.log("[登录密钥] 优先复用本次注册刚使用的邮箱验证码")
                     else:
                         if (
                             not force_fresh_email_code
-                            and not recent_code_attempted
+                            and not self.recent_email_code_attempted
                             and str(recent_email_code or "").strip()
                         ):
-                            recent_code_attempted = True
+                            self.recent_email_code_attempted = True
                             self.log("[登录密钥] 注册/登录阶段邮箱验证码已超过复用窗口，将读取最新验证码")
                         try:
                             code = self._wait_for_distinct_code(
@@ -781,27 +811,26 @@ class LoginSecretSetupFlow:
         page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
         reader = self._reader_instance()
         code_timestamp = min_timestamp
-        recent_code_attempted = False
         resend_attempted = False
         rejected_codes: set[str] = set()
         for attempt in range(2):
             using_recent_code = False
             if (
                 prefer_recent_email_code
-                and not recent_code_attempted
+                and not self.recent_email_code_attempted
                 and self._recent_email_code_usable(recent_email_code, recent_email_code_at)
             ):
                 code = str(recent_email_code).strip()
-                recent_code_attempted = True
+                self.recent_email_code_attempted = True
                 using_recent_code = True
                 self.log("[登录密钥] 优先复用注册/登录阶段刚使用的邮箱验证码进行密码重认证")
             else:
                 if (
                     prefer_recent_email_code
-                    and not recent_code_attempted
+                    and not self.recent_email_code_attempted
                     and str(recent_email_code or "").strip()
                 ):
-                    recent_code_attempted = True
+                    self.recent_email_code_attempted = True
                     self.log("[登录密钥] 注册/登录阶段邮箱验证码已超过复用窗口，将读取最新验证码")
                 try:
                     if attempt > 0 and rejected_codes:
@@ -1128,14 +1157,34 @@ class LoginSecretSetupFlow:
         security_complete = bool(result.get("password") and result.get("totp_secret"))
         should_refresh_access_token = security_complete and (security_changed or self.force_access_token_refresh)
         if should_refresh_access_token:
-            self.log("[登录密钥] 密码与 2FA 均已完成，开始刷新 ChatGPT Access Token")
+            candidate_token = str(current_session.get("accessToken") or current_session.get("access_token") or "")
             try:
-                current_session = self._refresh_session_with_login_secret(page)
+                if self._access_token_is_valid(page, candidate_token):
+                    self.log("[登录密钥] 添加密码与 2FA 后检测到当前 Access Token 仍有效，直接更新存储")
+                else:
+                    self.log("[登录密钥] 当前 Access Token 已失效，使用密码与 2FA 协议重新登录获取最新 Access Token")
+                    current_session = self._refresh_session_with_login_secret(page)
+                    refreshed_token = str(current_session.get("accessToken") or current_session.get("access_token") or "")
+                    if not self._access_token_is_valid(page, refreshed_token):
+                        raise RuntimeError("密码与 2FA 重新登录后获取的 Access Token 未通过有效性检测")
                 result["access_token_refreshed"] = True
-                self.log("[登录密钥] 已在当前注册浏览器登录态中获取最新 ChatGPT Access Token")
+                self.log("[登录密钥] 已确认有效的 ChatGPT Access Token，将替换旧 AT 存储")
             except Exception as exc:
                 result["errors"].append(f"刷新 ChatGPT Access Token 失败: {exc}")
                 self.log(f"[登录密钥] ChatGPT Access Token 刷新失败：{str(exc)[:240]}")
+                # Do not persist the post-security-change session unless its AT
+                # passed the probe. Keep the registration checkpoint as-is so a
+                # later LS retry can replace it with a confirmed token.
+                original_token = str(self.session.get("access_token") or "")
+                if original_token:
+                    current_session = {
+                        **(
+                            self.session.get("session_json")
+                            if isinstance(self.session.get("session_json"), dict)
+                            else {}
+                        ),
+                        "accessToken": original_token,
+                    }
         elif security_changed or self.force_access_token_refresh:
             self.log("[登录密钥] 密码与 2FA 尚未同时完成，跳过 Access Token 刷新，避免重复等待邮箱验证码")
         result["session"] = self._updated_session(current_session, context.storage_state())
@@ -1304,6 +1353,24 @@ class ProtocolLoginSecretSetupFlow:
         if not isinstance(payload, dict) or not (payload.get("accessToken") or payload.get("access_token")):
             raise RuntimeError("ChatGPT 登录态已失效")
         return payload
+
+    def _access_token_is_valid(self, access_token: str) -> bool:
+        token = str(access_token or "").strip()
+        if not token:
+            return False
+        status, data, _text = self._request(
+            "GET",
+            f"{CHATGPT_BASE_URL}/backend-api/models",
+            headers={
+                "accept": "application/json",
+                "authorization": f"Bearer {token}",
+                "origin": CHATGPT_BASE_URL,
+                "referer": f"{CHATGPT_BASE_URL}/",
+            },
+        )
+        if status == 429:
+            return True
+        return 200 <= status < 300 and isinstance(data, dict) and "models" in data
 
     def _refresh_session_with_login_secret(self) -> dict[str, Any]:
         refresh = getattr(self.http, "refresh_session_with_login_secret", None)
@@ -1625,14 +1692,31 @@ class ProtocolLoginSecretSetupFlow:
             security_complete = bool(result.get("password") and result.get("totp_secret"))
             should_refresh_access_token = security_complete and security_changed
             if should_refresh_access_token:
-                self.log("[登录密钥] 密码与 2FA 均已完成，开始刷新 ChatGPT Access Token")
+                candidate_token = str(current_session.get("accessToken") or current_session.get("access_token") or "")
                 try:
-                    current_session = self._refresh_session_with_login_secret()
+                    if self._access_token_is_valid(candidate_token):
+                        self.log("[登录密钥] 添加密码与 2FA 后检测到当前 Access Token 仍有效，直接更新存储")
+                    else:
+                        self.log("[登录密钥] 当前 Access Token 已失效，使用密码与 2FA 协议重新登录获取最新 Access Token")
+                        current_session = self._refresh_session_with_login_secret()
+                        refreshed_token = str(current_session.get("accessToken") or current_session.get("access_token") or "")
+                        if not self._access_token_is_valid(refreshed_token):
+                            raise RuntimeError("密码与 2FA 重新登录后获取的 Access Token 未通过有效性检测")
                     result["access_token_refreshed"] = True
-                    self.log("[登录密钥] 已在当前协议登录态中获取最新 ChatGPT Access Token")
+                    self.log("[登录密钥] 已确认有效的 ChatGPT Access Token，将替换旧 AT 存储")
                 except Exception as exc:
                     result["errors"].append(f"刷新 ChatGPT Access Token 失败: {exc}")
                     self.log(f"[登录密钥] ChatGPT Access Token 刷新失败：{str(exc)[:240]}")
+                    original_token = str(self.session.get("access_token") or "")
+                    if original_token:
+                        current_session = {
+                            **(
+                                self.session.get("session_json")
+                                if isinstance(self.session.get("session_json"), dict)
+                                else {}
+                            ),
+                            "accessToken": original_token,
+                        }
                     if exc.__class__.__name__ == "ProtocolChallengeRequired":
                         result["browser_challenge_required"] = True
             elif security_changed:
