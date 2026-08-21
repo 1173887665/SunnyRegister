@@ -165,6 +165,52 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(result["access_token_refreshed"])
         self.assertNotIn("expires_at", result["session"])
 
+    def test_browser_partial_security_change_skips_access_token_refresh(self):
+        class Flow(LoginSecretSetupFlow):
+            def _session_json(self, _page):
+                return {"accessToken": "current-token"}
+
+            def _add_password(self, _page):
+                return "new-password"
+
+            def _setup_2fa(self, _page, _password):
+                raise TimeoutError("邮箱验证码等待超时")
+
+            def _refresh_session_with_login_secret(self, _page):
+                raise AssertionError("partial LS must not trigger AT refresh")
+
+        account = self._account()
+        account.chatgpt_password = ""
+        account.totp_secret = ""
+        result = Flow(account, {"access_token": "current-token"}, "")._run_on_page(
+            Mock(), Mock(storage_state=lambda: {"cookies": []})
+        )
+        self.assertFalse(result["complete"])
+        self.assertFalse(result["access_token_refreshed"])
+        self.assertTrue(any("添加2FA失败" in error for error in result["errors"]))
+
+    def test_protocol_partial_security_change_skips_access_token_refresh(self):
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def _session_json(self):
+                return {"accessToken": "current-token"}
+
+            def _add_password(self, _password):
+                return {"accessToken": "current-token"}
+
+            def _setup_2fa(self, _access_token):
+                raise TimeoutError("邮箱验证码等待超时")
+
+            def _refresh_session_with_login_secret(self):
+                raise AssertionError("partial LS must not trigger AT refresh")
+
+        account = self._account()
+        account.chatgpt_password = ""
+        account.totp_secret = ""
+        result = Flow(account, {"access_token": "current-token"}, object()).run()
+        self.assertFalse(result["complete"])
+        self.assertFalse(result["access_token_refreshed"])
+        self.assertTrue(any("添加2FA失败" in error for error in result["errors"]))
+
     def test_login_secret_is_incomplete_when_reauthentication_returns_old_access_token(self):
         class Flow(LoginSecretSetupFlow):
             def __init__(self, account):
