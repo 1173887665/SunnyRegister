@@ -1424,7 +1424,7 @@ class BrowserEmailOTPSubmitTests(unittest.TestCase):
             "device-id",
             "email_otp_validate",
             "Mozilla/5.0 Firefox/135.0",
-            timeout_ms=60000,
+            timeout_ms=15000,
         )
         headers = fetch.call_args.kwargs["headers"]
         self.assertEqual(headers["openai-sentinel-token"], "sentinel-token")
@@ -1448,7 +1448,7 @@ class BrowserEmailOTPSubmitTests(unittest.TestCase):
 
         self.assertEqual(next_url, "https://auth.openai.com/about-you")
         self.assertEqual(fetch.call_count, 2)
-        self.assertEqual([call.kwargs["timeout_ms"] for call in fetch.call_args_list], [60000, 60000])
+        self.assertEqual([call.kwargs["timeout_ms"] for call in fetch.call_args_list], [15000, 15000])
         sleep_checked.assert_called_once_with(1.5)
 
     def test_native_otp_submit_uses_stable_identifiers_and_clicks_submitter(self):

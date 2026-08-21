@@ -43,6 +43,9 @@ PROFILE_SUBMISSION_TIMEOUT_SECONDS = 300
 PROFILE_TRANSITION_TIMEOUT_MS = 5000
 EMAIL_OTP_INITIAL_WAIT_SECONDS = 120
 EMAIL_OTP_RESEND_WAIT_SECONDS = 60
+# EmailOtpValidate is a small JSON request. Keep its browser-side timeout
+# short so a stalled proxy does not delay the mailbox login flow for a minute.
+EMAIL_OTP_BROWSER_REQUEST_TIMEOUT_MS = 15000
 
 # Phone binding must follow the number itself. Provider country identifiers are
 # not consistent (for example FireFox uses "mys"), while the E.164 prefix is.
@@ -1703,7 +1706,7 @@ class OpenAIEmailRegisterFlow:
                     device_id,
                     "email_otp_validate",
                     user_agent,
-                    timeout_ms=60000,
+                    timeout_ms=EMAIL_OTP_BROWSER_REQUEST_TIMEOUT_MS,
                 )
             except Exception as exc:
                 self.log(f"[认证] Sentinel token 生成失败，将保留页面原生会话继续校验：{str(exc)[:220]}")
@@ -1724,7 +1727,7 @@ class OpenAIEmailRegisterFlow:
                 method="POST",
                 headers=headers,
                 body=json.dumps({"code": code}),
-                timeout_ms=60000,
+                timeout_ms=EMAIL_OTP_BROWSER_REQUEST_TIMEOUT_MS,
             )
             if result.get("ok"):
                 payload = result.get("data") or {}
