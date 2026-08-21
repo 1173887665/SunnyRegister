@@ -420,6 +420,62 @@ def test_browser_password_step_waits_for_a_transitional_readonly_input() -> None
     assert messages.count("[认证] 账号需要密码步骤，准备填写 ChatGPT 密码") == 1
 
 
+def test_browser_login_secret_retries_password_transition_once_before_fallback() -> None:
+    account = MailAccount(
+        "user@example.com", "mailbox-password", "client", "mail-rt", "raw",
+        chatgpt_password="Short1!", totp_secret="JBSWY3DPEHPK3PXP",
+    )
+    messages: list[str] = []
+
+    class Flow(OpenAIEmailRegisterFlow):
+        def __init__(self):
+            super().__init__(account, "", True, messages.append, existing_account=True)
+            self.clock = 0.0
+            self.password_fills = 0
+
+        def _has_chatgpt_session(self, _page):
+            return False
+
+        def _progress_signature(self, _page):
+            return ""
+
+        def _page_reports_existing_account(self, _page):
+            return False
+
+        def _detect_route_error(self, _page):
+            return ""
+
+        def _has_phone_form(self, _page):
+            return False
+
+        def _has_totp_challenge(self, _page):
+            return False
+
+        def _has_workspace_selection(self, _page):
+            return False
+
+        def _has_visible_password(self, _page):
+            return True
+
+        def _fill_password_step(self, _page):
+            self.password_fills += 1
+            self.login_secret_stage = "password"
+            self.login_secret_submitted_at = self.clock
+            return True
+
+        def _sleep_checked(self, seconds):
+            self.clock += seconds
+
+    flow = Flow()
+    page = Mock(url="https://auth.openai.com/log-in/password")
+    with patch("sunny_core.openai_auth.time.time", side_effect=lambda: flow.clock):
+        with pytest.raises(LoginSecretAuthenticationError, match="密码提交后认证页面未继续"):
+            flow._drive_register_or_login(page, 0)
+
+    assert flow.password_fills == 2
+    assert any("页面未推进，正在当前登录会话中重试一次" in message for message in messages)
+
+
 def test_browser_can_switch_password_page_to_email_otp() -> None:
     account = MailAccount("user@icloud.com", "", "", "", "raw", mailbox_type="apple", mailbox_channel="url_api", access_key="https://mail.example.test")
     flow = OpenAIEmailRegisterFlow(account, "", True, None, existing_account=True)

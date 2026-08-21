@@ -577,6 +577,8 @@ class OpenAIEmailRegisterFlow:
             if self.existing_account:
                 if self._uses_login_secret():
                     self.log("[认证] 检测到完整 LS，本次优先使用 ChatGPT 密码与 2FA 登录")
+                elif not self.prefer_login_secret and self.account.has_login_secret:
+                    self.log("[认证] LS 登录未完成，本次回退使用邮箱凭证登录")
                 else:
                     self.log("[认证] 未检测到完整 LS，本次使用邮箱凭证登录")
             with open_registration_browser(
@@ -955,10 +957,12 @@ class OpenAIEmailRegisterFlow:
                     if time.time() - password_step_submitted_at < 20:
                         self._sleep_checked(1)
                         continue
-                    if self._uses_login_secret():
+                    if self._uses_login_secret() and password_step_attempts >= 2:
                         raise LoginSecretAuthenticationError(
                             f"[{self.account.email}] ChatGPT 密码提交后认证页面未继续"
                         )
+                    if self._uses_login_secret():
+                        self.log("[认证] ChatGPT 密码提交后页面未推进，正在当前登录会话中重试一次")
                     elif password_step_attempts >= 2:
                         raise LoginSecretAuthenticationError(
                             f"[{self.account.email}] Password step did not advance: "
@@ -967,7 +971,10 @@ class OpenAIEmailRegisterFlow:
                     password_step_submitted = False
                 if ("/log-in/password" in url or self.existing_account) and not self._uses_login_secret():
                     if not self._switch_password_to_email_code(page):
-                        raise RuntimeError("ChatGPT login requires a password or a configured email OTP endpoint")
+                        raise RuntimeError(
+                            "OpenAI 未提供邮箱验证码切换入口，且当前 LS 登录未完成；"
+                            f"当前页面：{self._page_text_summary(page, 240)}"
+                        )
                     if self.account.chatgpt_password or self.account.totp_secret:
                         self.log("[认证] 登录密钥不完整或已切换回退，本次使用邮箱凭证登录")
                     email_code_submitted = False
@@ -1957,10 +1964,21 @@ class OpenAIEmailRegisterFlow:
     def _switch_password_to_email_code(self, page) -> bool:
         selectors = [
             'button:has-text("Email code")', 'button:has-text("verification code")',
+            'button:has-text("Email me a code")', 'button:has-text("Use email")',
+            'button:has-text("Try another way")', 'button:has-text("Use a different method")',
+            'button:has-text("Send code")', 'button:has-text("Sign in with email")',
             '[role="button"]:has-text("Email code")', 'a:has-text("Email code")',
+            '[role="button"]:has-text("Email me a code")', '[role="button"]:has-text("Use email")',
+            '[role="button"]:has-text("Try another way")', '[role="button"]:has-text("Use a different method")',
+            '[role="button"]:has-text("Send code")', '[role="button"]:has-text("Sign in with email")',
             'button:has-text("邮箱验证码")', 'a:has-text("邮箱验证码")',
+            'button:has-text("使用邮箱")', 'button:has-text("尝试其他方式")',
+            'button:has-text("其他方式")', '[role="button"]:has-text("使用邮箱")',
+            '[role="button"]:has-text("尝试其他方式")', '[role="button"]:has-text("其他方式")',
             'button:has-text("メールコード")', 'button:has-text("メールで")',
+            'button:has-text("別の方法")', 'button:has-text("メールでコード")',
             'a:has-text("メールコード")', 'button:has-text("이메일 코드")',
+            'button:has-text("다른 방법")',
         ]
         for selector in selectors:
             try:
@@ -1979,7 +1997,7 @@ class OpenAIEmailRegisterFlow:
                     const label = el => `${el.innerText || ''} ${el.textContent || ''} ${el.getAttribute('aria-label') || ''}`
                         .replace(/\s+/g, ' ').trim().toLowerCase();
                     const candidates = [...document.querySelectorAll('button,a,[role="button"],[role="link"]')].filter(visible);
-                    const target = candidates.find(el => /email (code|verification)|verification code|邮箱验证码|郵箱驗證碼|メール.*コード|メールで|이메일.*코드/.test(label(el)));
+                    const target = candidates.find(el => /email (code|verification)|email me a code|use email|try another way|use a different method|send code|sign in with email|verification code|邮箱验证码|使用邮箱|尝试其他方式|其他方式|郵箱驗證碼|メール.*(コード|で)|別の方法|이메일.*코드|다른 방법/.test(label(el)));
                     if (!target) return false;
                     target.scrollIntoView({block:'center'}); target.click(); return true;
                 }"""
