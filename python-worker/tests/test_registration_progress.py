@@ -75,7 +75,37 @@ def test_login_secret_progress_extends_total_after_base_registration() -> None:
 
     event = recorder.events[0]
     assert event["detail"]["current"] == 10
-    assert event["detail"]["total"] == 11
+    assert event["detail"]["total"] == 12
+
+
+def test_login_secret_access_token_refresh_has_a_distinct_progress_step() -> None:
+    recorder = EventRecorder()
+    _emit_registration_progress(
+        recorder,
+        "user@example.com",
+        REGISTER_ONLY,
+        "login_secret_at_refresh",
+        setup_login_secret=True,
+    )
+
+    event = recorder.events[0]
+    assert event["detail"]["current"] == 11
+    assert event["detail"]["total"] == 12
+
+
+def test_login_secret_completion_reaches_the_extended_total() -> None:
+    recorder = EventRecorder()
+    _emit_registration_progress(
+        recorder,
+        "user@example.com",
+        REGISTER_ONLY,
+        "login_secret_completed",
+        setup_login_secret=True,
+    )
+
+    event = recorder.events[0]
+    assert event["detail"]["current"] == 12
+    assert event["detail"]["total"] == 12
 
 
 def test_login_secret_failure_keeps_an_abnormal_terminal_progress() -> None:
@@ -92,5 +122,5 @@ def test_login_secret_failure_keeps_an_abnormal_terminal_progress() -> None:
 
     event = recorder.events[0]
     assert event["detail"]["current"] == 11
-    assert event["detail"]["total"] == 11
+    assert event["detail"]["total"] == 12
     assert event["detail"]["state"] == "abnormal"

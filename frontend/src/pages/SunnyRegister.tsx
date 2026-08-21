@@ -170,7 +170,7 @@ const AGENT_IDENTITY_REVERSE_PROXY: RegisterStage = "agent_identity_reverse_prox
 
 function registrationStageTotal(stage: RegisterStage, setupLoginSecret = false): number {
   const base = stage === IMPORT_REVERSE_PROXY ? 12 : stage === CODEX_PHONE_BIND ? 10 : stage === AGENT_IDENTITY_REVERSE_PROXY ? 9 : 7;
-  return base + (setupLoginSecret ? 4 : 0);
+  return base + (setupLoginSecret ? 5 : 0);
 }
 
 function createRegistrationTaskProgress(taskId: string, stage: RegisterStage, emails: string[], setupLoginSecret = false): RegistrationTaskProgress {
@@ -698,6 +698,7 @@ Object.assign(zh.progressSteps, {
   login_secret_started: "开始补充登录密钥",
   login_secret_password: "正在添加 ChatGPT 密码",
   login_secret_2fa: "正在绑定 ChatGPT 2FA",
+  login_secret_at_refresh: "正在检测并更新 Access Token",
   login_secret_completed: "登录密钥已完成",
   login_secret_failed: "登录密钥未全部完成",
 });
@@ -705,6 +706,7 @@ Object.assign(en.progressSteps, {
   login_secret_started: "Starting Login Secret setup",
   login_secret_password: "Adding ChatGPT password",
   login_secret_2fa: "Binding ChatGPT 2FA",
+  login_secret_at_refresh: "Checking and updating Access Token",
   login_secret_completed: "Login Secret completed",
   login_secret_failed: "Login Secret setup incomplete",
 });
@@ -3779,7 +3781,7 @@ function AccountRegistrationProgressList({ t, progress }: { t: typeof zh; progre
   const visible = (running.length ? running : accounts.filter((account) => account.updatedAt > 0).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3));
   if (!visible.length) return <div className="sr-progress-empty">{t.noAccountProgress}</div>;
   return <div className="sr-account-progress-list">
-    {visible.map((account) => <details key={account.email} className={cn("sr-account-progress-item", account.state === "abnormal" && "danger")}>
+    {visible.map((account) => <details key={account.email} open={account.state === "running"} className={cn("sr-account-progress-item", account.state === "abnormal" && "danger")}>
       <summary>
         <div className="sr-account-progress-heading"><span title={account.email}>{account.email}</span><b>{account.current}/{account.total}</b></div>
         <RegistrationProgressBar current={account.current} total={account.total} tone={account.state === "abnormal" ? "danger" : "normal"}/>

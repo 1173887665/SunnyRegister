@@ -1164,6 +1164,7 @@ class LoginSecretSetupFlow:
         security_complete = bool(result.get("password") and result.get("totp_secret"))
         should_refresh_access_token = security_complete and (security_changed or self.force_access_token_refresh)
         if should_refresh_access_token:
+            self._progress("login_secret_at_refresh")
             candidate_token = str(current_session.get("accessToken") or current_session.get("access_token") or "")
             try:
                 if self._access_token_is_valid(page, candidate_token):
@@ -1716,6 +1717,7 @@ class ProtocolLoginSecretSetupFlow:
             security_complete = bool(result.get("password") and result.get("totp_secret"))
             should_refresh_access_token = security_complete and security_changed
             if should_refresh_access_token:
+                self.on_progress("login_secret_at_refresh")
                 candidate_token = str(current_session.get("accessToken") or current_session.get("access_token") or "")
                 try:
                     if self._access_token_is_valid(candidate_token):

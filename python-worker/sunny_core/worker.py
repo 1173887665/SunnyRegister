@@ -52,7 +52,8 @@ _REGISTRATION_PROGRESS_STEPS = {
     "login_secret_started": 1,
     "login_secret_password": 2,
     "login_secret_2fa": 3,
-    "login_secret_completed": 4,
+    "login_secret_at_refresh": 4,
+    "login_secret_completed": 5,
     "login_secret_failed": 4,
 }
 
@@ -194,9 +195,9 @@ def _emit_registration_progress(
     setup_login_secret: bool = False,
 ) -> None:
     base_total = _registration_stage_total(stage)
-    total = base_total + (4 if setup_login_secret else 0)
+    total = base_total + (5 if setup_login_secret else 0)
     if setup_login_secret and checkpoint.startswith("login_secret_"):
-        current = base_total + min(4, max(0, _REGISTRATION_PROGRESS_STEPS.get(checkpoint, 0)))
+        current = base_total + min(5, max(0, _REGISTRATION_PROGRESS_STEPS.get(checkpoint, 0)))
     else:
         current = min(base_total, max(0, _REGISTRATION_PROGRESS_STEPS.get(checkpoint, 0)))
     db.event(
