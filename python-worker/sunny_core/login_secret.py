@@ -19,6 +19,11 @@ EMAIL_OTP_VALIDATE_URL = f"{AUTH_BASE_URL}/api/accounts/email-otp/validate"
 MFA_INFO_URL = f"{CHATGPT_BASE_URL}/backend-api/accounts/mfa_info"
 MFA_ENROLL_URL = f"{CHATGPT_BASE_URL}/backend-api/accounts/mfa/enroll"
 MFA_ACTIVATE_URL = f"{CHATGPT_BASE_URL}/backend-api/accounts/mfa/user/activate_enrollment"
+_AUTH_RATE_LIMIT_MARKERS = (
+    "rate_limit_exceeded", "too many requests", "requests are too frequent",
+    "request limit exceeded", "リクエストが多すぎ", "请求过多", "请求太频繁",
+    "请求频率过高", "요청이 너무 많",
+)
 _ACCOUNT_DEACTIVATED_MARKERS = (
     "account_deactivated", "account disabled", "account has been disabled",
     "account deactivated", "account has been deactivated", "deleted or deactivated",
@@ -39,6 +44,15 @@ def _is_account_deactivated_text(value: Any) -> bool:
 
 class MFAReauthenticationRequired(RuntimeError):
     pass
+
+
+class LoginSecretRateLimitError(RuntimeError):
+    """OpenAI rejected the reauthentication transaction due to request rate limiting."""
+
+
+def _is_auth_rate_limit_text(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return any(marker in text for marker in _AUTH_RATE_LIMIT_MARKERS)
 
 
 def _password_already_set(result: dict[str, Any]) -> bool:
@@ -264,43 +278,57 @@ class LoginSecretSetupFlow:
     def _refresh_session_with_login_secret(self, page) -> dict[str, Any]:
         """Refresh the AT by reauthenticating in the active registration page."""
         self._ensure_chatgpt_page(page)
-        payload = page.evaluate(
-            """async ({email}) => {
-                const csrfResponse = await fetch('/api/auth/csrf', {
-                    credentials:'include', cache:'no-store',
-                    headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}
-                });
-                if (!csrfResponse.ok) return {ok:false,status:csrfResponse.status};
-                const csrf = await csrfResponse.json();
-                const query = new URLSearchParams({
-                    connection:'password', login_hint:email, screen_hint:'login',
-                    prompt:'login', reauth:'password', max_age:'0'
-                });
-                const body = new URLSearchParams({
-                    callbackUrl:'https://chatgpt.com/', csrfToken:csrf.csrfToken, json:'true'
-                });
-                const response = await fetch('/api/auth/signin/openai?' + query.toString(), {
-                    method:'POST', credentials:'include', cache:'no-store',
-                    headers:{'content-type':'application/x-www-form-urlencoded','Cache-Control':'no-cache','Pragma':'no-cache'},
-                    body:body.toString()
-                });
-                const text = await response.text();
-                let data={}; try { data=JSON.parse(text); } catch (_) {}
-                return {ok:response.ok,status:response.status,data};
-            }""",
-            {"email": self.account.email},
-        )
-        auth_url = str(((payload or {}).get("data") or {}).get("url") or "")
-        if not payload.get("ok") or not auth_url:
-            raise RuntimeError(f"发起登录密钥 AT 刷新失败: HTTP {payload.get('status')}")
+        def begin_auth() -> str:
+            payload = page.evaluate(
+                """async ({email}) => {
+                    const csrfResponse = await fetch('/api/auth/csrf', {
+                        credentials:'include', cache:'no-store',
+                        headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}
+                    });
+                    if (!csrfResponse.ok) return {ok:false,status:csrfResponse.status};
+                    const csrf = await csrfResponse.json();
+                    const query = new URLSearchParams({
+                        connection:'password', login_hint:email, screen_hint:'login',
+                        prompt:'login', reauth:'password', max_age:'0'
+                    });
+                    const body = new URLSearchParams({
+                        callbackUrl:'https://chatgpt.com/', csrfToken:csrf.csrfToken, json:'true'
+                    });
+                    const response = await fetch('/api/auth/signin/openai?' + query.toString(), {
+                        method:'POST', credentials:'include', cache:'no-store',
+                        headers:{'content-type':'application/x-www-form-urlencoded','Cache-Control':'no-cache','Pragma':'no-cache'},
+                        body:body.toString()
+                    });
+                    const text = await response.text();
+                    let data={}; try { data=JSON.parse(text); } catch (_) {}
+                    return {ok:response.ok,status:response.status,data};
+                }""",
+                {"email": self.account.email},
+            )
+            auth_url = str(((payload or {}).get("data") or {}).get("url") or "")
+            if not payload.get("ok") or not auth_url:
+                raise RuntimeError(f"发起登录密钥 AT 刷新失败: HTTP {payload.get('status')}")
+            return auth_url
+
+        auth_url = begin_auth()
         started_at = time.time()
         page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
-        self._complete_reauthentication(
-            page,
-            started_at,
-            self.account.chatgpt_password,
-            allow_email_fallback=False,
-        )
+        for attempt in range(2):
+            try:
+                self._complete_reauthentication(
+                    page,
+                    started_at,
+                    self.account.chatgpt_password,
+                    allow_email_fallback=False,
+                )
+                break
+            except LoginSecretRateLimitError:
+                if attempt:
+                    raise
+                self.log("[登录密钥] AT 刷新认证触发请求限流，等待后仅重试一次，不重复设置密码与 2FA")
+                self._sleep(15)
+                auth_url = begin_auth()
+                page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
         current_session = self._session_json(page)
         previous_token = str(self.session.get("access_token") or "")
         current_token = str(current_session.get("accessToken") or current_session.get("access_token") or "")
@@ -621,6 +649,10 @@ class LoginSecretSetupFlow:
                 except Exception:
                     pass
             state = self._page_state(page)
+            if _is_auth_rate_limit_text(f"{state.get('url', '')} {state.get('text', '')}"):
+                raise LoginSecretRateLimitError(
+                    "ChatGPT 重认证触发 rate_limit_exceeded：OpenAI 返回请求过多，请稍后重试"
+                )
             if _is_account_deactivated_text(f"{state.get('url', '')} {state.get('text', '')}"):
                 raise RuntimeError(
                     "account_deactivated: OpenAI 登录页报告账户已停用或封禁；已停止 2FA 验证"

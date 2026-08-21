@@ -3,7 +3,7 @@ import time
 import json
 from unittest.mock import Mock, patch
 
-from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretSetupFlow, ProtocolLoginSecretSetupFlow, _invalid_auth_state, _invalid_auth_step, _password_already_set, _wrong_email_otp, generate_chatgpt_password
+from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretRateLimitError, LoginSecretSetupFlow, ProtocolLoginSecretSetupFlow, _invalid_auth_state, _invalid_auth_step, _password_already_set, _wrong_email_otp, generate_chatgpt_password
 from sunny_core.protocol_auth import ProtocolChallengeRequired
 from sunny_core.mailbox import MailAccount, extract_otp
 
@@ -1115,6 +1115,27 @@ class LoginSecretTests(unittest.TestCase):
         self_account.totp_secret = "JBSWY3DPEHPK3PXP"
         with self.assertRaisesRegex(RuntimeError, "account_deactivated"):
             Flow()._complete_reauthentication(Page(), time.time(), "ChatGPT-password", allow_email_fallback=False)
+
+    def test_at_refresh_stops_immediately_on_rate_limit_error_page(self):
+        class Page:
+            url = "https://auth.openai.com/error?payload=rate_limit_exceeded"
+
+        class Flow(LoginSecretSetupFlow):
+            def _page_state(self, _page):
+                return {
+                    "url": Page.url,
+                    "passwordInputs": 0,
+                    "codeInputs": 0,
+                    "text": "認証エラー リクエストが多すぎます error_code: rate_limit_exceeded",
+                }
+
+            def _sleep(self, _seconds):
+                raise AssertionError("rate-limit error must not wait for the full timeout")
+
+        with self.assertRaises(LoginSecretRateLimitError):
+            Flow(self._account(), {}, "")._complete_reauthentication(
+                Page(), time.time(), "ChatGPT-password", allow_email_fallback=False
+            )
 
     def test_at_refresh_waits_when_totp_input_remains_visible_during_navigation(self):
         class Page:
