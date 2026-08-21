@@ -1693,6 +1693,10 @@ class ProtocolLoginSecretSetupFlow:
                     try:
                         access_token = str(current_session.get("accessToken") or current_session.get("access_token") or self.session.get("access_token") or "")
                         secret, current_session = self._setup_2fa(access_token)
+                        # Keep the shared task account in sync. A later
+                        # browser takeover for AT refresh reuses this object
+                        # to decide whether security setup is still required.
+                        self.account.totp_secret = secret
                         result.update({"totp_secret": secret, "totp_added": True})
                         self.log("[登录密钥] ChatGPT 2FA 添加成功")
                     except Exception as exc:

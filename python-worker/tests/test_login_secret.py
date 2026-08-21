@@ -314,6 +314,29 @@ class LoginSecretTests(unittest.TestCase):
         self.assertFalse(result["access_token_refreshed"])
         self.assertTrue(any("添加2FA失败" in error for error in result["errors"]))
 
+    def test_protocol_totp_success_updates_shared_account_for_browser_takeover(self):
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def _session_json(self):
+                return {"accessToken": "current-token"}
+
+            def _add_password(self, _password):
+                return {"accessToken": "current-token"}
+
+            def _setup_2fa(self, _access_token):
+                return "NEW-TOTP-SECRET", {"accessToken": "current-token"}
+
+            def _access_token_is_valid(self, _token):
+                return True
+
+        account = self._account()
+        account.chatgpt_password = ""
+        account.totp_secret = ""
+        result = Flow(account, {"access_token": "current-token"}, object()).run()
+
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["totp_secret"], "NEW-TOTP-SECRET")
+        self.assertEqual(account.totp_secret, "NEW-TOTP-SECRET")
+
     def test_browser_password_failure_skips_two_factor_step(self):
         class Flow(LoginSecretSetupFlow):
             def _session_json(self, _page):
