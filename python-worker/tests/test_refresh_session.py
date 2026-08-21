@@ -59,6 +59,13 @@ class FakeRefreshDB:
         self.deactivated_error = str(error)
 
 
+def test_login_secret_callback_account_deactivated_is_promoted_to_terminal_error():
+    with unittest.TestCase().assertRaisesRegex(RuntimeError, "account_deactivated"):
+        worker._raise_if_login_secret_account_deactivated(
+            {"complete": False, "errors": ["account_deactivated: account disabled"]}
+        )
+
+
 class RefreshSessionTests(unittest.TestCase):
     def test_cancelled_renewal_stops_without_recording_failure(self):
         db = FakeRefreshDB()

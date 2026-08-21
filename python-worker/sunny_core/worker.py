@@ -297,6 +297,19 @@ def _is_account_deactivated(error: Any) -> bool:
     ))
 
 
+def _raise_if_login_secret_account_deactivated(result: Any) -> None:
+    """Promote a captured LS callback error so the account flow is terminated."""
+    if not isinstance(result, dict):
+        return
+    errors = result.get("errors")
+    if isinstance(errors, (list, tuple)):
+        detail = "；".join(str(item) for item in errors if item)
+    else:
+        detail = str(errors or result.get("error") or "")
+    if _is_account_deactivated(detail):
+        raise RuntimeError(detail)
+
+
 def _is_otp_security_context_failure(error: Any) -> bool:
     """Return true only for a rejected OTP request caused by auth proof context.
 
@@ -1882,6 +1895,7 @@ def _run_one(
             )
         login_secret_result: dict[str, Any] | None = session.pop("login_secret_result", None)
         login_secret_from_browser = login_secret_result is not None
+        _raise_if_login_secret_account_deactivated(login_secret_result)
         recent_email_code = str(session.get("recent_email_code") or "").strip()
         try:
             recent_email_code_at = float(session.get("recent_email_code_at") or 0.0)
@@ -1919,6 +1933,7 @@ def _run_one(
                         db, str(email), stage, checkpoint, setup_login_secret=True,
                     ),
                 )
+                _raise_if_login_secret_account_deactivated(browser_result)
                 for key in ("password_added", "totp_added"):
                     if protocol_login_secret_result.get(key):
                         browser_result[key] = True
@@ -1931,6 +1946,8 @@ def _run_one(
                     session = browser_result["session"]
             except Exception as exc:
                 if _is_cancel_exception(exc):
+                    raise
+                if _is_account_deactivated(exc):
                     raise
                 errors = list(protocol_login_secret_result.get("errors") or [])
                 errors.append(f"浏览器挑战接管失败: {exc}")
@@ -1955,6 +1972,7 @@ def _run_one(
                         db, str(email), stage, checkpoint, setup_login_secret=True,
                     ),
                 )
+                _raise_if_login_secret_account_deactivated(login_secret_result)
                 if login_secret_result.get("password_added"):
                     db.save_chatgpt_password(mailbox_id, str(login_secret_result.get("password") or ""))
                 if login_secret_result.get("totp_added"):
@@ -1981,6 +1999,8 @@ def _run_one(
                     )
             except Exception as exc:
                 if _is_cancel_exception(exc):
+                    raise
+                if _is_account_deactivated(exc):
                     raise
                 login_secret_result = {"complete": False, "errors": [str(exc)]}
                 db.event(f"[{email}] [登录密钥] 账户已注册，但添加密码与 2FA 失败: {exc}", "warning", detail={"email": email, "scope": "selected", "login_secret_complete": False})
@@ -2536,6 +2556,14 @@ def _add_login_secrets(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[
             db.event(error, "error", detail={"email": email, "scope": "selected"})
             db.update_task(progress_current=idx, success_count=success, error_count=len(errors))
             continue
+        if str(mailbox.get("status") or "").strip().lower() in {"已封禁", "banned", "account_deactivated"}:
+            db.event(
+                f"[{email}] [登录密钥] 账户已封禁，跳过密码与 2FA 设置并终止该账户任务",
+                "warning",
+                detail={"email": email, "scope": "selected", "account_deactivated": True, "skipped": True},
+            )
+            db.update_task(progress_current=idx, success_count=success, error_count=len(errors))
+            continue
         chatgpt_password = str(mailbox.get("chat_gpt_password") or "").strip()
         totp_secret = str(mailbox.get("totp_secret") or "").strip()
         if chatgpt_password and totp_secret:
@@ -2592,6 +2620,7 @@ def _add_login_secrets(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[
                     mailbox_proxy_url=mailbox_proxy_url,
                     traffic_meter=meter,
                 )
+            _raise_if_login_secret_account_deactivated(result)
             if result.get("password_added"):
                 db.save_chatgpt_password(int(mailbox.get("id") or 0), str(result.get("password") or ""))
             if result.get("totp_added"):
@@ -2616,6 +2645,13 @@ def _add_login_secrets(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[
         except Exception as exc:
             if _is_cancel_exception(exc):
                 raise
+            if _is_account_deactivated(exc):
+                db.mark_account_deactivated(email, str(exc))
+                db.event(
+                    f"[{email}] [认证] OpenAI 返回 account_deactivated，账户已标记为已封禁并终止登录密钥任务",
+                    "warning",
+                    detail={"email": email, "scope": "selected", "account_deactivated": True},
+                )
             error = f"[{email}] 添加 LS 失败: {exc}"
             errors.append(error)
             items.append({"email": email, "status": "failed", "login_secret_complete": False, "error": str(exc)})
