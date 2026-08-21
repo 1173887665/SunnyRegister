@@ -208,6 +208,19 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(result["access_token_refreshed"])
         self.assertEqual(result["session"]["access_token"], "current-token")
 
+    def test_browser_at_probe_uses_shared_probe_and_keeps_diagnostic(self):
+        flow = LoginSecretSetupFlow(self._account(), {}, "http://proxy.example:8080")
+        page = Mock()
+        with patch(
+            "sunny_core.access_token_probe.probe_access_token",
+            return_value={"status": "blocked", "error": "边缘拦截，未判定令牌失效"},
+        ) as probe:
+            self.assertFalse(flow._access_token_is_valid(page, "access-token"))
+
+        probe.assert_called_once_with("access-token", "http://proxy.example:8080")
+        page.evaluate.assert_not_called()
+        self.assertIn("边缘拦截", flow.last_access_token_probe_error)
+
     def test_browser_at_refresh_rejects_email_fallback(self):
         class Flow(LoginSecretSetupFlow):
             def _page_state(self, _page):

@@ -138,6 +138,7 @@ class LoginSecretSetupFlow:
         self.recent_email_code_at = float(recent_email_code_at or 0.0)
         self.recent_email_code_attempted = False
         self.force_access_token_refresh = bool(force_access_token_refresh)
+        self.last_access_token_probe_error = ""
         self.traffic_optimizer = BrowserTrafficOptimizer(traffic_meter) if traffic_meter is not None else None
         self.reader: Any | None = None
 
@@ -224,31 +225,25 @@ class LoginSecretSetupFlow:
             raise RuntimeError(f"ChatGPT 登录态已失效: HTTP {result.get('status') if isinstance(result, dict) else 0}")
         return data
 
-    @staticmethod
-    def _access_token_is_valid(page, access_token: str) -> bool:
+    def _access_token_is_valid(self, page, access_token: str) -> bool:
         token = str(access_token or "").strip()
         if not token:
+            self.last_access_token_probe_error = "账户没有 Access Token"
             return False
         try:
-            result = page.evaluate(
-                """async token => {
-                    const headers = {accept:'application/json', authorization:'Bearer ' + token};
-                    const response = await fetch('https://chatgpt.com/backend-api/models', {
-                        credentials:'include', cache:'no-store', headers
-                    });
-                    const text = await response.text();
-                    let data = null; try { data = JSON.parse(text); } catch (_) {}
-                    return {status: response.status, data};
-                }""",
-                token,
-            ) or {}
-        except Exception:
+            from .access_token_probe import probe_access_token
+
+            result = probe_access_token(token, self.proxy_url)
+        except Exception as exc:
+            self.last_access_token_probe_error = f"AT 探测异常: {exc}"
             return False
-        status = int(result.get("status") or 0) if isinstance(result, dict) else 0
-        if status == 429:
+        if isinstance(result, dict) and result.get("status") == "valid":
+            self.last_access_token_probe_error = ""
             return True
-        data = result.get("data") if isinstance(result, dict) else None
-        return 200 <= status < 300 and isinstance(data, dict) and "models" in data
+        self.last_access_token_probe_error = str(
+            (result or {}).get("error") or (result or {}).get("status") or "AT 未通过有效性检测"
+        )
+        return False
 
     def _refresh_session_with_login_secret(self, page) -> dict[str, Any]:
         """Refresh the AT by reauthenticating in the active registration page."""
@@ -1175,7 +1170,10 @@ class LoginSecretSetupFlow:
                     current_session = self._refresh_session_with_login_secret(page)
                     refreshed_token = str(current_session.get("accessToken") or current_session.get("access_token") or "")
                     if not self._access_token_is_valid(page, refreshed_token):
-                        raise RuntimeError("密码与 2FA 重新登录后获取的 Access Token 未通过有效性检测")
+                        raise RuntimeError(
+                            "密码与 2FA 重新登录后获取的 Access Token 未通过有效性检测"
+                            f"：{self.last_access_token_probe_error}"
+                        )
                 result["access_token_refreshed"] = True
                 self.log("[登录密钥] 已确认有效的 ChatGPT Access Token，将替换旧 AT 存储")
             except Exception as exc:
@@ -1288,6 +1286,7 @@ class ProtocolLoginSecretSetupFlow:
         self.recent_email_code = str(recent_email_code or "").strip()
         self.recent_email_code_at = float(recent_email_code_at or 0.0)
         self.recent_email_code_attempted = False
+        self.last_access_token_probe_error = ""
         self.reader: Any | None = None
 
     def _check_cancelled(self) -> None:
@@ -1366,20 +1365,24 @@ class ProtocolLoginSecretSetupFlow:
     def _access_token_is_valid(self, access_token: str) -> bool:
         token = str(access_token or "").strip()
         if not token:
+            self.last_access_token_probe_error = "账户没有 Access Token"
             return False
-        status, data, _text = self._request(
-            "GET",
-            f"{CHATGPT_BASE_URL}/backend-api/models",
-            headers={
-                "accept": "application/json",
-                "authorization": f"Bearer {token}",
-                "origin": CHATGPT_BASE_URL,
-                "referer": f"{CHATGPT_BASE_URL}/",
-            },
-        )
-        if status == 429:
+        try:
+            from .access_token_probe import probe_access_token
+
+            protocol_flow = getattr(self.http, "_flow", None)
+            proxy_url = str(getattr(protocol_flow, "proxy_url", "") or "")
+            result = probe_access_token(token, proxy_url)
+        except Exception as exc:
+            self.last_access_token_probe_error = f"AT 探测异常: {exc}"
+            return False
+        if isinstance(result, dict) and result.get("status") == "valid":
+            self.last_access_token_probe_error = ""
             return True
-        return 200 <= status < 300 and isinstance(data, dict) and "models" in data
+        self.last_access_token_probe_error = str(
+            (result or {}).get("error") or (result or {}).get("status") or "AT 未通过有效性检测"
+        )
+        return False
 
     def _refresh_session_with_login_secret(self) -> dict[str, Any]:
         refresh = getattr(self.http, "refresh_session_with_login_secret", None)
@@ -1710,7 +1713,10 @@ class ProtocolLoginSecretSetupFlow:
                         current_session = self._refresh_session_with_login_secret()
                         refreshed_token = str(current_session.get("accessToken") or current_session.get("access_token") or "")
                         if not self._access_token_is_valid(refreshed_token):
-                            raise RuntimeError("密码与 2FA 重新登录后获取的 Access Token 未通过有效性检测")
+                            raise RuntimeError(
+                                "密码与 2FA 重新登录后获取的 Access Token 未通过有效性检测"
+                                f"：{self.last_access_token_probe_error}"
+                            )
                     result["access_token_refreshed"] = True
                     self.log("[登录密钥] 已确认有效的 ChatGPT Access Token，将替换旧 AT 存储")
                 except Exception as exc:
