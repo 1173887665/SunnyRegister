@@ -3,7 +3,8 @@ import time
 import json
 from unittest.mock import Mock, patch
 
-from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretSetupFlow, ProtocolLoginSecretSetupFlow, _password_already_set, _wrong_email_otp, generate_chatgpt_password
+from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretSetupFlow, ProtocolLoginSecretSetupFlow, _invalid_auth_state, _password_already_set, _wrong_email_otp, generate_chatgpt_password
+from sunny_core.protocol_auth import ProtocolChallengeRequired
 from sunny_core.mailbox import MailAccount, extract_otp
 
 
@@ -23,6 +24,11 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(_wrong_email_otp({"data": {"code": "wrong_email_otp_code"}}))
         self.assertTrue(_wrong_email_otp({"data": {"message": "Wrong code. Please check it."}}))
         self.assertFalse(_wrong_email_otp({"data": {"code": "account_deactivated"}}))
+
+    def test_invalid_auth_state_is_distinguished_from_generic_conflict(self):
+        self.assertTrue(_invalid_auth_state({"data": {"error": {"code": "invalid_state"}}}))
+        self.assertTrue(_invalid_auth_state(None, "Your sign-in session is no longer valid"))
+        self.assertFalse(_invalid_auth_state({"data": {"error": {"code": "conflict"}}}))
 
     def test_browser_reauthentication_timeout_resends_and_waits_again(self):
         class Reader:
@@ -301,6 +307,67 @@ class LoginSecretTests(unittest.TestCase):
         self.assertEqual(result["accessToken"], "access-token")
         self.assertEqual(flow.codes, ["123456", "654321"])
         self.assertEqual(flow.reader.calls, [10])
+
+    def test_protocol_password_invalid_state_reauthenticates_before_retry(self):
+        flow = ProtocolLoginSecretSetupFlow(self._account(), {}, object())
+        flow._reauthenticate = Mock(return_value={"accessToken": "access-token"})
+        flow._request = Mock(side_effect=[
+            (409, {"error": {"code": "invalid_state", "message": "Your sign-in session is no longer valid."}}, "invalid_state"),
+            (200, {"ok": True}, ""),
+        ])
+        flow._session_json = Mock(return_value={"accessToken": "new-access-token"})
+
+        result = flow._add_password("Strong-password-1!")
+
+        self.assertEqual(result["accessToken"], "new-access-token")
+        self.assertEqual(flow._reauthenticate.call_count, 2)
+
+    def test_protocol_challenge_is_exposed_for_native_browser_takeover(self):
+        account = self._account()
+        account.chatgpt_password = ""
+        account.totp_secret = "JBSWY3DPEHPK3PXP"
+        flow = ProtocolLoginSecretSetupFlow(account, {"access_token": "old-token"}, object())
+        flow._session_json = Mock(return_value={"accessToken": "old-token"})
+        flow._add_password = Mock(side_effect=ProtocolChallengeRequired("Sentinel challenge"))
+
+        result = flow.run()
+
+        self.assertTrue(result["browser_challenge_required"])
+        self.assertFalse(result["complete"])
+
+    def test_browser_takeover_can_force_at_refresh_with_complete_login_secret(self):
+        class Context:
+            @staticmethod
+            def storage_state():
+                return {"cookies": [{"name": "session", "value": "new"}]}
+
+        class Flow(LoginSecretSetupFlow):
+            def _ensure_chatgpt_page(self, _page):
+                return None
+
+            def _dismiss_continue_gate(self, _page):
+                return False
+
+            def _session_json(self, _page):
+                return {"accessToken": "old-token"}
+
+            def _refresh_session_with_login_secret(self, _page):
+                return {"accessToken": "new-token"}
+
+        account = self._account()
+        account.chatgpt_password = "ChatGPT-password"
+        account.totp_secret = "JBSWY3DPEHPK3PXP"
+        result = Flow(
+            account,
+            {"access_token": "old-token", "expires_at": 1},
+            "",
+            force_access_token_refresh=True,
+        )._run_on_page(Mock(), Context())
+
+        self.assertTrue(result["complete"])
+        self.assertTrue(result["access_token_refreshed"])
+        self.assertEqual(result["session"]["access_token"], "new-token")
+        self.assertNotIn("expires_at", result["session"])
 
     @staticmethod
     def _account():

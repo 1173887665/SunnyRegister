@@ -1851,6 +1851,52 @@ def _run_one(
             recent_email_code_at = 0.0
         session.pop("recent_email_code", None)
         session.pop("recent_email_code_at", None)
+        if (
+            login_secret_result is not None
+            and login_secret_result.get("browser_challenge_required") is True
+            and execution_mode == "protocol"
+            and protocol_challenge_strategy == "native_headless"
+        ):
+            protocol_login_secret_result = login_secret_result
+            if isinstance(protocol_login_secret_result.get("session"), dict):
+                session = protocol_login_secret_result["session"]
+            db.event(
+                f"[{email}] [登录密钥] 协议登录密钥流程遇到浏览器挑战，将携带当前协议 Cookie 登录态由 Camoufox 后台接管",
+                "warning",
+                detail={"email": email, "scope": "selected", "protocol_login_secret_browser_takeover": True},
+            )
+            try:
+                browser_result = setup_login_secret(
+                    account,
+                    session,
+                    proxies["register"],
+                    lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
+                    should_cancel=db.cancel_requested,
+                    mailbox_proxy_url=mailbox_proxy_url,
+                    traffic_meter=traffic_meter,
+                    recent_email_code=recent_email_code,
+                    recent_email_code_at=recent_email_code_at,
+                    force_access_token_refresh=True,
+                    on_progress=lambda checkpoint: _emit_registration_progress(
+                        db, str(email), stage, checkpoint, setup_login_secret=True,
+                    ),
+                )
+                for key in ("password_added", "totp_added"):
+                    if protocol_login_secret_result.get(key):
+                        browser_result[key] = True
+                for key in ("password", "totp_secret"):
+                    if not browser_result.get(key) and protocol_login_secret_result.get(key):
+                        browser_result[key] = protocol_login_secret_result[key]
+                login_secret_result = browser_result
+                login_secret_from_browser = True
+                if isinstance(browser_result.get("session"), dict):
+                    session = browser_result["session"]
+            except Exception as exc:
+                if _is_cancel_exception(exc):
+                    raise
+                errors = list(protocol_login_secret_result.get("errors") or [])
+                errors.append(f"浏览器挑战接管失败: {exc}")
+                login_secret_result = {**protocol_login_secret_result, "complete": False, "errors": errors}
         if payload.get("setup_login_secret") is True and login_secret_result is None:
             db.event(
                 f"[{email}] [登录密钥] 开始补充缺失的 ChatGPT 密码与 2FA",

@@ -758,6 +758,68 @@ class StageStatusTests(unittest.TestCase):
         self.assertEqual([item["session"]["access_token"] for item in db.sessions], ["first-access", "second-access"])
         self.assertEqual(db.account_updates[-1]["access_token"], "second-access")
 
+    def test_protocol_login_secret_challenge_uses_cookie_browser_takeover(self):
+        db = FakeDB()
+        protocol_storage = {
+            "cookies": [{
+                "name": "__Secure-next-auth.session-token",
+                "value": "protocol-session",
+                "domain": ".chatgpt.com",
+                "path": "/",
+            }],
+            "origins": [],
+        }
+        protocol_session = {
+            "access_token": "first-access",
+            "session_json": {"accessToken": "first-access"},
+            "storage_state_json": protocol_storage,
+            "auth_action": "login",
+            "login_secret_result": {
+                "complete": False,
+                "browser_challenge_required": True,
+                "errors": ["刷新 ChatGPT Access Token 失败: Sentinel challenge"],
+                "session": {
+                    "access_token": "first-access",
+                    "session_json": {"accessToken": "first-access"},
+                    "storage_state_json": protocol_storage,
+                },
+            },
+        }
+        browser_session = {
+            "access_token": "second-access",
+            "session_json": {"accessToken": "second-access"},
+            "storage_state_json": {"cookies": [{"name": "session", "value": "browser"}]},
+            "auth_action": "login",
+        }
+        browser_result = {
+            "complete": True,
+            "password": "ChatGPT-password",
+            "totp_secret": "JBSWY3DPEHPK3PXP",
+            "password_added": False,
+            "totp_added": False,
+            "access_token_refreshed": True,
+            "errors": [],
+            "session": browser_session,
+        }
+        payload = {
+            "registration_stage": worker.REGISTER_ONLY,
+            "execution_mode": "protocol",
+            "protocol_challenge_strategy": "native_headless",
+            "setup_login_secret": True,
+        }
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
+            patch.object(worker, "login_or_register_protocol", return_value=protocol_session),
+            patch.object(worker, "setup_login_secret", return_value=browser_result) as takeover,
+        ):
+            ok, result = worker._run_one(db, "sunny_login", payload, mailbox(status="已注册"), 1, 1)
+
+        self.assertTrue(ok)
+        self.assertTrue(result["stage_complete"])
+        self.assertEqual(db.sessions[-1]["session"]["access_token"], "second-access")
+        self.assertEqual(takeover.call_args.args[1]["storage_state_json"], protocol_storage)
+        self.assertTrue(takeover.call_args.kwargs["force_access_token_refresh"])
+
 class SessionFallbackTests(unittest.TestCase):
     def test_existing_account_applies_login_secret_callback_in_current_browser(self):
         account = MailAccount("user@example.com", "password", "client-id", "mail-rt", "raw")

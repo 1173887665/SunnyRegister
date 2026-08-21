@@ -52,6 +52,25 @@ def _wrong_email_otp(result: dict[str, Any] | None, text: str = "") -> bool:
     return code == "wrong_email_otp_code" or "wrong code" in raw or "incorrect code" in raw
 
 
+def _invalid_auth_state(result: dict[str, Any] | None, text: str = "") -> bool:
+    payload = result if isinstance(result, dict) else {}
+    candidates = [payload, payload.get("data"), payload.get("error")]
+    data = payload.get("data")
+    if isinstance(data, dict):
+        candidates.append(data.get("error"))
+    markers = [str(text or "").lower()]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        markers.extend((
+            str(candidate.get("code") or "").lower(),
+            str(candidate.get("type") or "").lower(),
+            str(candidate.get("message") or candidate.get("detail") or "").lower(),
+        ))
+    combined = " ".join(markers)
+    return "invalid_state" in combined or "sign-in session is no longer valid" in combined
+
+
 RECENT_EMAIL_CODE_MAX_AGE_SECONDS = 120
 EMAIL_OTP_INITIAL_WAIT_SECONDS = 120
 EMAIL_OTP_RESEND_WAIT_SECONDS = 60
@@ -86,6 +105,7 @@ class LoginSecretSetupFlow:
         on_progress: Callable[[str], None] | None = None,
         recent_email_code: str = "",
         recent_email_code_at: float = 0.0,
+        force_access_token_refresh: bool = False,
     ):
         self.account = account
         self.session = dict(session or {})
@@ -97,6 +117,7 @@ class LoginSecretSetupFlow:
         self.on_progress = on_progress or (lambda _checkpoint: None)
         self.recent_email_code = str(recent_email_code or "").strip()
         self.recent_email_code_at = float(recent_email_code_at or 0.0)
+        self.force_access_token_refresh = bool(force_access_token_refresh)
         self.traffic_optimizer = BrowserTrafficOptimizer(traffic_meter) if traffic_meter is not None else None
         self.reader: Any | None = None
 
@@ -990,7 +1011,7 @@ class LoginSecretSetupFlow:
             "errors": [],
             "access_token_refreshed": False,
         }
-        if result["password"] and result["totp_secret"]:
+        if result["password"] and result["totp_secret"] and not self.force_access_token_refresh:
             result["skipped"] = True
             result["complete"] = True
             return result
@@ -1014,7 +1035,8 @@ class LoginSecretSetupFlow:
                 result.update({"totp_secret": secret, "totp_added": True})
             except Exception as exc:
                 result["errors"].append(f"添加2FA失败: {exc}")
-        if result["password_added"] or result["totp_added"]:
+        security_changed = bool(result["password_added"] or result["totp_added"])
+        if security_changed or self.force_access_token_refresh:
             try:
                 current_session = self._refresh_session_with_login_secret(page)
                 result["access_token_refreshed"] = True
@@ -1025,7 +1047,7 @@ class LoginSecretSetupFlow:
         result["complete"] = bool(
             result.get("password")
             and result.get("totp_secret")
-            and (not (result["password_added"] or result["totp_added"]) or result["access_token_refreshed"])
+            and (not (security_changed or self.force_access_token_refresh) or result["access_token_refreshed"])
         )
         self._progress("login_secret_completed" if result["complete"] else "login_secret_failed")
         return result
@@ -1044,7 +1066,7 @@ class LoginSecretSetupFlow:
             finally:
                 if self.reader:
                     self.reader.close()
-        if self.account.chatgpt_password and self.account.totp_secret:
+        if self.account.chatgpt_password and self.account.totp_secret and not self.force_access_token_refresh:
             return {
                 "password": self.account.chatgpt_password,
                 "totp_secret": self.account.totp_secret,
@@ -1327,8 +1349,12 @@ class ProtocolLoginSecretSetupFlow:
                 self.log("[登录密钥] 已通过同一协议登录态添加 ChatGPT 密码（内容不写日志）")
                 return self._session_json()
             if attempt == 0 and status == 409:
-                self.log("[登录密钥] 密码协议接口正在同步认证状态，将保持当前登录态后重试")
-                time.sleep(1.5)
+                if _invalid_auth_state(result, text):
+                    self.log("[登录密钥] 密码认证状态已失效，将在当前协议 Cookie 会话中重新认证一次后重试")
+                    self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=add_password")
+                else:
+                    self.log("[登录密钥] 密码协议接口正在同步认证状态，将保持当前登录态后重试")
+                    time.sleep(1.5)
                 continue
             if attempt == 0 and status in {401, 403}:
                 self.log("[登录密钥] 密码协议接口要求重新认证，将最多重认证一次后重试")
@@ -1415,6 +1441,8 @@ class ProtocolLoginSecretSetupFlow:
                     result.update({"password": password, "password_added": True})
                 except Exception as exc:
                     result["errors"].append(f"添加密码失败: {exc}")
+                    if exc.__class__.__name__ == "ProtocolChallengeRequired":
+                        result["browser_challenge_required"] = True
             if not self.account.totp_secret:
                 self.on_progress("login_secret_2fa")
                 try:
@@ -1423,6 +1451,8 @@ class ProtocolLoginSecretSetupFlow:
                     result.update({"totp_secret": secret, "totp_added": True})
                 except Exception as exc:
                     result["errors"].append(f"添加2FA失败: {exc}")
+                    if exc.__class__.__name__ == "ProtocolChallengeRequired":
+                        result["browser_challenge_required"] = True
             if result["password_added"] or result["totp_added"]:
                 try:
                     current_session = self._refresh_session_with_login_secret()
@@ -1430,6 +1460,8 @@ class ProtocolLoginSecretSetupFlow:
                     self.log("[登录密钥] 已在当前协议登录态中通过密码与 2FA 获取最新 ChatGPT Access Token")
                 except Exception as exc:
                     result["errors"].append(f"刷新 ChatGPT Access Token 失败: {exc}")
+                    if exc.__class__.__name__ == "ProtocolChallengeRequired":
+                        result["browser_challenge_required"] = True
             result["session"] = self._updated_session(current_session)
             result["complete"] = bool(
                 result.get("password")
@@ -1455,6 +1487,7 @@ def setup_login_secret(
     on_progress: Callable[[str], None] | None = None,
     recent_email_code: str = "",
     recent_email_code_at: float = 0.0,
+    force_access_token_refresh: bool = False,
     browser_page=None,
     browser_context=None,
 ) -> dict[str, Any]:
@@ -1469,6 +1502,7 @@ def setup_login_secret(
         on_progress=on_progress,
         recent_email_code=recent_email_code,
         recent_email_code_at=recent_email_code_at,
+        force_access_token_refresh=force_access_token_refresh,
     ).run(browser_page=browser_page, browser_context=browser_context)
 
 
