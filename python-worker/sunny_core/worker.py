@@ -1576,7 +1576,7 @@ def _run_one(
         if not setup_login_secret_enabled:
             return {}
         db.event(
-            f"[{email}] [登录密钥] 在当前注册浏览器中补充缺失的 ChatGPT 密码与 2FA",
+            f"[{email}] [登录密钥] 在当前注册/登录浏览器中补充缺失的 ChatGPT 密码与 2FA",
             detail={"email": email, "scope": "selected", "setup_login_secret": True, "browser_reused": True},
         )
         return setup_login_secret(

@@ -540,7 +540,7 @@ class OpenAIEmailRegisterFlow:
 
     def _apply_post_registration_callback(self, context, page, result: dict[str, Any]) -> dict[str, Any]:
         callback = self.post_registration_callback
-        if callback is None or self.existing_account:
+        if callback is None:
             return result
         try:
             callback_result = callback(context, page, dict(result)) or {}
@@ -548,7 +548,7 @@ class OpenAIEmailRegisterFlow:
             raise
         except Exception as exc:
             callback_result = {"complete": False, "errors": [str(exc)]}
-            self.log(f"[认证] 注册后附加步骤失败，保留当前浏览器登录态：{str(exc)[:300]}")
+            self.log(f"[认证] 登录密钥附加步骤失败，保留当前浏览器登录态：{str(exc)[:300]}")
         result["login_secret_result"] = callback_result
         refreshed = callback_result.get("session") if isinstance(callback_result, dict) else None
         if isinstance(refreshed, dict):

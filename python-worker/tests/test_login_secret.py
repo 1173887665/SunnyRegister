@@ -105,7 +105,7 @@ class LoginSecretTests(unittest.TestCase):
 
         class Flow(LoginSecretSetupFlow):
             def __init__(self, account):
-                super().__init__(account, {"access_token": "old-token"}, "")
+                super().__init__(account, {"access_token": "old-token", "expires_at": 1}, "")
                 self.session_reads = 0
 
             def _session_json(self, _page):
@@ -115,6 +115,10 @@ class LoginSecretTests(unittest.TestCase):
             def _add_password(self, _page):
                 return "new-password"
 
+            def _refresh_session_with_login_secret(self, _page):
+                self.session_reads += 1
+                return {"accessToken": "new-token"}
+
         account = self._account()
         account.chatgpt_password = ""
         account.totp_secret = "JBSWY3DPEHPK3PXP"
@@ -122,12 +126,18 @@ class LoginSecretTests(unittest.TestCase):
         result = flow._run_on_page(Mock(), Context())
         self.assertEqual(result["session"]["access_token"], "new-token")
         self.assertEqual(result["session"]["session_json"]["accessToken"], "new-token")
+        self.assertTrue(result["access_token_refreshed"])
+        self.assertNotIn("expires_at", result["session"])
         self.assertEqual(flow.session_reads, 2)
 
     def test_protocol_login_secret_refreshes_access_token_after_security_change(self):
         class Flow(ProtocolLoginSecretSetupFlow):
             def __init__(self, account):
-                super().__init__(account, {"access_token": "old-token"}, object())
+                protocol_session = Mock()
+                protocol_session.refresh_session_with_login_secret.return_value = {
+                    "session_json": {"accessToken": "new-token"}
+                }
+                super().__init__(account, {"access_token": "old-token", "expires_at": 1}, protocol_session)
                 self.session_reads = 0
 
             def _session_json(self):
@@ -143,6 +153,30 @@ class LoginSecretTests(unittest.TestCase):
         result = Flow(account).run()
         self.assertEqual(result["session"]["access_token"], "new-token")
         self.assertEqual(result["session"]["session_json"]["accessToken"], "new-token")
+        self.assertTrue(result["access_token_refreshed"])
+        self.assertNotIn("expires_at", result["session"])
+
+    def test_login_secret_is_incomplete_when_reauthentication_returns_old_access_token(self):
+        class Flow(LoginSecretSetupFlow):
+            def __init__(self, account):
+                super().__init__(account, {"access_token": "old-token"}, "")
+
+            def _session_json(self, _page):
+                return {"accessToken": "old-token"}
+
+            def _add_password(self, _page):
+                return "new-password"
+
+            def _refresh_session_with_login_secret(self, _page):
+                raise RuntimeError("登录密钥重认证后仍返回注册阶段的旧 Access Token")
+
+        account = self._account()
+        account.chatgpt_password = ""
+        account.totp_secret = "JBSWY3DPEHPK3PXP"
+        result = Flow(account)._run_on_page(Mock(), Mock(storage_state=lambda: {"cookies": []}))
+        self.assertFalse(result["complete"])
+        self.assertFalse(result["access_token_refreshed"])
+        self.assertTrue(any("旧 Access Token" in error for error in result["errors"]))
 
     def test_password_reauthentication_reads_distinct_new_code_after_recent_code_rejected(self):
         class Reader:

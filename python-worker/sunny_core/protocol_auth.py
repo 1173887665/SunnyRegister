@@ -183,6 +183,9 @@ class _ProtocolCallbackSession:
         path = urlsplit(str(url)).path or "/"
         return self._flow._request(method, url, step=f"Post-registration {path}", **kwargs)
 
+    def refresh_session_with_login_secret(self) -> dict[str, Any]:
+        return self._flow._refresh_session_with_login_secret()
+
 
 class ProtocolRegistrationFlow:
     """ChatGPT email registration/login through HTTP requests only.
@@ -909,6 +912,36 @@ class ProtocolRegistrationFlow:
             result["recent_email_code_at"] = self.recent_email_code_at
         return result
 
+    def _refresh_session_with_login_secret(self) -> dict[str, Any]:
+        """Issue a new AT through LS login while retaining this protocol cookie jar."""
+        self.existing_account = True
+        self.auth_action = "login"
+        auth_started_at = time.time() - 5
+        self._start_next_auth()
+        initial_path = urlsplit(self.auth_page_url).path.rstrip("/")
+        initial_otp_redirect = initial_path == "/email-verification"
+        if initial_otp_redirect:
+            state = {"page": {"type": "email_otp_verification"}, "continue_url": self.auth_page_url}
+        else:
+            state = self._authorize_email()
+        page_type = self._page_type(state)
+        continue_url = self._continue_url(state) or self.auth_page_url
+        if page_type == "login_password":
+            state = self._verify_login_password(continue_url)
+        elif page_type in {"email_otp_verification", "email_otp_send"}:
+            state = self._verify_email(
+                continue_url,
+                request_code=not initial_otp_redirect,
+                load_page=not initial_otp_redirect,
+                min_timestamp=auth_started_at,
+            )
+        state = self._complete_mfa(state)
+        state = self._select_workspace(state)
+        continue_url = self._continue_url(state) or continue_url
+        result = self._finish_session(continue_url)
+        self.log("[登录密钥] 已在当前协议 Cookie 会话中通过密码与 2FA 重新认证并获取最新 ChatGPT Access Token")
+        return result
+
     def run(self) -> dict[str, Any]:
         self.log(f"[认证] 开始纯协议注册或登录：{self.account.email}")
         if self.challenge_strategy == "sentinel_protocol":
@@ -1004,14 +1037,14 @@ class ProtocolRegistrationFlow:
             state = self._select_workspace(state)
             continue_url = str(state.get("continue_url") or continue_url)
             result = self._finish_session(continue_url)
-            if self.post_registration_callback is not None and not self.existing_account:
+            if self.post_registration_callback is not None:
                 try:
                     callback_result = self.post_registration_callback(_ProtocolCallbackSession(self), dict(result)) or {}
                 except Exception as exc:
                     if self.should_cancel():
                         raise
                     callback_result = {"complete": False, "errors": [str(exc)]}
-                    self.log(f"[认证] 协议注册后附加步骤失败，保留当前协议登录态：{str(exc)[:300]}")
+                    self.log(f"[认证] 协议登录密钥附加步骤失败，保留当前协议登录态：{str(exc)[:300]}")
                 result["login_secret_result"] = callback_result
                 refreshed = callback_result.get("session") if isinstance(callback_result, dict) else None
                 if isinstance(refreshed, dict):

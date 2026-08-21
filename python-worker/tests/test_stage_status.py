@@ -718,7 +718,73 @@ class StageStatusTests(unittest.TestCase):
         self.assertEqual(db.account_updates[-1]["status"], "registered")
         self.assertEqual(len(db.sessions), 1)
 
+    def test_login_secret_flow_persists_first_at_then_replaces_it_with_second_at(self):
+        db = FakeDB()
+        first_session = {
+            "access_token": "first-access",
+            "session_json": {"accessToken": "first-access"},
+            "auth_action": "register",
+        }
+        second_session = {
+            "access_token": "second-access",
+            "session_json": {"accessToken": "second-access"},
+            "auth_action": "register",
+        }
+
+        def execute(*_args, **kwargs):
+            kwargs["on_progress"]("registered", first_session)
+            return {
+                **second_session,
+                "login_secret_result": {
+                    "complete": True,
+                    "errors": [],
+                    "session": second_session,
+                },
+            }
+
+        payload = {
+            "registration_stage": worker.REGISTER_ONLY,
+            "execution_mode": "background",
+            "setup_login_secret": True,
+        }
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
+            patch.object(worker, "login_or_register", side_effect=execute),
+        ):
+            ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
+
+        self.assertTrue(ok)
+        self.assertTrue(result["stage_complete"])
+        self.assertEqual([item["session"]["access_token"] for item in db.sessions], ["first-access", "second-access"])
+        self.assertEqual(db.account_updates[-1]["access_token"], "second-access")
+
 class SessionFallbackTests(unittest.TestCase):
+    def test_existing_account_applies_login_secret_callback_in_current_browser(self):
+        account = MailAccount("user@example.com", "password", "client-id", "mail-rt", "raw")
+        callback = Mock(return_value={
+            "complete": True,
+            "session": {
+                "access_token": "second-access",
+                "session_json": {"accessToken": "second-access"},
+                "storage_state_json": {"cookies": [{"name": "session", "value": "second"}]},
+            },
+        })
+        flow = OpenAIEmailRegisterFlow(
+            account, "", True, lambda _message: None,
+            existing_account=True, require_refresh_token=False,
+            post_registration_callback=callback,
+        )
+        context, page = Mock(), Mock()
+
+        result = flow._apply_post_registration_callback(
+            context, page,
+            {"access_token": "first-access", "session_json": {"accessToken": "first-access"}},
+        )
+
+        callback.assert_called_once()
+        self.assertEqual(result["access_token"], "second-access")
+        self.assertEqual(result["login_secret_result"]["session"]["access_token"], "second-access")
+
     def test_protocol_session_continues_oauth_without_repeating_email_login(self):
         account = MailAccount("user@example.com", "password", "client-id", "mail-rt", "raw")
         existing_session = {

@@ -184,6 +184,72 @@ class LoginSecretSetupFlow:
             raise RuntimeError(f"ChatGPT 登录态已失效: HTTP {result.get('status') if isinstance(result, dict) else 0}")
         return data
 
+    def _refresh_session_with_login_secret(self, page) -> dict[str, Any]:
+        """Refresh the AT by reauthenticating in the active registration page."""
+        self._ensure_chatgpt_page(page)
+        payload = page.evaluate(
+            """async ({email}) => {
+                const csrfResponse = await fetch('/api/auth/csrf', {
+                    credentials:'include', cache:'no-store',
+                    headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}
+                });
+                if (!csrfResponse.ok) return {ok:false,status:csrfResponse.status};
+                const csrf = await csrfResponse.json();
+                const query = new URLSearchParams({
+                    connection:'password', login_hint:email, screen_hint:'login',
+                    prompt:'login', reauth:'password', max_age:'0'
+                });
+                const body = new URLSearchParams({
+                    callbackUrl:'https://chatgpt.com/', csrfToken:csrf.csrfToken, json:'true'
+                });
+                const response = await fetch('/api/auth/signin/openai?' + query.toString(), {
+                    method:'POST', credentials:'include', cache:'no-store',
+                    headers:{'content-type':'application/x-www-form-urlencoded','Cache-Control':'no-cache','Pragma':'no-cache'},
+                    body:body.toString()
+                });
+                const text = await response.text();
+                let data={}; try { data=JSON.parse(text); } catch (_) {}
+                return {ok:response.ok,status:response.status,data};
+            }""",
+            {"email": self.account.email},
+        )
+        auth_url = str(((payload or {}).get("data") or {}).get("url") or "")
+        if not payload.get("ok") or not auth_url:
+            raise RuntimeError(f"发起登录密钥 AT 刷新失败: HTTP {payload.get('status')}")
+        started_at = time.time()
+        page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
+        self._complete_reauthentication(
+            page,
+            started_at,
+            self.account.chatgpt_password,
+            recent_email_code=self.recent_email_code,
+            recent_email_code_at=self.recent_email_code_at,
+        )
+        current_session = self._session_json(page)
+        previous_token = str(self.session.get("access_token") or "")
+        current_token = str(current_session.get("accessToken") or current_session.get("access_token") or "")
+        if previous_token and current_token == previous_token:
+            raise RuntimeError("登录密钥重认证后仍返回注册阶段的旧 Access Token")
+        return current_session
+
+    def _updated_session(self, current_session: dict[str, Any], storage_state: dict[str, Any]) -> dict[str, Any]:
+        access_token = str(current_session.get("accessToken") or current_session.get("access_token") or "")
+        if not access_token:
+            raise RuntimeError("登录密钥设置完成后未获取到新的 ChatGPT Access Token")
+        updated = {
+            **self.session,
+            "access_token": access_token,
+            "session_json": current_session,
+            "storage_state_json": storage_state,
+        }
+        # The first registration checkpoint carries the first AT expiry. Let
+        # persistence derive the expiry again only after AT replacement.
+        if access_token != str(self.session.get("access_token") or ""):
+            updated.pop("expires_at", None)
+        if str(updated.get("id_token") or "") == str(self.session.get("access_token") or ""):
+            updated["id_token"] = access_token
+        return updated
+
     @staticmethod
     def _is_chatgpt_page(page) -> bool:
         try:
@@ -922,6 +988,7 @@ class LoginSecretSetupFlow:
             "password_added": False,
             "totp_added": False,
             "errors": [],
+            "access_token_refreshed": False,
         }
         if result["password"] and result["totp_secret"]:
             result["skipped"] = True
@@ -949,17 +1016,17 @@ class LoginSecretSetupFlow:
                 result["errors"].append(f"添加2FA失败: {exc}")
         if result["password_added"] or result["totp_added"]:
             try:
-                current_session = self._session_json(page)
-                self.log("[登录密钥] 已在密码与 2FA 设置完成后刷新最新 ChatGPT Access Token")
+                current_session = self._refresh_session_with_login_secret(page)
+                result["access_token_refreshed"] = True
+                self.log("[登录密钥] 已在当前注册浏览器登录态中通过密码与 2FA 获取最新 ChatGPT Access Token")
             except Exception as exc:
                 result["errors"].append(f"刷新 ChatGPT Access Token 失败: {exc}")
-        result["session"] = {
-            **self.session,
-            "access_token": str(current_session.get("accessToken") or current_session.get("access_token") or self.session.get("access_token") or ""),
-            "session_json": current_session,
-            "storage_state_json": context.storage_state(),
-        }
-        result["complete"] = bool(result.get("password") and result.get("totp_secret"))
+        result["session"] = self._updated_session(current_session, context.storage_state())
+        result["complete"] = bool(
+            result.get("password")
+            and result.get("totp_secret")
+            and (not (result["password_added"] or result["totp_added"]) or result["access_token_refreshed"])
+        )
         self._progress("login_secret_completed" if result["complete"] else "login_secret_failed")
         return result
 
@@ -1110,6 +1177,35 @@ class ProtocolLoginSecretSetupFlow:
         if not isinstance(payload, dict) or not (payload.get("accessToken") or payload.get("access_token")):
             raise RuntimeError("ChatGPT 登录态已失效")
         return payload
+
+    def _refresh_session_with_login_secret(self) -> dict[str, Any]:
+        refresh = getattr(self.http, "refresh_session_with_login_secret", None)
+        if not callable(refresh):
+            raise RuntimeError("当前协议登录态不支持使用登录密钥刷新 ChatGPT Session")
+        result = refresh()
+        session_json = result.get("session_json") if isinstance(result, dict) else None
+        if not isinstance(session_json, dict) or not (session_json.get("accessToken") or session_json.get("access_token")):
+            raise RuntimeError("协议登录密钥重认证未返回新的 ChatGPT Access Token")
+        previous_token = str(self.session.get("access_token") or "")
+        current_token = str(session_json.get("accessToken") or session_json.get("access_token") or "")
+        if previous_token and current_token == previous_token:
+            raise RuntimeError("协议登录密钥重认证后仍返回注册阶段的旧 Access Token")
+        return session_json
+
+    def _updated_session(self, current_session: dict[str, Any]) -> dict[str, Any]:
+        access_token = str(current_session.get("accessToken") or current_session.get("access_token") or "")
+        if not access_token:
+            raise RuntimeError("登录密钥设置完成后未获取到新的 ChatGPT Access Token")
+        updated = {
+            **self.session,
+            "access_token": access_token,
+            "session_json": current_session,
+        }
+        if access_token != str(self.session.get("access_token") or ""):
+            updated.pop("expires_at", None)
+        if str(updated.get("id_token") or "") == str(self.session.get("access_token") or ""):
+            updated["id_token"] = access_token
+        return updated
 
     def _reauthenticate(self, callback_url: str, *, prefer_recent_email_code: bool = False) -> dict[str, Any]:
         status, csrf, text = self._request("GET", f"{CHATGPT_BASE_URL}/api/auth/csrf", headers={"accept": "application/json"})
@@ -1303,7 +1399,7 @@ class ProtocolLoginSecretSetupFlow:
         return secret, self._session_json()
 
     def run(self) -> dict[str, Any]:
-        result: dict[str, Any] = {"password": self.account.chatgpt_password, "totp_secret": self.account.totp_secret, "password_added": False, "totp_added": False, "errors": []}
+        result: dict[str, Any] = {"password": self.account.chatgpt_password, "totp_secret": self.account.totp_secret, "password_added": False, "totp_added": False, "access_token_refreshed": False, "errors": []}
         if result["password"] and result["totp_secret"]:
             result.update({"skipped": True, "complete": True})
             return result
@@ -1329,12 +1425,17 @@ class ProtocolLoginSecretSetupFlow:
                     result["errors"].append(f"添加2FA失败: {exc}")
             if result["password_added"] or result["totp_added"]:
                 try:
-                    current_session = self._session_json()
-                    self.log("[登录密钥] 已在密码与 2FA 设置完成后刷新最新 ChatGPT Access Token")
+                    current_session = self._refresh_session_with_login_secret()
+                    result["access_token_refreshed"] = True
+                    self.log("[登录密钥] 已在当前协议登录态中通过密码与 2FA 获取最新 ChatGPT Access Token")
                 except Exception as exc:
                     result["errors"].append(f"刷新 ChatGPT Access Token 失败: {exc}")
-            result["session"] = {**self.session, "access_token": str(current_session.get("accessToken") or current_session.get("access_token") or self.session.get("access_token") or ""), "session_json": current_session, "storage_state_json": self.session.get("storage_state_json") or {}}
-            result["complete"] = bool(result.get("password") and result.get("totp_secret"))
+            result["session"] = self._updated_session(current_session)
+            result["complete"] = bool(
+                result.get("password")
+                and result.get("totp_secret")
+                and (not (result["password_added"] or result["totp_added"]) or result["access_token_refreshed"])
+            )
             self.on_progress("login_secret_completed" if result["complete"] else "login_secret_failed")
             return result
         finally:

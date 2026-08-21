@@ -375,7 +375,14 @@ def test_protocol_incomplete_login_secret_uses_mailbox_otp() -> None:
         "user@outlook.com", "mail-password", "client", "refresh", "raw",
         chatgpt_password="ChatGPT-password",
     )
-    flow = ProtocolRegistrationFlow(account, existing_account=True, session=FakeSession([]))
+    callback = Mock(return_value={
+        "complete": True,
+        "session": {"access_token": "second-access", "session_json": {"accessToken": "second-access"}},
+    })
+    flow = ProtocolRegistrationFlow(
+        account, existing_account=True, session=FakeSession([]),
+        post_registration_callback=callback,
+    )
     flow.auth_page_url = "https://auth.openai.com/log-in/password"
     flow._start_next_auth = lambda: None
     flow._authorize_email = lambda: {
@@ -391,8 +398,9 @@ def test_protocol_incomplete_login_secret_uses_mailbox_otp() -> None:
     with patch("sunny_core.protocol_auth.create_mailbox_reader", FakeReader):
         result = flow.run()
 
-    assert result["access_token"] == "access"
+    assert result["access_token"] == "second-access"
     flow._verify_email.assert_called_once()
+    callback.assert_called_once()
 
 
 def test_protocol_rejected_password_falls_back_to_mailbox_otp() -> None:
@@ -452,3 +460,38 @@ def test_protocol_rejected_totp_restarts_with_mailbox_otp() -> None:
 
     assert result["access_token"] == "access"
     flow._restart_with_email_login.assert_called_once()
+
+
+def test_protocol_security_change_refresh_reuses_cookie_session_and_ls() -> None:
+    account = MailAccount(
+        "user@outlook.com", "mail-password", "client", "refresh", "raw",
+        chatgpt_password="ChatGPT-password", totp_secret="JBSWY3DPEHPK3PXP",
+    )
+    active_session = FakeSession([])
+    flow = ProtocolRegistrationFlow(account, existing_account=False, session=active_session)
+    flow.auth_page_url = "https://auth.openai.com/log-in/password"
+    flow._start_next_auth = Mock()
+    flow._authorize_email = Mock(return_value={
+        "page": {"type": "login_password"},
+        "continue_url": "https://auth.openai.com/log-in/password",
+    })
+    after_password = {
+        "page": {"type": "mfa_challenge"},
+        "continue_url": "https://auth.openai.com/mfa-challenge/factor",
+    }
+    after_mfa = {"page": {"type": "login_success"}, "continue_url": "https://chatgpt.com/callback"}
+    flow._verify_login_password = Mock(return_value=after_password)
+    flow._complete_mfa = Mock(return_value=after_mfa)
+    flow._select_workspace = Mock(return_value=after_mfa)
+    flow._finish_session = Mock(return_value={
+        "access_token": "new-access", "session_json": {"accessToken": "new-access"},
+    })
+
+    result = flow._refresh_session_with_login_secret()
+
+    assert flow.session is active_session
+    assert flow.existing_account is True
+    assert result["access_token"] == "new-access"
+    flow._verify_login_password.assert_called_once()
+    flow._complete_mfa.assert_called_once_with(after_password)
+    flow._finish_session.assert_called_once_with("https://chatgpt.com/callback")
