@@ -181,8 +181,7 @@ class LoginSecretSetupFlow:
             if re.fullmatch(r"\d{6}", code) and code not in excluded_codes:
                 return code
             if code:
-                self.log("[邮箱] 邮箱 API 返回了历史验证码，继续等待不同的新验证码")
-            cursor = time.time()
+                self.log("[邮箱] 邮箱读取器返回了历史验证码，继续等待不同的新验证码")
             self._sleep(0.25)
         raise TimeoutError(f"在 {int(timeout)} 秒内未获取到不同的新邮箱验证码")
 
@@ -574,7 +573,7 @@ class LoginSecretSetupFlow:
                     rejected_codes.add(submitted_email_code)
                     email_code_used = False
                     submitted_recent_code = False
-                    email_code_min_timestamp = time.time()
+                    email_code_min_timestamp = min_timestamp
                     continue
                 is_totp = "mfa" in url or "authenticator" in str(state.get("text") or "").lower()
                 if is_totp and not totp_used:
@@ -637,9 +636,9 @@ class LoginSecretSetupFlow:
         password = generate_chatgpt_password()
         protocol_result: dict[str, Any] = {"ok": False, "status": 0}
         try:
-            # Password enrollment is a separate password reauthentication flow.
-            # The registration OTP is rejected by this flow, so always request a
-            # fresh mailbox code before calling the protocol endpoint.
+            # Password enrollment is a separate reauthentication flow. Try the
+            # just-used registration code once, then require a distinct mailbox
+            # code if OpenAI rejects it.
             self._dismiss_continue_gate(page)
             self._reauth_for_password(page, password)
             protocol_result = self._add_password_via_protocol(page, password)
@@ -700,7 +699,6 @@ class LoginSecretSetupFlow:
                     password,
                     recent_email_code=self.recent_email_code,
                     recent_email_code_at=self.recent_email_code_at,
-                    force_fresh_email_code=True,
                 )
                 continue
             if state.get("passwordInputs") and self._submit_password(page, password):
@@ -800,10 +798,10 @@ class LoginSecretSetupFlow:
             if attempt == 0 and _wrong_email_otp(result, result.get("text", "") if isinstance(result, dict) else ""):
                 rejected_codes.add(str(code).strip())
                 if recent_code_attempted:
-                    self.log("[登录密钥] 注册/登录阶段验证码未通过密码重认证，将读取邮箱 API 中的新验证码后重试")
+                    self.log("[登录密钥] 注册/登录阶段验证码未通过密码重认证，将通过当前邮箱渠道读取新验证码后重试")
                 else:
                     self.log("[登录密钥] 重认证验证码无效，将重新读取最新邮箱验证码后重试")
-                code_timestamp = time.time()
+                code_timestamp = min_timestamp
                 continue
             raise RuntimeError(f"邮箱重认证验证码校验失败: HTTP {result.get('status', 0)} {self._protocol_error_detail(result)}".strip())
         else:
@@ -889,7 +887,14 @@ class LoginSecretSetupFlow:
         min_timestamp = time.time()
         # The reference flow validates this new OTP through the protocol and
         # follows continue_url so pwd_auth_time is refreshed before MFA calls.
-        return self._reauthenticate_with_fresh_email_code(page, auth_url, min_timestamp)
+        return self._reauthenticate_with_fresh_email_code(
+            page,
+            auth_url,
+            min_timestamp,
+            recent_email_code=self.recent_email_code,
+            recent_email_code_at=self.recent_email_code_at,
+            prefer_recent_email_code=True,
+        )
 
     @staticmethod
     def _mfa_info(page, access_token: str) -> dict[str, Any]:
@@ -1184,8 +1189,7 @@ class ProtocolLoginSecretSetupFlow:
             if re.fullmatch(r"\d{6}", code) and code not in excluded_codes:
                 return code
             if code:
-                self.log("[邮箱] 邮箱 API 返回了历史验证码，继续等待不同的新验证码")
-            cursor = time.time()
+                self.log("[邮箱] 邮箱读取器返回了历史验证码，继续等待不同的新验证码")
             time.sleep(0.25)
         raise TimeoutError(f"在 {int(timeout)} 秒内未获取到不同的新邮箱验证码")
 
@@ -1336,10 +1340,10 @@ class ProtocolLoginSecretSetupFlow:
             if attempt == 0 and _wrong_email_otp({"data": payload}, text):
                 rejected_codes.add(str(code).strip())
                 if recent_code_attempted:
-                    self.log("[登录密钥] 注册/登录阶段验证码未通过密码重认证，将读取邮箱 API 中的新验证码后重试")
+                    self.log("[登录密钥] 注册/登录阶段验证码未通过密码重认证，将通过当前邮箱渠道读取新验证码后重试")
                 else:
                     self.log("[登录密钥] 重认证验证码无效，将重新读取最新邮箱验证码后重试")
-                code_timestamp = time.time()
+                code_timestamp = sent_at
                 continue
             self._require_ok(status, payload, text, "邮箱重认证验证码校验")
         else:
@@ -1368,14 +1372,20 @@ class ProtocolLoginSecretSetupFlow:
             if attempt == 0 and status == 409:
                 if _invalid_auth_state(result, text):
                     self.log("[登录密钥] 密码认证状态已失效，将在当前协议 Cookie 会话中重新认证一次后重试")
-                    self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=add_password")
+                    self._reauthenticate(
+                        f"{CHATGPT_BASE_URL}/?action=add_password",
+                        prefer_recent_email_code=True,
+                    )
                 else:
                     self.log("[登录密钥] 密码协议接口正在同步认证状态，将保持当前登录态后重试")
                     time.sleep(1.5)
                 continue
             if attempt == 0 and status in {401, 403}:
                 self.log("[登录密钥] 密码协议接口要求重新认证，将最多重认证一次后重试")
-                self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=add_password")
+                self._reauthenticate(
+                    f"{CHATGPT_BASE_URL}/?action=add_password",
+                    prefer_recent_email_code=True,
+                )
                 continue
             self._require_ok(status, data, text, "添加 ChatGPT 密码")
         raise RuntimeError("添加 ChatGPT 密码失败: 未获得有效响应")
@@ -1402,7 +1412,10 @@ class ProtocolLoginSecretSetupFlow:
     def _setup_2fa(self, access_token: str) -> tuple[str, dict[str, Any]]:
         status, info, text = self._mfa_request("GET", MFA_INFO_URL, access_token)
         if status in {401, 403}:
-            session_json = self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=enable&factor=totp")
+            session_json = self._reauthenticate(
+                f"{CHATGPT_BASE_URL}/?action=enable&factor=totp",
+                prefer_recent_email_code=True,
+            )
             access_token = str(session_json.get("accessToken") or session_json.get("access_token") or "")
             status, info, text = self._mfa_request("GET", MFA_INFO_URL, access_token)
         info = self._require_ok(status, info, text, "查询 2FA 状态")

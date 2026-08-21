@@ -545,8 +545,10 @@ class LoginSecretTests(unittest.TestCase):
         class Reader:
             def __init__(self):
                 self.codes = iter(("123456", "654321"))
+                self.timestamps = []
 
-            def wait_for_code(self, *_args):
+            def wait_for_code(self, timestamp, *_args):
+                self.timestamps.append(timestamp)
                 return next(self.codes)
 
         class Flow(LoginSecretSetupFlow):
@@ -602,6 +604,8 @@ class LoginSecretTests(unittest.TestCase):
         )
 
         self.assertEqual(flow.submitted_codes, ["123456", "654321"])
+        self.assertGreaterEqual(len(flow.reader_stub.timestamps), 2)
+        self.assertEqual(flow.reader_stub.timestamps[0], flow.reader_stub.timestamps[-1])
         self.assertEqual(flow.logs.count("[登录密钥] 优先复用本次注册刚使用的邮箱验证码"), 1)
         self.assertEqual(flow.logs.count("[登录密钥] 注册阶段验证码无法用于重认证，将等待新的邮箱验证码"), 1)
 
@@ -706,6 +710,37 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(any("post_login_add_password:'true'" in script for script in page.scripts))
         self.assertTrue(any("action=add_password" in script for script in page.scripts))
         self.assertTrue(any("email-otp/validate" in script for script in page.scripts))
+
+    def test_browser_two_factor_reauthentication_uses_same_recent_code_strategy(self):
+        class Page:
+            url = "https://chatgpt.com/"
+
+            def evaluate(self, script, _payload=None):
+                if "/api/auth/signin/openai" in script:
+                    return {"ok": True, "status": 200, "data": {"url": "https://auth.openai.com/authorize"}}
+                if "/api/auth/csrf" in script:
+                    return {"ok": True, "status": 200, "data": {"csrfToken": "csrf-token"}}
+                raise AssertionError("unexpected browser request")
+
+        flow = LoginSecretSetupFlow(
+            self._account(),
+            {},
+            "",
+            recent_email_code="123456",
+            recent_email_code_at=time.time(),
+        )
+        reauthenticate = Mock(return_value={"accessToken": "access-token"})
+        flow._reauthenticate_with_fresh_email_code = reauthenticate
+
+        flow._reauth_for_2fa(
+            Page(),
+            "ChatGPT-password",
+            recent_email_code="123456",
+            recent_email_code_at=flow.recent_email_code_at,
+        )
+
+        self.assertTrue(reauthenticate.call_args.kwargs["prefer_recent_email_code"])
+        self.assertEqual(reauthenticate.call_args.kwargs["recent_email_code"], "123456")
 
     def test_browser_reauthentication_reads_new_code_after_old_code_is_rejected(self):
         class Reader:
