@@ -556,6 +556,10 @@ class LoginSecretSetupFlow:
             if "chatgpt.com" in url:
                 try:
                     self._session_json(page)
+                    if submitted_recent_code:
+                        self.log("[登录密钥] 已成功复用注册/登录阶段邮箱验证码完成重认证")
+                    elif email_code_used:
+                        self.log("[登录密钥] 已使用邮箱渠道最新验证码完成重认证")
                     return
                 except Exception:
                     pass
@@ -595,6 +599,13 @@ class LoginSecretSetupFlow:
                         recent_code_attempted = True
                         self.log("[登录密钥] 优先复用本次注册刚使用的邮箱验证码")
                     else:
+                        if (
+                            not force_fresh_email_code
+                            and not recent_code_attempted
+                            and str(recent_email_code or "").strip()
+                        ):
+                            recent_code_attempted = True
+                            self.log("[登录密钥] 注册/登录阶段邮箱验证码已超过复用窗口，将读取最新验证码")
                         try:
                             code = self._wait_for_distinct_code(
                                 self._reader_instance(), email_code_min_timestamp,
@@ -742,6 +753,7 @@ class LoginSecretSetupFlow:
         resend_attempted = False
         rejected_codes: set[str] = set()
         for attempt in range(2):
+            using_recent_code = False
             if (
                 prefer_recent_email_code
                 and not recent_code_attempted
@@ -749,8 +761,16 @@ class LoginSecretSetupFlow:
             ):
                 code = str(recent_email_code).strip()
                 recent_code_attempted = True
+                using_recent_code = True
                 self.log("[登录密钥] 优先复用注册/登录阶段刚使用的邮箱验证码进行密码重认证")
             else:
+                if (
+                    prefer_recent_email_code
+                    and not recent_code_attempted
+                    and str(recent_email_code or "").strip()
+                ):
+                    recent_code_attempted = True
+                    self.log("[登录密钥] 注册/登录阶段邮箱验证码已超过复用窗口，将读取最新验证码")
                 try:
                     if attempt > 0 and rejected_codes:
                         code = self._wait_for_distinct_code(
@@ -794,10 +814,14 @@ class LoginSecretSetupFlow:
             data = result.get("data") if isinstance(result, dict) else None
             continue_url = str((data or {}).get("continue_url") or "") if isinstance(data, dict) else ""
             if result.get("ok") and continue_url:
+                if using_recent_code:
+                    self.log("[登录密钥] 已成功复用注册/登录阶段邮箱验证码完成重认证")
+                else:
+                    self.log("[登录密钥] 已使用邮箱渠道最新验证码完成重认证")
                 break
             if attempt == 0 and _wrong_email_otp(result, result.get("text", "") if isinstance(result, dict) else ""):
                 rejected_codes.add(str(code).strip())
-                if recent_code_attempted:
+                if using_recent_code:
                     self.log("[登录密钥] 注册/登录阶段验证码未通过密码重认证，将通过当前邮箱渠道读取新验证码后重试")
                 else:
                     self.log("[登录密钥] 重认证验证码无效，将重新读取最新邮箱验证码后重试")
@@ -1280,6 +1304,7 @@ class ProtocolLoginSecretSetupFlow:
         rejected_codes: set[str] = set()
         resend_attempted = False
         for attempt in range(2):
+            using_recent_code = False
             if (
                 prefer_recent_email_code
                 and not recent_code_attempted
@@ -1287,8 +1312,16 @@ class ProtocolLoginSecretSetupFlow:
             ):
                 code = self.recent_email_code
                 recent_code_attempted = True
+                using_recent_code = True
                 self.log("[登录密钥] 优先复用注册/登录阶段刚使用的邮箱验证码进行密码重认证")
             else:
+                if (
+                    prefer_recent_email_code
+                    and not recent_code_attempted
+                    and str(self.recent_email_code or "").strip()
+                ):
+                    recent_code_attempted = True
+                    self.log("[登录密钥] 注册/登录阶段邮箱验证码已超过复用窗口，将读取最新验证码")
                 try:
                     code = self._wait_for_distinct_code(
                         reader,
@@ -1336,10 +1369,14 @@ class ProtocolLoginSecretSetupFlow:
                 json={"code": code},
             )
             if 200 <= status < 300:
+                if using_recent_code:
+                    self.log("[登录密钥] 已成功复用注册/登录阶段邮箱验证码完成重认证")
+                else:
+                    self.log("[登录密钥] 已使用邮箱渠道最新验证码完成重认证")
                 break
             if attempt == 0 and _wrong_email_otp({"data": payload}, text):
                 rejected_codes.add(str(code).strip())
-                if recent_code_attempted:
+                if using_recent_code:
                     self.log("[登录密钥] 注册/登录阶段验证码未通过密码重认证，将通过当前邮箱渠道读取新验证码后重试")
                 else:
                     self.log("[登录密钥] 重认证验证码无效，将重新读取最新邮箱验证码后重试")

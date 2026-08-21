@@ -93,6 +93,8 @@ class LoginSecretTests(unittest.TestCase):
         flow = LoginSecretSetupFlow(self._account(), {}, "")
         flow.reader = Reader()
         page = Page()
+        logs = []
+        flow.log = logs.append
         result = flow._reauthenticate_with_fresh_email_code(
             page,
             "https://auth.openai.com/authorize",
@@ -103,6 +105,7 @@ class LoginSecretTests(unittest.TestCase):
         )
         self.assertEqual(result["accessToken"], "access-token")
         self.assertEqual(page.codes, ["123456"])
+        self.assertTrue(any("已成功复用注册/登录阶段邮箱验证码完成重认证" in item for item in logs))
 
     def test_browser_login_secret_refreshes_access_token_after_security_change(self):
         class Context:
@@ -307,6 +310,52 @@ class LoginSecretTests(unittest.TestCase):
         self.assertEqual(result["accessToken"], "access-token")
         self.assertEqual(flow.codes, ["123456", "654321"])
         self.assertEqual(flow.reader.calls, [10])
+
+    def test_protocol_reauthentication_reads_mailbox_when_recent_code_expired(self):
+        class Reader:
+            def __init__(self):
+                self.calls = []
+
+            def wait_for_code(self, _timestamp, timeout):
+                self.calls.append(timeout)
+                return "654321"
+
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def __init__(self, account):
+                super().__init__(
+                    account,
+                    {},
+                    object(),
+                    recent_email_code="123456",
+                    recent_email_code_at=time.time() - RECENT_EMAIL_CODE_MAX_AGE_SECONDS - 1,
+                )
+                self.reader = Reader()
+                self.codes = []
+                self.logs = []
+                self.log = self.logs.append
+
+            def _request(self, method, url, **kwargs):
+                if url.endswith("/api/auth/csrf"):
+                    return 200, {"csrfToken": "csrf-token"}, ""
+                if "/api/auth/signin/openai?" in url:
+                    return 200, {"url": "https://auth.openai.com/authorize"}, ""
+                if url.endswith("/api/accounts/email-otp/validate"):
+                    self.codes.append(kwargs.get("json", {}).get("code"))
+                    return 200, {"continue_url": "https://chatgpt.com/api/auth/callback/openai"}, ""
+                if url.endswith("/api/auth/session"):
+                    return 200, {"accessToken": "access-token"}, ""
+                return 200, {}, ""
+
+        flow = Flow(self._account())
+        result = flow._reauthenticate(
+            "https://chatgpt.com/?action=add_password",
+            prefer_recent_email_code=True,
+        )
+        self.assertEqual(result["accessToken"], "access-token")
+        self.assertEqual(flow.codes, ["654321"])
+        self.assertEqual(flow.reader.calls, [120])
+        self.assertTrue(any("已超过复用窗口" in item for item in flow.logs))
+        self.assertTrue(any("已使用邮箱渠道最新验证码完成重认证" in item for item in flow.logs))
 
     def test_protocol_password_invalid_state_reauthenticates_before_retry(self):
         flow = ProtocolLoginSecretSetupFlow(self._account(), {}, object())
