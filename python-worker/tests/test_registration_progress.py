@@ -74,6 +74,21 @@ def test_login_secret_progress_extends_total_after_base_registration() -> None:
     )
 
     event = recorder.events[0]
+    assert event["detail"]["current"] == 9
+    assert event["detail"]["total"] == 12
+
+
+def test_login_secret_password_follows_two_factor_progress() -> None:
+    recorder = EventRecorder()
+    _emit_registration_progress(
+        recorder,
+        "user@example.com",
+        REGISTER_ONLY,
+        "login_secret_password",
+        setup_login_secret=True,
+    )
+
+    event = recorder.events[0]
     assert event["detail"]["current"] == 10
     assert event["detail"]["total"] == 12
 
