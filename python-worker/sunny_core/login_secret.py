@@ -1074,6 +1074,9 @@ class LoginSecretSetupFlow:
             activation = self._activate_totp(page, access_token, code, session_id)
             status = int((activation or {}).get("status") or 0)
             if status in {401, 403}:
+                if status == 401 and attempt == 0:
+                    self.log("[登录密钥] 2FA 动态验证码可能已过期，等待下一个验证码窗口后重试")
+                    continue
                 raise MFAReauthenticationRequired(f"2FA activate 要求重新认证: HTTP {status}")
             activation_data = activation.get("data") if isinstance(activation, dict) else {}
             if isinstance(activation, dict) and activation.get("ok") and isinstance(activation_data, dict) and activation_data.get("success") is True:
@@ -1646,6 +1649,11 @@ class ProtocolLoginSecretSetupFlow:
                 json={"code": code, "factor_type": "totp", "session_id": session_id},
             )
             data = activation if isinstance(activation, dict) else {}
+            if status == 401 and attempt == 0:
+                self.log("[登录密钥] 2FA 动态验证码可能已过期，等待下一个验证码窗口后重试")
+                continue
+            if status in {401, 403}:
+                raise MFAReauthenticationRequired(f"2FA activate 要求重新认证: HTTP {status}")
             if status == 200 and data.get("success") is True:
                 break
         else:

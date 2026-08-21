@@ -1327,6 +1327,45 @@ class LoginSecretTests(unittest.TestCase):
         self.assertEqual(page.calls, ["enroll", ("activate", "123456", "session-id")])
         self.assertEqual(flow.account.totp_secret, secret)
 
+    def test_totp_protocol_activation_retries_next_code_after_401(self):
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def __init__(self, account):
+                super().__init__(account, {}, object())
+                self.activation_codes = []
+                self.info_calls = 0
+
+            def _mfa_request(self, method, url, _access_token, **kwargs):
+                if url.endswith("/accounts/mfa_info"):
+                    self.info_calls += 1
+                    enabled = self.info_calls > 1
+                    factors = [{"id": "factor-id", "factor_type": "totp"}] if enabled else []
+                    return 200, {"mfa_enabled": enabled, "factors": {"totp": factors}}, ""
+                if url.endswith("/accounts/mfa/enroll"):
+                    return 200, {"secret": "JBSWY3DPEHPK3PXP", "session_id": "session-id", "factor": {"id": "factor-id"}}, ""
+                if url.endswith("/accounts/mfa/user/activate_enrollment"):
+                    self.activation_codes.append(kwargs["json"]["code"])
+                    if len(self.activation_codes) == 1:
+                        return 401, {"error": {"code": "invalid_totp_code"}}, "invalid_totp_code"
+                    return 200, {"success": True}, ""
+                raise AssertionError(f"unexpected MFA request: {method} {url}")
+
+            def _session_json(self):
+                return {"accessToken": "new-access-token"}
+
+        account = self._account()
+        account.totp_secret = ""
+        logs = []
+        flow = Flow(account)
+        flow.log = logs.append
+        with patch("sunny_core.login_secret.generate_totp", side_effect=["111111", "222222"]), patch(
+            "sunny_core.login_secret.time.sleep"
+        ):
+            secret, _session = flow._setup_2fa("access-token")
+
+        self.assertEqual(secret, "JBSWY3DPEHPK3PXP")
+        self.assertEqual(flow.activation_codes, ["111111", "222222"])
+        self.assertTrue(any("动态验证码可能已过期" in message for message in logs))
+
     def test_totp_protocol_reauthenticates_once_only_after_unauthorized_response(self):
         class FakePage:
             def __init__(self):
