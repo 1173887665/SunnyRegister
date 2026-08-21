@@ -284,7 +284,17 @@ def _is_cancel_exception(exc: BaseException) -> bool:
 
 def _is_account_deactivated(error: Any) -> bool:
     text = str(error or "").strip().lower()
-    return "account_deactivated" in text or "account because it has been deleted or deactivated" in text
+    return any(marker in text for marker in (
+        "account_deactivated", "account disabled", "account has been disabled",
+        "account deactivated", "account has been deactivated", "deleted or deactivated",
+        "account suspended", "account has been suspended", "account is suspended",
+        "account banned", "account has been banned", "account is banned", "account blocked",
+        "account is disabled", "account is deactivated",
+        "账户已停用", "账户被禁用", "账户已被禁用", "账户已禁用", "账号已封禁", "账号被封禁",
+        "账号已被封禁", "账号已被禁用", "账户已封禁", "账户被暂停", "账户已被暂停", "アカウントが無効", "アカウントは無効",
+        "アカウントが停止", "アカウントは停止", "利用停止", "계정이 비활성화",
+        "계정이 정지", "계정이 차단",
+    ))
 
 
 def _is_otp_security_context_failure(error: Any) -> bool:
@@ -1442,6 +1452,16 @@ def _run_one(
 ) -> tuple[bool, dict[str, Any] | str]:
     db.ensure_not_cancelled()
     email = mailbox.get("email") or f"mailbox-{index}"
+    mailbox_id = max(0, int(mailbox.get("id") or 0))
+    current_mailbox_status = db.mailbox_status(mailbox_id) if mailbox_id else str(mailbox.get("status") or "")
+    if not mailbox_id and email:
+        current = db.fetch_mailbox_by_email(str(email))
+        if current:
+            current_mailbox_status = str(current.get("status") or current_mailbox_status)
+    if str(current_mailbox_status or "").strip().lower() in {"已封禁", "banned", "account_deactivated"}:
+        message = f"[{email}] account_deactivated: 账户已封禁，已停止后续任务并释放当前账号资源"
+        db.event(message, "warning", detail={"email": email, "scope": "selected", "account_deactivated": True, "skipped": True})
+        return False, message
     stage = _stage(payload)
     setup_login_secret_enabled = payload.get("setup_login_secret") is True
     explicit_rt_acquire = task_type == "sunny_acquire_rt"

@@ -1077,6 +1077,45 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(any("已提交 ChatGPT 密码" in item for item in flow.logs))
         self.assertTrue(any("已提交 2FA 动态验证码" in item for item in flow.logs))
 
+    def test_at_refresh_stops_before_totp_when_account_is_deactivated(self):
+        class Page:
+            url = "https://auth.openai.com/authorize"
+
+        class Flow(LoginSecretSetupFlow):
+            def __init__(self):
+                super().__init__(self_account, {}, "")
+                self.phase = "password"
+
+            def _page_state(self, _page):
+                if self.phase == "password":
+                    return {
+                        "url": "https://auth.openai.com/authorize",
+                        "passwordInputs": 1,
+                        "codeInputs": 0,
+                        "text": "パスワードを入力してください",
+                    }
+                return {
+                    "url": "https://auth.openai.com/account-disabled",
+                    "passwordInputs": 0,
+                    "codeInputs": 0,
+                    "text": "このアカウントは無効になっています",
+                }
+
+            def _submit_password(self, _page, _password):
+                self.phase = "disabled"
+                return True
+
+            def _sleep(self, _seconds):
+                return None
+
+            def _reader_instance(self):
+                raise AssertionError("disabled account must not wait for mailbox OTP")
+
+        self_account = self._account()
+        self_account.totp_secret = "JBSWY3DPEHPK3PXP"
+        with self.assertRaisesRegex(RuntimeError, "account_deactivated"):
+            Flow()._complete_reauthentication(Page(), time.time(), "ChatGPT-password", allow_email_fallback=False)
+
     def test_at_refresh_waits_when_totp_input_remains_visible_during_navigation(self):
         class Page:
             url = "https://auth.openai.com/authorize"

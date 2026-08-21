@@ -52,6 +52,17 @@ _TRANSIENT_TRANSPORT_MARKERS = (
     "tls handshake",
     "timed out",
 )
+_ACCOUNT_DEACTIVATED_MARKERS = (
+    "account_deactivated", "account disabled", "account has been disabled",
+    "account deactivated", "account has been deactivated", "deleted or deactivated",
+    "account suspended", "account has been suspended", "account is suspended",
+    "account banned", "account has been banned", "account is banned", "account blocked",
+    "account is disabled", "account is deactivated",
+    "账户已停用", "账户被禁用", "账户已被禁用", "账户已禁用", "账号已封禁", "账号被封禁",
+    "账号已被封禁", "账号已被禁用", "账户已封禁", "账户被暂停", "账户已被暂停", "アカウントが無効", "アカウントは無効",
+    "アカウントが停止", "アカウントは停止", "利用停止", "계정이 비활성화",
+    "계정이 정지", "계정이 차단",
+)
 
 
 class ProtocolRegistrationError(RuntimeError):
@@ -73,6 +84,15 @@ def _is_login_secret_rejection(error: BaseException) -> bool:
     if "account_deactivated" in message or "deleted or deactivated" in message:
         return False
     return any(marker in message for marker in ("http 400", "http 401", "http 422", "invalid", "incorrect", "wrong"))
+
+
+def _is_account_deactivated_payload(value: Any) -> bool:
+    try:
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        text = str(value or "")
+    text = text.strip().lower()
+    return any(marker in text for marker in _ACCOUNT_DEACTIVATED_MARKERS)
 
 
 @dataclass
@@ -160,6 +180,8 @@ def _response_error(response, step: str) -> ProtocolRegistrationError:
     status = int(getattr(response, "status_code", 0) or 0)
     body = str(getattr(response, "text", "") or "")[:800]
     marker = body.lower()
+    if _is_account_deactivated_payload(body):
+        return ProtocolRegistrationError(f"account_deactivated: {step} reported that the account is disabled: {body}")
     if status in {403, 429} or any(value in marker for value in ("cloudflare", "challenge", "turnstile", "captcha")):
         return ProtocolChallengeRequired(
             f"{step} requires an interactive anti-bot challenge (HTTP {status}); "
@@ -618,6 +640,8 @@ class ProtocolRegistrationFlow:
                 raise ProtocolLoginSecretRejected(str(error)) from error
             raise error
         result = _json_response(response, "Verify ChatGPT password")
+        if _is_account_deactivated_payload(result):
+            raise ProtocolRegistrationError("account_deactivated: OpenAI password verification reported a disabled account")
         self.log("[认证] ChatGPT 密码验证成功")
         return result
 
@@ -631,6 +655,8 @@ class ProtocolRegistrationFlow:
         return str(page.get("type") or "")
 
     def _complete_mfa(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if _is_account_deactivated_payload(payload):
+            raise ProtocolRegistrationError("account_deactivated: OpenAI reported a disabled account after password verification")
         page_type = self._page_type(payload)
         continue_url = self._continue_url(payload)
         if page_type != "mfa_challenge" and "/mfa-challenge/" not in continue_url:

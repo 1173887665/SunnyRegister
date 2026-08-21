@@ -404,6 +404,23 @@ def test_browser_login_secret_failure_retries_same_mode_with_mailbox_otp(headles
     assert flow_class.call_args_list[1].kwargs["prefer_login_secret"] is False
 
 
+def test_browser_login_secret_account_deactivated_does_not_fallback_to_mailbox_otp() -> None:
+    account = MailAccount(
+        "user@example.com", "mailbox-password", "client", "mail-rt", "raw",
+        chatgpt_password="Short1!", totp_secret="JBSWY3DPEHPK3PXP",
+    )
+    first = Mock()
+    first.run.side_effect = LoginSecretAuthenticationError(
+        "ChatGPT 密码验证失败: account_deactivated: account disabled"
+    )
+
+    with patch("sunny_core.openai_auth.OpenAIEmailRegisterFlow", return_value=first) as flow_class:
+        with pytest.raises(LoginSecretAuthenticationError, match="account_deactivated"):
+            login_or_register(account, existing_account=True, require_refresh_token=False)
+
+    assert flow_class.call_count == 1
+
+
 def test_browser_password_step_waits_for_a_transitional_readonly_input() -> None:
     account = MailAccount("user@example.com", "mailbox-password", "client", "mail-rt", "raw")
     messages: list[str] = []

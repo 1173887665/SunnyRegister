@@ -19,6 +19,22 @@ EMAIL_OTP_VALIDATE_URL = f"{AUTH_BASE_URL}/api/accounts/email-otp/validate"
 MFA_INFO_URL = f"{CHATGPT_BASE_URL}/backend-api/accounts/mfa_info"
 MFA_ENROLL_URL = f"{CHATGPT_BASE_URL}/backend-api/accounts/mfa/enroll"
 MFA_ACTIVATE_URL = f"{CHATGPT_BASE_URL}/backend-api/accounts/mfa/user/activate_enrollment"
+_ACCOUNT_DEACTIVATED_MARKERS = (
+    "account_deactivated", "account disabled", "account has been disabled",
+    "account deactivated", "account has been deactivated", "deleted or deactivated",
+    "account suspended", "account has been suspended", "account is suspended",
+    "account banned", "account has been banned", "account is banned", "account blocked",
+    "account is disabled", "account is deactivated",
+    "账户已停用", "账户被禁用", "账户已被禁用", "账户已禁用", "账号已封禁", "账号被封禁",
+    "账号已被封禁", "账号已被禁用", "账户已封禁", "账户被暂停", "账户已被暂停", "アカウントが無効", "アカウントは無効",
+    "アカウントが停止", "アカウントは停止", "利用停止", "계정이 비활성화",
+    "계정이 정지", "계정이 차단",
+)
+
+
+def _is_account_deactivated_text(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return any(marker in text for marker in _ACCOUNT_DEACTIVATED_MARKERS)
 
 
 class MFAReauthenticationRequired(RuntimeError):
@@ -605,6 +621,10 @@ class LoginSecretSetupFlow:
                 except Exception:
                     pass
             state = self._page_state(page)
+            if _is_account_deactivated_text(f"{state.get('url', '')} {state.get('text', '')}"):
+                raise RuntimeError(
+                    "account_deactivated: OpenAI 登录页报告账户已停用或封禁；已停止 2FA 验证"
+                )
             if state.get("passwordInputs") and not password_used:
                 if not password or not self._submit_password(page, password):
                     raise RuntimeError("重认证要求密码，但密码输入未能提交")

@@ -53,6 +53,17 @@ LOGIN_SECRET_NO_PROGRESS_TIMEOUT_SECONDS = 25
 # EmailOtpValidate is a small JSON request. Keep its browser-side timeout
 # short so a stalled proxy does not delay the mailbox login flow for a minute.
 EMAIL_OTP_BROWSER_REQUEST_TIMEOUT_MS = 15000
+_ACCOUNT_DEACTIVATED_MARKERS = (
+    "account_deactivated", "account disabled", "account has been disabled",
+    "account deactivated", "account has been deactivated", "deleted or deactivated",
+    "account suspended", "account has been suspended", "account is suspended",
+    "account banned", "account has been banned", "account is banned", "account blocked",
+    "account is disabled", "account is deactivated",
+    "账户已停用", "账户被禁用", "账户已被禁用", "账户已禁用", "账号已封禁", "账号被封禁",
+    "账号已被封禁", "账号已被禁用", "账户已封禁", "账户被暂停", "账户已被暂停", "アカウントが無効", "アカウントは無効",
+    "アカウントが停止", "アカウントは停止", "利用停止", "계정이 비활성화",
+    "계정이 정지", "계정이 차단",
+)
 
 # Phone binding must follow the number itself. Provider country identifiers are
 # not consistent (for example FireFox uses "mys"), while the E.164 prefix is.
@@ -1001,9 +1012,14 @@ class OpenAIEmailRegisterFlow:
                     password_step_submitted = False
                 if ("/log-in/password" in url or self.existing_account) and not self._uses_login_secret():
                     if not self._switch_password_to_email_code(page):
+                        page_summary = self._page_text_summary(page, 300)
+                        if any(marker in page_summary.lower() for marker in _ACCOUNT_DEACTIVATED_MARKERS):
+                            raise LoginSecretAuthenticationError(
+                                f"account_deactivated: OpenAI 登录页报告账户已停用或封禁；当前页面：{page_summary}"
+                            )
                         raise RuntimeError(
                             "OpenAI 未提供邮箱验证码切换入口，且当前 LS 登录未完成；"
-                            f"当前页面：{self._page_text_summary(page, 240)}"
+                            f"当前页面：{page_summary[:240]}"
                         )
                     if self.account.chatgpt_password or self.account.totp_secret:
                         self.log("[认证] 登录密钥不完整或已切换回退，本次使用邮箱凭证登录")
@@ -1914,6 +1930,8 @@ class OpenAIEmailRegisterFlow:
             text = re.sub(r"\s+", " ", page.locator("body").inner_text(timeout=700)).strip().lower()
         except Exception:
             return ""
+        if any(marker in text for marker in _ACCOUNT_DEACTIVATED_MARKERS):
+            return f"account_deactivated: {text[:300]}"
         password_markers = (
             "incorrect password", "wrong password", "invalid password", "password is incorrect",
             "密码不正确", "密码错误", "パスワードが正しく", "パスワードが違", "비밀번호가 올바르지",
@@ -3221,6 +3239,8 @@ def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool 
         ).run()
     except LoginSecretAuthenticationError as exc:
         if not existing_account or not account.has_login_secret:
+            raise
+        if any(marker in str(exc).lower() for marker in _ACCOUNT_DEACTIVATED_MARKERS):
             raise
         _emit(log, f"[认证] LS 凭证登录失败，将使用邮箱凭证建立新的隔离登录会话重试：{str(exc)[:240]}")
         return OpenAIEmailRegisterFlow(

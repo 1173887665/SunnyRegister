@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from unittest.mock import Mock, patch
 
+import pytest
+
 from sunny_core.browser_traffic import ProxyTrafficMeter
 from sunny_core.mailbox import MailAccount
 from sunny_core.protocol_auth import (
@@ -93,6 +95,19 @@ def test_protocol_challenge_error_omits_upstream_html() -> None:
     assert "HTTP 403" in str(error)
     assert "HTML challenge page was omitted" in str(error)
     assert "<html>" not in str(error)
+
+
+def test_protocol_account_deactivated_error_is_not_misclassified_as_challenge() -> None:
+    response = FakeResponse(
+        status_code=403,
+        text='{"error":{"code":"account_deactivated","message":"account disabled"}}',
+    )
+
+    error = _response_error(response, "Verify ChatGPT password")
+
+    assert isinstance(error, ProtocolRegistrationError)
+    assert not isinstance(error, ProtocolChallengeRequired)
+    assert "account_deactivated" in str(error)
 
 
 def test_protocol_request_retries_transient_connection_reset() -> None:
@@ -460,6 +475,20 @@ def test_protocol_rejected_totp_restarts_with_mailbox_otp() -> None:
 
     assert result["access_token"] == "access"
     flow._restart_with_email_login.assert_called_once()
+
+
+def test_protocol_account_deactivated_after_password_does_not_enter_totp() -> None:
+    account = MailAccount(
+        "user@outlook.com", "mail-password", "client", "refresh", "raw",
+        chatgpt_password="ChatGPT-password", totp_secret="JBSWY3DPEHPK3PXP",
+    )
+    flow = ProtocolRegistrationFlow(account, existing_account=True, session=FakeSession([]))
+
+    with pytest.raises(ProtocolRegistrationError, match="account_deactivated"):
+        flow._complete_mfa({
+            "page": {"type": "account_deactivated"},
+            "continue_url": "https://auth.openai.com/account-disabled",
+        })
 
 
 def test_protocol_security_change_refresh_reuses_cookie_session_and_ls() -> None:

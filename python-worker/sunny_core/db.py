@@ -681,7 +681,7 @@ class SunnyDB:
             marks = ",".join("?" for _ in ids)
             rows = self.conn.execute(f"select * from sunny_mailboxes where id in ({marks}) order by id asc", ids).fetchall()
         else:
-            sql = "select * from sunny_mailboxes where enabled=1 and coalesce(status,'') not in ('disabled') order by id asc"
+            sql = "select * from sunny_mailboxes where enabled=1 and coalesce(status,'') not in ('disabled','已封禁','banned') order by id asc"
             if limit:
                 sql += f" limit {int(limit)}"
             rows = self.conn.execute(sql).fetchall()
