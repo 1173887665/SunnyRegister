@@ -43,6 +43,10 @@ type sunnyAccessTokenResult struct {
 }
 
 func (s *Server) createSunnyAccessTokenRenewalTask(sourceTask *Task, source string, accountIDs []uint) Task {
+	accountIDs = s.filterActiveSunnyRenewalAccounts(accountIDs)
+	if len(accountIDs) == 0 {
+		return Task{}
+	}
 	concurrency := intValue(strings.TrimSpace(os.Getenv("SUNNY_AT_RENEWAL_CONCURRENCY")), 3)
 	if concurrency < 1 {
 		concurrency = 1
@@ -57,6 +61,37 @@ func (s *Server) createSunnyAccessTokenRenewalTask(sourceTask *Task, source stri
 	renewalTask := s.createTask("sunny_refresh_session", "sunny", refreshPayload, len(accountIDs))
 	s.appendTaskEvent(sourceTask.ID, fmt.Sprintf("检测到 %d 个无效 AT，已创建续期任务", len(accountIDs)), "log", "warning", map[string]any{"renewal_task_id": renewalTask.ID})
 	return renewalTask
+}
+
+func (s *Server) filterActiveSunnyRenewalAccounts(accountIDs []uint) []uint {
+	requested := make(map[uint]bool, len(accountIDs))
+	for _, accountID := range accountIDs {
+		if accountID != 0 {
+			requested[accountID] = true
+		}
+	}
+	if len(requested) == 0 {
+		return nil
+	}
+	var tasks []Task
+	if err := s.db.Where("type = ? AND status NOT IN ?", "sunny_refresh_session", []string{TaskSucceeded, TaskFailed, TaskInterrupted, TaskCancelled}).Find(&tasks).Error; err != nil {
+		return accountIDs
+	}
+	active := make(map[uint]bool)
+	for _, task := range tasks {
+		for _, accountID := range uintSlice(jsonMap(task.PayloadJSON)["account_ids"]) {
+			active[accountID] = true
+		}
+	}
+	filtered := make([]uint, 0, len(requested))
+	seen := make(map[uint]bool)
+	for _, accountID := range accountIDs {
+		if accountID != 0 && !active[accountID] && !seen[accountID] {
+			filtered = append(filtered, accountID)
+			seen[accountID] = true
+		}
+	}
+	return filtered
 }
 
 func defaultSunnyMaintenanceConfig() map[string]any {
@@ -430,6 +465,10 @@ func (s *Server) executeSunnyAccessTokenCheckTask(task *Task, payload map[string
 	invalidAccounts := []uint{}
 	invalidSessions := []uint{}
 	seenAccounts := map[uint]bool{}
+	accountBySession := make(map[uint]uint, len(candidates))
+	for _, candidate := range candidates {
+		accountBySession[candidate.SessionID] = candidate.AccountID
+	}
 	items := make([]any, 0, len(candidates))
 	batchSize := s.sunnyAccessTokenCheckBatchSize()
 	concurrency := s.sunnyAccessTokenCheckConcurrency()
@@ -483,10 +522,25 @@ func (s *Server) executeSunnyAccessTokenCheckTask(task *Task, payload map[string
 		}
 	}
 	if len(invalidAccounts) > 0 {
-		renewalTask := s.createSunnyAccessTokenRenewalTask(task, "access_token_check", invalidAccounts)
-		result["renewal_task_id"] = renewalTask.ID
-		result["renewal_queued"] = len(invalidAccounts)
-		result["invalid_session_ids"] = invalidSessions
+		renewalAccounts := s.filterActiveSunnyRenewalAccounts(invalidAccounts)
+		if len(renewalAccounts) > 0 {
+			renewalTask := s.createSunnyAccessTokenRenewalTask(task, "access_token_check", renewalAccounts)
+			if renewalTask.ID != "" {
+				queuedAccounts := make(map[uint]bool, len(renewalAccounts))
+				for _, accountID := range renewalAccounts {
+					queuedAccounts[accountID] = true
+				}
+				queuedSessions := make([]uint, 0, len(invalidSessions))
+				for _, sessionID := range invalidSessions {
+					if queuedAccounts[accountBySession[sessionID]] {
+						queuedSessions = append(queuedSessions, sessionID)
+					}
+				}
+				result["renewal_task_id"] = renewalTask.ID
+				result["renewal_queued"] = len(renewalAccounts)
+				result["invalid_session_ids"] = queuedSessions
+			}
+		}
 	}
 	result["items"] = items
 	s.completeSunnyAccessTokenCheckTask(task, result)

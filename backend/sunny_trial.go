@@ -63,6 +63,7 @@ type sunnyCheckoutProxyContextKey struct{}
 type sunnyTrialCandidate struct {
 	SessionID   uint
 	AccountID   uint
+	MailboxID   uint
 	Email       string
 	AccessToken string
 	SkipReason  string
@@ -591,8 +592,12 @@ func (s *Server) sunnyTrialCandidates(ids []uint) ([]sunnyTrialCandidate, error)
 		candidate := sunnyTrialCandidate{
 			SessionID:   session.ID,
 			AccountID:   firstUint(session.AccountID, account.ID),
+			MailboxID:   account.MailboxID,
 			Email:       session.Email,
 			AccessToken: firstText(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken),
+		}
+		if candidate.MailboxID == 0 {
+			candidate.MailboxID = mailboxes[sunnyEmailKey(session.Email)].ID
 		}
 		if !sunnyTrialApplies(text(item["status"]), text(item["plan_type"])) {
 			candidate.SkipReason = "仅已注册且套餐为 free 的账户支持试用资格检测"
@@ -602,6 +607,46 @@ func (s *Server) sunnyTrialCandidates(ids []uint) ([]sunnyTrialCandidate, error)
 		candidates = append(candidates, candidate)
 	}
 	return candidates, nil
+}
+
+func (s *Server) persistSunnyTrialSidecars(candidate sunnyTrialCandidate, accountUpdates, mailboxUpdates map[string]any) error {
+	tx := s.db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	accountQuery := tx.Model(&SunnyAccount{})
+	if candidate.AccountID != 0 {
+		accountQuery = accountQuery.Where("id = ?", candidate.AccountID)
+	} else {
+		accountQuery = accountQuery.Where("lower(trim(email)) = lower(trim(?))", candidate.Email)
+	}
+	var account SunnyAccount
+	if err := accountQuery.First(&account).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("账户 %s 不存在，试用资格未保存", candidate.Email)
+	}
+	accountResult := tx.Model(&SunnyAccount{}).Where("id = ?", account.ID).Updates(accountUpdates)
+	if accountResult.Error != nil {
+		tx.Rollback()
+		return accountResult.Error
+	}
+	mailboxQuery := tx.Model(&SunnyMailbox{})
+	if candidate.MailboxID != 0 {
+		mailboxQuery = mailboxQuery.Where("id = ?", candidate.MailboxID)
+	} else {
+		mailboxQuery = mailboxQuery.Where("lower(trim(email)) = lower(trim(?))", candidate.Email)
+	}
+	var mailbox SunnyMailbox
+	if err := mailboxQuery.First(&mailbox).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("邮箱 %s 不存在，试用资格未保存", candidate.Email)
+	}
+	mailboxResult := tx.Model(&SunnyMailbox{}).Where("id = ?", mailbox.ID).Updates(mailboxUpdates)
+	if mailboxResult.Error != nil {
+		tx.Rollback()
+		return mailboxResult.Error
+	}
+	return tx.Commit().Error
 }
 
 func (s *Server) activeSunnyTrialSessionIDs() (map[uint]bool, error) {
@@ -689,6 +734,10 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 	invalidSessions := []uint{}
 	seenAccounts := map[uint]bool{}
 	items := make([]any, 0, len(candidates))
+	candidateBySession := make(map[uint]sunnyTrialCandidate, len(candidates))
+	for _, candidate := range candidates {
+		candidateBySession[candidate.SessionID] = candidate
+	}
 	batchSize := s.sunnyTrialBatchSize()
 	concurrency := s.sunnyTrialConcurrency()
 	for start := 0; start < len(candidates); start += batchSize {
@@ -732,10 +781,12 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 			case outcome.Error != "":
 				result["failed"] = result["failed"].(int) + 1
 				item["status"], item["error"] = "failed", outcome.Error
-				updates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now,
+				accountUpdates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now,
 					"checkout_kind": sunnyCheckoutUnknown, "payment_methods_json": "[]", "commerce_check_error": outcome.Error, "commerce_checked_at": now}
-				s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).Updates(updates)
-				s.db.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).Updates(map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now})
+				mailboxUpdates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now}
+				if persistErr := s.persistSunnyTrialSidecars(candidateBySession[outcome.SessionID], accountUpdates, mailboxUpdates); persistErr != nil {
+					item["status"], item["error"] = "failed", persistErr.Error()
+				}
 			default:
 				eligibility := normalizeSunnyTrialEligibility(outcome.Eligibility)
 				checkoutKind := normalizeSunnyCheckoutKind(outcome.CheckoutKind)
@@ -771,16 +822,7 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 					"checkout_kind": checkoutKind, "payment_methods_json": paymentJSON, "commerce_check_error": commerceError, "commerce_checked_at": now,
 				}
 				mailboxUpdates := map[string]any{"trial_eligibility": eligibility, "trial_check_error": outcome.TrialError, "trial_checked_at": now}
-				tx := s.db.Begin()
-				updateErr := tx.Model(&SunnyAccount{}).Where("email = ?", outcome.Email).Updates(accountUpdates).Error
-				if updateErr == nil {
-					updateErr = tx.Model(&SunnyMailbox{}).Where("email = ?", outcome.Email).Updates(mailboxUpdates).Error
-				}
-				if updateErr == nil {
-					updateErr = tx.Commit().Error
-				} else {
-					tx.Rollback()
-				}
+				updateErr := s.persistSunnyTrialSidecars(candidateBySession[outcome.SessionID], accountUpdates, mailboxUpdates)
 				if updateErr != nil {
 					result["failed"] = result["failed"].(int) + 1
 					item["status"], item["error"] = "failed", updateErr.Error()
@@ -805,10 +847,25 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 		}
 	}
 	if len(invalidAccounts) > 0 {
-		renewalTask := s.createSunnyAccessTokenRenewalTask(task, "trial_check", invalidAccounts)
-		result["renewal_task_id"] = renewalTask.ID
-		result["renewal_queued"] = len(invalidAccounts)
-		result["invalid_session_ids"] = invalidSessions
+		renewalAccounts := s.filterActiveSunnyRenewalAccounts(invalidAccounts)
+		if len(renewalAccounts) > 0 {
+			renewalTask := s.createSunnyAccessTokenRenewalTask(task, "trial_check", renewalAccounts)
+			if renewalTask.ID != "" {
+				queuedAccounts := make(map[uint]bool, len(renewalAccounts))
+				for _, accountID := range renewalAccounts {
+					queuedAccounts[accountID] = true
+				}
+				queuedSessions := make([]uint, 0, len(invalidSessions))
+				for _, sessionID := range invalidSessions {
+					if queuedAccounts[candidateBySession[sessionID].AccountID] {
+						queuedSessions = append(queuedSessions, sessionID)
+					}
+				}
+				result["renewal_task_id"] = renewalTask.ID
+				result["renewal_queued"] = len(renewalAccounts)
+				result["invalid_session_ids"] = queuedSessions
+			}
+		}
 	}
 	result["items"] = items
 	s.completeSunnyTrialTask(task, result)

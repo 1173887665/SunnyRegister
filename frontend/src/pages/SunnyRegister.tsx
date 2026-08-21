@@ -273,6 +273,7 @@ type PersistentSessionTask = {
   dismissedEmails: string[];
   isBatch?: boolean;
   localOnly?: boolean;
+  renewalNeedsVerification?: boolean;
   error?: string;
 };
 type PersistentSessionTaskSnapshot = { tasks: PersistentSessionTask[] };
@@ -287,7 +288,7 @@ function readPersistentSessionTasks(): PersistentSessionTask[] {
     const value = JSON.parse(window.localStorage.getItem(SESSION_TASK_STORAGE_KEY) || "[]");
     return Array.isArray(value) ? value
       .filter((item) => item?.clientId && item?.taskId && Array.isArray(item?.sessionIds))
-      .map((item) => ({ ...item, state: "running" as SessionTaskState, progress: item.progress || {}, dismissedEmails: [] })) : [];
+      .map((item) => ({ ...item, state: "running" as SessionTaskState, progress: item.progress || {}, dismissedEmails: [], renewalNeedsVerification: item.kind === "refresh-at" })) : [];
   } catch {
     return [];
   }
@@ -434,6 +435,9 @@ function ensureSessionTaskPolling(task: PersistentSessionTask, initial?: AnyObj)
   const promise = (async () => {
     let since = 0;
     let current = initial || await apiFetch(`/tasks/${task.taskId}`);
+    if (!current.terminal && task.kind === "refresh-at" && task.renewalNeedsVerification) {
+      updateSessionTask(task.clientId, (item) => ({ ...item, renewalNeedsVerification: false }));
+    }
     while (!current.terminal) {
       const eventResult = await apiFetch(`/tasks/${task.taskId}/events?since=${since}`).catch(() => ({ items: [] }));
       const events = Array.isArray(eventResult.items) ? eventResult.items : [];
@@ -3292,7 +3296,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const batchPaymentProbeBusy = activeTaskForKind("payment-probe").some((task)=>task.isBatch);
   const batchATCheckBusy = activeTaskForKind("access-token-check").some((task)=>task.isBatch);
   const batchSub2Busy = activeTaskForKind("sub2-import").some((task)=>task.isBatch);
-  const activeRenewalTasks = persistentTasks.filter((task)=>task.kind==="refresh-at" && task.state==="running" && task.taskId);
+  const activeRenewalTasks = persistentTasks.filter((task)=>task.kind==="refresh-at" && task.state==="running" && task.taskId && !task.renewalNeedsVerification);
   const [stoppingRenewalTaskIds,setStoppingRenewalTaskIds]=useState<string[]>([]);
   const stoppingRenewal = activeRenewalTasks.some((task)=>stoppingRenewalTaskIds.includes(task.taskId));
   const refreshingSessionIds = Array.from(new Set(persistentTasks.filter((task)=>task.kind==="refresh-at" && task.state==="running").flatMap((task)=>task.sessionIds)));

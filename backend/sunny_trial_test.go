@@ -209,6 +209,31 @@ func TestSunnyTrialInvalidTokenClearsEligibilityAndMarksATInvalid(t *testing.T) 
 	}
 }
 
+func TestSunnyTrialDoesNotQueueDuplicateRenewalForActiveAccount(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	session := prepareSunnyTrialAccount(t, s)
+	activeRenewal := s.createTask("sunny_refresh_session", "sunny", map[string]any{"account_ids": []uint{session.AccountID}}, 1)
+	previousCheck := sunnyCheckTrialEligibility
+	sunnyCheckTrialEligibility = func(context.Context, string) (bool, string, bool, error) {
+		return false, "accessToken 无效或已过期", true, fmt.Errorf("accessToken 无效或已过期")
+	}
+	t.Cleanup(func() { sunnyCheckTrialEligibility = previousCheck })
+
+	task := s.createTask(sunnyTrialTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
+	s.executeSunnyTrialTask(&task, map[string]any{"session_ids": []uint{session.ID}})
+	result := jsonMap(task.ResultJSON)
+	if text(result["renewal_task_id"]) != "" || intValue(result["renewal_queued"], 0) != 0 {
+		t.Fatalf("duplicate renewal task was queued: %#v", result)
+	}
+	var renewals []Task
+	if err := s.db.Where("type = ?", "sunny_refresh_session").Find(&renewals).Error; err != nil {
+		t.Fatalf("load renewal tasks: %v", err)
+	}
+	if len(renewals) != 1 || renewals[0].ID != activeRenewal.ID {
+		t.Fatalf("unexpected renewal tasks: %#v", renewals)
+	}
+}
+
 func TestSunnyTrialEligibilityCanBeEditedFromSessionAndMailbox(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	session := prepareSunnyTrialAccount(t, s)
