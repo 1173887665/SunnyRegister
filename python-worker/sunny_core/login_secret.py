@@ -593,6 +593,7 @@ class LoginSecretSetupFlow:
         submitted_recent_code = False
         rejected_codes: set[str] = set()
         totp_used = False
+        totp_submitted_at = 0.0
         password_used = False
         email_code_min_timestamp = min_timestamp
         while time.time() < deadline:
@@ -637,14 +638,22 @@ class LoginSecretSetupFlow:
                 is_totp = explicit_totp or bool(
                     password_used and self.account.totp_secret and not explicit_email
                 )
-                if is_totp and not totp_used:
-                    if not self.account.totp_secret:
-                        raise RuntimeError("重认证要求 TOTP，但账户没有 2FA 密钥")
-                    if not self._fill_code(page, generate_totp(self.account.totp_secret)):
-                        raise RuntimeError("TOTP 重认证输入失败")
-                    totp_used = True
-                    self.log("[登录密钥] AT 刷新重认证：已提交 2FA 动态验证码")
-                    self._sleep(2)
+                if is_totp:
+                    if not totp_used:
+                        if not self.account.totp_secret:
+                            raise RuntimeError("重认证要求 TOTP，但账户没有 2FA 密钥")
+                        if not self._fill_code(page, generate_totp(self.account.totp_secret)):
+                            raise RuntimeError("TOTP 重认证输入失败")
+                        totp_used = True
+                        totp_submitted_at = time.time()
+                        self.log("[登录密钥] AT 刷新重认证：已提交 2FA 动态验证码")
+                        self._sleep(2)
+                        continue
+                    if self._email_code_rejected(state):
+                        raise RuntimeError("AT 刷新登录的 2FA 动态验证码未通过验证")
+                    if totp_submitted_at > 0 and time.time() - totp_submitted_at >= 30:
+                        raise TimeoutError("AT 刷新登录提交 2FA 后 30 秒内未完成跳转")
+                    self._sleep(0.75)
                     continue
                 if not email_code_used:
                     if not allow_email_fallback:

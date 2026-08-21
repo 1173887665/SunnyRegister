@@ -982,6 +982,54 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(any("已提交 ChatGPT 密码" in item for item in flow.logs))
         self.assertTrue(any("已提交 2FA 动态验证码" in item for item in flow.logs))
 
+    def test_at_refresh_waits_when_totp_input_remains_visible_during_navigation(self):
+        class Page:
+            url = "https://auth.openai.com/authorize"
+
+        class Flow(LoginSecretSetupFlow):
+            def __init__(self):
+                super().__init__(self_account, {}, "")
+                self.totp_submitted = False
+                self.waited_after_totp = False
+
+            def _page_state(self, _page):
+                return {
+                    "url": "https://auth.openai.com/authorize",
+                    "passwordInputs": 0,
+                    "codeInputs": 1,
+                    "text": "認証アプリの認証コードを入力してください",
+                }
+
+            def _fill_code(self, _page, _code):
+                self.totp_submitted = True
+                return True
+
+            def _sleep(self, seconds):
+                if self.totp_submitted and seconds < 1:
+                    self.waited_after_totp = True
+                    page.url = "https://chatgpt.com/"
+
+            def _session_json(self, _page):
+                return {"accessToken": "new-token"}
+
+            def _reader_instance(self):
+                raise AssertionError("TOTP 跳转等待期间不得读取邮箱验证码")
+
+        self_account = self._account()
+        self_account.totp_secret = "JBSWY3DPEHPK3PXP"
+        page = Page()
+        flow = Flow()
+        with patch("sunny_core.login_secret.generate_totp", return_value="654321"):
+            flow._complete_reauthentication(
+                page,
+                time.time(),
+                "ChatGPT-password",
+                allow_email_fallback=False,
+            )
+
+        self.assertTrue(flow.totp_submitted)
+        self.assertTrue(flow.waited_after_totp)
+
     def test_password_reauthentication_always_reads_a_fresh_mailbox_code(self):
         class Reader:
             def wait_for_code(self, min_timestamp):
