@@ -1184,6 +1184,23 @@ def _sub2api_login_secret(db: SunnyDB, email: str, session: dict[str, Any]) -> s
     return ""
 
 
+def _login_secret_result_message(result: dict[str, Any]) -> str:
+    errors = "；".join(str(item) for item in (result.get("errors") or []) if str(item).strip()) or "未知原因"
+    password_complete = bool(result.get("password"))
+    totp_complete = bool(result.get("totp_secret"))
+    access_token_refreshed = bool(result.get("access_token_refreshed"))
+    if result.get("complete"):
+        return "ChatGPT 密码、2FA 与最新 Access Token 已全部完成"
+    if password_complete and totp_complete:
+        at_status = "已更新" if access_token_refreshed else "更新未完成"
+        return f"ChatGPT 密码与 2FA 已成功并保存，Access Token {at_status}：{errors}"
+    if password_complete:
+        return f"ChatGPT 密码已成功并保存，2FA 未完成，Access Token 未刷新：{errors}"
+    if totp_complete:
+        return f"ChatGPT 2FA 已保存，但密码未完成，Access Token 未刷新：{errors}"
+    return f"ChatGPT 密码与 2FA 均未完成，Access Token 未刷新：{errors}"
+
+
 def _import_sub2api_agent_identity(
     db: SunnyDB,
     email: str,
@@ -1924,12 +1941,22 @@ def _run_one(
                 if isinstance(login_secret_result.get("session"), dict):
                     session = login_secret_result["session"]
                 if login_secret_result.get("complete"):
-                    db.event(f"[{email}] [登录密钥] ChatGPT 密码与 2FA 已设置完成", detail={"email": email, "scope": "selected", "login_secret_complete": True})
+                    db.event(
+                        f"[{email}] [登录密钥] {_login_secret_result_message(login_secret_result)}",
+                        detail={"email": email, "scope": "selected", "login_secret_complete": True},
+                    )
                 else:
                     db.event(
-                        f"[{email}] [登录密钥] 账户已注册，但登录密钥未全部完成：{'；'.join(login_secret_result.get('errors') or ['未知原因'])}",
+                        f"[{email}] [登录密钥] {_login_secret_result_message(login_secret_result)}",
                         "warning",
-                        detail={"email": email, "scope": "selected", "login_secret_complete": False},
+                        detail={
+                            "email": email,
+                            "scope": "selected",
+                            "login_secret_complete": False,
+                            "password_complete": bool(login_secret_result.get("password")),
+                            "totp_complete": bool(login_secret_result.get("totp_secret")),
+                            "access_token_refreshed": bool(login_secret_result.get("access_token_refreshed")),
+                        },
                     )
             except Exception as exc:
                 if _is_cancel_exception(exc):
@@ -1944,12 +1971,22 @@ def _run_one(
             if isinstance(login_secret_result.get("session"), dict):
                 session = login_secret_result["session"]
             if login_secret_result.get("complete"):
-                db.event(f"[{email}] [登录密钥] ChatGPT 密码与 2FA 已设置完成", detail={"email": email, "scope": "selected", "login_secret_complete": True})
+                db.event(
+                    f"[{email}] [登录密钥] {_login_secret_result_message(login_secret_result)}",
+                    detail={"email": email, "scope": "selected", "login_secret_complete": True},
+                )
             else:
                 db.event(
-                    f"[{email}] [登录密钥] 账户已注册，但登录密钥未全部完成：{'；'.join(login_secret_result.get('errors') or ['未知原因'])}",
+                    f"[{email}] [登录密钥] {_login_secret_result_message(login_secret_result)}",
                     "warning",
-                    detail={"email": email, "scope": "selected", "login_secret_complete": False},
+                    detail={
+                        "email": email,
+                        "scope": "selected",
+                        "login_secret_complete": False,
+                        "password_complete": bool(login_secret_result.get("password")),
+                        "totp_complete": bool(login_secret_result.get("totp_secret")),
+                        "access_token_refreshed": bool(login_secret_result.get("access_token_refreshed")),
+                    },
                 )
         if session.get("phone_binding_skipped_reason"):
             phone_skipped_reason = str(session.get("phone_binding_skipped_reason") or "")

@@ -211,6 +211,46 @@ class LoginSecretTests(unittest.TestCase):
         self.assertFalse(result["access_token_refreshed"])
         self.assertTrue(any("添加2FA失败" in error for error in result["errors"]))
 
+    def test_browser_password_failure_skips_two_factor_step(self):
+        class Flow(LoginSecretSetupFlow):
+            def _session_json(self, _page):
+                return {"accessToken": "current-token"}
+
+            def _add_password(self, _page):
+                raise RuntimeError("password failed")
+
+            def _setup_2fa(self, _page, _password):
+                raise AssertionError("2FA must not run before password succeeds")
+
+        account = self._account()
+        account.chatgpt_password = ""
+        account.totp_secret = ""
+        result = Flow(account, {"access_token": "current-token"}, "")._run_on_page(
+            Mock(), Mock(storage_state=lambda: {"cookies": []})
+        )
+        self.assertFalse(result["complete"])
+        self.assertTrue(any("添加密码失败" in error for error in result["errors"]))
+        self.assertTrue(any("添加2FA未执行" in error for error in result["errors"]))
+
+    def test_protocol_password_failure_skips_two_factor_step(self):
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def _session_json(self):
+                return {"accessToken": "current-token"}
+
+            def _add_password(self, _password):
+                raise RuntimeError("password failed")
+
+            def _setup_2fa(self, _access_token):
+                raise AssertionError("2FA must not run before password succeeds")
+
+        account = self._account()
+        account.chatgpt_password = ""
+        account.totp_secret = ""
+        result = Flow(account, {"access_token": "current-token"}, object()).run()
+        self.assertFalse(result["complete"])
+        self.assertTrue(any("添加密码失败" in error for error in result["errors"]))
+        self.assertTrue(any("添加2FA未执行" in error for error in result["errors"]))
+
     def test_login_secret_is_incomplete_when_reauthentication_returns_old_access_token(self):
         class Flow(LoginSecretSetupFlow):
             def __init__(self, account):
@@ -703,6 +743,60 @@ class LoginSecretTests(unittest.TestCase):
         self.assertEqual(flow.reader_stub.timestamps[0], flow.reader_stub.timestamps[-1])
         self.assertEqual(flow.logs.count("[登录密钥] 优先复用本次注册刚使用的邮箱验证码"), 1)
         self.assertEqual(flow.logs.count("[登录密钥] 注册阶段验证码无法用于重认证，将等待新的邮箱验证码"), 1)
+
+    def test_at_refresh_reauthentication_recognizes_japanese_totp_after_password(self):
+        class Flow(LoginSecretSetupFlow):
+            def __init__(self):
+                super().__init__(self_account, {}, "")
+                self.phase = "password"
+                self.used_totp = ""
+                self.logs = []
+                self.log = self.logs.append
+
+            def _page_state(self, _page):
+                if self.phase == "password":
+                    return {
+                        "url": "https://auth.openai.com/authorize",
+                        "passwordInputs": 1,
+                        "codeInputs": 0,
+                        "text": "パスワードを入力してください",
+                    }
+                return {
+                    "url": "https://auth.openai.com/authorize",
+                    "passwordInputs": 0,
+                    "codeInputs": 1,
+                    "text": "認証アプリの認証コードを入力してください",
+                }
+
+            def _submit_password(self, _page, _password):
+                self.phase = "totp"
+                return True
+
+            def _fill_code(self, page, code):
+                self.used_totp = code
+                page.url = "https://chatgpt.com/"
+                return True
+
+            def _session_json(self, _page):
+                if not self.used_totp:
+                    raise RuntimeError("not authenticated")
+                return {"accessToken": "new-token"}
+
+            def _reader_instance(self):
+                raise AssertionError("TOTP page must not read an email code")
+
+            def _sleep(self, _seconds):
+                return None
+
+        self_account = self._account()
+        self_account.totp_secret = "JBSWY3DPEHPK3PXP"
+        page = type("Page", (), {"url": "https://auth.openai.com/authorize"})()
+        flow = Flow()
+        with patch("sunny_core.login_secret.generate_totp", return_value="654321"):
+            flow._complete_reauthentication(page, time.time(), "ChatGPT-password")
+        self.assertEqual(flow.used_totp, "654321")
+        self.assertTrue(any("已提交 ChatGPT 密码" in item for item in flow.logs))
+        self.assertTrue(any("已提交 2FA 动态验证码" in item for item in flow.logs))
 
     def test_password_reauthentication_always_reads_a_fresh_mailbox_code(self):
         class Reader:

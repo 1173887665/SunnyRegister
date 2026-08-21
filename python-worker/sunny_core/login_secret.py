@@ -568,6 +568,7 @@ class LoginSecretSetupFlow:
                 if not password or not self._submit_password(page, password):
                     raise RuntimeError("重认证要求密码，但密码输入未能提交")
                 password_used = True
+                self.log("[登录密钥] AT 刷新重认证：已提交 ChatGPT 密码")
                 self._sleep(2)
                 continue
             if state.get("codeInputs"):
@@ -579,13 +580,25 @@ class LoginSecretSetupFlow:
                     submitted_recent_code = False
                     email_code_min_timestamp = min_timestamp
                     continue
-                is_totp = "mfa" in url or "authenticator" in str(state.get("text") or "").lower()
+                page_text = str(state.get("text") or "").lower()
+                explicit_totp = any(marker in f"{url} {page_text}" for marker in (
+                    "mfa", "totp", "authenticator", "two-factor", "2fa",
+                    "認証アプリ", "認証コード", "两步验证", "双重验证", "身份验证器",
+                    "인증 앱", "인증 코드",
+                ))
+                explicit_email = any(marker in page_text for marker in (
+                    "email", "e-mail", "メール", "邮箱", "郵箱", "이메일",
+                ))
+                is_totp = explicit_totp or bool(
+                    password_used and self.account.totp_secret and not explicit_email
+                )
                 if is_totp and not totp_used:
                     if not self.account.totp_secret:
                         raise RuntimeError("重认证要求 TOTP，但账户没有 2FA 密钥")
                     if not self._fill_code(page, generate_totp(self.account.totp_secret)):
                         raise RuntimeError("TOTP 重认证输入失败")
                     totp_used = True
+                    self.log("[登录密钥] AT 刷新重认证：已提交 2FA 动态验证码")
                     self._sleep(2)
                     continue
                 if not email_code_used:
@@ -1077,17 +1090,21 @@ class LoginSecretSetupFlow:
                 self.log("[登录密钥] ChatGPT 密码添加成功")
             except Exception as exc:
                 result["errors"].append(f"添加密码失败: {exc}")
-                self.log(f"[登录密钥] ChatGPT 密码添加失败，将继续尝试 2FA：{str(exc)[:240]}")
+                self.log(f"[登录密钥] ChatGPT 密码添加失败，将跳过 2FA 并保留当前状态：{str(exc)[:240]}")
         if not self.account.totp_secret:
             self._progress("login_secret_2fa")
-            self.log("[登录密钥] 开始添加 ChatGPT 2FA")
-            try:
-                secret, current_session = self._setup_2fa(page, self.account.chatgpt_password)
-                result.update({"totp_secret": secret, "totp_added": True})
-                self.log("[登录密钥] ChatGPT 2FA 添加成功")
-            except Exception as exc:
-                result["errors"].append(f"添加2FA失败: {exc}")
-                self.log(f"[登录密钥] ChatGPT 2FA 添加失败，保留已完成步骤：{str(exc)[:240]}")
+            if not result.get("password"):
+                result["errors"].append("添加2FA未执行: ChatGPT 密码尚未完成")
+                self.log("[登录密钥] ChatGPT 密码尚未完成，按顺序跳过 2FA 设置")
+            else:
+                self.log("[登录密钥] ChatGPT 密码已确认，开始添加 2FA")
+                try:
+                    secret, current_session = self._setup_2fa(page, self.account.chatgpt_password)
+                    result.update({"totp_secret": secret, "totp_added": True})
+                    self.log("[登录密钥] ChatGPT 2FA 添加成功")
+                except Exception as exc:
+                    result["errors"].append(f"添加2FA失败: {exc}")
+                    self.log(f"[登录密钥] ChatGPT 2FA 添加失败，保留已完成的密码：{str(exc)[:240]}")
         security_changed = bool(result["password_added"] or result["totp_added"])
         security_complete = bool(result.get("password") and result.get("totp_secret"))
         should_refresh_access_token = security_complete and (security_changed or self.force_access_token_refresh)
@@ -1108,11 +1125,14 @@ class LoginSecretSetupFlow:
             and result.get("totp_secret")
             and (not should_refresh_access_token or result["access_token_refreshed"])
         )
+        at_status = "已更新" if result.get("access_token_refreshed") else (
+            "更新失败" if should_refresh_access_token else "未触发"
+        )
         self.log(
             "[登录密钥] 流程完成："
             f"密码={'已完成' if result.get('password') else '未完成'}，"
             f"2FA={'已完成' if result.get('totp_secret') else '未完成'}，"
-            f"AT={'已更新' if result.get('access_token_refreshed') else '未更新'}"
+            f"AT={at_status}"
         )
         self._progress("login_secret_completed" if result["complete"] else "login_secret_failed")
         return result
@@ -1531,22 +1551,26 @@ class ProtocolLoginSecretSetupFlow:
                     self.log("[登录密钥] ChatGPT 密码添加成功")
                 except Exception as exc:
                     result["errors"].append(f"添加密码失败: {exc}")
-                    self.log(f"[登录密钥] ChatGPT 密码添加失败，将继续尝试 2FA：{str(exc)[:240]}")
+                    self.log(f"[登录密钥] ChatGPT 密码添加失败，将跳过 2FA 并保留当前状态：{str(exc)[:240]}")
                     if exc.__class__.__name__ == "ProtocolChallengeRequired":
                         result["browser_challenge_required"] = True
             if not self.account.totp_secret:
                 self.on_progress("login_secret_2fa")
-                self.log("[登录密钥] 开始添加 ChatGPT 2FA")
-                try:
-                    access_token = str(current_session.get("accessToken") or current_session.get("access_token") or self.session.get("access_token") or "")
-                    secret, current_session = self._setup_2fa(access_token)
-                    result.update({"totp_secret": secret, "totp_added": True})
-                    self.log("[登录密钥] ChatGPT 2FA 添加成功")
-                except Exception as exc:
-                    result["errors"].append(f"添加2FA失败: {exc}")
-                    self.log(f"[登录密钥] ChatGPT 2FA 添加失败，保留已完成步骤：{str(exc)[:240]}")
-                    if exc.__class__.__name__ == "ProtocolChallengeRequired":
-                        result["browser_challenge_required"] = True
+                if not result.get("password"):
+                    result["errors"].append("添加2FA未执行: ChatGPT 密码尚未完成")
+                    self.log("[登录密钥] ChatGPT 密码尚未完成，按顺序跳过 2FA 设置")
+                else:
+                    self.log("[登录密钥] ChatGPT 密码已确认，开始添加 2FA")
+                    try:
+                        access_token = str(current_session.get("accessToken") or current_session.get("access_token") or self.session.get("access_token") or "")
+                        secret, current_session = self._setup_2fa(access_token)
+                        result.update({"totp_secret": secret, "totp_added": True})
+                        self.log("[登录密钥] ChatGPT 2FA 添加成功")
+                    except Exception as exc:
+                        result["errors"].append(f"添加2FA失败: {exc}")
+                        self.log(f"[登录密钥] ChatGPT 2FA 添加失败，保留已完成的密码：{str(exc)[:240]}")
+                        if exc.__class__.__name__ == "ProtocolChallengeRequired":
+                            result["browser_challenge_required"] = True
             security_changed = bool(result["password_added"] or result["totp_added"])
             security_complete = bool(result.get("password") and result.get("totp_secret"))
             should_refresh_access_token = security_complete and security_changed
@@ -1569,11 +1593,14 @@ class ProtocolLoginSecretSetupFlow:
                 and result.get("totp_secret")
                 and (not should_refresh_access_token or result["access_token_refreshed"])
             )
+            at_status = "已更新" if result.get("access_token_refreshed") else (
+                "更新失败" if should_refresh_access_token else "未触发"
+            )
             self.log(
                 "[登录密钥] 流程完成："
                 f"密码={'已完成' if result.get('password') else '未完成'}，"
                 f"2FA={'已完成' if result.get('totp_secret') else '未完成'}，"
-                f"AT={'已更新' if result.get('access_token_refreshed') else '未更新'}"
+                f"AT={at_status}"
             )
             self.on_progress("login_secret_completed" if result["complete"] else "login_secret_failed")
             return result

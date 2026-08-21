@@ -80,6 +80,18 @@ def mailbox(status="未注册", openai_rt="") -> dict:
 
 
 class StageStatusTests(unittest.TestCase):
+    def test_login_secret_result_message_distinguishes_credentials_from_at_refresh(self):
+        message = worker._login_secret_result_message({
+            "password": "password",
+            "totp_secret": "totp-secret",
+            "access_token_refreshed": False,
+            "complete": False,
+            "errors": ["刷新 ChatGPT Access Token 失败"],
+        })
+        self.assertIn("密码与 2FA 已成功并保存", message)
+        self.assertIn("Access Token 更新未完成", message)
+        self.assertNotIn("登录密钥未全部完成", message)
+
     class AboutYouControl:
         def __init__(self, value="", **attributes):
             self.value = value
