@@ -71,6 +71,25 @@ def _invalid_auth_state(result: dict[str, Any] | None, text: str = "") -> bool:
     return "invalid_state" in combined or "sign-in session is no longer valid" in combined
 
 
+def _invalid_auth_step(result: dict[str, Any] | None, text: str = "") -> bool:
+    payload = result if isinstance(result, dict) else {}
+    candidates = [payload, payload.get("data"), payload.get("error")]
+    data = payload.get("data")
+    if isinstance(data, dict):
+        candidates.append(data.get("error"))
+    markers = [str(text or "").lower()]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        markers.extend((
+            str(candidate.get("code") or "").lower(),
+            str(candidate.get("type") or "").lower(),
+            str(candidate.get("message") or candidate.get("detail") or "").lower(),
+        ))
+    combined = " ".join(markers)
+    return "invalid_auth_step" in combined or "invalid authorization step" in combined
+
+
 RECENT_EMAIL_CODE_MAX_AGE_SECONDS = 120
 EMAIL_OTP_INITIAL_WAIT_SECONDS = 120
 EMAIL_OTP_RESEND_WAIT_SECONDS = 60
@@ -1210,6 +1229,7 @@ class ProtocolLoginSecretSetupFlow:
         self.on_progress = on_progress or (lambda _checkpoint: None)
         self.recent_email_code = str(recent_email_code or "").strip()
         self.recent_email_code_at = float(recent_email_code_at or 0.0)
+        self.recent_email_code_attempted = False
         self.reader: Any | None = None
 
     def _check_cancelled(self) -> None:
@@ -1314,7 +1334,13 @@ class ProtocolLoginSecretSetupFlow:
             updated["id_token"] = access_token
         return updated
 
-    def _reauthenticate(self, callback_url: str, *, prefer_recent_email_code: bool = False) -> dict[str, Any]:
+    def _reauthenticate(
+        self,
+        callback_url: str,
+        *,
+        prefer_recent_email_code: bool = False,
+        post_login_add_password: bool = False,
+    ) -> dict[str, Any]:
         status, csrf, text = self._request("GET", f"{CHATGPT_BASE_URL}/api/auth/csrf", headers={"accept": "application/json"})
         csrf = self._require_ok(status, csrf, text, "读取 ChatGPT CSRF")
         csrf_token = str((csrf or {}).get("csrfToken") or "") if isinstance(csrf, dict) else ""
@@ -1322,7 +1348,15 @@ class ProtocolLoginSecretSetupFlow:
             raise RuntimeError("ChatGPT CSRF 响应缺少 csrfToken")
         from urllib.parse import urlencode
 
-        query = urlencode({"connection": "password", "login_hint": self.account.email, "reauth": "password", "max_age": "0"})
+        query_params = {
+            "connection": "password",
+            "login_hint": self.account.email,
+            "reauth": "password",
+            "max_age": "0",
+        }
+        if post_login_add_password:
+            query_params["post_login_add_password"] = "true"
+        query = urlencode(query_params)
         body = urlencode({"callbackUrl": callback_url, "csrfToken": csrf_token, "json": "true"})
         status, payload, text = self._request(
             "POST",
@@ -1340,27 +1374,26 @@ class ProtocolLoginSecretSetupFlow:
             raise RuntimeError(f"加载 ChatGPT 重认证页面失败: HTTP {status} {text[:180]}")
         reader = self._reader_instance()
         code_timestamp = sent_at
-        recent_code_attempted = False
         rejected_codes: set[str] = set()
         resend_attempted = False
         for attempt in range(2):
             using_recent_code = False
             if (
                 prefer_recent_email_code
-                and not recent_code_attempted
+                and not self.recent_email_code_attempted
                 and self._recent_email_code_usable(self.recent_email_code, self.recent_email_code_at)
             ):
                 code = self.recent_email_code
-                recent_code_attempted = True
+                self.recent_email_code_attempted = True
                 using_recent_code = True
                 self.log("[登录密钥] 优先复用注册/登录阶段刚使用的邮箱验证码进行密码重认证")
             else:
                 if (
                     prefer_recent_email_code
-                    and not recent_code_attempted
+                    and not self.recent_email_code_attempted
                     and str(self.recent_email_code or "").strip()
                 ):
-                    recent_code_attempted = True
+                    self.recent_email_code_attempted = True
                     self.log("[登录密钥] 注册/登录阶段邮箱验证码已超过复用窗口，将读取最新验证码")
                 try:
                     code = self._wait_for_distinct_code(
@@ -1432,7 +1465,11 @@ class ProtocolLoginSecretSetupFlow:
         return self._session_json()
 
     def _add_password(self, password: str) -> dict[str, Any]:
-        self._reauthenticate(f"{CHATGPT_BASE_URL}/?action=add_password", prefer_recent_email_code=True)
+        self._reauthenticate(
+            f"{CHATGPT_BASE_URL}/?action=add_password",
+            prefer_recent_email_code=True,
+            post_login_add_password=True,
+        )
         for attempt in range(2):
             status, data, text = self._request(
                 "POST",
@@ -1446,22 +1483,35 @@ class ProtocolLoginSecretSetupFlow:
             if 200 <= status < 300:
                 self.log("[登录密钥] 已通过同一协议登录态添加 ChatGPT 密码（内容不写日志）")
                 return self._session_json()
-            if attempt == 0 and status == 409:
-                if _invalid_auth_state(result, text):
-                    self.log("[登录密钥] 密码认证状态已失效，将在当前协议 Cookie 会话中重新认证一次后重试")
+            invalid_step = _invalid_auth_step(result, text)
+            invalid_state = _invalid_auth_state(result, text)
+            if invalid_step or invalid_state:
+                if attempt == 0:
+                    reason = "认证步骤不匹配" if invalid_step else "认证状态已失效"
+                    self.log(
+                        f"[登录密钥] 密码{reason}，将在当前协议 Cookie 会话中创建一次新的添加密码专用认证事务后重试"
+                    )
                     self._reauthenticate(
                         f"{CHATGPT_BASE_URL}/?action=add_password",
                         prefer_recent_email_code=True,
+                        post_login_add_password=True,
                     )
-                else:
-                    self.log("[登录密钥] 密码协议接口正在同步认证状态，将保持当前登录态后重试")
-                    time.sleep(1.5)
+                    continue
+                from .protocol_auth import ProtocolChallengeRequired
+
+                raise ProtocolChallengeRequired(
+                    "OpenAI 拒绝协议添加密码专用认证事务，需由当前流程的浏览器设置页接管"
+                )
+            if attempt == 0 and status == 409:
+                self.log("[登录密钥] 密码协议接口正在同步认证状态，将保持当前登录态后重试")
+                time.sleep(1.5)
                 continue
             if attempt == 0 and status in {401, 403}:
                 self.log("[登录密钥] 密码协议接口要求重新认证，将最多重认证一次后重试")
                 self._reauthenticate(
                     f"{CHATGPT_BASE_URL}/?action=add_password",
                     prefer_recent_email_code=True,
+                    post_login_add_password=True,
                 )
                 continue
             self._require_ok(status, data, text, "添加 ChatGPT 密码")

@@ -3,7 +3,7 @@ import time
 import json
 from unittest.mock import Mock, patch
 
-from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretSetupFlow, ProtocolLoginSecretSetupFlow, _invalid_auth_state, _password_already_set, _wrong_email_otp, generate_chatgpt_password
+from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretSetupFlow, ProtocolLoginSecretSetupFlow, _invalid_auth_state, _invalid_auth_step, _password_already_set, _wrong_email_otp, generate_chatgpt_password
 from sunny_core.protocol_auth import ProtocolChallengeRequired
 from sunny_core.mailbox import MailAccount, extract_otp
 
@@ -29,6 +29,11 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(_invalid_auth_state({"data": {"error": {"code": "invalid_state"}}}))
         self.assertTrue(_invalid_auth_state(None, "Your sign-in session is no longer valid"))
         self.assertFalse(_invalid_auth_state({"data": {"error": {"code": "conflict"}}}))
+
+    def test_invalid_auth_step_is_recognized(self):
+        self.assertTrue(_invalid_auth_step({"data": {"error": {"code": "invalid_auth_step"}}}))
+        self.assertTrue(_invalid_auth_step(None, "Invalid authorization step."))
+        self.assertFalse(_invalid_auth_step({"data": {"error": {"code": "invalid_state"}}}))
 
     def test_browser_reauthentication_timeout_resends_and_waits_again(self):
         class Reader:
@@ -456,6 +461,96 @@ class LoginSecretTests(unittest.TestCase):
 
         self.assertEqual(result["accessToken"], "new-access-token")
         self.assertEqual(flow._reauthenticate.call_count, 2)
+        for call in flow._reauthenticate.call_args_list:
+            self.assertTrue(call.kwargs["post_login_add_password"])
+
+    def test_protocol_password_reauthentication_uses_dedicated_add_password_transaction(self):
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def __init__(self, account):
+                super().__init__(account, {}, object())
+                self.signin_url = ""
+
+            def _request(self, method, url, **kwargs):
+                if url.endswith("/api/auth/csrf"):
+                    return 200, {"csrfToken": "csrf-token"}, ""
+                if "/api/auth/signin/openai?" in url:
+                    self.signin_url = url
+                    return 200, {"url": "https://auth.openai.com/authorize"}, ""
+                if url.endswith("/api/accounts/email-otp/validate"):
+                    return 200, {"continue_url": "https://chatgpt.com/api/auth/callback/openai"}, ""
+                if url.endswith("/api/auth/session"):
+                    return 200, {"accessToken": "access-token"}, ""
+                return 200, {}, ""
+
+            def _wait_for_code(self, _reader, _min_timestamp, _timeout):
+                return "654321"
+
+        flow = Flow(self._account())
+        flow.reader = object()
+        flow._reauthenticate(
+            "https://chatgpt.com/?action=add_password",
+            post_login_add_password=True,
+        )
+
+        self.assertIn("post_login_add_password=true", flow.signin_url)
+        self.assertIn("reauth=password", flow.signin_url)
+
+    def test_protocol_password_persistent_invalid_auth_step_requires_browser_takeover(self):
+        flow = ProtocolLoginSecretSetupFlow(self._account(), {}, object())
+        flow._reauthenticate = Mock(return_value={"accessToken": "access-token"})
+        invalid_step = (
+            400,
+            {"error": {"code": "invalid_auth_step", "message": "Invalid authorization step."}},
+            "invalid_auth_step",
+        )
+        flow._request = Mock(side_effect=[invalid_step, invalid_step])
+
+        with self.assertRaises(ProtocolChallengeRequired):
+            flow._add_password("Strong-password-1!")
+
+        self.assertEqual(flow._reauthenticate.call_count, 2)
+        for call in flow._reauthenticate.call_args_list:
+            self.assertTrue(call.kwargs["post_login_add_password"])
+
+    def test_protocol_recent_registration_code_is_attempted_only_once_across_reauthentication(self):
+        class Reader:
+            def __init__(self):
+                self.calls = []
+
+            def wait_for_code(self, _timestamp, timeout):
+                self.calls.append(timeout)
+                return "654321"
+
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def __init__(self, account):
+                super().__init__(
+                    account,
+                    {},
+                    object(),
+                    recent_email_code="123456",
+                    recent_email_code_at=time.time(),
+                )
+                self.reader = Reader()
+                self.codes = []
+
+            def _request(self, method, url, **kwargs):
+                if url.endswith("/api/auth/csrf"):
+                    return 200, {"csrfToken": "csrf-token"}, ""
+                if "/api/auth/signin/openai?" in url:
+                    return 200, {"url": "https://auth.openai.com/authorize"}, ""
+                if url.endswith("/api/accounts/email-otp/validate"):
+                    self.codes.append(kwargs.get("json", {}).get("code"))
+                    return 200, {"continue_url": "https://chatgpt.com/api/auth/callback/openai"}, ""
+                if url.endswith("/api/auth/session"):
+                    return 200, {"accessToken": "access-token"}, ""
+                return 200, {}, ""
+
+        flow = Flow(self._account())
+        flow._reauthenticate("https://chatgpt.com/?action=add_password", prefer_recent_email_code=True)
+        flow._reauthenticate("https://chatgpt.com/?action=add_password", prefer_recent_email_code=True)
+
+        self.assertEqual(flow.codes, ["123456", "654321"])
+        self.assertEqual(flow.reader.calls, [120])
 
     def test_protocol_challenge_is_exposed_for_native_browser_takeover(self):
         account = self._account()
