@@ -75,11 +75,27 @@ def _password_already_set(result: dict[str, Any]) -> bool:
 def _wrong_email_otp(result: dict[str, Any] | None, text: str = "") -> bool:
     """Recognize an OTP rejected by OpenAI so the mailbox can be rescanned."""
     payload = result if isinstance(result, dict) else {}
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    code = str((data or {}).get("code") or "").strip().lower()
-    message = str((data or {}).get("message") or "").strip().lower()
-    raw = f"{code} {message} {str(text or '').lower()}"
-    return code == "wrong_email_otp_code" or "wrong code" in raw or "incorrect code" in raw
+    candidates = [payload]
+    data = payload.get("data")
+    if isinstance(data, dict):
+        candidates.append(data)
+        if isinstance(data.get("error"), dict):
+            candidates.append(data["error"])
+    if isinstance(payload.get("error"), dict):
+        candidates.append(payload["error"])
+    values = [str(text or "").lower()]
+    for candidate in candidates:
+        values.extend(
+            str(candidate.get(key) or "").strip().lower()
+            for key in ("code", "type", "message", "detail")
+        )
+    raw = " ".join(values)
+    return any(marker in raw for marker in (
+        "wrong_email_otp_code", "invalid_email_otp", "email_otp_invalid",
+        "invalid email otp", "email otp is invalid", "wrong code", "incorrect code",
+        "invalid code", "code has expired", "验证码错误", "验证码无效", "验证码已过期",
+        "コードが正しくありません", "コードの有効期限が切れ",
+    ))
 
 
 def _invalid_auth_state(result: dict[str, Any] | None, text: str = "") -> bool:
@@ -992,9 +1008,7 @@ class LoginSecretSetupFlow:
             page,
             auth_url,
             min_timestamp,
-            recent_email_code=self.recent_email_code,
-            recent_email_code_at=self.recent_email_code_at,
-            prefer_recent_email_code=True,
+            prefer_recent_email_code=False,
         )
 
     def _reauth_for_2fa(
@@ -1032,9 +1046,7 @@ class LoginSecretSetupFlow:
             page,
             auth_url,
             min_timestamp,
-            recent_email_code=self.recent_email_code,
-            recent_email_code_at=self.recent_email_code_at,
-            prefer_recent_email_code=True,
+            prefer_recent_email_code=False,
         )
 
     @staticmethod
@@ -1676,7 +1688,7 @@ class ProtocolLoginSecretSetupFlow:
         if status in {401, 403}:
             session_json = self._reauthenticate(
                 f"{CHATGPT_BASE_URL}/?action=enable&factor=totp",
-                prefer_recent_email_code=True,
+                prefer_recent_email_code=False,
             )
             access_token = str(session_json.get("accessToken") or session_json.get("access_token") or "")
             status, info, text = self._mfa_request("GET", MFA_INFO_URL, access_token)

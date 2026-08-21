@@ -404,6 +404,28 @@ def test_browser_login_secret_failure_retries_same_mode_with_mailbox_otp(headles
     assert flow_class.call_args_list[1].kwargs["prefer_login_secret"] is False
 
 
+def test_browser_email_otp_timeout_restarts_authentication_once() -> None:
+    account = MailAccount("user@example.com", "mailbox-password", "client", "mail-rt", "raw")
+    first = Mock()
+    first.run.side_effect = TimeoutError("Timed out waiting for OpenAI email OTP after 120 seconds")
+    second = Mock()
+    second.run.return_value = {"access_token": "access-token"}
+    logs: list[str] = []
+
+    with patch("sunny_core.openai_auth.OpenAIEmailRegisterFlow", side_effect=[first, second]) as flow_class:
+        result = login_or_register(
+            account,
+            log=logs.append,
+            existing_account=True,
+            require_refresh_token=False,
+        )
+
+    assert result["access_token"] == "access-token"
+    assert flow_class.call_count == 2
+    assert flow_class.call_args_list[1].kwargs["existing_session"] is None
+    assert any("重新建立隔离登录会话并重试一次" in item for item in logs)
+
+
 def test_browser_login_secret_account_deactivated_does_not_fallback_to_mailbox_otp() -> None:
     account = MailAccount(
         "user@example.com", "mailbox-password", "client", "mail-rt", "raw",

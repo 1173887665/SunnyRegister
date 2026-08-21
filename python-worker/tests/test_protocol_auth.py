@@ -12,6 +12,7 @@ from sunny_core.protocol_auth import (
     ProtocolLoginSecretRejected,
     ProtocolRegistrationError,
     ProtocolRegistrationFlow,
+    login_or_register_protocol,
     _response_error,
 )
 
@@ -156,6 +157,22 @@ def test_protocol_email_timeout_resends_once_before_validation() -> None:
     send_requests = [request for request in session.requests if request[1].endswith("/api/accounts/email-otp/send")]
     assert len(send_requests) == 2
     assert send_requests[1][2]["headers"]["referer"] == "https://auth.openai.com/email-verification"
+
+
+def test_protocol_email_otp_timeout_restarts_authentication_once() -> None:
+    account = MailAccount("user@outlook.com", "password", "client", "refresh", "raw")
+    first = Mock()
+    first.run.side_effect = TimeoutError("重新发送协议验证码后等待 60 秒仍未收到验证码")
+    second = Mock()
+    second.run.return_value = {"access_token": "access-token"}
+    logs: list[str] = []
+
+    with patch("sunny_core.protocol_auth.ProtocolRegistrationFlow", side_effect=[first, second]) as flow_class:
+        result = login_or_register_protocol(account, log=logs.append)
+
+    assert result["access_token"] == "access-token"
+    assert flow_class.call_count == 2
+    assert any("重新建立认证事务并重试一次" in item for item in logs)
 
 
 def test_protocol_homepage_reset_falls_back_to_lightweight_csrf() -> None:

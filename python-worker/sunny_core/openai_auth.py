@@ -53,6 +53,10 @@ LOGIN_SECRET_NO_PROGRESS_TIMEOUT_SECONDS = 25
 # EmailOtpValidate is a small JSON request. Keep its browser-side timeout
 # short so a stalled proxy does not delay the mailbox login flow for a minute.
 EMAIL_OTP_BROWSER_REQUEST_TIMEOUT_MS = 15000
+_EMAIL_OTP_TIMEOUT_MARKERS = (
+    "email otp", "email verification", "email-otp", "邮箱验证码", "协议验证码",
+    "openai 邮箱验证码", "openai email code", "重新发送验证码",
+)
 _ACCOUNT_DEACTIVATED_MARKERS = (
     "account_deactivated", "account disabled", "account has been disabled",
     "account deactivated", "account has been deactivated", "deleted or deactivated",
@@ -126,6 +130,14 @@ def _is_browser_driver_disconnected(error: Any) -> bool:
 def _is_navigation_aborted(error: Any) -> bool:
     message = str(error or "").strip().lower()
     return any(marker in message for marker in _NAVIGATION_ABORT_MARKERS)
+
+
+def _is_email_otp_timeout(error: Any) -> bool:
+    """Return true only for mailbox OTP timeouts, not generic auth timeouts."""
+    if not isinstance(error, TimeoutError):
+        return False
+    message = str(error or "").strip().lower()
+    return any(marker in message for marker in _EMAIL_OTP_TIMEOUT_MARKERS)
 
 
 def _is_transient_browser_network_error(error: Any) -> bool:
@@ -3237,12 +3249,37 @@ def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool 
         return OpenAIEmailRegisterFlow(
             account, proxy_url, headless, log, prefer_login_secret=True, **flow_kwargs,
         ).run()
+    except TimeoutError as exc:
+        if not _is_email_otp_timeout(exc):
+            raise
+        _emit(
+            log,
+            "[邮箱] OpenAI 邮箱验证码等待超时，已重新建立隔离登录会话并重试一次；"
+            "若再次超时将停止当前账户流程",
+        )
+        retry_kwargs = {**flow_kwargs, "existing_session": None}
+        return OpenAIEmailRegisterFlow(
+            account, proxy_url, headless, log, prefer_login_secret=True, **retry_kwargs,
+        ).run()
     except LoginSecretAuthenticationError as exc:
         if not existing_account or not account.has_login_secret:
             raise
         if any(marker in str(exc).lower() for marker in _ACCOUNT_DEACTIVATED_MARKERS):
             raise
         _emit(log, f"[认证] LS 凭证登录失败，将使用邮箱凭证建立新的隔离登录会话重试：{str(exc)[:240]}")
-        return OpenAIEmailRegisterFlow(
-            account, proxy_url, headless, log, prefer_login_secret=False, **flow_kwargs,
-        ).run()
+        fallback_kwargs = {**flow_kwargs, "existing_session": None}
+        try:
+            return OpenAIEmailRegisterFlow(
+                account, proxy_url, headless, log, prefer_login_secret=False, **fallback_kwargs,
+            ).run()
+        except TimeoutError as retry_exc:
+            if not _is_email_otp_timeout(retry_exc):
+                raise
+            _emit(
+                log,
+                "[邮箱] 邮箱凭证回退登录验证码等待超时，已重新建立隔离登录会话并重试一次；"
+                "若再次超时将停止当前账户流程",
+            )
+            return OpenAIEmailRegisterFlow(
+                account, proxy_url, headless, log, prefer_login_secret=False, **fallback_kwargs,
+            ).run()

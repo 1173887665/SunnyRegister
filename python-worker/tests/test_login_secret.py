@@ -23,6 +23,7 @@ class LoginSecretTests(unittest.TestCase):
     def test_wrong_email_otp_response_is_recognized_for_retry(self):
         self.assertTrue(_wrong_email_otp({"data": {"code": "wrong_email_otp_code"}}))
         self.assertTrue(_wrong_email_otp({"data": {"message": "Wrong code. Please check it."}}))
+        self.assertTrue(_wrong_email_otp({"data": {"error": {"message": "Invalid email OTP"}}}))
         self.assertFalse(_wrong_email_otp({"data": {"code": "account_deactivated"}}))
 
     def test_invalid_auth_state_is_distinguished_from_generic_conflict(self):
@@ -1287,7 +1288,7 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(any("action=add_password" in script for script in page.scripts))
         self.assertTrue(any("email-otp/validate" in script for script in page.scripts))
 
-    def test_browser_two_factor_reauthentication_uses_same_recent_code_strategy(self):
+    def test_browser_two_factor_reauthentication_always_reads_a_fresh_code(self):
         class Page:
             url = "https://chatgpt.com/"
 
@@ -1315,8 +1316,8 @@ class LoginSecretTests(unittest.TestCase):
             recent_email_code_at=flow.recent_email_code_at,
         )
 
-        self.assertTrue(reauthenticate.call_args.kwargs["prefer_recent_email_code"])
-        self.assertEqual(reauthenticate.call_args.kwargs["recent_email_code"], "123456")
+        self.assertFalse(reauthenticate.call_args.kwargs["prefer_recent_email_code"])
+        self.assertNotIn("recent_email_code", reauthenticate.call_args.kwargs)
 
     def test_browser_reauthentication_reads_new_code_after_old_code_is_rejected(self):
         class Reader:

@@ -35,6 +35,10 @@ VALIDATE_EMAIL_OTP_URL = f"{AUTH_BASE_URL}/api/accounts/email-otp/validate"
 CREATE_ACCOUNT_URL = f"{AUTH_BASE_URL}/api/accounts/create_account"
 EMAIL_OTP_INITIAL_WAIT_SECONDS = 120
 EMAIL_OTP_RESEND_WAIT_SECONDS = 60
+_EMAIL_OTP_TIMEOUT_MARKERS = (
+    "email otp", "email verification", "email-otp", "邮箱验证码", "协议验证码",
+    "openai 邮箱验证码", "openai email code", "重新发送验证码",
+)
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -84,6 +88,14 @@ def _is_login_secret_rejection(error: BaseException) -> bool:
     if "account_deactivated" in message or "deleted or deactivated" in message:
         return False
     return any(marker in message for marker in ("http 400", "http 401", "http 422", "invalid", "incorrect", "wrong"))
+
+
+def _is_email_otp_timeout(error: Any) -> bool:
+    """Return true only for mailbox OTP timeouts, not generic auth timeouts."""
+    if not isinstance(error, TimeoutError):
+        return False
+    message = str(error or "").strip().lower()
+    return any(marker in message for marker in _EMAIL_OTP_TIMEOUT_MARKERS)
 
 
 def _is_account_deactivated_payload(value: Any) -> bool:
@@ -1132,15 +1144,23 @@ def login_or_register_protocol(
     traffic_meter: ProxyTrafficMeter | None = None,
     post_registration_callback: Callable[[Any, dict[str, Any]], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
-    return ProtocolRegistrationFlow(
-        account,
-        proxy_url,
-        log,
-        existing_account=existing_account,
-        should_cancel=should_cancel,
-        on_progress=on_progress,
-        challenge_strategy=challenge_strategy,
-        mailbox_proxy_url=mailbox_proxy_url,
-        traffic_meter=traffic_meter,
-        post_registration_callback=post_registration_callback,
-    ).run()
+    flow_kwargs = {
+        "existing_account": existing_account,
+        "should_cancel": should_cancel,
+        "on_progress": on_progress,
+        "challenge_strategy": challenge_strategy,
+        "mailbox_proxy_url": mailbox_proxy_url,
+        "traffic_meter": traffic_meter,
+        "post_registration_callback": post_registration_callback,
+    }
+    try:
+        return ProtocolRegistrationFlow(account, proxy_url, log, **flow_kwargs).run()
+    except TimeoutError as exc:
+        if not _is_email_otp_timeout(exc):
+            raise
+        if log:
+            log(
+                "[邮箱] 协议模式 OpenAI 邮箱验证码等待超时，已重新建立认证事务并重试一次；"
+                "若再次超时将停止当前账户流程"
+            )
+        return ProtocolRegistrationFlow(account, proxy_url, log, **flow_kwargs).run()
