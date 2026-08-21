@@ -541,6 +541,70 @@ class LoginSecretTests(unittest.TestCase):
         )
         self.assertEqual(Flow.instance.used_code, "123456")
 
+    def test_reauthentication_rejects_recent_code_once_then_waits_for_distinct_code(self):
+        class Reader:
+            def __init__(self):
+                self.codes = iter(("123456", "654321"))
+
+            def wait_for_code(self, *_args):
+                return next(self.codes)
+
+        class Flow(LoginSecretSetupFlow):
+            def __init__(self):
+                super().__init__(self_account, {}, "")
+                self.reader_stub = Reader()
+                self.submitted_codes = []
+                self.logs = []
+
+            def _page_state(self, _page):
+                if self.submitted_codes == ["123456"]:
+                    return {
+                        "url": "https://auth.openai.com/email-verification",
+                        "passwordInputs": 0,
+                        "codeInputs": 1,
+                        "text": "Wrong code. Please check it and try again.",
+                    }
+                return {
+                    "url": "https://auth.openai.com/email-verification",
+                    "passwordInputs": 0,
+                    "codeInputs": 1,
+                    "text": "",
+                }
+
+            def _session_json(self, _page):
+                if self.submitted_codes != ["123456", "654321"]:
+                    raise RuntimeError("not authenticated")
+                return {"accessToken": "access-token"}
+
+            def _reader_instance(self):
+                return self.reader_stub
+
+            def _fill_code(self, page, code):
+                self.submitted_codes.append(code)
+                if code == "654321":
+                    page.url = "https://chatgpt.com/"
+                return True
+
+            def _sleep(self, _seconds):
+                return None
+
+        self_account = self._account()
+        flow = Flow()
+        flow.log = flow.logs.append
+        page = type("Page", (), {"url": "https://auth.openai.com/email-verification"})()
+
+        flow._complete_reauthentication(
+            page,
+            time.time(),
+            "ChatGPT-password",
+            recent_email_code="123456",
+            recent_email_code_at=time.time(),
+        )
+
+        self.assertEqual(flow.submitted_codes, ["123456", "654321"])
+        self.assertEqual(flow.logs.count("[登录密钥] 优先复用本次注册刚使用的邮箱验证码"), 1)
+        self.assertEqual(flow.logs.count("[登录密钥] 注册阶段验证码无法用于重认证，将等待新的邮箱验证码"), 1)
+
     def test_password_reauthentication_always_reads_a_fresh_mailbox_code(self):
         class Reader:
             def wait_for_code(self, min_timestamp):

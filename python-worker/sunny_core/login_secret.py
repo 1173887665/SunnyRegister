@@ -545,6 +545,9 @@ class LoginSecretSetupFlow:
         email_code_used = False
         recent_code_attempted = False
         recent_code_submitted_at = 0.0
+        submitted_email_code = ""
+        submitted_recent_code = False
+        rejected_codes: set[str] = set()
         totp_used = False
         password_used = False
         email_code_min_timestamp = min_timestamp
@@ -565,11 +568,12 @@ class LoginSecretSetupFlow:
                 self._sleep(2)
                 continue
             if state.get("codeInputs"):
-                recent_code_stalled = recent_code_attempted and email_code_used and recent_code_submitted_at > 0 and time.time() - recent_code_submitted_at >= 8
-                if recent_code_attempted and email_code_used and (self._email_code_rejected(state) or recent_code_stalled):
+                recent_code_stalled = submitted_recent_code and email_code_used and recent_code_submitted_at > 0 and time.time() - recent_code_submitted_at >= 8
+                if submitted_recent_code and email_code_used and (self._email_code_rejected(state) or recent_code_stalled):
                     self.log("[登录密钥] 注册阶段验证码无法用于重认证，将等待新的邮箱验证码")
+                    rejected_codes.add(submitted_email_code)
                     email_code_used = False
-                    recent_code_attempted = False
+                    submitted_recent_code = False
                     email_code_min_timestamp = time.time()
                     continue
                 is_totp = "mfa" in url or "authenticator" in str(state.get("text") or "").lower()
@@ -582,15 +586,23 @@ class LoginSecretSetupFlow:
                     self._sleep(2)
                     continue
                 if not email_code_used:
-                    if not force_fresh_email_code and self._recent_email_code_usable(recent_email_code, recent_email_code_at):
+                    use_recent_code = bool(
+                        not force_fresh_email_code
+                        and not recent_code_attempted
+                        and self._recent_email_code_usable(recent_email_code, recent_email_code_at)
+                    )
+                    if use_recent_code:
                         code = recent_email_code
                         recent_code_attempted = True
                         self.log("[登录密钥] 优先复用本次注册刚使用的邮箱验证码")
                     else:
                         try:
-                            code = self._wait_for_code(
-                                self._reader_instance(),
-                                email_code_min_timestamp, EMAIL_OTP_INITIAL_WAIT_SECONDS
+                            code = self._wait_for_distinct_code(
+                                self._reader_instance(), email_code_min_timestamp,
+                                rejected_codes, EMAIL_OTP_INITIAL_WAIT_SECONDS,
+                            ) if rejected_codes else self._wait_for_code(
+                                self._reader_instance(), email_code_min_timestamp,
+                                EMAIL_OTP_INITIAL_WAIT_SECONDS,
                             )
                         except TimeoutError as exc:
                             if resend_attempted or not self._click_resend_email_code(page):
@@ -601,16 +613,21 @@ class LoginSecretSetupFlow:
                             email_code_min_timestamp = time.time() - 2
                             self.log("[邮箱] 120 秒未收到重认证验证码，已重新发送，继续等待 60 秒")
                             try:
-                                code = self._wait_for_code(
-                                    self._reader_instance(),
-                                    email_code_min_timestamp, EMAIL_OTP_RESEND_WAIT_SECONDS
+                                code = self._wait_for_distinct_code(
+                                    self._reader_instance(), email_code_min_timestamp,
+                                    rejected_codes, EMAIL_OTP_RESEND_WAIT_SECONDS,
+                                ) if rejected_codes else self._wait_for_code(
+                                    self._reader_instance(), email_code_min_timestamp,
+                                    EMAIL_OTP_RESEND_WAIT_SECONDS,
                                 )
                             except TimeoutError as resend_exc:
                                 raise TimeoutError("重新发送重认证验证码后等待 60 秒仍未收到验证码") from resend_exc
                     if not self._fill_code(page, code):
                         raise RuntimeError("邮箱重认证验证码输入失败")
                     email_code_used = True
-                    recent_code_submitted_at = time.time() if recent_code_attempted else 0.0
+                    submitted_email_code = str(code).strip()
+                    submitted_recent_code = use_recent_code
+                    recent_code_submitted_at = time.time() if use_recent_code else 0.0
                     self._sleep(2)
                     continue
             self._sleep(0.75)
