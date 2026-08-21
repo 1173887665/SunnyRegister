@@ -43,6 +43,13 @@ PROFILE_SUBMISSION_TIMEOUT_SECONDS = 300
 PROFILE_TRANSITION_TIMEOUT_MS = 5000
 EMAIL_OTP_INITIAL_WAIT_SECONDS = 120
 EMAIL_OTP_RESEND_WAIT_SECONDS = 60
+# A complete LS is intended to be a fast renewal path.  Keep the browser
+# state machine bounded so a stalled auth SPA can hand off to the mailbox flow
+# instead of leaving an AT renewal task in "authentication_running" for many
+# minutes.
+LOGIN_SECRET_FLOW_TIMEOUT_SECONDS = 120
+LOGIN_SECRET_STEP_TIMEOUT_SECONDS = 8
+LOGIN_SECRET_NO_PROGRESS_TIMEOUT_SECONDS = 25
 # EmailOtpValidate is a small JSON request. Keep its browser-side timeout
 # short so a stalled proxy does not delay the mailbox login flow for a minute.
 EMAIL_OTP_BROWSER_REQUEST_TIMEOUT_MS = 15000
@@ -856,7 +863,9 @@ class OpenAIEmailRegisterFlow:
         return csrf_value, device_id
 
     def _drive_register_or_login(self, page, otp_min_timestamp: float) -> None:
-        deadline = time.time() + 600
+        deadline = time.time() + (
+            LOGIN_SECRET_FLOW_TIMEOUT_SECONDS if self._uses_login_secret() else 600
+        )
         email_code_submitted = False
         about_you_submitted = False
         about_you_at = 0.0
@@ -882,20 +891,37 @@ class OpenAIEmailRegisterFlow:
                 credential_label = "密码" if self.login_secret_stage == "password" else "2FA"
                 raise LoginSecretAuthenticationError(f"ChatGPT {credential_label}验证失败: {login_secret_error}")
             signature = self._progress_signature(page)
+            no_progress_timeout = (
+                LOGIN_SECRET_NO_PROGRESS_TIMEOUT_SECONDS
+                if self._uses_login_secret()
+                else 90
+            )
             if signature and signature != last_progress_signature:
                 last_progress_signature = signature
                 last_progress_at = time.time()
                 passive_reload_count = 0
-            elif signature and time.time() - last_progress_at >= 90 and not self._page_needs_manual_attention(page):
+            elif (
+                signature
+                and time.time() - last_progress_at >= no_progress_timeout
+                and not self._page_needs_manual_attention(page)
+            ):
                 if passive_reload_count < 1:
                     passive_reload_count += 1
                     last_progress_at = time.time()
-                    self.log(f"[认证] 页面长时间无进展，刷新当前页面后继续尝试：{self._page_text_summary(page, 160)}")
+                    self.log(
+                        f"[认证] 页面超过 {no_progress_timeout} 秒无进展，"
+                        f"刷新当前页面后继续尝试：{self._page_text_summary(page, 160)}"
+                    )
                     try:
                         page.reload(wait_until="domcontentloaded", timeout=45000)
                     except Exception as exc:
                         self.log(f"[认证] 页面刷新失败，继续等待：{exc}")
                     continue
+                if self._uses_login_secret():
+                    raise LoginSecretAuthenticationError(
+                        f"[{self.account.email}] ChatGPT 密码与 2FA 登录页面超过 "
+                        f"{no_progress_timeout * 2} 秒未继续"
+                    )
                 raise RuntimeError(f"Register/login page stalled without progress: {self._page_text_summary(page, 300)}")
             if self._page_reports_existing_account(page):
                 if existing_account_recovery_attempted:
@@ -923,6 +949,10 @@ class OpenAIEmailRegisterFlow:
                     self.log(f"[{self.account.email}] Page error; retried {route_error_retries}/3")
                     self._sleep_checked(4)
                     continue
+                if self._uses_login_secret():
+                    raise LoginSecretAuthenticationError(
+                        f"[{self.account.email}] ChatGPT LS 登录页面异常，已停止等待并回退邮箱凭证：{error_text}"
+                    )
                 raise RuntimeError(f"OpenAI auth page error: {error_text}")
             url = str(page.url or "")
             if "add-phone" in url or "phone-verification" in url or self._has_phone_form(page):
@@ -933,7 +963,7 @@ class OpenAIEmailRegisterFlow:
                 raise RuntimeError("Phone verification required, but no usable phone pool is configured")
             if self._has_totp_challenge(page):
                 if self.login_secret_stage == "totp":
-                    if time.time() - self.login_secret_submitted_at < 20:
+                    if time.time() - self.login_secret_submitted_at < LOGIN_SECRET_STEP_TIMEOUT_SECONDS:
                         self._sleep_checked(1)
                         continue
                     raise LoginSecretAuthenticationError("ChatGPT 2FA 提交后认证页面未继续")
@@ -954,7 +984,7 @@ class OpenAIEmailRegisterFlow:
                     # The auth SPA keeps the old password node mounted while the
                     # request is transitioning. Do not refill it on every loop;
                     # wait for the next route, then allow one controlled retry.
-                    if time.time() - password_step_submitted_at < 20:
+                    if time.time() - password_step_submitted_at < LOGIN_SECRET_STEP_TIMEOUT_SECONDS:
                         self._sleep_checked(1)
                         continue
                     if self._uses_login_secret() and password_step_attempts >= 2:
@@ -1060,6 +1090,11 @@ class OpenAIEmailRegisterFlow:
                 continue
             about_you_submitted = False
             self._sleep_checked(2)
+        if self._uses_login_secret():
+            raise LoginSecretAuthenticationError(
+                f"[{self.account.email}] ChatGPT 密码与 2FA 登录超过 "
+                f"{LOGIN_SECRET_FLOW_TIMEOUT_SECONDS} 秒未完成"
+            )
         raise TimeoutError(f"[{self.account.email}] Register/login flow timed out")
 
     def _progress_signature(self, page) -> str:
@@ -1919,7 +1954,7 @@ class OpenAIEmailRegisterFlow:
         if not editable_inputs:
             if not self.password_step_wait_started_at:
                 self.password_step_wait_started_at = now
-            if now - self.password_step_wait_started_at < 8:
+            if now - self.password_step_wait_started_at < LOGIN_SECRET_STEP_TIMEOUT_SECONDS:
                 return False
             # A stale React node can remain read-only after the route is ready.
             # Use the native setter once before declaring the password step dead.
