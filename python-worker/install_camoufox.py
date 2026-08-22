@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import os
 import platform
-import shutil
 import time
 from pathlib import Path
-from zipfile import ZipFile
 
 import requests
 from camoufox.addons import DefaultAddons, maybe_download_addons
-from camoufox.pkgman import ARCH_MAP, INSTALL_DIR
+from camoufox.pkgman import (
+    ARCH_MAP,
+    AvailableVersion,
+    CamoufoxFetcher,
+    RepoConfig,
+    Version,
+)
 
 try:
     # Camoufox <= 0.5.3 exposed the optional GeoIP settings here.  Newer
@@ -77,19 +81,15 @@ def download_with_resume(url: str, target: Path, attempts: int = 12) -> None:
 
 def install_browser() -> None:
     architecture = platform_architecture()
-    archive = Path("/tmp/camoufox.zip")
-    download_with_resume(browser_asset_url(architecture), archive)
-    if INSTALL_DIR.exists():
-        shutil.rmtree(INSTALL_DIR)
-    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
-    with ZipFile(archive) as package:
-        package.extractall(INSTALL_DIR)
-    (INSTALL_DIR / "version.json").write_text(
-        f'{{"version":"{CAMOUFOX_VERSION}","release":"{CAMOUFOX_RELEASE}"}}',
-        encoding="utf-8",
+    selected = AvailableVersion(
+        version=Version(CAMOUFOX_RELEASE, CAMOUFOX_VERSION),
+        url=browser_asset_url(architecture),
+        is_prerelease=True,
     )
-    for path in INSTALL_DIR.rglob("*"):
-        path.chmod(0o755)
+    CamoufoxFetcher(
+        repo_config=RepoConfig.get_default(),
+        selected_version=selected,
+    ).install(replace=True)
 
 
 def install_geoip_database() -> None:
