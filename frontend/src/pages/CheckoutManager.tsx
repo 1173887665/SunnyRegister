@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { ChevronDown, ChevronUp, Clipboard, Download, ExternalLink, FileText, ListChecks, Loader2, Play, RefreshCw, ScrollText, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Clipboard, CreditCard, Download, ExternalLink, FileText, ListChecks, Loader2, Play, RefreshCw, ScrollText, Trash2, X } from "lucide-react";
 import { API_BASE, apiFetch, triggerBrowserDownload } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -32,6 +32,7 @@ type CheckoutPreferences = {
   planFilter?: string;
   trialFilter?: string;
   checkoutFilter?: string;
+  paymentMethods?: string[];
   plan?: string;
   linkType?: string;
   country?: string;
@@ -66,6 +67,8 @@ const pathLabels: Record<string, string> = {
   hosted: "官方长链", ph_short: "菲律宾短链", paypal: "PayPal", ideal: "iDEAL", upi: "UPI",
   pix: "PIX", twint: "TWINT", momo: "MoMo", gcash: "GCash", kakao: "Kakao Pay",
 };
+const paymentMethodOptions = ["paypal", "card", "link", "gcash", "kakao_pay", "nicepay", "ideal", "momo", "twint", "pix", "upi"];
+const paymentMethodLabels: Record<string, string> = { paypal: "PayPal", card: "Card", link: "Link", gcash: "GCash", kakao_pay: "Kakao Pay", nicepay: "Nicepay", ideal: "iDEAL", momo: "MoMo", twint: "TWINT", pix: "PIX", upi: "UPI" };
 
 type BadgeTone = "slate" | "blue" | "green" | "cyan" | "red" | "amber" | "violet" | "rose";
 const badgeTones: Record<BadgeTone, string> = {
@@ -81,6 +84,33 @@ const badgeTones: Record<BadgeTone, string> = {
 
 function normalized(value: unknown) { return String(value || "").trim().toLowerCase(); }
 function labelFor(value: unknown, labels: Record<string, string>, fallback = "-") { const key = normalized(value); return labels[key] || (key ? String(value) : fallback); }
+function paymentMethodLabel(value: unknown) {
+  const key = normalized(value);
+  return paymentMethodLabels[key] || key.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
+}
+function PaymentMethodFilter({ value, options, onChange }: { value: string[]; options: string[]; onChange: (value: string[]) => void }) {
+  const toggle = (method: string) => onChange(value.includes(method) ? value.filter((item) => item !== method) : [...value, method]);
+  const allSelected = options.length > 0 && value.length === options.length;
+  return <details className="sr-payment-filter">
+    <summary className="sr-payment-filter-trigger">
+      <CreditCard className="sr-payment-filter-icon" />
+      {value.length === 0 ? <span className="sr-payment-filter-placeholder">全部支付方式</span> : <span className="sr-payment-filter-chips">
+        {value.slice(0, 2).map((method) => <span className="sr-payment-filter-chip" key={method}>{paymentMethodLabel(method)}</span>)}
+        {value.length > 2 && <span className="sr-payment-filter-more">+{value.length - 2}</span>}
+      </span>}
+      <ChevronDown className="sr-payment-filter-chevron" />
+    </summary>
+    <div className="sr-payment-filter-menu">
+      <div className="sr-payment-filter-menu-head">
+        <span>支付方式筛选（同时满足）</span>
+        <div className="sr-payment-filter-menu-actions"><button type="button" className="sr-payment-filter-action" onClick={() => onChange(allSelected ? [] : options)}><ListChecks className="h-3.5 w-3.5" />{allSelected ? "清除筛选" : "全选"}</button></div>
+      </div>
+      <div className="sr-payment-filter-options">
+        {options.map((method) => <label key={method} className={`sr-payment-filter-option ${value.includes(method) ? "is-selected" : ""}`}><input type="checkbox" checked={value.includes(method)} onChange={() => toggle(method)} /><span>{paymentMethodLabel(method)}</span>{value.includes(method) && <span className="sr-payment-filter-check">✓</span>}</label>)}
+      </div>
+    </div>
+  </details>;
+}
 function CompactBadge({ label, tone = "slate" }: { label: string; tone?: BadgeTone }) {
   return <span className={`inline-flex whitespace-nowrap rounded-md border px-2 py-0.5 text-[11px] font-semibold ${badgeTones[tone]}`}>{label}</span>;
 }
@@ -276,6 +306,7 @@ export default function CheckoutManager() {
   const [planFilter, setPlanFilter] = useState(savedPreferences.planFilter ?? "free");
   const [trialFilter, setTrialFilter] = useState(savedPreferences.trialFilter ?? "eligible");
   const [checkoutFilter, setCheckoutFilter] = useState(savedPreferences.checkoutFilter ?? "");
+  const [paymentMethods, setPaymentMethods] = useState<string[]>(() => Array.isArray(savedPreferences.paymentMethods) ? savedPreferences.paymentMethods : []);
   const [plan, setPlan] = useState(savedPreferences.plan ?? "plus");
   const [linkType, setLinkType] = useState(savedPreferences.linkType ?? "hosted");
   const [country, setCountry] = useState(savedPreferences.country ?? "US");
@@ -320,7 +351,7 @@ export default function CheckoutManager() {
     try {
       const preferences: CheckoutPreferences = {
         checkoutProxies, promotionProxies, systemAT, externalText, query, group, status, planFilter, trialFilter,
-        checkoutFilter, plan, linkType, country, currency, retryCount, concurrency, usePromo, promoCampaign,
+        checkoutFilter, paymentMethods, plan, linkType, country, currency, retryCount, concurrency, usePromo, promoCampaign,
         promoCode, promoCountry, idealBank, workspaceName, workspaceId, seatQuantity, priceInterval,
         creditQuantity, pixTaxID, pixAutoKind, pageSize, logOpen,
       };
@@ -329,7 +360,7 @@ export default function CheckoutManager() {
       window.localStorage.setItem("pay153.proxy_pool_2", checkoutProxies);
       window.localStorage.setItem("pay153.proxy_pool_1", promotionProxies);
     } catch { /* private browsing may disable local storage */ }
-  }, [checkoutFilter, checkoutProxies, concurrency, country, creditQuantity, currency, externalText, group, idealBank, linkType, logOpen, pageSize, pixAutoKind, pixTaxID, plan, planFilter, priceInterval, promoCampaign, promoCode, promoCountry, promotionProxies, query, retryCount, seatQuantity, status, systemAT, trialFilter, usePromo, workspaceId, workspaceName]);
+  }, [checkoutFilter, checkoutProxies, concurrency, country, creditQuantity, currency, externalText, group, idealBank, linkType, logOpen, pageSize, paymentMethods, pixAutoKind, pixTaxID, plan, planFilter, priceInterval, promoCampaign, promoCode, promoCountry, promotionProxies, query, retryCount, seatQuantity, status, systemAT, trialFilter, usePromo, workspaceId, workspaceName]);
   useEffect(() => {
     try {
       if (activeTaskID) window.localStorage.setItem(checkoutTaskStorageKey, activeTaskID);
@@ -467,7 +498,7 @@ export default function CheckoutManager() {
     if (!systemAT) return;
     let active = true;
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
-    if (query) params.set("q", query); if (group) params.set("group_id", group); if (status) params.set("status", status); if (planFilter) params.set("plan_type", planFilter); if (trialFilter) params.set("trial_eligibility", trialFilter); if (checkoutFilter) params.set("checkout_kind", checkoutFilter);
+    if (query) params.set("q", query); if (group) params.set("group_id", group); if (status) params.set("status", status); if (planFilter) params.set("plan_type", planFilter); if (trialFilter) params.set("trial_eligibility", trialFilter); if (checkoutFilter) params.set("checkout_kind", checkoutFilter); if (paymentMethods.length) params.set("payment_methods", paymentMethods.join(","));
     setListLoading(true);
     void apiFetch(`/sunny/sessions?${params}`).then((data) => {
       if (!active) return;
@@ -481,7 +512,7 @@ export default function CheckoutManager() {
       setTotal(nextTotal);
     }).catch(() => { if (active) { setSessions([]); setTotal(0); } }).finally(() => { if (active) setListLoading(false); });
     return () => { active = false; };
-  }, [systemAT, query, group, status, planFilter, trialFilter, checkoutFilter, page, pageSize, refreshKey]);
+  }, [systemAT, query, group, status, planFilter, trialFilter, checkoutFilter, paymentMethods, page, pageSize, refreshKey]);
   useEffect(() => { setExternalRows(parseExternalRows(externalText)); }, [externalText]);
   useEffect(() => { if (logOpen && logScrollRef.current) logScrollRef.current.scrollTop = logScrollRef.current.scrollHeight; }, [logOpen, taskLogs]);
   const visibleExternalRows = useMemo(() => externalRows.slice((page - 1) * pageSize, page * pageSize), [externalRows, page, pageSize]);
@@ -508,6 +539,7 @@ export default function CheckoutManager() {
   const pageCount = checkoutPageCount(listTotal, pageSize);
   const pageFrom = listTotal ? (page - 1) * pageSize + 1 : 0;
   const pageTo = Math.min(page * pageSize, listTotal);
+  const availablePaymentMethods = useMemo(() => Array.from(new Set([...paymentMethodOptions, ...paymentMethods, ...sessions.flatMap((item) => Array.isArray(item.payment_methods) ? item.payment_methods : [])])), [paymentMethods, sessions]);
   const selectedCount = selected.length;
   const allCurrentSelected = rows.length > 0 && rows.every((row) => selected.includes(checkoutSelectionKey(row, systemAT)));
   const selectedExternalRows = useMemo(
@@ -557,6 +589,7 @@ export default function CheckoutManager() {
       if (planFilter) params.set("plan_type", planFilter);
       if (trialFilter) params.set("trial_eligibility", trialFilter);
       if (checkoutFilter) params.set("checkout_kind", checkoutFilter);
+      if (paymentMethods.length) params.set("payment_methods", paymentMethods.join(","));
       const data = await apiFetch(`/sunny/sessions?${params.toString()}`);
       const ids = Array.from(new Set<number>((data.ids || []).map((value: any) => Number(value)).filter((value: number) => value > 0)));
       setSelected(ids);
@@ -671,6 +704,7 @@ export default function CheckoutManager() {
           <select aria-label="套餐筛选" className="h-9 w-32 shrink-0 rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] px-2 text-xs" value={planFilter} onChange={(e) => changeFilter(setPlanFilter, e.target.value)}><option value="">全部套餐</option>{sessionPlans.map((value) => <option key={value} value={value}>{planLabels[value]}</option>)}</select>
           <select aria-label="试用资格筛选" className="h-9 w-36 shrink-0 rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] px-2 text-xs" value={trialFilter} onChange={(e) => changeFilter(setTrialFilter, e.target.value)}><option value="">全部试用资格</option><option value="eligible">有0元试用</option><option value="ineligible">无0元试用</option><option value="unknown">未检测</option></select>
           <select aria-label="Checkout 类型筛选" className="h-9 w-40 shrink-0 rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] px-2 text-xs" value={checkoutFilter} onChange={(e) => changeFilter(setCheckoutFilter, e.target.value)}><option value="">全部 Checkout</option><option value="oaics">OAICS</option><option value="cs_live">CS Live</option><option value="cs_test">CS Test</option><option value="unknown">未检测</option></select>
+          <PaymentMethodFilter value={paymentMethods} options={availablePaymentMethods} onChange={(value) => { setPaymentMethods(value); setPage(1); }} />
         </div>}
         <div className="sr-selection-summary shrink-0" aria-live="polite"><button type="button" className="sr-select-all" disabled={selectingAll || listTotal <= 0} onClick={() => void selectAllRows()}>{selectingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ListChecks className="h-3.5 w-3.5" />}<span>全选</span></button>{selectedCount > 0 && <><span className="sr-selected-count">已选择 {selectedCount} 项</span><button type="button" className="sr-clear-selection" onClick={() => setSelected([])}>清除选择</button></>}</div>
         <button type="button" className="sr-text-btn ml-auto" disabled={listLoading} onClick={refreshRows}>{listLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}刷新列表</button>
