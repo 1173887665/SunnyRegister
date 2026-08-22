@@ -1857,10 +1857,18 @@ class JobStore:
                 else:
                     strategy_cycle = ("standalone", "inline")
                 current["local_method_strategy"] = strategy_cycle[(attempt - 1) % len(strategy_cycle)]
-                # Creating the Checkout at zero due removes PIX/UPI from this
-                # merchant's payment_method_types, so local methods keep the
-                # mid-flight promotion flow.
-                current["promo_on_create"] = False
+                # PIX/UPI need a non-zero Stage1 to publish their Stripe
+                # mandate configuration.  MoMo is different: its OAICS
+                # intermediate Checkout must carry the account campaign so
+                # the user can see both MoMo and the zero-due Plus offer.
+                # Keep later MoMo retries on the existing late-promotion path
+                # so a Stripe cs_* Checkout can still be rebuilt when OAICS is
+                # returned by the first attempt.
+                current["promo_on_create"] = (
+                    current.get("link_type") == "momo"
+                    and bool(current.get("use_promo"))
+                    and logical_attempt == 1
+                )
             if current.get("link_type") == "pix" and current.get("pix_tax_id_auto"):
                 auto_kind = current.get("pix_auto_kind") or "cpf"
                 kind = ("cpf" if attempt % 2 else "cnpj") if auto_kind == "mixed" else auto_kind
@@ -3151,6 +3159,82 @@ class JobStore:
                         )
                     self.update(job_id, percent=100, text="OAICS iDEAL 签名支付链接生成完成", status="done", result=result)
                     return
+                if provider == "momo":
+                    # MoMo may be published through the custom OAICS
+                    # Checkout even though the final payment flow requires a
+                    # Stripe cs_* session.  Treat this OAICS session as an
+                    # intermediate eligibility check: apply the account's
+                    # campaign here, verify that MoMo is still offered, and
+                    # only then rebuild the Stripe Checkout.  Previously we
+                    # rebuilt immediately, leaving the inspectable oaics_ link
+                    # at the regular Plus price.
+                    self.update(job_id, percent=58, text="正在校验 OAICS MoMo 试用 Checkout")
+                    custom_state = fetch_custom_checkout_session_with_retry(
+                        chatgpt_http,
+                        token,
+                        session_id,
+                        custom_processor,
+                        device_id,
+                        log=lambda message: self.log(job_id, message),
+                        attempts=4,
+                    )
+                    custom_amount = custom_checkout_amount_minor(custom_state)
+                    custom_currency = custom_checkout_currency(custom_state) or options["currency"]
+                    momo_methods = custom_payment_methods_for(custom_state, "momo")
+                    if promo_requested and custom_amount != 0:
+                        self.update(job_id, percent=66, text="正在为 OAICS MoMo Checkout 应用优惠")
+                        custom_update = update_checkout_promo(
+                            promo_chatgpt_http,
+                            token,
+                            session_id,
+                            custom_processor,
+                            options.get("promo_campaign") or "plus-1-month-free",
+                            lambda m: self.log(job_id, m),
+                            device_id=device_id,
+                        )
+                        updated_amount = custom_checkout_amount_minor(custom_update)
+                        if updated_amount is not None:
+                            custom_amount = updated_amount
+                        custom_currency = custom_checkout_currency(custom_update) or custom_currency
+                        custom_state = fetch_custom_checkout_session_with_retry(
+                            chatgpt_http,
+                            token,
+                            session_id,
+                            custom_processor,
+                            device_id,
+                            log=lambda message: self.log(job_id, message),
+                            attempts=4,
+                        )
+                        refreshed_amount = custom_checkout_amount_minor(custom_state)
+                        if refreshed_amount is not None:
+                            custom_amount = refreshed_amount
+                        custom_currency = custom_checkout_currency(custom_state) or custom_currency
+                        momo_methods = custom_payment_methods_for(custom_state, "momo")
+                    custom_url = (
+                        str(checkout_data.get("checkout_url") or "").strip()
+                        or f"https://chatgpt.com/checkout/{custom_processor}/{session_id}"
+                    )
+                    if not momo_methods:
+                        raise RuntimeError(
+                            "CUSTOM_CHECKOUT_REBUILD_REQUIRED: received {} but OAICS 未返回 MoMo 支付方式；"
+                            "将更换代理重建 Checkout".format(session_id)
+                        )
+                    if promo_requested and custom_amount != 0:
+                        raise RuntimeError(
+                            "CUSTOM_CHECKOUT_REBUILD_REQUIRED: received {}; OAICS MoMo 试用金额未归零 "
+                            "(amount={} {}); checkout_url={}；将更换代理重建 Checkout".format(
+                                session_id, custom_amount, custom_currency, custom_url,
+                            )
+                        )
+                    self.log(
+                        job_id,
+                        "OAICS MoMo 中间 Checkout 已确认：支付方式=MOMO，Plus 今日应付 amount=0，"
+                        f"checkout_url={custom_url}；继续重建 Stripe cs_* Checkout",
+                    )
+                    raise RuntimeError(
+                        "CUSTOM_CHECKOUT_REBUILD_REQUIRED: received {}; OAICS MoMo 0 元资格已确认，"
+                        "需要 Stripe cs_* Checkout 继续生成最终 MOMO 链接".format(session_id)
+                    )
                 if provider != "hosted":
                     raise RuntimeError(
                         f"CUSTOM_CHECKOUT_REBUILD_REQUIRED: received {session_id}; "

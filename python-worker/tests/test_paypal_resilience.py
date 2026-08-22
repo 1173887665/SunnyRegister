@@ -76,6 +76,28 @@ def test_other_local_checkout_payload_keeps_custom_session_mode() -> None:
     assert payload["checkout_ui_mode"] == "custom"
 
 
+def test_momo_trial_payload_carries_verified_campaign_on_first_checkout() -> None:
+    options = {
+        "plan": "plus",
+        "link_type": "momo",
+        "country": "VN",
+        "currency": "VND",
+        "checkout_country": "VN",
+        "checkout_currency": "VND",
+        "use_promo": True,
+        "promo_campaign": "plus-1-month-free",
+        "promo_on_create": True,
+    }
+
+    payload = checkout_app.checkout_payload(options, {})
+
+    assert payload["checkout_ui_mode"] == "custom"
+    assert payload["promo_campaign"] == {
+        "promo_campaign_id": "plus-1-month-free",
+        "is_coupon_from_query_param": False,
+    }
+
+
 def test_ideal_success_requires_signed_pay_ideal_transaction_url() -> None:
     valid = (
         "https://pay.ideal.nl/transactions/https%3A%2F%2Ftx.ideal.nl%2F2%2FTEST"
