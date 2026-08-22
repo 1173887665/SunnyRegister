@@ -770,7 +770,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				}
 				m.Password, m.ClientID, m.RefreshToken = "", "", ""
 				if mailboxChannel == "url_api" {
-					m.Raw = sunnyURLAPIRaw(m.Email, m.ChatGPTPassword, m.AccessKey, m.TOTPSecret)
+					m.Raw = sunnyURLAPIRaw(m.Email, m.AccessKey)
 				} else {
 					m.Raw = strings.Join([]string{strings.TrimSpace(m.Email), strings.TrimSpace(m.AccessKey)}, "----")
 				}
@@ -890,12 +890,16 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 		email, password, chatgptPassword, totpSecret, clientID, refreshToken, accessKey, openaiRT = p["email"], p["password"], p["chatgpt_password"], p["totp_secret"], p["client_id"], p["refresh_token"], p["access_key"], p["openai_rt"]
 		if mailboxType == "microsoft" {
 			raw = sunnyMicrosoftRaw(email, password, clientID, refreshToken)
+		} else if mailboxChannel == "url_api" {
+			raw = sunnyURLAPIRaw(email, accessKey)
+		} else {
+			raw = strings.Join([]string{email, accessKey}, "----")
 		}
 	} else {
 		email, password, chatgptPassword, totpSecret, clientID, refreshToken, accessKey, openaiRT = text(body["email"]), text(body["password"]), text(body["chatgpt_password"]), text(body["totp_secret"]), text(body["client_id"]), text(body["refresh_token"]), text(body["access_key"]), text(body["openai_rt"])
 		if mailboxType == "apple" {
 			if mailboxChannel == "url_api" {
-				raw = sunnyURLAPIRaw(email, chatgptPassword, accessKey, totpSecret)
+				raw = sunnyURLAPIRaw(email, accessKey)
 			} else {
 				raw = strings.Join([]string{email, accessKey}, "----")
 			}
@@ -1183,18 +1187,10 @@ func parseSunnyURLAPIMailboxLine(raw string) (map[string]string, error) {
 	return out, nil
 }
 
-func sunnyURLAPIRaw(email, password, accessKey, totpSecret string) string {
+func sunnyURLAPIRaw(email, accessKey string) string {
 	parts := []string{strings.TrimSpace(email)}
-	if strings.TrimSpace(password) != "" {
-		parts = append(parts, strings.TrimSpace(password))
-		if strings.TrimSpace(accessKey) != "" {
-			parts = append(parts, strings.TrimSpace(accessKey))
-		}
-	} else if strings.TrimSpace(accessKey) != "" {
-		parts = append(parts, strings.TrimSpace(accessKey))
-	}
-	if strings.TrimSpace(totpSecret) != "" {
-		parts = append(parts, strings.TrimSpace(totpSecret))
+	if value := strings.TrimSpace(accessKey); value != "" {
+		parts = append(parts, value)
 	}
 	return strings.Join(parts, "----")
 }
@@ -1204,7 +1200,10 @@ func sunnyMailboxCredentialLine(mailbox SunnyMailbox) string {
 	mailboxChannel := normalizeSunnyMailboxChannel(mailbox.MailboxType, mailbox.MailboxChannel)
 	if mailboxType == "apple" {
 		if mailboxChannel == "url_api" {
-			return sunnyURLAPIRaw(mailbox.Email, mailbox.ChatGPTPassword, mailbox.AccessKey, mailbox.TOTPSecret)
+			if strings.TrimSpace(mailbox.Email) == "" || strings.TrimSpace(mailbox.AccessKey) == "" {
+				return sunnyCanonicalMailboxCredential(mailbox.Raw, mailboxType, mailboxChannel)
+			}
+			return sunnyURLAPIRaw(mailbox.Email, mailbox.AccessKey)
 		}
 		if strings.TrimSpace(mailbox.Email) != "" && strings.TrimSpace(mailbox.AccessKey) != "" {
 			return strings.Join([]string{strings.TrimSpace(mailbox.Email), strings.TrimSpace(mailbox.AccessKey)}, "----")
@@ -1212,7 +1211,30 @@ func sunnyMailboxCredentialLine(mailbox SunnyMailbox) string {
 	} else if strings.TrimSpace(mailbox.Email) != "" && strings.TrimSpace(mailbox.Password) != "" && strings.TrimSpace(mailbox.ClientID) != "" && strings.TrimSpace(mailbox.RefreshToken) != "" {
 		return sunnyMicrosoftRaw(mailbox.Email, mailbox.Password, mailbox.ClientID, mailbox.RefreshToken)
 	}
-	return strings.TrimSpace(mailbox.Raw)
+	return sunnyCanonicalMailboxCredential(mailbox.Raw, mailboxType, mailboxChannel)
+}
+
+func sunnyCanonicalMailboxCredential(raw, mailboxType, mailboxChannel string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.TrimSpace(mailboxType) == "" && (strings.Contains(raw, "----http://") || strings.Contains(raw, "----https://")) {
+		mailboxType, mailboxChannel = "apple", "url_api"
+	}
+	p, err := parseSunnyMailboxLineForProvider(raw, mailboxType, mailboxChannel)
+	if err != nil {
+		return raw
+	}
+	return sunnyMailboxCredentialLine(SunnyMailbox{
+		Email:          p["email"],
+		MailboxType:    mailboxType,
+		MailboxChannel: mailboxChannel,
+		Password:       p["password"],
+		ClientID:       p["client_id"],
+		RefreshToken:   p["refresh_token"],
+		AccessKey:      p["access_key"],
+	})
 }
 
 func sunnyCredentialPreview(value string) string {
@@ -1302,7 +1324,7 @@ func (s *Server) sunnyImportMailboxes(w http.ResponseWriter, r *http.Request) {
 		if mailboxType == "microsoft" {
 			p["raw"] = sunnyMicrosoftRaw(p["email"], p["password"], p["client_id"], p["refresh_token"])
 		} else {
-			p["raw"] = strings.TrimSpace(line)
+			p["raw"] = sunnyURLAPIRaw(p["email"], p["access_key"])
 		}
 		parsed[key] = p
 	}
@@ -3915,10 +3937,12 @@ func buildSunnySub2AccountPayload(sess SunnySession, cfg map[string]any, mailbox
 }
 
 func sunnySessionSecretKey(sess SunnySession, mailbox SunnyMailbox) string {
-	if value := strings.TrimSpace(sunnyMailboxCredentialLine(mailbox)); value != "" {
-		return value
+	if mailbox.ID != 0 {
+		if value := strings.TrimSpace(sunnyMailboxCredentialLine(mailbox)); value != "" {
+			return value
+		}
 	}
-	return strings.TrimSpace(sess.RawMailboxLine)
+	return sunnyCanonicalMailboxCredential(sess.RawMailboxLine, "", "")
 }
 
 func sunnyDefaultSub2ModelMapping() map[string]any {
@@ -4153,14 +4177,14 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 		"status": status, "plan_type": plan, "trial_eligibility": trialEligibility, "group_id": mailbox.GroupID, "group_name": mailbox.GroupName,
 		"checkout_kind": checkoutKind, "checkout_result": sunnyCheckoutResultJSON(account.CheckoutResultJSON), "payment_methods": paymentMethods, "payment_probe_results": paymentProbeResults,
 		"payment_probe_error": account.PaymentProbeError, "payment_probed_at": nullableTime(account.PaymentProbedAt != nil, pointerTime(account.PaymentProbedAt)), "commerce_check_error": account.CommerceCheckError,
-		"phone_bound":       sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailbox.Status),
-		"has_access_token":  row.HasAccessToken != 0 || account.HasAccessToken != 0,
-		"has_refresh_token": row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
-		"has_secret_key":    row.HasSecretKey != 0 || mailbox.HasSecretKey != 0,
+		"phone_bound":          sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailbox.Status),
+		"has_access_token":     row.HasAccessToken != 0 || account.HasAccessToken != 0,
+		"has_refresh_token":    row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
+		"has_secret_key":       row.HasSecretKey != 0 || mailbox.HasSecretKey != 0,
 		"has_chatgpt_password": mailbox.HasChatGPTPassword != 0,
 		"has_totp_secret":      mailbox.HasTOTPSecret != 0,
 		"has_login_secret":     mailbox.HasChatGPTPassword != 0 && mailbox.HasTOTPSecret != 0,
-		"updated_at":        formatTime(row.UpdatedAt), "access_token_expires_at": nullableTime(expiresAt.Valid, expiresAt.Time), "last_health_checked_at": lastHealthText,
+		"updated_at":           formatTime(row.UpdatedAt), "access_token_expires_at": nullableTime(expiresAt.Valid, expiresAt.Time), "last_health_checked_at": lastHealthText,
 		"access_token_status": fallback(row.AccessTokenStatus, "unknown"), "access_token_error": row.AccessTokenError,
 		"access_token_checked_at": nullableTime(row.AccessTokenCheckedAt != nil, sunnyTimePointerValue(row.AccessTokenCheckedAt)),
 		"health_check_status":     fallback(row.HealthCheckStatus, "unknown"), "health_check_error": row.HealthCheckError,

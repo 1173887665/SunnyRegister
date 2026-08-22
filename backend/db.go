@@ -325,6 +325,35 @@ func ensureSunnySchema(db *gorm.DB) {
 	}
 	db.Exec("UPDATE sunny_mailboxes SET status = '已接码' WHERE status = 'PLUS试用中'")
 	db.Exec("UPDATE sunny_accounts SET status = 'phone_bound' WHERE status = 'PLUS试用中'")
+	sanitizeSunnyMailboxCredentials(db)
+}
+
+func sanitizeSunnyMailboxCredentials(db *gorm.DB) {
+	var mailboxes []SunnyMailbox
+	if err := db.Find(&mailboxes).Error; err != nil {
+		return
+	}
+	credentials := make(map[string]string, len(mailboxes))
+	for _, mailbox := range mailboxes {
+		credential := strings.TrimSpace(sunnyMailboxCredentialLine(mailbox))
+		if credential == "" {
+			continue
+		}
+		credentials[sunnyEmailKey(mailbox.Email)] = credential
+		if credential != strings.TrimSpace(mailbox.Raw) {
+			db.Model(&SunnyMailbox{}).Where("id = ?", mailbox.ID).UpdateColumn("raw", credential)
+		}
+	}
+	var sessions []SunnySession
+	if err := db.Select("id", "email", "raw_mailbox_line").Find(&sessions).Error; err != nil {
+		return
+	}
+	for _, session := range sessions {
+		credential := credentials[sunnyEmailKey(session.Email)]
+		if credential != "" && credential != strings.TrimSpace(session.RawMailboxLine) {
+			db.Model(&SunnySession{}).Where("id = ?", session.ID).UpdateColumn("raw_mailbox_line", credential)
+		}
+	}
 }
 
 func seedProviderDefinitions(db *gorm.DB) {

@@ -60,8 +60,14 @@ func TestSunnyURLAPIReimportUpdatesCredentialsAndPreservesLifecycle(t *testing.T
 			t.Fatalf("summary leaked sensitive field %q", key)
 		}
 	}
-	if got := sunnyMailboxCredentialLine(updated); got != body["lines"] {
-		t.Fatalf("canonical export=%q want=%q", got, body["lines"])
+	if got := sunnyMailboxCredentialLine(updated); got != "session@example.com----https://mail.example.test/latest" {
+		t.Fatalf("canonical mailbox credential=%q", got)
+	}
+	if updated.Raw != "session@example.com----https://mail.example.test/latest" {
+		t.Fatalf("stored mailbox credential=%q", updated.Raw)
+	}
+	if got := sunnySub2Notes(updated, sunnyMailboxCredentialLine(updated)); got != "邮箱凭证：session@example.com----https://mail.example.test/latest\n密码2FA：session@example.com----new-chat-password----"+secret {
+		t.Fatalf("sub2api notes=%q", got)
 	}
 
 	listRecorder := httptest.NewRecorder()
@@ -313,6 +319,46 @@ func TestSunnySub2NotesIncludesLoginSecretLine(t *testing.T) {
 	}
 	if got := sunnySub2Notes(mailbox, ""); got != "密码2FA：ls@example.com----ChatGPT-pass----JBSWY3DPEHPK3PXP" {
 		t.Fatalf("unexpected LS-only sub2api notes: %q", got)
+	}
+}
+
+func TestSunnyMailboxCredentialLineCanonicalizesLegacyURLAPIRaw(t *testing.T) {
+	mailbox := SunnyMailbox{
+		Email:           "legacy@icloud.com",
+		MailboxType:     "apple",
+		MailboxChannel:  "url_api",
+		AccessKey:       "https://mail.example.test/messages/key",
+		ChatGPTPassword: "chat-password",
+		TOTPSecret:      "JBSWY3DPEHPK3PXP",
+		Raw:             "legacy@icloud.com----chat-password----https://mail.example.test/messages/key----JBSWY3DPEHPK3PXP",
+	}
+	if got := sunnyMailboxCredentialLine(mailbox); got != "legacy@icloud.com----https://mail.example.test/messages/key" {
+		t.Fatalf("legacy URL API credential=%q", got)
+	}
+}
+
+func TestSanitizeSunnyMailboxCredentialsUpdatesHistoricalSK(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	const legacy = "session@example.com----chat-password----https://mail.example.test/messages/key----JBSWY3DPEHPK3PXP"
+	if err := s.db.Model(&SunnyMailbox{}).Where("email = ?", "session@example.com").Updates(map[string]any{
+		"mailbox_type": "apple", "mailbox_channel": "url_api", "access_key": "https://mail.example.test/messages/key",
+		"chat_gpt_password": "chat-password", "totp_secret": "JBSWY3DPEHPK3PXP", "raw": legacy,
+	}).Error; err != nil {
+		t.Fatalf("prepare historical mailbox: %v", err)
+	}
+	if err := s.db.Model(&SunnySession{}).Where("email = ?", "session@example.com").UpdateColumn("raw_mailbox_line", legacy).Error; err != nil {
+		t.Fatalf("prepare historical session: %v", err)
+	}
+
+	sanitizeSunnyMailboxCredentials(s.db)
+	want := "session@example.com----https://mail.example.test/messages/key"
+	var mailbox SunnyMailbox
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&mailbox).Error; err != nil || mailbox.Raw != want {
+		t.Fatalf("sanitized mailbox raw=%q err=%v", mailbox.Raw, err)
+	}
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil || session.RawMailboxLine != want {
+		t.Fatalf("sanitized session raw=%q err=%v", session.RawMailboxLine, err)
 	}
 }
 

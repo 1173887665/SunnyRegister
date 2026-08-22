@@ -938,10 +938,20 @@ func (s *Server) sub2APIAccountNotes(item AccountRecord) string {
 			if notes := firstText(text(credentials[key]), text(metadata[key])); notes != "" {
 				mailbox := SunnyMailbox{
 					Email:           firstText(text(provider["login_identifier"]), text(credentials["email"]), item.Email),
+					MailboxType:     firstText(text(credentials["mailbox_type"]), text(metadata["mailbox_type"]), text(credentials["type"]), text(metadata["type"])),
+					MailboxChannel:  firstText(text(credentials["mailbox_channel"]), text(metadata["mailbox_channel"]), text(credentials["channel"]), text(metadata["channel"])),
+					Password:        firstText(text(credentials["password"]), text(metadata["password"]), text(credentials["mailbox_password"]), text(metadata["mailbox_password"])),
+					ClientID:        firstText(text(credentials["client_id"]), text(metadata["client_id"]), text(credentials["mailbox_client_id"]), text(metadata["mailbox_client_id"])),
+					RefreshToken:    firstText(text(credentials["refresh_token"]), text(metadata["refresh_token"]), text(credentials["mailbox_refresh_token"]), text(metadata["mailbox_refresh_token"])),
+					AccessKey:       firstText(text(credentials["access_key"]), text(metadata["access_key"]), text(credentials["mailbox_access_key"]), text(metadata["mailbox_access_key"])),
 					ChatGPTPassword: firstText(text(credentials["chatgpt_password"]), text(credentials["chat_gpt_password"]), text(metadata["chatgpt_password"])),
 					TOTPSecret:      firstText(text(credentials["totp_secret"]), text(metadata["totp_secret"])),
 				}
-				return sunnySub2Notes(mailbox, notes)
+				secretKey := sunnyMailboxCredentialLine(mailbox)
+				if secretKey == "" {
+					secretKey = sunnyCanonicalMailboxCredential(notes, mailbox.MailboxType, mailbox.MailboxChannel)
+				}
+				return sunnySub2Notes(mailbox, secretKey)
 			}
 		}
 		value := func(keys ...string) string {

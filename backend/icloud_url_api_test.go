@@ -28,8 +28,12 @@ func TestParseSunnyMailboxLineForURLAPI(t *testing.T) {
 		if parsed["email"] != "alias@icloud.com" || parsed["chatgpt_password"] != test.password || parsed["access_key"] != test.url || parsed["totp_secret"] != test.totp {
 			t.Fatalf("unexpected parsed mailbox for %q: %#v", test.line, parsed)
 		}
-		if got := sunnyURLAPIRaw(parsed["email"], parsed["chatgpt_password"], parsed["access_key"], parsed["totp_secret"]); got != test.line {
-			t.Fatalf("canonical form mismatch: got %q want %q", got, test.line)
+		wantCredential := parsed["email"]
+		if parsed["access_key"] != "" {
+			wantCredential += "----" + parsed["access_key"]
+		}
+		if got := sunnyURLAPIRaw(parsed["email"], parsed["access_key"]); got != wantCredential {
+			t.Fatalf("canonical credential mismatch: got %q want %q", got, wantCredential)
 		}
 	}
 	for _, invalid := range []string{
