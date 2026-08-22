@@ -1858,16 +1858,15 @@ class JobStore:
                     strategy_cycle = ("standalone", "inline")
                 current["local_method_strategy"] = strategy_cycle[(attempt - 1) % len(strategy_cycle)]
                 # PIX/UPI need a non-zero Stage1 to publish their Stripe
-                # mandate configuration.  MoMo is different: its OAICS
-                # intermediate Checkout must carry the account campaign so
-                # the user can see both MoMo and the zero-due Plus offer.
-                # Keep later MoMo retries on the existing late-promotion path
-                # so a Stripe cs_* Checkout can still be rebuilt when OAICS is
-                # returned by the first attempt.
+                # mandate configuration.  MoMo follows the same rule for its
+                # OAICS intermediate session: creating it at zero due causes
+                # OpenAI to omit the country-specific custom method.  Create
+                # the VN/VND session first, then apply the campaign through
+                # checkout/update so the same inspectable OAICS link contains
+                # both MoMo and the zero-due Plus offer.
                 current["promo_on_create"] = (
-                    current.get("link_type") == "momo"
+                    current.get("link_type") == "gcash"
                     and bool(current.get("use_promo"))
-                    and logical_attempt == 1
                 )
             if current.get("link_type") == "pix" and current.get("pix_tax_id_auto"):
                 auto_kind = current.get("pix_auto_kind") or "cpf"
