@@ -1083,6 +1083,10 @@ def update_checkout_promo(
     text = resp.text or ""
     log(f"[promo] checkout/update: {resp.status_code} {text[:180]}")
     if resp.status_code != 200:
+        if resp.status_code == 403 and "promotion is not available" in text.lower():
+            raise RuntimeError(
+                "PROMOTION_NOT_AVAILABLE: 当前 Checkout 会话未接受该 0 元活动，不能继续生成支付链接"
+            )
         raise RuntimeError(f"应用 Plus 优惠失败：HTTP {resp.status_code} {text[:300]}")
     try:
         return resp.json() or {}
@@ -1210,11 +1214,11 @@ def submit_custom_checkout_taxes(
     )
     text = resp.text or ""
     if resp.status_code != 200:
-        raise RuntimeError(f"提交 PH 账单地址失败：HTTP {resp.status_code} {text[:300]}")
+        raise RuntimeError(f"提交 Checkout 账单地址失败：HTTP {resp.status_code} {text[:300]}")
     try:
         payload = resp.json() or {}
     except Exception as exc:
-        raise RuntimeError(f"提交 PH 账单地址返回非 JSON：{text[:300]}") from exc
+        raise RuntimeError(f"提交 Checkout 账单地址返回非 JSON：{text[:300]}") from exc
     checkout = payload.get("checkout_session") or {}
     return checkout if isinstance(checkout, dict) else {}
 
@@ -1905,7 +1909,7 @@ class JobStore:
                     return
             non_retryable = any(marker in lowered for marker in (
                 "access token", "token_invalidated", "token_expired", "token_revoked", "jwt expired",
-                "计划类型", "提取方式", "任务已停止",
+                "计划类型", "提取方式", "任务已停止", "promotion_not_available",
             ))
             transport_kind = _proxy_transport_error_kind(last_error)
             if transport_kind:
@@ -3043,6 +3047,16 @@ class JobStore:
                         )
                         custom_amount = custom_checkout_amount_minor(custom_state)
                         custom_currency = custom_checkout_currency(custom_state) or custom_currency
+                    self.update(job_id, percent=72, text="正在提交 NL iDEAL 账单信息")
+                    ideal_billing = default_billing("NL", meta.get("email") or "")
+                    tax_checkout = submit_custom_checkout_taxes(
+                        chatgpt_http, token, session_id, custom_processor,
+                        ideal_billing, custom_currency, device_id,
+                    )
+                    if tax_checkout:
+                        custom_state = tax_checkout
+                        custom_amount = custom_checkout_amount_minor(custom_state)
+                        custom_currency = custom_checkout_currency(custom_state) or custom_currency
                     if promo_requested and custom_amount != 0:
                         raise RuntimeError(
                             f"IDEAL_ZERO_DUE_REQUIRED: OAICS iDEAL 优惠未使金额归零：amount={custom_amount} {custom_currency}"
@@ -3077,6 +3091,17 @@ class JobStore:
                                 method_name="iDEAL",
                                 log=lambda message: self.log(job_id, message),
                             )
+                        self.update(job_id, percent=88, text="正在提交 OAICS iDEAL Checkout approval")
+                        approve_checkout(
+                            token,
+                            session_id,
+                            custom_processor,
+                            exit_proxy,
+                            device_id,
+                            did,
+                            http=chatgpt_http,
+                            log=lambda message: self.log(job_id, message),
+                        )
                         started = start_custom_checkout_method(
                             chatgpt_http, token, session_id, custom_processor,
                             method_id, device_id, method_name="iDEAL",

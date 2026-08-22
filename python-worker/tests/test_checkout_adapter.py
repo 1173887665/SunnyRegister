@@ -95,6 +95,13 @@ class CheckoutAdapterTests(unittest.TestCase):
         self.assertEqual(options["entry_proxy_country"], "VN")
         self.assertEqual(options["exit_proxy_country"], "PH")
 
+    def test_start_checkout_preserves_zero_retry_count(self) -> None:
+        with patch.object(sunny_adapter.STORE, "create", create=True, return_value="job-zero") as create:
+            sunny_adapter.start_checkout({"token": "token", "link_type": "ideal", "retry_count": 0})
+
+        options = create.call_args.args[0]
+        self.assertEqual(options["retry_count"], 0)
+
     def test_checkout_status_returns_ordered_sanitized_logs(self) -> None:
         token = "eyJ" + "a" * 80
         job = {

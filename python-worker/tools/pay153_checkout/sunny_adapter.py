@@ -33,6 +33,8 @@ def start_checkout(payload: dict[str, Any]) -> str:
     link_type = str(payload.get("link_type") or "hosted").strip().lower()
     checkout_kind = str(payload.get("checkout_kind") or "unknown").strip().lower()
     paypal_mode = checkout_mode(checkout_kind)
+    raw_retry_count = payload.get("retry_count")
+    retry_count = 3 if raw_retry_count is None or str(raw_retry_count).strip() == "" else int(raw_retry_count)
     options = {
         "token_raw": str(payload.get("token") or ""),
         "plan": str(payload.get("plan") or "plus"),
@@ -65,7 +67,7 @@ def start_checkout(payload: dict[str, Any]) -> str:
         "pix_tax_id": str(payload.get("pix_tax_id") or "")[:14],
         "pix_tax_id_auto": not bool(payload.get("pix_tax_id")),
         "pix_auto_kind": str(payload.get("pix_auto_kind") or "cpf"),
-        "retry_count": min(50, max(1, int(payload.get("retry_count") or 3))),
+        "retry_count": min(50, max(0, retry_count)),
         "paired_proxy_rotation": True,
         "use_sen": True,
         "use_so": True,
