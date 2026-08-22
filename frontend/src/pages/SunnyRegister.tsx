@@ -112,14 +112,14 @@ function ResizableDataTable({ tableKey, columns, headers, className="", children
     return ()=>observer.disconnect();
   },[columns]);
   const setColumnWidth=(index:number,width:number)=>setWidths((current)=>resizeDataTableColumn(current,columns,index,width,viewportWidth));
-  const startResize=(event:ReactPointerEvent<HTMLSpanElement>,index:number)=>{
+  const startResize=(event:ReactPointerEvent<HTMLSpanElement>,index:number, direction:1|-1 = 1)=>{
     event.preventDefault();
     event.stopPropagation();
     resizeCleanup.current?.();
     const startX=event.clientX;
     const startWidths=[...widths];
     const startWidth=startWidths[index];
-    const onMove=(moveEvent:PointerEvent)=>setWidths(resizeDataTableColumn(startWidths,columns,index,startWidth+moveEvent.clientX-startX,viewportWidth));
+    const onMove=(moveEvent:PointerEvent)=>setWidths(resizeDataTableColumn(startWidths,columns,index,startWidth+direction*(moveEvent.clientX-startX),viewportWidth));
     const cleanup=()=>{
       window.removeEventListener("pointermove",onMove);
       window.removeEventListener("pointerup",cleanup);
@@ -138,7 +138,7 @@ function ResizableDataTable({ tableKey, columns, headers, className="", children
   const actionIndex=columns.length-1;
   return <table ref={tableRef} className={cn("sr-account-table sr-resizable-table",className)} style={{width:tableWidth,minWidth:tableWidth,maxWidth:"none"}}>
     <colgroup>{widths.map((width,index)=><col key={index} style={{width}}/>)}</colgroup>
-    <thead><tr>{headers.map((header,index)=><th key={index}><span className="sr-table-header-content">{header}</span><span className={cn("sr-column-resizer",index===actionIndex&&"is-last")} role="separator" aria-orientation="vertical" tabIndex={0} title={resizeTitle} onPointerDown={(event)=>startResize(event,index)} onDoubleClick={()=>setColumnWidth(index,columns[index].width)} onKeyDown={(event)=>{if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();setColumnWidth(index,widths[index]+(event.key==="ArrowRight"?12:-12));}else if(event.key==="Home"){event.preventDefault();setColumnWidth(index,columns[index].width);}}}/></th>)}</tr></thead>
+    <thead><tr>{headers.map((header,index)=><th key={index}><span className="sr-table-header-content">{header}</span><span className={cn("sr-column-resizer",index===actionIndex&&"is-last")} role="separator" aria-orientation="vertical" tabIndex={0} title={resizeTitle} onPointerDown={(event)=>startResize(event,index,index===actionIndex?-1:1)} onDoubleClick={()=>setColumnWidth(index,columns[index].width)} onKeyDown={(event)=>{if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();const delta=event.key==="ArrowRight"?12:-12;setColumnWidth(index,widths[index]+(index===actionIndex?-delta:delta));}else if(event.key==="Home"){event.preventDefault();setColumnWidth(index,columns[index].width);}}}/></th>)}</tr></thead>
     {children}
   </table>;
 }

@@ -540,7 +540,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   color: var(--text-primary);
   border-color: var(--border) !important;
 }
-.sr-column-resizer.is-last { right:0; }
+.sr-column-resizer.is-last { right:auto; left:-5px; }
 .sr-column-resizing,
 .sr-column-resizing * { cursor:col-resize !important; user-select:none !important; }
 .sr-resizable-table td {
@@ -2770,7 +2770,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .audit-column-resizer { position:absolute; top:8px; right:-5px; bottom:8px; z-index:2; width:10px; cursor:col-resize; touch-action:none; }
 .audit-column-resizer::after { position:absolute; top:5px; right:4px; bottom:5px; width:1px; background:rgba(148,163,184,.28); content:""; transition:background .15s ease, box-shadow .15s ease, width .15s ease; }
 .audit-column-resizer:hover::after, .audit-column-resizer:focus-visible::after { width:2px; background:var(--accent); box-shadow:0 0 0 3px rgba(20,184,166,.10); }
-.audit-column-resizer.is-last { right:0; }
+.audit-column-resizer.is-last { right:auto; left:-5px; }
 .audit-column-resizing, .audit-column-resizing * { cursor:col-resize!important; user-select:none!important; }
 .audit-table td { height:68px; border-bottom:1px solid var(--border-soft); padding:9px 10px; color:var(--text-secondary); font-size:13px; text-align:center; vertical-align:middle; }
 .audit-table tr:last-child td { border-bottom:0; }
