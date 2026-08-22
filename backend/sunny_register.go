@@ -4458,6 +4458,20 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		writeJSON(w, http.StatusAccepted, serializeTask(task))
 		return
 	}
+	if len(parts) == 1 && parts[0] == "checkout-probe" && r.Method == http.MethodPost {
+		body, err := parseBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		task, err := s.createSunnyCheckoutProbeTask(body)
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, serializeTask(task))
+		return
+	}
 	if len(parts) == 1 && parts[0] == "payment-probe" && r.Method == http.MethodPost {
 		body, err := parseBody(r)
 		if err != nil {

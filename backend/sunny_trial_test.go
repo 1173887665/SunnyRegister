@@ -148,11 +148,11 @@ func TestSunnyTrialTaskPersistsAndFiltersEligibility(t *testing.T) {
 		t.Fatalf("unknown filter status=%d body=%s", unknownRecorder.Code, unknownRecorder.Body.String())
 	}
 
-	previousCheck := sunnyCheckTrialEligibility
-	sunnyCheckTrialEligibility = func(context.Context, string) (bool, string, bool, error) {
-		return true, "该账号有 ChatGPT Plus 0 元试用资格", false, nil
+	previousCheck := sunnyCheckTrialOnly
+	sunnyCheckTrialOnly = func(context.Context, string) sunnyCommerceProbeResult {
+		return sunnyCommerceProbeResult{Eligibility: sunnyTrialEligible, TrialState: sunnyTrialEligible, TrialMessage: "该账号有 ChatGPT Plus 0 元试用资格"}
 	}
-	t.Cleanup(func() { sunnyCheckTrialEligibility = previousCheck })
+	t.Cleanup(func() { sunnyCheckTrialOnly = previousCheck })
 
 	task := s.createTask(sunnyTrialTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
 	s.executeSunnyTrialTask(&task, map[string]any{"session_ids": []uint{session.ID}})
@@ -172,17 +172,40 @@ func TestSunnyTrialTaskPersistsAndFiltersEligibility(t *testing.T) {
 	}
 }
 
+func TestSunnyTrialTaskDoesNotOverwriteCheckoutOrPaymentData(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	session := prepareSunnyTrialAccount(t, s)
+	if err := s.db.Model(&SunnyAccount{}).Where("email = ?", session.Email).Updates(map[string]any{
+		"checkout_kind": "oaics", "payment_methods_json": `["card","paypal"]`,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	previousCheck := sunnyCheckTrialOnly
+	sunnyCheckTrialOnly = func(context.Context, string) sunnyCommerceProbeResult {
+		return sunnyCommerceProbeResult{Eligibility: sunnyTrialIneligible, TrialState: sunnyTrialIneligible}
+	}
+	t.Cleanup(func() { sunnyCheckTrialOnly = previousCheck })
+
+	task := s.createTask(sunnyTrialTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
+	s.executeSunnyTrialTask(&task, map[string]any{"session_ids": []uint{session.ID}})
+	var account SunnyAccount
+	s.db.Where("email = ?", session.Email).First(&account)
+	if account.TrialEligibility != sunnyTrialIneligible || account.CheckoutKind != "oaics" || account.PaymentMethodsJSON != `["card","paypal"]` {
+		t.Fatalf("unexpected account state after trial-only check: %#v", account)
+	}
+}
+
 func TestSunnyTrialInvalidTokenClearsEligibilityAndMarksATInvalid(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	session := prepareSunnyTrialAccount(t, s)
 	if err := s.db.Model(&SunnyAccount{}).Where("email = ?", session.Email).Update("trial_eligibility", sunnyTrialEligible).Error; err != nil {
 		t.Fatal(err)
 	}
-	previousCheck := sunnyCheckTrialEligibility
-	sunnyCheckTrialEligibility = func(context.Context, string) (bool, string, bool, error) {
-		return false, "accessToken 无效或已过期", true, fmt.Errorf("accessToken 无效或已过期")
+	previousCheck := sunnyCheckTrialOnly
+	sunnyCheckTrialOnly = func(context.Context, string) sunnyCommerceProbeResult {
+		return sunnyCommerceProbeResult{Eligibility: sunnyTrialUnknown, TrialError: "accessToken 无效或已过期", InvalidToken: true}
 	}
-	t.Cleanup(func() { sunnyCheckTrialEligibility = previousCheck })
+	t.Cleanup(func() { sunnyCheckTrialOnly = previousCheck })
 
 	task := s.createTask(sunnyTrialTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
 	s.executeSunnyTrialTask(&task, map[string]any{"session_ids": []uint{session.ID}})
@@ -213,11 +236,11 @@ func TestSunnyTrialDoesNotQueueDuplicateRenewalForActiveAccount(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	session := prepareSunnyTrialAccount(t, s)
 	activeRenewal := s.createTask("sunny_refresh_session", "sunny", map[string]any{"account_ids": []uint{session.AccountID}}, 1)
-	previousCheck := sunnyCheckTrialEligibility
-	sunnyCheckTrialEligibility = func(context.Context, string) (bool, string, bool, error) {
-		return false, "accessToken 无效或已过期", true, fmt.Errorf("accessToken 无效或已过期")
+	previousCheck := sunnyCheckTrialOnly
+	sunnyCheckTrialOnly = func(context.Context, string) sunnyCommerceProbeResult {
+		return sunnyCommerceProbeResult{Eligibility: sunnyTrialUnknown, TrialError: "accessToken 无效或已过期", InvalidToken: true}
 	}
-	t.Cleanup(func() { sunnyCheckTrialEligibility = previousCheck })
+	t.Cleanup(func() { sunnyCheckTrialOnly = previousCheck })
 
 	task := s.createTask(sunnyTrialTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
 	s.executeSunnyTrialTask(&task, map[string]any{"session_ids": []uint{session.ID}})
@@ -335,11 +358,11 @@ func TestSunnyTrialTasksSkipSessionsAlreadyBeingChecked(t *testing.T) {
 		t.Fatalf("unexpected skipped session IDs: %#v", secondPayload)
 	}
 
-	previousCheck := sunnyCheckCommerce
-	sunnyCheckCommerce = func(context.Context, string) sunnyCommerceProbeResult {
+	previousCheck := sunnyCheckTrialOnly
+	sunnyCheckTrialOnly = func(context.Context, string) sunnyCommerceProbeResult {
 		return sunnyCommerceProbeResult{Eligibility: sunnyTrialEligible, TrialState: sunnyTrialEligible, TrialMessage: "eligible"}
 	}
-	t.Cleanup(func() { sunnyCheckCommerce = previousCheck })
+	t.Cleanup(func() { sunnyCheckTrialOnly = previousCheck })
 	s.executeSunnyTrialTask(&secondTask, secondPayload)
 	result := jsonMap(secondTask.ResultJSON)
 	if intValue(result["skipped"], 0) != 1 || intValue(result["eligible"], 0) != 1 {

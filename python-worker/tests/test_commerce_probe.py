@@ -1,7 +1,7 @@
 from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
-from sunny_core.commerce_probe import probe_commerce, probe_payment_methods
+from sunny_core.commerce_probe import probe_commerce, probe_payment_methods, probe_trial
 
 
 def response(status: int, payload=None, content_type: str = "application/json"):
@@ -30,6 +30,23 @@ def test_probe_commerce_parses_trial_checkout_and_payment_methods() -> None:
     assert result["trial"] == {"state": "eligible", "http": 200, "error": ""}
     assert result["checkout"]["kind"] == "oaics"
     assert result["checkout"]["payment_methods"] == ["card", "paypal"]
+
+
+def test_probe_trial_does_not_run_checkout() -> None:
+    session = MagicMock()
+    session.get.return_value = response(200, {"state": "eligible"})
+    with (
+        patch("sunny_core.commerce_probe.curl_requests.Session", return_value=session),
+        patch("sunny_core.commerce_probe._task_style_checkout_probe") as checkout_probe,
+    ):
+        result = probe_trial("token", "http://register-proxy")
+
+    assert result["trial"] == {"state": "eligible", "http": 200, "error": ""}
+    assert session.proxies == {
+        "http": "http://register-proxy",
+        "https": "http://register-proxy",
+    }
+    checkout_probe.assert_not_called()
 
 
 def test_probe_commerce_reports_html_challenge_without_leaking_body() -> None:

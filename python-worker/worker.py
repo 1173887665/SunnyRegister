@@ -66,6 +66,11 @@ class ProbeAccessTokenRequest(BaseModel):
     proxy_url: str = ""
 
 
+class ProbeTrialRequest(BaseModel):
+    access_token: str
+    proxy_url: str = ""
+
+
 class ProbeCommerceRequest(BaseModel):
     access_token: str
     proxy_url: str = ""
@@ -185,6 +190,14 @@ def cancel(req: CancelRequest, authorization: str | None = Header(default=None))
 def probe_access_token(req: ProbeAccessTokenRequest, authorization: str | None = Header(default=None)) -> dict:
     _check_token(authorization)
     from sunny_core.access_token_probe import probe_access_token as run_probe
+
+    return run_probe(req.access_token, req.proxy_url)
+
+
+@app.post("/probe-trial")
+def probe_trial(req: ProbeTrialRequest, authorization: str | None = Header(default=None)) -> dict:
+    _check_token(authorization)
+    from sunny_core.commerce_probe import probe_trial as run_probe
 
     return run_probe(req.access_token, req.proxy_url)
 

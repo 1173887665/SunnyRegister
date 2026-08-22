@@ -132,6 +132,42 @@ def _task_style_checkout_probe(
             close()
 
 
+def probe_trial(access_token: str, proxy_url: str = "") -> dict[str, Any]:
+    token = str(access_token or "").strip()
+    if not token:
+        return {
+            "trial": {"state": "", "http": 0, "error": "missing access token"},
+            "traffic": {"requests": 0, "total_bytes": 0},
+        }
+    selected_proxy = str(proxy_url or "").strip()
+    session = _session(selected_proxy)
+    meter = ProxyTrafficMeter(
+        proxy_url=selected_proxy,
+        tracked_proxy=bool(selected_proxy),
+        operation="commerce_trial",
+    )
+    result: dict[str, Any] = {
+        "trial": {"state": "", "http": 0, "error": ""},
+        "traffic": {"requests": 0, "total_bytes": 0},
+    }
+    try:
+        try:
+            with use_traffic_meter(meter):
+                response = _request_with_retry(lambda: session.get(TRIAL_URL, headers=_headers(token), timeout=30))
+            payload, error = _safe_json(response)
+            result["trial"] = {
+                "state": str(payload.get("state") or "").strip().lower(),
+                "http": response.status_code,
+                "error": error,
+            }
+        except Exception as exc:
+            result["trial"]["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
+        result["traffic"] = meter.snapshot()
+        return result
+    finally:
+        session.close()
+
+
 def probe_payment_methods(
     access_token: str,
     proxy_url: str = "",

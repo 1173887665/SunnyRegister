@@ -323,6 +323,8 @@ func auditMetaForRequest(r *http.Request, body, response map[string]any, status 
 		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "subscription_check", "account_subscription"
 	case strings.Contains(path, "/sunny/sessions/trial-check"):
 		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "trial_check", "account_trial"
+	case strings.Contains(path, "/sunny/sessions/checkout-probe"):
+		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "checkout_probe", "account_checkout"
 	case strings.Contains(path, "/sunny/sessions/payment-probe"):
 		meta.LogType, meta.Category, meta.Action, meta.EntityType = "task", "account", "payment_probe", "account_payment"
 	case strings.Contains(path, "/sunny/tasks/refresh-session"):
@@ -393,7 +395,7 @@ func auditAction(path, method string) string {
 
 func auditSummary(category, action, status string, count int, entity string) string {
 	categoryLabels := map[string]string{"authentication": "系统认证", "mailbox": "邮箱配置", "sms": "接码配置", "reverse_proxy": "反代配置", "proxy": "代理配置", "account": "账户管理", "registration_task": "注册任务", "audit": "日志管理", "configuration": "系统配置", "system": "系统"}
-	actionLabels := map[string]string{"login": "登录", "logout": "退出登录", "create": "新增", "update": "修改", "delete": "删除", "import": "导入", "export": "导出", "health_check": "账户测活", "subscription_check": "订阅检测", "payment_probe": "支付探测", "refresh_access_token": "AT 续期", "acquire_refresh_token": "获取 RT", "check": "检测", "refresh": "刷新", "cancel": "取消", "batch_update": "批量修改", "toggle": "启用状态切换", "test": "测试", "restart": "重启"}
+	actionLabels := map[string]string{"login": "登录", "logout": "退出登录", "create": "新增", "update": "修改", "delete": "删除", "import": "导入", "export": "导出", "health_check": "账户测活", "subscription_check": "订阅检测", "checkout_probe": "Checkout 探测", "payment_probe": "支付探测", "refresh_access_token": "AT 续期", "acquire_refresh_token": "获取 RT", "check": "检测", "refresh": "刷新", "cancel": "取消", "batch_update": "批量修改", "toggle": "启用状态切换", "test": "测试", "restart": "重启"}
 	result := "成功"
 	if status != "success" {
 		result = "失败"

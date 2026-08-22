@@ -111,7 +111,7 @@ func TestSunnyCommerceProxyURLPrefersCheckoutCountryAndPurpose(t *testing.T) {
 	rows := []SunnyProxy{
 		{Address: "http://register.example:8080", Country: "US", PurposeTags: "register", Status: "enabled", Enabled: true, LastCheckOK: true},
 		{Address: "http://commerce-de.example:8080", Country: "DE", PurposeTags: "commerce", Status: "enabled", Enabled: true, LastCheckOK: true},
-		{Address: "http://commerce-us.example:8080", Country: "US", PurposeTags: "register,commerce", Status: "enabled", Enabled: true, LastCheckOK: true},
+		{Address: "http://commerce-us.example:8080", Country: "US", PurposeTags: "commerce", Status: "enabled", Enabled: true, LastCheckOK: true},
 	}
 	if err := db.Create(&rows).Error; err != nil {
 		t.Fatal(err)
@@ -120,5 +120,8 @@ func TestSunnyCommerceProxyURLPrefersCheckoutCountryAndPurpose(t *testing.T) {
 	server := &Server{db: db}
 	if got := server.sunnyCommerceProxyURL("account@example.com"); got != "http://commerce-us.example:8080" {
 		t.Fatalf("proxy=%q", got)
+	}
+	if got := server.sunnyRegisterProxyURL("account@example.com"); got != "http://register.example:8080" {
+		t.Fatalf("register proxy=%q", got)
 	}
 }

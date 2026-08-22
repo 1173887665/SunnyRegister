@@ -742,6 +742,10 @@ func (s *Server) executeTask(taskID string) {
 		s.executeSunnyTrialTask(&task, jsonMap(task.PayloadJSON))
 		return
 	}
+	if task.Type == sunnyCheckoutProbeTaskType {
+		s.executeSunnyCheckoutProbeTask(&task, jsonMap(task.PayloadJSON))
+		return
+	}
 	if task.Type == sunnyPaymentProbeTaskType {
 		s.executeSunnyPaymentProbeTask(&task, jsonMap(task.PayloadJSON))
 		return

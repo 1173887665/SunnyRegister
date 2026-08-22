@@ -26,6 +26,7 @@ const (
 var (
 	sunnyTrialCheckEndpoint    = "https://chatgpt.com/backend-api/promo_campaign/check_coupon?coupon=plus-1-month-free&is_coupon_from_query_param=true"
 	sunnyCheckoutEndpoint      = "https://chatgpt.com/backend-api/payments/checkout"
+	sunnyCheckTrialOnly        = checkSunnyTrialOnly
 	sunnyCheckTrialEligibility = func(ctx context.Context, accessToken string) (bool, string, bool, error) {
 		proxyURL, _ := ctx.Value(sunnyTrialProxyContextKey{}).(string)
 		return checkSunnyTrialEligibility(ctx, accessToken, proxyURL)
@@ -514,6 +515,80 @@ func probeSunnyCommerceViaWorker(ctx context.Context, accessToken, promotionProx
 	return result, true
 }
 
+func probeSunnyTrialViaWorker(ctx context.Context, accessToken, proxyURL string) (sunnyCommerceProbeResult, bool) {
+	result := sunnyCommerceProbeResult{Eligibility: sunnyTrialUnknown, CheckoutKind: sunnyCheckoutUnknown, PaymentMethods: []string{}}
+	workerURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PYTHON_WORKER_URL")), "/")
+	if workerURL == "" {
+		workerURL = "http://127.0.0.1:8765"
+	}
+	body, _ := json.Marshal(map[string]string{"access_token": accessToken, "proxy_url": proxyURL})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, workerURL+"/probe-trial", bytes.NewReader(body))
+	if err != nil {
+		return result, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token := secretValue("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := (&http.Client{Timeout: 70 * time.Second}).Do(req)
+	if err != nil {
+		return result, false
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	if err != nil || resp.StatusCode == http.StatusNotFound || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return result, false
+	}
+	var payload struct {
+		Trial struct {
+			State string `json:"state"`
+			HTTP  int    `json:"http"`
+			Error string `json:"error"`
+		} `json:"trial"`
+		Traffic struct {
+			TotalBytes int64 `json:"total_bytes"`
+		} `json:"traffic"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return result, false
+	}
+	result.TrialState = strings.ToLower(strings.TrimSpace(payload.Trial.State))
+	switch result.TrialState {
+	case sunnyTrialEligible:
+		result.Eligibility = sunnyTrialEligible
+		result.TrialMessage = "该账户有 ChatGPT Plus 0 元试用资格"
+	case "not_eligible", sunnyTrialIneligible:
+		result.Eligibility = sunnyTrialIneligible
+		result.TrialMessage = "该账户没有 ChatGPT Plus 0 元试用资格"
+	default:
+		result.TrialError = fallback(strings.TrimSpace(payload.Trial.Error), fmt.Sprintf("ChatGPT 试用接口返回 HTTP %d，未提供有效状态", payload.Trial.HTTP))
+	}
+	result.InvalidToken = payload.Trial.HTTP == http.StatusUnauthorized
+	result.TrafficBytes = payload.Traffic.TotalBytes
+	return result, true
+}
+
+func checkSunnyTrialOnly(ctx context.Context, accessToken string) sunnyCommerceProbeResult {
+	result := sunnyCommerceProbeResult{Eligibility: sunnyTrialUnknown, CheckoutKind: sunnyCheckoutUnknown, PaymentMethods: []string{}}
+	token := strings.TrimSpace(accessToken)
+	if token == "" {
+		result.TrialError = "账户缺少 Access Token"
+		return result
+	}
+	proxyURL, _ := ctx.Value(sunnyTrialProxyContextKey{}).(string)
+	if workerResult, ok := probeSunnyTrialViaWorker(ctx, token, proxyURL); ok {
+		sunnyTrafficMeterFromContext(ctx).addExternal(workerResult.TrafficBytes)
+		return workerResult
+	}
+	client := sunnyCommerceHTTPClientWithMeter(sunnyTrafficMeterFromContext(ctx), proxyURL)
+	eligibility, state, message, invalid, err := probeSunnyTrial(ctx, client, token)
+	result.Eligibility, result.TrialState, result.TrialMessage, result.InvalidToken = eligibility, state, message, invalid
+	if err != nil {
+		result.TrialError = err.Error()
+	}
+	return result
+}
+
 func checkSunnyTrialEligibility(ctx context.Context, accessToken string, proxyURLs ...string) (bool, string, bool, error) {
 	client := sunnyCommerceHTTPClientWithMeter(sunnyTrafficMeterFromContext(ctx), proxyURLs...)
 	eligibility, _, message, invalid, err := probeSunnyTrial(ctx, client, accessToken)
@@ -570,6 +645,19 @@ func checkSunnyCommerceWithRetry(ctx context.Context, accessToken string) (sunny
 	}
 	retried := sunnyCheckCommerce(ctx, accessToken)
 	return mergeSunnyCommerceProbeResults(initial, retried), true
+}
+
+func checkSunnyTrialWithRetry(ctx context.Context, accessToken string) (sunnyCommerceProbeResult, bool) {
+	initial := sunnyCheckTrialOnly(ctx, accessToken)
+	if initial.InvalidToken || normalizeSunnyTrialEligibility(initial.Eligibility) != sunnyTrialUnknown {
+		return initial, false
+	}
+	retried := sunnyCheckTrialOnly(ctx, accessToken)
+	if normalizeSunnyTrialEligibility(retried.Eligibility) == sunnyTrialUnknown && strings.TrimSpace(retried.TrialError) == "" {
+		retried.TrialError = initial.TrialError
+	}
+	retried.InvalidToken = initial.InvalidToken || retried.InvalidToken
+	return retried, true
 }
 
 func (s *Server) sunnyTrialBatchSize() int {
@@ -729,7 +817,7 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 			candidates[index].SkipReason = "已有试用资格检测任务正在执行，已跳过"
 		}
 	}
-	result := map[string]any{"requested": len(candidates), "eligible": 0, "ineligible": 0, "checkout_detected": 0, "payment_detected": 0, "retried": 0, "partial": 0, "skipped": 0, "failed": 0, "items": []any{}}
+	result := map[string]any{"requested": len(candidates), "eligible": 0, "ineligible": 0, "retried": 0, "skipped": 0, "failed": 0, "items": []any{}}
 	invalidAccounts := []uint{}
 	invalidSessions := []uint{}
 	seenAccounts := map[uint]bool{}
@@ -750,16 +838,13 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 			if outcome.SkipReason == "" && outcome.Error == "" {
 				meter := &sunnyTrafficMeter{}
 				trialCtx := withSunnyTrafficMeter(context.Background(), meter)
-				trialCtx = context.WithValue(trialCtx, sunnyTrialProxyContextKey{}, s.sunnyCommerceProxyURL(candidate.Email))
-				commerce, retried := checkSunnyCommerceWithRetry(trialCtx, candidate.AccessToken)
-				outcome.Eligibility = commerce.Eligibility
-				outcome.TrialState = commerce.TrialState
-				outcome.Message = commerce.TrialMessage
-				outcome.TrialError = commerce.TrialError
-				outcome.CheckoutKind = commerce.CheckoutKind
-				outcome.PaymentMethods = commerce.PaymentMethods
-				outcome.CheckoutError = commerce.CheckoutError
-				outcome.InvalidToken = commerce.InvalidToken
+				trialCtx = context.WithValue(trialCtx, sunnyTrialProxyContextKey{}, s.sunnyRegisterProxyURL(candidate.Email))
+				trial, retried := checkSunnyTrialWithRetry(trialCtx, candidate.AccessToken)
+				outcome.Eligibility = trial.Eligibility
+				outcome.TrialState = trial.TrialState
+				outcome.Message = trial.TrialMessage
+				outcome.TrialError = trial.TrialError
+				outcome.InvalidToken = trial.InvalidToken
 				outcome.Retried = retried
 				outcome.TrafficBytes = meter.totalBytes()
 			}
@@ -781,58 +866,43 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 			case outcome.Error != "":
 				result["failed"] = result["failed"].(int) + 1
 				item["status"], item["error"] = "failed", outcome.Error
-				accountUpdates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now,
-					"checkout_kind": sunnyCheckoutUnknown, "payment_methods_json": "[]", "commerce_check_error": outcome.Error, "commerce_checked_at": now}
+				accountUpdates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now}
 				mailboxUpdates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now}
 				if persistErr := s.persistSunnyTrialSidecars(candidateBySession[outcome.SessionID], accountUpdates, mailboxUpdates); persistErr != nil {
 					item["status"], item["error"] = "failed", persistErr.Error()
 				}
 			default:
 				eligibility := normalizeSunnyTrialEligibility(outcome.Eligibility)
-				checkoutKind := normalizeSunnyCheckoutKind(outcome.CheckoutKind)
-				paymentJSON := dumpJSON(outcome.PaymentMethods)
-				commerceError := strings.Join(compactStrings(outcome.TrialError, outcome.CheckoutError), "; ")
 				item["trial_eligibility"] = eligibility
 				item["trial_state"] = outcome.TrialState
-				item["checkout_kind"] = checkoutKind
-				item["payment_methods"] = outcome.PaymentMethods
 				if outcome.TrialError != "" {
 					item["trial_error"] = outcome.TrialError
 				}
-				if outcome.CheckoutError != "" {
-					item["checkout_error"] = outcome.CheckoutError
-				}
 				if eligibility == sunnyTrialEligible || eligibility == sunnyTrialIneligible {
 					result[eligibility] = result[eligibility].(int) + 1
-				}
-				if checkoutKind != sunnyCheckoutUnknown {
-					result["checkout_detected"] = result["checkout_detected"].(int) + 1
-				}
-				if len(outcome.PaymentMethods) > 0 {
-					result["payment_detected"] = result["payment_detected"].(int) + 1
-				}
-				if commerceError != "" {
-					result["partial"] = result["partial"].(int) + 1
-					item["status"], item["error"] = "partial", commerceError
-				} else {
 					item["status"], item["message"] = eligibility, outcome.Message
+				} else {
+					result["failed"] = result["failed"].(int) + 1
+					item["status"], item["error"] = "failed", fallback(outcome.TrialError, "无法确认试用资格")
 				}
 				accountUpdates := map[string]any{
 					"trial_eligibility": eligibility, "trial_check_error": outcome.TrialError, "trial_checked_at": now,
-					"checkout_kind": checkoutKind, "payment_methods_json": paymentJSON, "commerce_check_error": commerceError, "commerce_checked_at": now,
 				}
 				mailboxUpdates := map[string]any{"trial_eligibility": eligibility, "trial_check_error": outcome.TrialError, "trial_checked_at": now}
 				updateErr := s.persistSunnyTrialSidecars(candidateBySession[outcome.SessionID], accountUpdates, mailboxUpdates)
 				if updateErr != nil {
-					result["failed"] = result["failed"].(int) + 1
+					if item["status"] != "failed" {
+						result[eligibility] = result[eligibility].(int) - 1
+						result["failed"] = result["failed"].(int) + 1
+					}
 					item["status"], item["error"] = "failed", updateErr.Error()
-				} else if commerceError != "" {
-					s.appendAccountTaskEvent(task.ID, outcome.Email, "trial", "commerce.check_partial", fmt.Sprintf("账户 %s 商业状态检测部分完成：%s", outcome.Email, commerceError), "warning", map[string]any{"error": commerceError})
+				} else if item["status"] == "failed" {
+					s.appendAccountTaskEvent(task.ID, outcome.Email, "trial", "trial.check_failed", fmt.Sprintf("账户 %s 试用资格检测失败：%s", outcome.Email, item["error"]), "warning", map[string]any{"error": item["error"]})
 				} else {
-					s.appendAccountTaskEvent(task.ID, outcome.Email, "trial", "commerce.checked", fmt.Sprintf("账户 %s 商业状态检测完成：试用=%s，Checkout=%s，支付方式=%s", outcome.Email, eligibility, checkoutKind, strings.Join(outcome.PaymentMethods, ",")), "info", map[string]any{"trial_eligibility": eligibility, "checkout_kind": checkoutKind, "payment_methods": outcome.PaymentMethods})
+					s.appendAccountTaskEvent(task.ID, outcome.Email, "trial", "trial.checked", fmt.Sprintf("账户 %s 试用资格检测完成：%s", outcome.Email, eligibility), "info", map[string]any{"trial_eligibility": eligibility})
 				}
 				if outcome.InvalidToken {
-					errorMessage := fallback(strings.Join(compactStrings(outcome.TrialError, outcome.CheckoutError), "; "), "Access Token 无效或已过期")
+					errorMessage := fallback(outcome.TrialError, "Access Token 无效或已过期")
 					s.db.Model(&SunnySession{}).Where("id = ?", outcome.SessionID).Updates(map[string]any{"access_token_status": "invalid", "access_token_error": errorMessage, "access_token_checked_at": now})
 					invalidSessions = append(invalidSessions, outcome.SessionID)
 					if outcome.AccountID != 0 && !seenAccounts[outcome.AccountID] {
@@ -871,22 +941,21 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 	s.completeSunnyTrialTask(task, result)
 }
 
-// sunnyCommerceProxyURL keeps trial, Checkout and payment-method checks on a
-// dedicated healthy proxy when one is explicitly tagged for account checks.
-// An empty result intentionally preserves the direct-egress fallback.
-func (s *Server) sunnyCommerceProxyURL(accountKey string) string {
+func (s *Server) sunnyPurposeProxyURL(purpose, accountKey, preferredCountry string) string {
 	var proxies []SunnyProxy
 	query := "(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?"
 	if err := s.db.Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
-		Where(query, "%,"+sunnyProxyPurposeCommerce+",%").
+		Where(query, "%,"+purpose+",%").
 		Order("updated_at desc, id asc").Find(&proxies).Error; err != nil || len(proxies) == 0 {
 		return ""
 	}
-	country, _ := sunnyCheckoutBilling()
+	country := strings.ToUpper(strings.TrimSpace(preferredCountry))
 	matched := make([]SunnyProxy, 0, len(proxies))
-	for _, proxy := range proxies {
-		if strings.EqualFold(strings.TrimSpace(proxy.Country), country) {
-			matched = append(matched, proxy)
+	if country != "" {
+		for _, proxy := range proxies {
+			if strings.EqualFold(strings.TrimSpace(proxy.Country), country) {
+				matched = append(matched, proxy)
+			}
 		}
 	}
 	if len(matched) > 0 {
@@ -895,6 +964,18 @@ func (s *Server) sunnyCommerceProxyURL(accountKey string) string {
 	hash := fnv.New32a()
 	_, _ = hash.Write([]byte(strings.ToLower(strings.TrimSpace(accountKey))))
 	return normalizeSunnyProxyAddress(proxies[int(hash.Sum32())%len(proxies)].Address)
+}
+
+// Trial checks use the same healthy proxy pool as registration and login.
+func (s *Server) sunnyRegisterProxyURL(accountKey string) string {
+	return s.sunnyPurposeProxyURL(sunnyProxyPurposeRegister, accountKey, "")
+}
+
+// Checkout checks retain the dedicated account-check proxy pool and prefer the
+// configured billing country when that country has an available proxy.
+func (s *Server) sunnyCommerceProxyURL(accountKey string) string {
+	country, _ := sunnyCheckoutBilling()
+	return s.sunnyPurposeProxyURL(sunnyProxyPurposeCommerce, accountKey, country)
 }
 
 func (s *Server) failSunnyTrialTask(task *Task, message string) {
@@ -909,11 +990,11 @@ func (s *Server) failSunnyTrialTask(task *Task, message string) {
 func (s *Server) completeSunnyTrialTask(task *Task, result map[string]any) {
 	task.Status = TaskSucceeded
 	task.SuccessCount = intValue(result["eligible"], 0) + intValue(result["ineligible"], 0)
-	task.ErrorCount = intValue(result["failed"], 0) + intValue(result["partial"], 0)
+	task.ErrorCount = intValue(result["failed"], 0)
 	task.ResultJSON = dumpJSON(result)
 	task.FinishedAt = sql.NullTime{Time: time.Now(), Valid: true}
 	s.db.Save(task)
-	s.appendTaskEvent(task.ID, "账户试用资格、Checkout 与支付方式检测任务完成", "log", "info", result)
+	s.appendTaskEvent(task.ID, "账户试用资格检测任务完成", "log", "info", result)
 }
 
 func compactStrings(values ...string) []string {

@@ -48,6 +48,7 @@ type sunnyPaymentAccountProbe struct {
 }
 
 type sunnyPaymentProbeResponse struct {
+	Kind         string
 	Methods      []string
 	HTTP         int
 	InvalidToken bool
@@ -141,8 +142,8 @@ func probeSunnyPaymentMethods(ctx context.Context, accessToken, country, currenc
 	}
 	meter := sunnyTrafficMeterFromContext(ctx)
 	client := sunnyCommerceHTTPClientWithMeter(meter, proxyURL)
-	_, methods, invalid, err := probeSunnyCheckoutForCountry(ctx, client, accessToken, country, currency)
-	result := sunnyPaymentProbeResponse{Methods: normalizeSunnyPaymentMethods(methods), HTTP: http.StatusOK, InvalidToken: invalid}
+	kind, methods, invalid, err := probeSunnyCheckoutForCountry(ctx, client, accessToken, country, currency)
+	result := sunnyPaymentProbeResponse{Kind: normalizeSunnyCheckoutKind(kind), Methods: normalizeSunnyPaymentMethods(methods), HTTP: http.StatusOK, InvalidToken: invalid}
 	if err != nil {
 		result.HTTP = 0
 		result.Error = err.Error()
@@ -176,6 +177,7 @@ func probeSunnyPaymentMethodsViaWorker(ctx context.Context, accessToken, country
 	}
 	var payload struct {
 		Checkout struct {
+			Kind           string   `json:"kind"`
 			PaymentMethods []string `json:"payment_methods"`
 			HTTP           int      `json:"http"`
 			Error          string   `json:"error"`
@@ -187,6 +189,7 @@ func probeSunnyPaymentMethodsViaWorker(ctx context.Context, accessToken, country
 	if json.Unmarshal(raw, &payload) != nil {
 		return result, false
 	}
+	result.Kind = normalizeSunnyCheckoutKind(payload.Checkout.Kind)
 	result.Methods = normalizeSunnyPaymentMethods(payload.Checkout.PaymentMethods)
 	result.HTTP = payload.Checkout.HTTP
 	result.InvalidToken = payload.Checkout.HTTP == http.StatusUnauthorized
