@@ -2944,6 +2944,62 @@ class JobStore:
                         raise RuntimeError(f"OAICS PayPal 优惠未生效：amount={custom_amount} {custom_currency}")
                     self.update(job_id, percent=100, text="OAICS PayPal 跳转链接生成完成", status="done", result=result)
                     return
+                if provider == "ideal":
+                    self.update(job_id, percent=58, text="正在读取 OAICS iDEAL 支付方式")
+                    custom_state = fetch_custom_checkout_session_with_retry(
+                        chatgpt_http, token, session_id, custom_processor, device_id,
+                        log=lambda message: self.log(job_id, message), attempts=6,
+                    )
+                    payment_types = {
+                        str(item.get("type") if isinstance(item, dict) else item).lower()
+                        for item in (custom_state.get("payment_method_types") or [])
+                    }
+                    if "ideal" not in payment_types:
+                        raise RuntimeError(
+                            "OAICS_IDEAL_UNAVAILABLE: OAICS Checkout 未返回 iDEAL 支付方式"
+                        )
+                    custom_amount = custom_checkout_amount_minor(custom_state)
+                    custom_currency = custom_checkout_currency(custom_state) or "EUR"
+                    if promo_requested:
+                        self.update(job_id, percent=68, text="正在为 OAICS iDEAL 应用优惠")
+                        try:
+                            custom_update = update_checkout_promo(
+                                promo_chatgpt_http, token, session_id, custom_processor,
+                                options.get("promo_campaign") or "plus-1-month-free",
+                                lambda m: self.log(job_id, m), device_id=device_id,
+                            )
+                            custom_amount = custom_checkout_amount_minor(custom_update)
+                            custom_currency = custom_checkout_currency(custom_update) or custom_currency
+                        except Exception as promo_error:
+                            self.log(job_id, f"OAICS iDEAL 优惠更新提示：{type(promo_error).__name__}")
+                    custom_url = (
+                        str(checkout_data.get("checkout_url") or "").strip()
+                        or f"https://chatgpt.com/checkout/{custom_processor}/{session_id}"
+                    )
+                    custom_verification = (
+                        "verified_zero" if custom_amount == 0
+                        else ("pending" if custom_amount is None else "nonzero")
+                    )
+                    result.update({
+                        "requested_link_type": "ideal",
+                        "link_type": "ideal",
+                        "checkout_provider": "open_ai_oaics",
+                        "checkout_ui_mode": "custom",
+                        "processor_entity": custom_processor,
+                        "provider_redirect_url": custom_url,
+                        "short_link": custom_url,
+                        "checkout_url": custom_url,
+                        "checkout_amount": custom_amount,
+                        "amount_currency": custom_currency,
+                        "amount_verification": custom_verification,
+                        "payment_method_types": sorted(payment_types),
+                        "promo_applied": (
+                            (custom_amount == 0) if promo_requested and custom_amount is not None else None
+                        ),
+                        "expires_at": int(time.time()) + 1800,
+                    })
+                    self.update(job_id, percent=100, text="OAICS iDEAL Checkout 链接生成完成", status="done", result=result)
+                    return
                 if provider != "hosted":
                     raise RuntimeError(
                         f"CUSTOM_CHECKOUT_REBUILD_REQUIRED: received {session_id}; "

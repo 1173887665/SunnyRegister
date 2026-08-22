@@ -42,6 +42,39 @@ def test_proxy_route_label_redacts_credentials() -> None:
     assert "secret" not in label
 
 
+def test_ideal_checkout_payload_uses_custom_session_for_oaics_compatibility() -> None:
+    options = {
+        "plan": "plus",
+        "link_type": "ideal",
+        "country": "NL",
+        "currency": "EUR",
+        "checkout_country": "NL",
+        "checkout_currency": "EUR",
+        "use_promo": True,
+    }
+
+    payload = checkout_app.checkout_payload(options, {})
+
+    assert payload["checkout_ui_mode"] == "custom"
+    assert "promo_campaign" not in payload
+
+
+def test_other_local_checkout_payload_keeps_custom_session_mode() -> None:
+    options = {
+        "plan": "plus",
+        "link_type": "twint",
+        "country": "CH",
+        "currency": "CHF",
+        "checkout_country": "CH",
+        "checkout_currency": "CHF",
+        "use_promo": True,
+    }
+
+    payload = checkout_app.checkout_payload(options, {})
+
+    assert payload["checkout_ui_mode"] == "custom"
+
+
 @pytest.mark.parametrize("transport_error", [
     "SSLError: curl: (35) Recv failure: Connection reset by peer",
     "Timeout: Failed to perform, curl: (28) Operation timed out after 60002 milliseconds with 0 bytes received",
