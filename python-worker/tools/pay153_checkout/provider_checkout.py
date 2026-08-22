@@ -7,7 +7,7 @@ import random
 import re
 import time
 import uuid
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 from datetime import date, timedelta
 from typing import Any, Callable
 
@@ -915,6 +915,22 @@ def canonical_ideal_payment_url(value: str) -> str:
         return wrapped
     return raw
 
+
+def is_valid_ideal_payment_url(value: str) -> bool:
+    """Accept only the signed public iDEAL transaction page."""
+    normalized = canonical_ideal_payment_url(value)
+    parsed = urlsplit(normalized)
+    if parsed.scheme.lower() != "https" or parsed.netloc.lower().rstrip(".") != "pay.ideal.nl":
+        return False
+    if not parsed.path.startswith("/transactions/"):
+        return False
+    transaction = parsed.path.split("/transactions/", 1)[1]
+    transaction_target = unquote(transaction)
+    return (
+        transaction_target.startswith("https://tx.ideal.nl/")
+        and bool(parse_qs(parsed.query).get("sig", [""])[0])
+    )
+
 def enrich_ideal_redirect(http, redirect_url: str, log: Callable[[str], None]) -> dict[str, Any]:
     """Resolve the iDEAL hosted page and extract its Canvas QR payload."""
     if not redirect_url:
@@ -1349,6 +1365,10 @@ def stripe_to_provider(
     })
     if provider == "ideal" and out.get("provider_redirect_url"):
         out.update(enrich_ideal_redirect(http, str(out.get("provider_redirect_url") or ""), log))
+    if provider == "ideal" and not is_valid_ideal_payment_url(out.get("provider_redirect_url") or ""):
+        raise RuntimeError(
+            "iDEAL 未返回有效的 pay.ideal.nl 交易链接；不会将 Checkout 页面或未签名地址判定为成功"
+        )
     if not out.get("provider_redirect_url") and not out.get("qr_image_png") and not out.get("qr_data"):
         decline = payment_decline(confirm)
         failure_detail = provider_failure_detail(confirm)

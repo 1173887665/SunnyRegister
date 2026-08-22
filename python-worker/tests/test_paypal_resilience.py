@@ -12,6 +12,7 @@ if str(PAY153_DIR) not in sys.path:
     sys.path.insert(0, str(PAY153_DIR))
 
 import app as checkout_app  # noqa: E402
+import provider_checkout  # noqa: E402
 import stripe_checkout  # noqa: E402
 
 
@@ -73,6 +74,23 @@ def test_other_local_checkout_payload_keeps_custom_session_mode() -> None:
     payload = checkout_app.checkout_payload(options, {})
 
     assert payload["checkout_ui_mode"] == "custom"
+
+
+def test_ideal_success_requires_signed_pay_ideal_transaction_url() -> None:
+    valid = (
+        "https://pay.ideal.nl/transactions/https%3A%2F%2Ftx.ideal.nl%2F2%2FTEST"
+        "?sig=SIGNED"
+    )
+    assert provider_checkout.is_valid_ideal_payment_url(valid) is True
+    assert provider_checkout.is_valid_ideal_payment_url(
+        "https://chatgpt.com/checkout/openai_ie/oaics_test"
+    ) is False
+    assert provider_checkout.is_valid_ideal_payment_url(
+        "https://pay.ideal.nl/transactions/https%3A%2F%2Ftx.ideal.nl%2F2%2FTEST"
+    ) is False
+    assert provider_checkout.is_valid_ideal_payment_url(
+        "https://pay.ideal.nl/transactions/https%3A%2F%2Fexample.com%2F2%2FTEST?sig=SIGNED"
+    ) is False
 
 
 @pytest.mark.parametrize("transport_error", [

@@ -23,7 +23,12 @@ from flask import Flask, jsonify, redirect, request, send_from_directory
 from curl_cffi import requests
 
 import stripe_checkout as sc
-from provider_checkout import PROVIDER_DEFAULTS, default_billing, stripe_to_provider
+from provider_checkout import (
+    PROVIDER_DEFAULTS,
+    default_billing,
+    is_valid_ideal_payment_url,
+    stripe_to_provider,
+)
 from paypal_routing import reconcile_checkout_mode, session_checkout_kind
 from proxy_routing import checkout_route_proxy, promotion_route_proxy, shares_checkout_proxy
 from sentinel_fallback import resolve_payment_sentinel_headers
@@ -1296,6 +1301,43 @@ def start_custom_checkout_method(
     return payload
 
 
+def is_valid_gcash_authorization_url(value: str) -> bool:
+    """Return whether a URL is the final public GCash authorization page."""
+    try:
+        parsed = urlsplit(str(value or "").strip())
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.lower() == "https"
+        and parsed.netloc.lower().rstrip(".") == "m.gcash.com"
+        and bool(parsed.path)
+    )
+
+
+def gcash_authorization_url(*payloads: Any) -> str:
+    """Find the final m.gcash.com URL returned by confirm/start payloads."""
+    found: list[str] = []
+    url_pattern = re.compile(r"https://m\\.gcash\\.com/[^\\s\\\"'<>]+", re.IGNORECASE)
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+        elif isinstance(value, str):
+            candidates = [value, *url_pattern.findall(value)]
+            for candidate in candidates:
+                candidate = candidate.strip().rstrip(".,)")
+                if is_valid_gcash_authorization_url(candidate) and candidate not in found:
+                    found.append(candidate)
+
+    for payload in payloads:
+        walk(payload)
+    return found[0] if found else ""
+
+
 
 def approve_checkout(
     token: str,
@@ -2390,6 +2432,8 @@ class JobStore:
                 self.ensure_not_cancelled(job_id)
 
             promo_requested = options["plan"] == "plus" and options.get("use_promo", False)
+            if provider == "ideal" and (options["plan"] != "plus" or not promo_requested):
+                raise RuntimeError("IDEAL_ZERO_DUE_REQUIRED: iDEAL 提链仅允许已开启并验证通过的 Plus 0 元试用")
             if provider == "gcash":
                 gcash_checkout_proxy = exit_proxy if options.get("named_proxy_pools") else entry_proxy
                 gcash_promotion_proxy = entry_proxy if options.get("named_proxy_pools") else exit_proxy
@@ -2481,6 +2525,15 @@ class JobStore:
                     lambda m: self.log(job_id, m),
                 )
                 detected_campaign = promo_campaign_from_payload(preflight)
+                if provider == "ideal":
+                    if preflight.get("one_click_trial_eligible") is not True:
+                        raise RuntimeError(
+                            "IDEAL_TRIAL_NOT_ELIGIBLE: Promotion 代理未确认当前账号具备 Plus 0 元试用资格"
+                        )
+                    if not detected_campaign:
+                        raise RuntimeError(
+                            "IDEAL_TRIAL_CAMPAIGN_MISSING: Promotion 代理未返回可用的 Plus 试用活动"
+                        )
                 if preflight.get("one_click_trial_eligible") is True:
                     options["promo_marker_eligible"] = True
                 if detected_campaign:
@@ -2945,61 +2998,10 @@ class JobStore:
                     self.update(job_id, percent=100, text="OAICS PayPal 跳转链接生成完成", status="done", result=result)
                     return
                 if provider == "ideal":
-                    self.update(job_id, percent=58, text="正在读取 OAICS iDEAL 支付方式")
-                    custom_state = fetch_custom_checkout_session_with_retry(
-                        chatgpt_http, token, session_id, custom_processor, device_id,
-                        log=lambda message: self.log(job_id, message), attempts=6,
+                    raise RuntimeError(
+                        f"CUSTOM_CHECKOUT_REBUILD_REQUIRED: received {session_id}; "
+                        "iDEAL requires a Stripe cs_* checkout and a signed pay.ideal.nl transaction URL"
                     )
-                    payment_types = {
-                        str(item.get("type") if isinstance(item, dict) else item).lower()
-                        for item in (custom_state.get("payment_method_types") or [])
-                    }
-                    if "ideal" not in payment_types:
-                        raise RuntimeError(
-                            "OAICS_IDEAL_UNAVAILABLE: OAICS Checkout 未返回 iDEAL 支付方式"
-                        )
-                    custom_amount = custom_checkout_amount_minor(custom_state)
-                    custom_currency = custom_checkout_currency(custom_state) or "EUR"
-                    if promo_requested:
-                        self.update(job_id, percent=68, text="正在为 OAICS iDEAL 应用优惠")
-                        try:
-                            custom_update = update_checkout_promo(
-                                promo_chatgpt_http, token, session_id, custom_processor,
-                                options.get("promo_campaign") or "plus-1-month-free",
-                                lambda m: self.log(job_id, m), device_id=device_id,
-                            )
-                            custom_amount = custom_checkout_amount_minor(custom_update)
-                            custom_currency = custom_checkout_currency(custom_update) or custom_currency
-                        except Exception as promo_error:
-                            self.log(job_id, f"OAICS iDEAL 优惠更新提示：{type(promo_error).__name__}")
-                    custom_url = (
-                        str(checkout_data.get("checkout_url") or "").strip()
-                        or f"https://chatgpt.com/checkout/{custom_processor}/{session_id}"
-                    )
-                    custom_verification = (
-                        "verified_zero" if custom_amount == 0
-                        else ("pending" if custom_amount is None else "nonzero")
-                    )
-                    result.update({
-                        "requested_link_type": "ideal",
-                        "link_type": "ideal",
-                        "checkout_provider": "open_ai_oaics",
-                        "checkout_ui_mode": "custom",
-                        "processor_entity": custom_processor,
-                        "provider_redirect_url": custom_url,
-                        "short_link": custom_url,
-                        "checkout_url": custom_url,
-                        "checkout_amount": custom_amount,
-                        "amount_currency": custom_currency,
-                        "amount_verification": custom_verification,
-                        "payment_method_types": sorted(payment_types),
-                        "promo_applied": (
-                            (custom_amount == 0) if promo_requested and custom_amount is not None else None
-                        ),
-                        "expires_at": int(time.time()) + 1800,
-                    })
-                    self.update(job_id, percent=100, text="OAICS iDEAL Checkout 链接生成完成", status="done", result=result)
-                    return
                 if provider != "hosted":
                     raise RuntimeError(
                         f"CUSTOM_CHECKOUT_REBUILD_REQUIRED: received {session_id}; "
@@ -3367,6 +3369,20 @@ class JobStore:
                 log=provider_log,
             )
             self.ensure_not_cancelled(job_id)
+            if provider == "ideal":
+                provider_amount = provider_result.get("checkout_amount")
+                try:
+                    provider_amount_zero = provider_amount is not None and float(provider_amount) == 0
+                except (TypeError, ValueError):
+                    provider_amount_zero = False
+                if provider_result.get("promo_applied") is not True or not provider_amount_zero:
+                    raise RuntimeError(
+                        "IDEAL_ZERO_DUE_VERIFICATION_FAILED: iDEAL 结果未通过金额为 0 且优惠已应用的校验"
+                    )
+                if not is_valid_ideal_payment_url(provider_result.get("provider_redirect_url") or ""):
+                    raise RuntimeError(
+                        "IDEAL_PAYMENT_LINK_INVALID: iDEAL 结果不是带签名的 pay.ideal.nl 交易链接"
+                    )
             self.update(job_id, percent=98, text="结果已生成，正在整理页面")
             result.update(provider_result)
             # Display the currency Stripe actually returned instead of only
