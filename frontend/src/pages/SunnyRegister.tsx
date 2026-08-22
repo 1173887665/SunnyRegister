@@ -3655,7 +3655,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       await load();
     } catch(e:any) { notify("fail",e.message||String(e)); }
   }
-  return <Card className="relative overflow-hidden rounded-[30px] p-5" aria-busy={listLoading}>
+  return <Card className="sr-session-panel relative rounded-[30px] p-5" aria-busy={listLoading}>
     <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
       <div className="flex items-center gap-2"><h2 className="text-xl font-bold">{t.session}</h2><button type="button" className="sr-icon-command" title={t.maintenanceSettings} onClick={()=>setMaintenanceOpen(true)}><Settings2 className="h-4 w-4"/></button></div>

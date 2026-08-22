@@ -357,6 +357,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 }
 .sr-toolbar { position: relative; z-index: 20; overflow: visible; }
 .sr-table-card { position: relative; z-index: 1; overflow: visible !important; }
+.sr-session-panel { overflow: visible; }
 .sr-list-loading {
   position: absolute;
   inset: 0;
@@ -1900,6 +1901,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   top: calc(100% + 7px);
   left: 0;
   width: 280px;
+  z-index: 130;
   overflow: hidden;
   border: 1px solid rgba(20,184,166,.20);
   border-radius: 14px;
