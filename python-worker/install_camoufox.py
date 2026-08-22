@@ -11,8 +11,15 @@ from zipfile import ZipFile
 
 import requests
 from camoufox.addons import DefaultAddons, maybe_download_addons
-from camoufox.locale import ALLOW_GEOIP, MMDB_FILE
 from camoufox.pkgman import ARCH_MAP, INSTALL_DIR
+
+try:
+    # Camoufox <= 0.5.3 exposed the optional GeoIP settings here.  Newer
+    # releases removed this module while keeping the browser runtime API.
+    from camoufox.locale import ALLOW_GEOIP, MMDB_FILE
+except ModuleNotFoundError:
+    ALLOW_GEOIP = False
+    MMDB_FILE = ""
 
 
 CAMOUFOX_VERSION = os.getenv("CAMOUFOX_BROWSER_VERSION", "152.0.4")
