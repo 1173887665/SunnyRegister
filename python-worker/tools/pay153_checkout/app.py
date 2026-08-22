@@ -1317,7 +1317,7 @@ def is_valid_gcash_authorization_url(value: str) -> bool:
 def gcash_authorization_url(*payloads: Any) -> str:
     """Find the final m.gcash.com URL returned by confirm/start payloads."""
     found: list[str] = []
-    url_pattern = re.compile(r"https://m\\.gcash\\.com/[^\\s\\\"'<>]+", re.IGNORECASE)
+    url_pattern = re.compile(r"https://m\.gcash\.com/[^\s\"'<>]+", re.IGNORECASE)
 
     def walk(value: Any) -> None:
         if isinstance(value, dict):
@@ -1327,7 +1327,8 @@ def gcash_authorization_url(*payloads: Any) -> str:
             for item in value:
                 walk(item)
         elif isinstance(value, str):
-            candidates = [value, *url_pattern.findall(value)]
+            decoded = unquote(value)
+            candidates = [value, decoded, *url_pattern.findall(value), *url_pattern.findall(decoded)]
             for candidate in candidates:
                 candidate = candidate.strip().rstrip(".,)")
                 if is_valid_gcash_authorization_url(candidate) and candidate not in found:
@@ -2434,6 +2435,8 @@ class JobStore:
             promo_requested = options["plan"] == "plus" and options.get("use_promo", False)
             if provider == "ideal" and (options["plan"] != "plus" or not promo_requested):
                 raise RuntimeError("IDEAL_ZERO_DUE_REQUIRED: iDEAL 提链仅允许已开启并验证通过的 Plus 0 元试用")
+            if provider == "gcash" and not promo_requested:
+                raise RuntimeError("GCASH_ZERO_DUE_REQUIRED: GCash 提链仅允许已开启优惠的 Plus 0 元试用")
             if provider == "gcash":
                 gcash_checkout_proxy = exit_proxy if options.get("named_proxy_pools") else entry_proxy
                 gcash_promotion_proxy = entry_proxy if options.get("named_proxy_pools") else exit_proxy
@@ -2441,10 +2444,12 @@ class JobStore:
                 promotion_country_hint = options.get("entry_proxy_country") if options.get("named_proxy_pools") else options.get("exit_proxy_country")
                 main_country, main_region = proxy_country(gcash_checkout_proxy, checkout_country_hint)
                 promo_proxy_country, promo_proxy_region = proxy_country(gcash_promotion_proxy, promotion_country_hint)
-                self.update(job_id, percent=9, text="校验 US Checkout 与优惠代理")
-                self.log(job_id, f"GCash 路由：Checkout={main_country}/{main_region}，账单=PH/PHP，优惠更新={promo_proxy_country}/{promo_proxy_region}")
-                if main_country != "US":
-                    self.log(job_id, f"GCash Checkout 代理当前为 {main_country or '?'}；目标为 US，继续由上游校验")
+                country = options["country"] = options["checkout_country"] = "PH"
+                options["currency"] = options["checkout_currency"] = "PHP"
+                self.update(job_id, percent=9, text="校验 PH Checkout 与 VN 优惠代理")
+                self.log(job_id, f"GCash 路由：Checkout={main_country}/{main_region}（目标 PH），账单=PH/PHP，优惠更新={promo_proxy_country}/{promo_proxy_region}（默认 VN）")
+                if main_country != "PH":
+                    self.log(job_id, f"GCash Checkout 代理当前为 {main_country or '?'}；目标为 PH，继续由上游校验")
                 self.ensure_not_cancelled(job_id)
             if provider == "paypal":
                 self.update(job_id, percent=9, text="第 1/7 步：校验 PayPal 优惠识别代理与支付代理")
@@ -2855,7 +2860,12 @@ class JobStore:
                         custom_method_id, device_id,
                     )
                     action = started.get("next_action") or {}
-                    redirect_url = str(action.get("url") or "").strip()
+                    adyen_redirect_url = str(action.get("url") or "").strip()
+                    redirect_url = gcash_authorization_url(confirmed, started)
+                    if not redirect_url:
+                        raise RuntimeError(
+                            "GCASH_AUTHORIZATION_LINK_MISSING: GCash 未返回 m.gcash.com 授权链接"
+                        )
                     result.update({
                         "link_type": "gcash",
                         "checkout_provider": "open_ai",
@@ -2865,6 +2875,8 @@ class JobStore:
                         "provider_redirect_url": redirect_url,
                         "short_link": redirect_url,
                         "checkout_url": redirect_url,
+                        "gcash_authorization_url": redirect_url,
+                        "adyen_redirect_url": adyen_redirect_url,
                         "verification_url": str(confirmed.get("confirm_return_url") or ""),
                         "checkout_amount": custom_amount,
                         "amount_currency": custom_currency,
@@ -2872,15 +2884,12 @@ class JobStore:
                             "verified_zero" if custom_amount == 0
                             else ("pending" if custom_amount is None else "nonzero")
                         ),
-                        "promo_applied": (
-                            (custom_amount == 0)
-                            if promo_requested and custom_amount is not None else None
-                        ),
+                        "promo_applied": (custom_amount == 0) if promo_requested else None,
                         "expires_at": int(time.time()) + 1800,
                     })
-                    if promo_requested and custom_amount not in {None, 0}:
+                    if promo_requested and custom_amount != 0:
                         raise RuntimeError(
-                            f"GCash 优惠未生效：今日应付 amount={custom_amount} {custom_currency}"
+                            f"GCASH_ZERO_DUE_REQUIRED: GCash 优惠未生效或金额未知：amount={custom_amount} {custom_currency}"
                         )
                     self.update(job_id, percent=100, text="GCash 跳转链接生成完成", status="done", result=result)
                     return
@@ -3649,8 +3658,8 @@ def start_checkout():
         "use_so": data.get("use_so", True) is not False,
         "dynamic_proxy_api": dynamic_proxy_api,
         "allow_missing_customer_session": bool(data.get("allow_missing_customer_session")) and internal_request,
-        "entry_proxy_country": str(data.get("entry_proxy_country") or ("US" if link_type in {"gcash", "ph_short"} and country == "PH" else country)).upper(),
-        "exit_proxy_country": str(data.get("exit_proxy_country") or (str(data.get("promo_country") or "VN") if link_type == "gcash" else ((str(data.get("promo_country") or ("TR" if country == "PH" else country))) if link_type == "ph_short" and bool(data.get("use_promo", True)) else country))).upper(),
+        "entry_proxy_country": str(data.get("entry_proxy_country") or ("VN" if link_type == "gcash" else ("US" if link_type == "ph_short" and country == "PH" else country))).upper(),
+        "exit_proxy_country": str(data.get("exit_proxy_country") or ("PH" if link_type == "gcash" else ((str(data.get("promo_country") or ("TR" if country == "PH" else country))) if link_type == "ph_short" and bool(data.get("use_promo", True)) else country))).upper(),
         "proxy_session_time": min(120, max(1, int(data.get("proxy_session_time") or 10))),
     }
     if link_type == "ph_short":

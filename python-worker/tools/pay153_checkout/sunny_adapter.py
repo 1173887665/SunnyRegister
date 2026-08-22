@@ -43,10 +43,10 @@ def start_checkout(payload: dict[str, Any]) -> str:
         # created session can select OAICS or Stripe automatically. Known
         # CS Live accounts retain the reference project's PayPal workflow.
         "oaics_paypal": link_type == "paypal" and paypal_mode != "cs_live",
-        "country": str(payload.get("country") or "US").upper(),
-        "currency": str(payload.get("currency") or "USD").upper(),
-        "checkout_country": str(payload.get("country") or "US").upper(),
-        "checkout_currency": str(payload.get("currency") or "USD").upper(),
+        "country": str(payload.get("country") or ("PH" if link_type == "gcash" else "US")).upper(),
+        "currency": str(payload.get("currency") or ("PHP" if link_type == "gcash" else "USD")).upper(),
+        "checkout_country": str(payload.get("country") or ("PH" if link_type == "gcash" else "US")).upper(),
+        "checkout_currency": str(payload.get("currency") or ("PHP" if link_type == "gcash" else "USD")).upper(),
         # pay153's entry pool is the Promotion route and its exit pool is the
         # billing/Checkout route. SunnyRegister exposes those pools in the
         # opposite order, so keep the translation at this adapter boundary.
@@ -70,10 +70,12 @@ def start_checkout(payload: dict[str, Any]) -> str:
         "use_sen": True,
         "use_so": True,
         "entry_proxy_country": str(payload.get("promo_country") or payload.get("country") or "US").upper(),
-        "exit_proxy_country": str(payload.get("country") or "US").upper(),
+        "exit_proxy_country": str(payload.get("country") or ("PH" if link_type == "gcash" else "US")).upper(),
     }
-    if options["link_type"] in {"gcash", "ph_short"} and options["country"] == "PH":
-        options["exit_proxy_country"] = "US"
+    if options["link_type"] == "gcash":
+        options["country"] = options["checkout_country"] = "PH"
+        options["currency"] = options["checkout_currency"] = "PHP"
+        options["exit_proxy_country"] = str(payload.get("checkout_country") or "PH").upper()
     if options["link_type"] == "gcash":
         options["entry_proxy_country"] = str(payload.get("promo_country") or "VN").upper()
     if options["link_type"] == "ph_short" and options["use_promo"]:

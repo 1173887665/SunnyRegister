@@ -93,7 +93,7 @@ class CheckoutAdapterTests(unittest.TestCase):
 
         options = create.call_args.args[0]
         self.assertEqual(options["entry_proxy_country"], "VN")
-        self.assertEqual(options["exit_proxy_country"], "US")
+        self.assertEqual(options["exit_proxy_country"], "PH")
 
     def test_checkout_status_returns_ordered_sanitized_logs(self) -> None:
         token = "eyJ" + "a" * 80
