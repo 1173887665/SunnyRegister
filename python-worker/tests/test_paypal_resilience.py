@@ -338,6 +338,18 @@ def test_oaics_session_retry_waits_for_delayed_payment_methods() -> None:
     assert any("延迟就绪" in message for message in logs)
 
 
+def test_oaics_custom_payment_methods_selects_ideal_only() -> None:
+    payload = {
+        "custom_payment_methods": [
+            {"id": "cpmt_card", "type": "card"},
+            {"id": "cpmt_ideal", "type": "ideal", "label": "iDEAL"},
+            {"id": "legacy_ideal", "type": "ideal"},
+        ]
+    }
+    methods = checkout_app.custom_payment_methods_for(payload, "ideal")
+    assert [item["id"] for item in methods] == ["cpmt_ideal"]
+
+
 def test_elements_session_records_paypal_types_for_init_probe() -> None:
     class FakeHttp:
         def get(self, *_args, **_kwargs):

@@ -25,7 +25,9 @@ from curl_cffi import requests
 import stripe_checkout as sc
 from provider_checkout import (
     PROVIDER_DEFAULTS,
+    canonical_ideal_payment_url,
     default_billing,
+    enrich_ideal_redirect,
     is_valid_ideal_payment_url,
     stripe_to_provider,
 )
@@ -1151,6 +1153,18 @@ def fetch_custom_checkout_session_with_retry(
     return last
 
 
+def custom_payment_methods_for(payload: dict[str, Any], provider: str) -> list[dict[str, Any]]:
+    """Return OAICS custom payment methods whose payload identifies a provider."""
+    provider_name = str(provider or "").strip().lower()
+    methods = payload.get("custom_payment_methods") or []
+    return [
+        item for item in methods
+        if isinstance(item, dict)
+        and str(item.get("id") or "").startswith("cpmt_")
+        and provider_name in json.dumps(item, ensure_ascii=False).lower()
+    ]
+
+
 def submit_custom_checkout_taxes(
     http,
     token: str,
@@ -1268,6 +1282,8 @@ def start_custom_checkout_method(
     processor_entity: str,
     custom_payment_method_id: str,
     device_id: str,
+    *,
+    method_name: str = "GCash",
 ) -> dict[str, Any]:
     resp = http.post(
         "https://chatgpt.com/backend-api/payments/checkout/custom_payment_method/start",
@@ -1290,14 +1306,14 @@ def start_custom_checkout_method(
     )
     text = resp.text or ""
     if resp.status_code != 200:
-        raise RuntimeError(f"启动 GCash 支付失败：HTTP {resp.status_code} {text[:300]}")
+        raise RuntimeError(f"启动 {method_name} 支付失败：HTTP {resp.status_code} {text[:300]}")
     try:
         payload = resp.json() or {}
     except Exception:
-        raise RuntimeError(f"启动 GCash 支付返回非 JSON：{text[:300]}")
+        raise RuntimeError(f"启动 {method_name} 支付返回非 JSON：{text[:300]}")
     action = payload.get("next_action") or {}
     if str(payload.get("status") or "").lower() != "requires_action" or not action.get("url"):
-        raise RuntimeError(f"GCash 未返回跳转链接：{text[:300]}")
+        raise RuntimeError(f"{method_name} 未返回跳转链接：{text[:300]}")
     return payload
 
 
@@ -3007,10 +3023,109 @@ class JobStore:
                     self.update(job_id, percent=100, text="OAICS PayPal 跳转链接生成完成", status="done", result=result)
                     return
                 if provider == "ideal":
-                    raise RuntimeError(
-                        f"CUSTOM_CHECKOUT_REBUILD_REQUIRED: received {session_id}; "
-                        "iDEAL requires a Stripe cs_* checkout and a signed pay.ideal.nl transaction URL"
+                    self.update(job_id, percent=58, text="正在读取 OAICS iDEAL 自定义支付方式")
+                    custom_state = fetch_custom_checkout_session_with_retry(
+                        chatgpt_http, token, session_id, custom_processor, device_id,
+                        log=lambda message: self.log(job_id, message), attempts=6,
                     )
+                    custom_amount = custom_checkout_amount_minor(custom_state)
+                    custom_currency = custom_checkout_currency(custom_state) or options["currency"]
+                    if promo_requested and custom_amount != 0:
+                        self.update(job_id, percent=66, text="正在为 OAICS iDEAL 应用优惠")
+                        update_checkout_promo(
+                            promo_chatgpt_http, token, session_id, custom_processor,
+                            options.get("promo_campaign") or "plus-1-month-free",
+                            lambda m: self.log(job_id, m), device_id=device_id,
+                        )
+                        custom_state = fetch_custom_checkout_session_with_retry(
+                            chatgpt_http, token, session_id, custom_processor, device_id,
+                            log=lambda message: self.log(job_id, message), attempts=6,
+                        )
+                        custom_amount = custom_checkout_amount_minor(custom_state)
+                        custom_currency = custom_checkout_currency(custom_state) or custom_currency
+                    if promo_requested and custom_amount != 0:
+                        raise RuntimeError(
+                            f"IDEAL_ZERO_DUE_REQUIRED: OAICS iDEAL 优惠未使金额归零：amount={custom_amount} {custom_currency}"
+                        )
+                    methods = custom_payment_methods_for(custom_state, "ideal")
+                    if not methods:
+                        raise RuntimeError(
+                            "OAICS_IDEAL_METHOD_UNAVAILABLE: OAICS Checkout 未返回可确认的 iDEAL 自定义支付方式"
+                        )
+                    selected_method_id = ""
+                    redirect_url = ""
+                    confirmed: dict[str, Any] = {}
+                    for method in methods:
+                        method_id = str(method.get("id") or "")
+                        try:
+                            confirmed = confirm_custom_checkout_method(
+                                chatgpt_http, token, session_id, custom_processor,
+                                method_id, exit_proxy, device_id, did,
+                                use_sen=bool(options.get("use_sen", True)),
+                                use_so=bool(options.get("use_so", True)),
+                                method_name="iDEAL",
+                                log=lambda message: self.log(job_id, message),
+                            )
+                        except RuntimeError as confirm_error:
+                            if "CUSTOM_CONFIRM_BLOCKED" not in str(confirm_error):
+                                raise
+                            self.log(job_id, "OAICS iDEAL confirm 首次被拦截，正在更新 SEN/SO 后重试")
+                            confirmed = confirm_custom_checkout_method(
+                                chatgpt_http, token, session_id, custom_processor,
+                                method_id, exit_proxy, device_id, did,
+                                use_sen=True, use_so=True,
+                                method_name="iDEAL",
+                                log=lambda message: self.log(job_id, message),
+                            )
+                        started = start_custom_checkout_method(
+                            chatgpt_http, token, session_id, custom_processor,
+                            method_id, device_id, method_name="iDEAL",
+                        )
+                        action = started.get("next_action") or {}
+                        candidate_url = canonical_ideal_payment_url(str(action.get("url") or "").strip())
+                        if is_valid_ideal_payment_url(candidate_url):
+                            selected_method_id = method_id
+                            redirect_url = candidate_url
+                            break
+                        self.log(job_id, f"OAICS 自定义支付 {method_id[:12]} 未返回有效 pay.ideal.nl 链接，继续检查")
+                    if not redirect_url:
+                        raise RuntimeError(
+                            "OAICS_IDEAL_REDIRECT_MISSING: iDEAL 自定义支付方式未返回带签名的 pay.ideal.nl 链接"
+                        )
+                    ideal_details = enrich_ideal_redirect(
+                        chatgpt_http, redirect_url, lambda message: self.log(job_id, message),
+                    )
+                    redirect_url = canonical_ideal_payment_url(
+                        str(ideal_details.get("provider_redirect_url") or redirect_url)
+                    )
+                    if not is_valid_ideal_payment_url(redirect_url):
+                        raise RuntimeError(
+                            "IDEAL_PAYMENT_LINK_INVALID: OAICS iDEAL 返回的链接未通过 pay.ideal.nl 签名校验"
+                        )
+                    result.update({
+                        "link_type": "ideal",
+                        "checkout_provider": "open_ai_oaics",
+                        "checkout_ui_mode": "custom",
+                        "processor_entity": custom_processor,
+                        "custom_payment_method_id": selected_method_id,
+                        "payment_method_type": "ideal",
+                        "provider_redirect_url": redirect_url,
+                        "short_link": redirect_url,
+                        "checkout_url": redirect_url,
+                        "verification_url": str(confirmed.get("confirm_return_url") or ""),
+                        "checkout_amount": custom_amount,
+                        "amount_currency": custom_currency,
+                        "amount_verification": "verified_zero" if custom_amount == 0 else "nonzero",
+                        "promo_applied": custom_amount == 0 if promo_requested else None,
+                        "expires_at": int(time.time()) + 1800,
+                        **ideal_details,
+                    })
+                    if promo_requested and custom_amount != 0:
+                        raise RuntimeError(
+                            f"IDEAL_ZERO_DUE_REQUIRED: OAICS iDEAL 最终金额不是 0：amount={custom_amount} {custom_currency}"
+                        )
+                    self.update(job_id, percent=100, text="OAICS iDEAL 签名支付链接生成完成", status="done", result=result)
+                    return
                 if provider != "hosted":
                     raise RuntimeError(
                         f"CUSTOM_CHECKOUT_REBUILD_REQUIRED: received {session_id}; "
