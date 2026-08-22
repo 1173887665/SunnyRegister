@@ -1857,6 +1857,10 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   z-index: 25;
 }
 .sr-payment-filter[open] { z-index: 120; }
+.checkout-filter-toolbar,
+.checkout-filter-controls { overflow: visible !important; }
+.checkout-filter-toolbar { position: relative; }
+.checkout-filter-controls { align-content: flex-start; }
 .sr-payment-filter-trigger {
   display: flex;
   align-items: center;
