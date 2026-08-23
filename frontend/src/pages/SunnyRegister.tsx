@@ -1902,7 +1902,7 @@ function RemailProviderConfig({ t, config, setConfig, notify }: { t: typeof zh; 
   const [busy, setBusy] = useState(false);
   const [projects, setProjects] = useState<AnyObj[]>([]);
   const [wallet, setWallet] = useState<AnyObj|null>(null);
-  const autoLoadedProjects = useRef(false);
+  const [expanded, setExpanded] = useState(true);
   const update = (key:string, value:any) => setConfig({...config, [key]: value});
   function projectList(value:any):AnyObj[] {
     if (Array.isArray(value)) return value.filter((item)=>item && typeof item === "object");
@@ -1960,15 +1960,9 @@ function RemailProviderConfig({ t, config, setConfig, notify }: { t: typeof zh; 
     } catch (e:any) { notify("fail", e.message || String(e)); }
     finally { setBusy(false); }
   }
-  useEffect(()=>{
-    if(config.enabled && config.api_key_configured === true && !autoLoadedProjects.current) {
-      autoLoadedProjects.current=true;
-      void loadProjects();
-    }
-  },[config.enabled,config.api_key_configured]);
   return <Card className="sr-sms-provider-card rounded-[24px] p-5">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold">Remail 第三方邮箱供应商</h2><p className="mt-1 text-sm text-slate-500">启用后，自动注册将按配置下单邮箱，并将订单邮箱写入自建邮箱池。</p></div><button type="button" aria-label="启用 Remail" title="启用 Remail" disabled={busy} className={cn("sr-switch-only", config.enabled && "on")} onClick={toggleEnabled}><span/></button></div>
-    {config.enabled && <div className="sr-mailbox-expanded mt-5 space-y-4">
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold">Remail 第三方邮箱供应商</h2><p className="mt-1 text-sm text-slate-500">启用后，自动注册将按配置下单邮箱，并将订单邮箱写入自建邮箱池。</p></div><div className="flex items-center gap-3"><button type="button" aria-label={expanded ? "折叠 Remail 配置" : "展开 Remail 配置"} title={expanded ? "折叠 Remail 配置" : "展开 Remail 配置"} className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white/80 text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700" onClick={()=>setExpanded((value)=>!value)}><ChevronDown className={cn("h-4 w-4 transition-transform", expanded && "rotate-180")} /></button><button type="button" aria-label="启用 Remail" title="启用 Remail" disabled={busy} className={cn("sr-switch-only", config.enabled && "on")} onClick={toggleEnabled}><span/></button></div></div>
+    {config.enabled && expanded && <div className="sr-mailbox-expanded mt-5 space-y-4">
     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
       <div><Label>API 地址</Label><Input value={config.base_url || ""} onChange={(e)=>update("base_url",e.target.value)} placeholder="https://remail.aishop6.com"/></div>
       <div><Label>API Key</Label><Input type="password" autoComplete="new-password" value={config.api_key || ""} onChange={(e)=>update("api_key",e.target.value)} placeholder="请输入 Remail API Key"/></div>
@@ -1977,8 +1971,7 @@ function RemailProviderConfig({ t, config, setConfig, notify }: { t: typeof zh; 
       <div><Label>服务模式</Label><SelectBox value={config.service_mode || "purchase"} onChange={(v)=>update("service_mode",String(v))} options={[{value:"purchase",label:"购买邮箱"},{value:"code",label:"验证码服务"}]}/></div>
       <div><Label>供给策略</Label><SelectBox value={config.supply || "private_first"} onChange={(v)=>update("supply",String(v))} options={[{value:"private_first",label:"私有资源优先"},{value:"public_only",label:"仅公共资源"}]}/></div>
     </div>
-    {wallet && <div className="grid gap-3 rounded-lg border border-emerald-200 bg-white/70 p-4 sm:grid-cols-2 lg:grid-cols-4"><div><span className="text-xs text-slate-500">可用余额</span><strong className="mt-1 block text-lg text-emerald-700">{String(wallet.consumerBalance ?? "-")}</strong></div><div><span className="text-xs text-slate-500">累计消费</span><strong className="mt-1 block text-lg">{String(wallet.historicalSpend ?? "-")}</strong></div><div><span className="text-xs text-slate-500">订单数量</span><strong className="mt-1 block text-lg">{String(wallet.orderCount ?? "-")}</strong></div><div><span className="text-xs text-slate-500">余额更新时间</span><strong className="mt-1 block text-sm">{formatDateTime(wallet.updatedAt)}</strong></div></div>}
-    <div className="flex flex-wrap gap-2"><Button disabled={busy} className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={save}><Save className="mr-2 h-4 w-4"/>保存 Remail 配置</Button><Button disabled={busy} variant="outline" className="rounded-xl" onClick={check}><RefreshCw className="mr-2 h-4 w-4"/>查询余额 / 测试连接</Button><Button disabled={busy} variant="outline" className="rounded-xl" onClick={loadProjects}><RefreshCw className="mr-2 h-4 w-4"/>加载项目</Button></div>
+    <div className="flex flex-wrap items-center gap-2">{wallet && <div className="flex min-h-10 flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs text-slate-600"><span>余额 <strong className="text-emerald-700">{String(wallet.consumerBalance ?? "-")}</strong></span><span>累计消费 <strong>{String(wallet.historicalSpend ?? "-")}</strong></span><span>订单 <strong>{String(wallet.orderCount ?? "-")}</strong></span><span>更新于 <strong>{formatDateTime(wallet.updatedAt)}</strong></span></div>}<div className="sr-sms-provider-actions ml-auto"><Button disabled={busy} className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={save}><Save className="mr-2 h-4 w-4"/>保存 Remail 配置</Button><Button disabled={busy} variant="outline" className="rounded-xl" onClick={check}><RefreshCw className="mr-2 h-4 w-4"/>查询余额 / 测试连接</Button><Button disabled={busy} variant="outline" className="rounded-xl" onClick={loadProjects}><RefreshCw className="mr-2 h-4 w-4"/>加载项目</Button></div></div>
     </div>}
   </Card>;
 }
