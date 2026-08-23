@@ -197,6 +197,29 @@ def parse_account_line(line: str) -> MailAccount:
 
 def account_from_row(row: dict[str, Any]) -> MailAccount:
     mailbox_type = str(row.get("mailbox_type") or "microsoft").strip().lower()
+    if mailbox_type in {"domain", "domain_mailbox", "cloudmail", "cfworker"} or str(row.get("mailbox_channel") or "").strip().lower() == "domain_api":
+        email = str(row.get("email") or "").strip()
+        access_key = str(row.get("access_key") or "").strip()
+        raw = str(row.get("raw") or "").strip()
+        if raw and (not email or not access_key):
+            parts = [part.strip() for part in raw.split("----", 1)]
+            email = email or (parts[0] if parts else "")
+            access_key = access_key or (parts[1] if len(parts) > 1 else "")
+        if not email or "@" not in email or not access_key:
+            raise ValueError("Invalid domain mailbox row; expected email and CloudMail credential")
+        try:
+            metadata = json.loads(access_key)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid domain mailbox credential JSON") from exc
+        if not str(metadata.get("base_url") or "").strip() or not str(metadata.get("auth_token") or "").strip():
+            raise ValueError("Domain mailbox credential is missing base_url or auth_token")
+        return MailAccount(
+            email=email, password="", client_id="", refresh_token="", raw=raw or f"{email}----{access_key}",
+            account_type=str(row.get("account_type") or "free"), openai_rt=str(row.get("openai_rt") or ""),
+            mailbox_type="domain", mailbox_channel="domain_api", access_key=access_key,
+            chatgpt_password=str(row.get("chat_gpt_password") or row.get("chatgpt_password") or ""),
+            totp_secret=str(row.get("totp_secret") or "").strip(),
+        )
     if mailbox_type == "remail" or str(row.get("mailbox_channel") or "").strip().lower() == "remail_api":
         email = str(row.get("email") or "").strip()
         access_key = str(row.get("access_key") or "").strip()
@@ -1228,6 +1251,132 @@ class RemailReader:
         raise TimeoutError("Timed out waiting for OpenAI email OTP via Remail API")
 
 
+class DomainMailReader:
+    """CloudMail/CF Worker-style self-hosted domain mailbox adapter."""
+
+    def __init__(self, account: MailAccount, log: Callable[[str], None] | None, proxy_url: str = ""):
+        self.account = account
+        self.log = log or (lambda _m: None)
+        self.proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+        try:
+            metadata = json.loads(account.access_key)
+        except (TypeError, ValueError) as exc:
+            raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱凭证格式无效", terminal=True) from exc
+        self.base_url = str(metadata.get("base_url") or "").strip().rstrip("/")
+        self.auth_token = str(metadata.get("auth_token") or "").strip()
+        if not self.base_url or not self.auth_token:
+            raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱凭证缺少 API 地址或 Authorization Token", terminal=True)
+        self.seen_keys: set[str] = set()
+
+    @staticmethod
+    def _nested(payload: Any) -> list[Any]:
+        values: list[Any] = []
+        if isinstance(payload, dict):
+            values.append(payload)
+            for key in ("data", "items", "messages", "result", "list", "rows", "records"):
+                if key in payload:
+                    values.extend(DomainMailReader._nested(payload[key]))
+        elif isinstance(payload, list):
+            values.extend(payload)
+        return values
+
+    @staticmethod
+    def _timestamp(value: Any) -> float:
+        raw = str(value or "").strip()
+        if not raw:
+            return 0.0
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
+    def _request(self) -> Any:
+        try:
+            response = requests.post(
+                self.base_url + "/api/public/emailList",
+                json={"toEmail": self.account.email, "timeSort": "desc", "type": 0, "isDel": 0, "num": 1, "size": 20},
+                headers={"Authorization": self.auth_token, "X-Auth-Token": self.auth_token, "Accept": "application/json", "User-Agent": "SunnyRegister/1.0"},
+                timeout=30,
+                proxies=self.proxies,
+            )
+        except requests.RequestException as exc:
+            raise MailboxAccessError("domain_network_error", "自建域名邮箱接口连接失败", str(exc)) from exc
+        try:
+            if response.status_code in {401, 403}:
+                raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱 Authorization Token 无效", f"HTTP {response.status_code}", terminal=True)
+            if not response.ok:
+                raise MailboxAccessError("domain_provider_failed", "自建域名邮箱接口请求失败", f"HTTP {response.status_code}")
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise MailboxAccessError("domain_response_invalid", "自建域名邮箱接口返回了无法解析的 JSON", str(exc), terminal=True) from exc
+        finally:
+            response.close()
+
+    def _latest(self) -> dict[str, Any]:
+        candidates: list[dict[str, Any]] = []
+        for order, item in enumerate(self._nested(self._request())):
+            if not isinstance(item, dict):
+                continue
+            body = str(item.get("text") or item.get("body") or item.get("content") or item.get("html") or item.get("bodyPreview") or item.get("subject") or "")
+            code = ""
+            for key in ("verificationCode", "verification_code", "otp", "code"):
+                candidate = str(item.get(key) or "").strip()
+                if re.fullmatch(r"\d{6}", candidate):
+                    code = candidate
+                    break
+            if not code:
+                match = re.search(r"(?<!\d)(\d{6})(?!\d)", body)
+                code = match.group(1) if match else ""
+            if not code:
+                continue
+            timestamp = 0.0
+            for key in ("createTime", "receivedAt", "received_at", "date"):
+                timestamp = self._timestamp(item.get(key))
+                if timestamp:
+                    break
+            message_id = item.get("emailId") or item.get("id") or item.get("messageId") or timestamp
+            candidates.append({"code": code, "key": f"{message_id}:{code}", "timestamp": timestamp, "order": order, "body": body, "id": message_id, "sender": item.get("sendEmail") or item.get("sender") or item.get("from"), "recipient": item.get("toEmail") or item.get("recipient") or item.get("to"), "subject": item.get("subject"), "date": item.get("createTime") or item.get("receivedAt") or item.get("date")})
+        return max(candidates, key=lambda item: (float(item.get("timestamp") or 0), -int(item.get("order") or 0)), default={})
+
+    def connect(self, access_token: str | None = None) -> None:
+        current = self._latest()
+        if current.get("key"):
+            self.seen_keys.add(str(current["key"]))
+
+    def close(self) -> None:
+        return None
+
+    def latest_message(self) -> dict[str, Any]:
+        current = self._latest()
+        return {"id": current.get("id") or current.get("key", "domain"), "email": self.account.email, "from": current.get("sender", ""), "to": current.get("recipient", self.account.email), "subject": current.get("subject") or "Domain mailbox", "date": current.get("date", ""), "body": current.get("body", ""), "body_preview": current.get("body", ""), "otp": current.get("code", ""), "source": "domain_api"}
+
+    def wait_for_code(self, min_timestamp: float, timeout: int = 120) -> str:
+        started = time.monotonic()
+        last_error_notice = 0.0
+        while time.monotonic() - started < timeout:
+            remaining = max(1, int(timeout - (time.monotonic() - started)))
+            try:
+                current = self._latest()
+            except MailboxAccessError as exc:
+                if exc.terminal:
+                    raise
+                if time.monotonic() - last_error_notice >= 20:
+                    self.log(f"[{self.account.email}] 自建域名邮箱 API 暂时不可用，将继续重试：{str(exc)[:180]}")
+                    last_error_notice = time.monotonic()
+                time.sleep(min(3, remaining))
+                continue
+            timestamp = float(current.get("timestamp") or 0)
+            key = str(current.get("key") or "")
+            code = str(current.get("code") or "").strip()
+            if code and re.fullmatch(r"\d{6}", code) and key not in self.seen_keys and (not timestamp or timestamp >= float(min_timestamp or 0)):
+                self.seen_keys.add(key)
+                self.log(f"[{self.account.email}] 已通过自建域名邮箱 API 收到验证码（已脱敏）")
+                return code
+            time.sleep(min(2, remaining))
+        raise TimeoutError("Timed out waiting for OpenAI email OTP via domain mailbox API")
+
+
 class URLAPIICloudReader:
     """Slow URL-based iCloud adapter returning the newest mailbox message page."""
 
@@ -1536,6 +1685,8 @@ class URLAPIICloudReader:
 
 
 def create_mailbox_reader(account: MailAccount, log: Callable[[str], None] | None, proxy_url: str = ""):
+    if account.mailbox_type == "domain" or account.mailbox_channel == "domain_api":
+        return DomainMailReader(account, log, proxy_url)
     if account.mailbox_type == "remail" or account.mailbox_channel == "remail_api":
         return RemailReader(account, log, proxy_url)
     if account.mailbox_type == "apple":

@@ -65,6 +65,9 @@ func (s *Server) handleSunny(w http.ResponseWriter, r *http.Request, rest string
 	case "remail":
 		s.remailConfigHandler(w, r, parts[1:])
 		return
+	case "domain-mail":
+		s.domainMailboxConfigHandler(w, r, parts[1:])
+		return
 	case "phones":
 		s.sunnyPhones(w, r, parts[1:])
 		return
@@ -368,6 +371,10 @@ func sunnyMailboxRawForEmail(mailbox SunnyMailbox, email string) string {
 	mailboxType := normalizeSunnyMailboxType(mailbox.MailboxType)
 	mailboxChannel := normalizeSunnyMailboxChannel(mailbox.MailboxType, mailbox.MailboxChannel)
 	if mailboxType == "remail" {
+		if strings.TrimSpace(mailbox.AccessKey) != "" {
+			return strings.Join([]string{email, strings.TrimSpace(mailbox.AccessKey)}, "----")
+		}
+	} else if mailboxType == "domain" {
 		if strings.TrimSpace(mailbox.AccessKey) != "" {
 			return strings.Join([]string{email, strings.TrimSpace(mailbox.AccessKey)}, "----")
 		}
@@ -851,6 +858,17 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				}
 				m.Password, m.ClientID, m.RefreshToken = "", "", ""
 				m.Raw = strings.Join([]string{strings.TrimSpace(m.Email), strings.TrimSpace(m.AccessKey)}, "----")
+			} else if mailboxType == "domain" {
+				if mailboxChannel != "domain_api" || strings.TrimSpace(m.AccessKey) == "" {
+					writeError(w, http.StatusUnprocessableEntity, sunnyMailboxFormatHint(mailboxType, mailboxChannel))
+					return
+				}
+				if _, _, err := parseDomainMailboxCredential(m.AccessKey); err != nil {
+					writeError(w, http.StatusUnprocessableEntity, sunnyMailboxFormatHint(mailboxType, mailboxChannel))
+					return
+				}
+				m.Password, m.ClientID, m.RefreshToken = "", "", ""
+				m.Raw = strings.Join([]string{strings.TrimSpace(m.Email), strings.TrimSpace(m.AccessKey)}, "----")
 			} else if mailboxType == "apple" {
 				if mailboxChannel != "xbovo" && mailboxChannel != "url_api" {
 					writeError(w, http.StatusUnprocessableEntity, "暂不支持该 iCloud 邮箱渠道")
@@ -984,7 +1002,7 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 			return SunnyMailbox{}, err
 		}
 		email, password, chatgptPassword, totpSecret, clientID, refreshToken, accessKey, openaiRT = p["email"], p["password"], p["chatgpt_password"], p["totp_secret"], p["client_id"], p["refresh_token"], p["access_key"], p["openai_rt"]
-		if mailboxType == "remail" {
+		if mailboxType == "remail" || mailboxType == "domain" {
 			raw = strings.Join([]string{email, accessKey}, "----")
 		} else if mailboxType == "microsoft" {
 			raw = sunnyMicrosoftRaw(email, password, clientID, refreshToken)
@@ -995,7 +1013,7 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 		}
 	} else {
 		email, password, chatgptPassword, totpSecret, clientID, refreshToken, accessKey, openaiRT = text(body["email"]), text(body["password"]), text(body["chatgpt_password"]), text(body["totp_secret"]), text(body["client_id"]), text(body["refresh_token"]), text(body["access_key"]), text(body["openai_rt"])
-		if mailboxType == "remail" {
+		if mailboxType == "remail" || mailboxType == "domain" {
 			raw = strings.Join([]string{email, accessKey}, "----")
 		} else if mailboxType == "apple" {
 			if mailboxChannel == "url_api" {
@@ -1007,7 +1025,7 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 			raw = sunnyMicrosoftRaw(email, password, clientID, refreshToken)
 		}
 	}
-	if email == "" || !strings.Contains(email, "@") || (mailboxType == "apple" && mailboxChannel != "url_api" && accessKey == "") || (mailboxType == "microsoft" && (clientID == "" || refreshToken == "")) || (mailboxType == "remail" && accessKey == "") {
+	if email == "" || !strings.Contains(email, "@") || (mailboxType == "apple" && mailboxChannel != "url_api" && accessKey == "") || (mailboxType == "microsoft" && (clientID == "" || refreshToken == "")) || ((mailboxType == "remail" || mailboxType == "domain") && accessKey == "") {
 		return SunnyMailbox{}, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, mailboxChannel))
 	}
 	if mailboxType == "apple" {
@@ -1018,6 +1036,14 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 			if _, err := validateURLAPIMailAddress(accessKey); err != nil {
 				return SunnyMailbox{}, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, mailboxChannel))
 			}
+		}
+	}
+	if mailboxType == "domain" {
+		if mailboxChannel != "domain_api" {
+			return SunnyMailbox{}, fmt.Errorf("自建域名邮箱渠道必须为 domain_api")
+		}
+		if _, _, err := parseDomainMailboxCredential(accessKey); err != nil {
+			return SunnyMailbox{}, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, mailboxChannel))
 		}
 	}
 	gid := uint(intValue(body["group_id"], 0))
@@ -1036,6 +1062,8 @@ func normalizeSunnyMailboxType(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "remail", "remail邮箱", "rm":
 		return "remail"
+	case "domain", "domain邮箱", "自建域名邮箱", "cloudmail", "cfworker":
+		return "domain"
 	case "apple", "icloud":
 		return "apple"
 	default:
@@ -1057,6 +1085,9 @@ func normalizeSunnyMailboxChannel(mailboxType, value string) string {
 		}
 		return normalized
 	}
+	if normalizeSunnyMailboxType(mailboxType) == "domain" {
+		return "domain_api"
+	}
 	return "outlook"
 }
 
@@ -1069,6 +1100,9 @@ func sunnyMailboxFormatHint(mailboxType, channel string) string {
 			return "url_api 苹果邮箱凭证支持 邮箱、邮箱----密码、邮箱----取码URL，以及可选的备用取码URL和2FA密钥"
 		}
 		return "苹果邮箱凭证格式必须为 icloud_email----key"
+	}
+	if normalizeSunnyMailboxType(mailboxType) == "domain" {
+		return "自建域名邮箱凭证格式必须为 email----域名邮箱 API 凭证 JSON"
 	}
 	return "微软邮箱凭证格式必须为 email----password----client_id----refresh_token"
 }
@@ -1312,6 +1346,12 @@ func sunnyMailboxCredentialLine(mailbox SunnyMailbox) string {
 		}
 		return sunnyCanonicalMailboxCredential(mailbox.Raw, mailboxType, mailboxChannel)
 	}
+	if mailboxType == "domain" {
+		if strings.TrimSpace(mailbox.Email) != "" && strings.TrimSpace(mailbox.AccessKey) != "" {
+			return strings.Join([]string{strings.TrimSpace(mailbox.Email), strings.TrimSpace(mailbox.AccessKey)}, "----")
+		}
+		return sunnyCanonicalMailboxCredential(mailbox.Raw, mailboxType, mailboxChannel)
+	}
 	if mailboxType == "apple" {
 		if mailboxChannel == "url_api" {
 			if strings.TrimSpace(mailbox.Email) == "" || strings.TrimSpace(mailbox.AccessKey) == "" {
@@ -1390,6 +1430,16 @@ func parseSunnyMailboxLineForProvider(raw, mailboxType, channel string) (map[str
 			return nil, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, channel))
 		}
 		return map[string]string{"email": strings.TrimSpace(parts[0]), "password": "", "chatgpt_password": "", "totp_secret": "", "client_id": "", "refresh_token": "", "access_key": strings.TrimSpace(strings.Join(parts[1:], "----")), "openai_rt": ""}, nil
+	}
+	if normalizeSunnyMailboxType(mailboxType) == "domain" {
+		parts := strings.SplitN(strings.TrimSpace(raw), "----", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || !strings.Contains(parts[0], "@") || strings.TrimSpace(parts[1]) == "" {
+			return nil, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, channel))
+		}
+		if _, _, err := parseDomainMailboxCredential(strings.TrimSpace(parts[1])); err != nil {
+			return nil, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, channel))
+		}
+		return map[string]string{"email": strings.TrimSpace(parts[0]), "password": "", "chatgpt_password": "", "totp_secret": "", "client_id": "", "refresh_token": "", "access_key": strings.TrimSpace(parts[1]), "openai_rt": ""}, nil
 	}
 	if normalizeSunnyMailboxType(mailboxType) != "apple" {
 		return parseSunnyMailboxLine(raw)
@@ -1521,6 +1571,8 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 	var err error
 	if normalizeSunnyMailboxType(m.MailboxType) == "remail" {
 		payload, err = remailLatestMail(m.AccessKey, m.Email, limit)
+	} else if normalizeSunnyMailboxType(m.MailboxType) == "domain" {
+		payload, err = domainMailLatestMail(m.AccessKey, m.Email, limit)
 	} else if normalizeSunnyMailboxType(m.MailboxType) == "apple" {
 		switch normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel) {
 		case "url_api":
@@ -4975,8 +5027,18 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 		return
 	}
 	if typ == "sunny_register" {
-		if strings.EqualFold(strings.TrimSpace(text(body["identity"])), "remail") {
+		identity := strings.ToLower(strings.TrimSpace(text(body["identity"])))
+		if identity == "remail" {
 			if err := s.validateRemailRegistration(body); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		} else if identity == "domain" || identity == "domain_mailbox" || identity == "自建域名邮箱" {
+			if err := s.sunnyValidateProxyForRegisterTask(); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if err := s.prepareDomainMailboxRegistration(body); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
@@ -5060,7 +5122,8 @@ func sunnySortClause(sortBy string, sortOrder string, allowed map[string]string,
 }
 
 func (s *Server) sunnyValidateRegisterStageResources(body map[string]any) error {
-	if strings.EqualFold(strings.TrimSpace(text(body["identity"])), "remail") {
+	identity := strings.ToLower(strings.TrimSpace(text(body["identity"])))
+	if identity == "remail" || identity == "domain" || identity == "domain_mailbox" || identity == "自建域名邮箱" {
 		return s.sunnyValidateProxyForRegisterTask()
 	}
 	mailboxCfg := s.sunnyGetConfig(sunnyCfgMailbox, defaultMailboxConfig())
