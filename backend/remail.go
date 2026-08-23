@@ -15,14 +15,24 @@ const sunnyCfgRemail = "remail"
 
 func defaultRemailConfig() map[string]any {
 	return map[string]any{
-		"enabled":      false,
-		"base_url":     "https://remail.aishop6.com",
-		"api_key":      "",
-		"project_id":   0,
-		"email_suffix": "",
-		"service_mode": "code",
-		"supply":       "private_first",
+		"enabled":               false,
+		"base_url":              "https://remail.aishop6.com",
+		"api_key":               "",
+		"project_id":            0,
+		"email_suffix":          "",
+		"service_mode":          "purchase",
+		"service_mode_explicit": false,
+		"supply":                "private_first",
 	}
+}
+
+type remailAPIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *remailAPIError) Error() string {
+	return fmt.Sprintf("Remail HTTP %d：%s", e.StatusCode, e.Message)
 }
 
 type remailClient struct {
@@ -111,8 +121,11 @@ func (c *remailClient) request(ctx context.Context, method, path string, query u
 		detail := strings.TrimSpace(string(raw))
 		if payload != nil {
 			detail = fallback(firstText(payload["message"], payload["error"], payload["detail"]), detail)
+			if detail != strings.TrimSpace(string(raw)) && strings.Contains(strings.ToLower(string(raw)), "insufficient") {
+				detail += "；" + strings.TrimSpace(string(raw))
+			}
 		}
-		return nil, fmt.Errorf("Remail HTTP %d：%s", resp.StatusCode, detail)
+		return nil, &remailAPIError{StatusCode: resp.StatusCode, Message: detail}
 	}
 	if payload == nil {
 		payload = map[string]any{}
@@ -128,13 +141,20 @@ func (c *remailClient) projects(ctx context.Context) (map[string]any, error) {
 	return c.request(ctx, http.MethodGet, "/v1/open/projects", nil, nil)
 }
 
+func (c *remailClient) wallet(ctx context.Context) (map[string]any, error) {
+	return c.request(ctx, http.MethodGet, "/v1/open/wallet", nil, nil)
+}
+
 func (c *remailClient) createOrder(ctx context.Context, cfg map[string]any) (remailOrder, map[string]any, error) {
 	projectID := intValue(cfg["project_id"], 0)
 	if projectID <= 0 {
 		return remailOrder{}, nil, fmt.Errorf("Remail 未配置项目 ID")
 	}
 	query := url.Values{}
-	serviceMode := fallback(text(cfg["service_mode"]), "code")
+	serviceMode := fallback(text(cfg["service_mode"]), "purchase")
+	if serviceMode == "code" && !boolValue(cfg["service_mode_explicit"], false) {
+		serviceMode = "purchase"
+	}
 	supply := fallback(text(cfg["supply"]), "private_first")
 	query.Set("serviceMode", serviceMode)
 	query.Set("supply", supply)
@@ -202,14 +222,18 @@ func (c *remailClient) order(ctx context.Context, orderNo string) (remailOrder, 
 }
 
 func (s *Server) remailConfigHandler(w http.ResponseWriter, r *http.Request, parts []string) {
-	if len(parts) == 0 && r.Method == http.MethodGet {
+	if len(parts) == 1 && parts[0] == "config" && r.Method == http.MethodGet {
 		cfg := s.sunnyGetConfig(sunnyCfgRemail, defaultRemailConfig())
+		if text(cfg["service_mode"]) == "code" && !boolValue(cfg["service_mode_explicit"], false) {
+			cfg["service_mode"] = "purchase"
+			s.sunnySaveConfig(sunnyCfgRemail, cfg)
+		}
 		cfg["api_key_configured"] = strings.TrimSpace(text(cfg["api_key"])) != ""
 		cfg["api_key"] = ""
 		writeJSON(w, http.StatusOK, cfg)
 		return
 	}
-	if len(parts) == 0 && r.Method == http.MethodPut {
+	if len(parts) == 1 && parts[0] == "config" && r.Method == http.MethodPut {
 		body, _ := parseBody(r)
 		if strings.TrimSpace(text(body["api_key"])) == "" {
 			current := s.sunnyGetConfig(sunnyCfgRemail, defaultRemailConfig())
@@ -218,6 +242,7 @@ func (s *Server) remailConfigHandler(w http.ResponseWriter, r *http.Request, par
 			}
 		}
 		cfg := mergeConfig(defaultRemailConfig(), body)
+		cfg["service_mode_explicit"] = true
 		s.sunnySaveConfig(sunnyCfgRemail, cfg)
 		cfg["api_key_configured"] = strings.TrimSpace(text(cfg["api_key"])) != ""
 		cfg["api_key"] = ""
@@ -249,10 +274,12 @@ func (s *Server) remailConfigHandler(w http.ResponseWriter, r *http.Request, par
 	case "projects":
 		payload, err = client.projects(ctx)
 	case "check":
-		payload, err = client.profile(ctx)
+		payload, err = client.wallet(ctx)
 		if err == nil {
 			payload["ok"] = true
 		}
+	case "wallet":
+		payload, err = client.wallet(ctx)
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 		return
@@ -366,6 +393,14 @@ func remailDateGroupName(now time.Time) string {
 	return "rm-api-" + now.In(applicationLocation()).Format("01-02")
 }
 
+func isRemailInsufficientBalance(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "余额不足") || strings.Contains(lower, "insufficient funds") || (strings.Contains(lower, "insufficient") && strings.Contains(lower, "balance"))
+}
+
 func (s *Server) prepareRemailRegistration(body map[string]any) error {
 	cfg := s.sunnyGetConfig(sunnyCfgRemail, defaultRemailConfig())
 	if !boolValue(cfg["enabled"], false) {
@@ -386,11 +421,18 @@ func (s *Server) prepareRemailRegistration(body map[string]any) error {
 	}
 	gid = group.ID
 	ids := make([]uint, 0, count)
+	requestedCount := count
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(45+count*5)*time.Second)
 	defer cancel()
 	for i := 0; i < count; i++ {
 		order, _, orderErr := client.createOrder(ctx, cfg)
 		if orderErr != nil {
+			if isRemailInsufficientBalance(orderErr) && len(ids) > 0 {
+				reason := fmt.Sprintf("Remail 余额不足：已成功下单 %d/%d 个邮箱；已下单账户将继续处理，未下单账户已停止", len(ids), requestedCount)
+				body["provider_stop_reason"] = reason
+				body["provider_requested_count"] = requestedCount
+				break
+			}
 			return fmt.Errorf("Remail 第 %d 个邮箱下单失败：%w", i+1, orderErr)
 		}
 		mailbox := SunnyMailbox{GroupID: gid, Email: order.DeliveryEmail, MailboxType: "remail", MailboxChannel: "remail_api", AccessKey: remailTokenPayload(client.baseURL, client.apiKey, order), Raw: order.DeliveryEmail + "----" + order.ServiceToken, AccountType: "free", Status: "未注册", Enabled: true, LatestMailJSON: "{}"}

@@ -1715,7 +1715,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   const [batchEditing,setBatchEditing]=useState(false);
   const [mailboxForMail,setMailboxForMail]=useState<AnyObj|null>(null);
   const [mailboxCfg,setMailboxCfg]=useCachedState<AnyObj>("mailbox.config",{pool_enabled:true});
-  const [remailCfg,setRemailCfg]=useCachedState<AnyObj>("mailbox.remail.config",{enabled:false,base_url:"https://remail.aishop6.com",project_id:0,service_mode:"code",supply:"private_first"});
+  const [remailCfg,setRemailCfg]=useCachedState<AnyObj>("mailbox.remail.config",{enabled:false,base_url:"https://remail.aishop6.com",project_id:0,service_mode:"purchase",supply:"private_first"});
   const [fieldLoading,setFieldLoading]=useState<Record<string,boolean>>({});
   const [credentialVisible,setCredentialVisible]=useState<Record<string,boolean>>({});
   const [credentialValues,setCredentialValues]=useState<Record<string,string>>({});
@@ -1901,7 +1901,33 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
 function RemailProviderConfig({ t, config, setConfig, notify }: { t: typeof zh; config: AnyObj; setConfig: (v: AnyObj)=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
   const [busy, setBusy] = useState(false);
   const [projects, setProjects] = useState<AnyObj[]>([]);
+  const [wallet, setWallet] = useState<AnyObj|null>(null);
+  const autoLoadedProjects = useRef(false);
   const update = (key:string, value:any) => setConfig({...config, [key]: value});
+  function projectList(value:any):AnyObj[] {
+    if (Array.isArray(value)) return value.filter((item)=>item && typeof item === "object");
+    if (!value || typeof value !== "object") return [];
+    for (const key of ["projects","items","data","result"]) {
+      const found=projectList(value[key]);
+      if(found.length) return found;
+    }
+    return [];
+  }
+  function projectLabel(project:AnyObj) {
+    return String(project.name || project.title || project.code || project.slug || project.productType || "项目");
+  }
+  async function toggleEnabled() {
+    const next={...config,enabled:!config.enabled};
+    setConfig(next);
+    setBusy(true);
+    try {
+      const saved=await apiFetch("/sunny/remail/config",{method:"PUT",body:JSON.stringify(next)});
+      setConfig(saved || next);
+    } catch(e:any) {
+      setConfig(config);
+      notify("fail",e.message||String(e));
+    } finally { setBusy(false); }
+  }
   async function save() {
     setBusy(true);
     try {
@@ -1914,9 +1940,9 @@ function RemailProviderConfig({ t, config, setConfig, notify }: { t: typeof zh; 
   async function check() {
     setBusy(true);
     try {
-      const result = await apiFetch("/sunny/remail/check", {method:"POST", body:JSON.stringify(config)});
-      const balance = result.balance ?? result.data?.balance ?? result.data?.quota ?? result.quota;
-      notify("ok", balance === undefined ? "Remail API 连接成功" : `Remail 余额：${balance}`);
+      const result = await apiFetch("/sunny/remail/wallet", {method:"POST", body:JSON.stringify(config)});
+      setWallet(result || {});
+      notify("ok", `Remail 可用余额：${result.consumerBalance ?? "-"}`);
     } catch (e:any) { notify("fail", e.message || String(e)); }
     finally { setBusy(false); }
   }
@@ -1924,23 +1950,36 @@ function RemailProviderConfig({ t, config, setConfig, notify }: { t: typeof zh; 
     setBusy(true);
     try {
       const result = await apiFetch("/sunny/remail/projects", {method:"POST", body:JSON.stringify(config)});
-      const list = Array.isArray(result) ? result : (Array.isArray(result.data) ? result.data : (Array.isArray(result.items) ? result.items : []));
+      const list = projectList(result);
       setProjects(list);
+      if (!Number(config.project_id || 0)) {
+        const preferred=list.find((project)=>projectLabel(project).trim().toLowerCase()==="chatgpt") || list.find((project)=>projectLabel(project).toLowerCase().includes("chatgpt"));
+        if(preferred) update("project_id",Number(preferred.id || preferred.projectId || 0));
+      }
       notify("ok", `已加载 ${list.length} 个 Remail 项目`);
     } catch (e:any) { notify("fail", e.message || String(e)); }
     finally { setBusy(false); }
   }
+  useEffect(()=>{
+    if(config.enabled && config.api_key_configured === true && !autoLoadedProjects.current) {
+      autoLoadedProjects.current=true;
+      void loadProjects();
+    }
+  },[config.enabled,config.api_key_configured]);
   return <Card className="sr-sms-provider-card rounded-[24px] p-5">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold">Remail 第三方邮箱供应商</h2><p className="mt-1 text-sm text-slate-500">启用后，自动注册将按配置下单邮箱，并将订单邮箱写入自建邮箱池。</p></div><button type="button" aria-label="启用 Remail" title="启用 Remail" className={cn("sr-switch-only", config.enabled && "on")} onClick={()=>update("enabled", !config.enabled)}><span/></button></div>
-    <div className="mt-5 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold">Remail 第三方邮箱供应商</h2><p className="mt-1 text-sm text-slate-500">启用后，自动注册将按配置下单邮箱，并将订单邮箱写入自建邮箱池。</p></div><button type="button" aria-label="启用 Remail" title="启用 Remail" disabled={busy} className={cn("sr-switch-only", config.enabled && "on")} onClick={toggleEnabled}><span/></button></div>
+    {config.enabled && <div className="sr-mailbox-expanded mt-5 space-y-4">
+    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
       <div><Label>API 地址</Label><Input value={config.base_url || ""} onChange={(e)=>update("base_url",e.target.value)} placeholder="https://remail.aishop6.com"/></div>
       <div><Label>API Key</Label><Input type="password" autoComplete="new-password" value={config.api_key || ""} onChange={(e)=>update("api_key",e.target.value)} placeholder="请输入 Remail API Key"/></div>
-      <div><Label>项目 / 产品</Label>{projects.length ? <SelectBox searchable value={config.project_id || 0} onChange={(v)=>update("project_id",Number(v))} options={projects.map((project:any)=>({value:Number(project.id || project.projectId || 0),label:`${project.name || project.title || project.productType || "项目"} (#${project.id || project.projectId})`}))}/> : <Input type="number" min={1} value={config.project_id || ""} onChange={(e)=>update("project_id",Number(e.target.value || 0))}/>}</div>
+      <div><Label>项目 / 产品</Label>{projects.length ? <SelectBox searchable value={config.project_id || 0} onChange={(v)=>update("project_id",Number(v))} options={projects.map((project:any)=>({value:Number(project.id || project.projectId || 0),label:`${projectLabel(project)} (#${project.id || project.projectId})`}))}/> : <Input type="number" min={1} value={config.project_id || ""} onChange={(e)=>update("project_id",Number(e.target.value || 0))}/>}</div>
       <div><Label>邮箱后缀（可选）</Label><Input value={config.email_suffix || ""} onChange={(e)=>update("email_suffix",e.target.value)} placeholder="outlook.com"/></div>
-      <div><Label>服务模式</Label><SelectBox value={config.service_mode || "code"} onChange={(v)=>update("service_mode",String(v))} options={[{value:"code",label:"验证码服务"},{value:"purchase",label:"购买邮箱"}]}/></div>
+      <div><Label>服务模式</Label><SelectBox value={config.service_mode || "purchase"} onChange={(v)=>update("service_mode",String(v))} options={[{value:"purchase",label:"购买邮箱"},{value:"code",label:"验证码服务"}]}/></div>
       <div><Label>供给策略</Label><SelectBox value={config.supply || "private_first"} onChange={(v)=>update("supply",String(v))} options={[{value:"private_first",label:"私有资源优先"},{value:"public_only",label:"仅公共资源"}]}/></div>
     </div>
-    <div className="mt-5 flex flex-wrap gap-2"><Button disabled={busy} className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={save}><Save className="mr-2 h-4 w-4"/>保存 Remail 配置</Button><Button disabled={busy} variant="outline" className="rounded-xl" onClick={check}><RefreshCw className="mr-2 h-4 w-4"/>查询余额 / 测试连接</Button><Button disabled={busy} variant="outline" className="rounded-xl" onClick={loadProjects}><RefreshCw className="mr-2 h-4 w-4"/>加载项目</Button></div>
+    {wallet && <div className="grid gap-3 rounded-lg border border-emerald-200 bg-white/70 p-4 sm:grid-cols-2 lg:grid-cols-4"><div><span className="text-xs text-slate-500">可用余额</span><strong className="mt-1 block text-lg text-emerald-700">{String(wallet.consumerBalance ?? "-")}</strong></div><div><span className="text-xs text-slate-500">累计消费</span><strong className="mt-1 block text-lg">{String(wallet.historicalSpend ?? "-")}</strong></div><div><span className="text-xs text-slate-500">订单数量</span><strong className="mt-1 block text-lg">{String(wallet.orderCount ?? "-")}</strong></div><div><span className="text-xs text-slate-500">余额更新时间</span><strong className="mt-1 block text-sm">{formatDateTime(wallet.updatedAt)}</strong></div></div>}
+    <div className="flex flex-wrap gap-2"><Button disabled={busy} className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700" onClick={save}><Save className="mr-2 h-4 w-4"/>保存 Remail 配置</Button><Button disabled={busy} variant="outline" className="rounded-xl" onClick={check}><RefreshCw className="mr-2 h-4 w-4"/>查询余额 / 测试连接</Button><Button disabled={busy} variant="outline" className="rounded-xl" onClick={loadProjects}><RefreshCw className="mr-2 h-4 w-4"/>加载项目</Button></div>
+    </div>}
   </Card>;
 }
 

@@ -2722,8 +2722,15 @@ def run_sunny_task(task_id: str) -> None:
             raise RuntimeError("邮箱配置不可用：请先导入并启用 Outlook 邮箱池")
         total = len(mailboxes)
         stage = _stage(payload)
+        provider_stop_reason = str(payload.get("provider_stop_reason") or "").strip()
         db.update_task(progress_total=total)
         db.event(f"[系统] 本次任务阶段：{_stage_label(stage)}，账号数量：{total}", detail={"scope": "global", "stage": stage, "total": total})
+        if provider_stop_reason:
+            db.event(
+                f"[Remail] {provider_stop_reason}",
+                "warning",
+                detail={"scope": "global", "provider": "remail", "provider_stop_reason": provider_stop_reason},
+            )
         _log_proxy_startup(db, payload)
         db.ensure_not_cancelled()
         if payload.get("proxy_enabled") is not False and not _proxy_snapshot(payload).get("register"):
@@ -2814,10 +2821,14 @@ def run_sunny_task(task_id: str) -> None:
         skipped_phone = len([x for x in items if x.get("phone_skipped_reason")])
         imported = len([x for x in items if x.get("sub2api")])
         partial = len([x for x in items if x.get("stage_complete") is False])
-        status = "succeeded" if success else "failed"
-        summary = {"success": success, "failed": len(errors), "partial": partial, "registered": registered, "logged_in": logged_in, "skipped_phone": skipped_phone, "imported": imported, "stage": stage, "errors": errors, "items": items}
-        db.update_task(status=status, error="; ".join(errors[:3]) if not success else "", result_json=json.dumps(summary, ensure_ascii=False), finished_at=now_sql())
-        db.event(f"注册任务总结：成功 {success}，失败 {len(errors)}，阶段未完成 {partial}，新注册 {registered}，登录更新 {logged_in}，跳过接码 {skipped_phone}，导入反代 {imported}", "info" if success else "error", detail={"scope": "global", **summary})
+        status = "failed" if provider_stop_reason or not success else "succeeded"
+        summary = {"success": success, "failed": len(errors), "partial": partial, "registered": registered, "logged_in": logged_in, "skipped_phone": skipped_phone, "imported": imported, "stage": stage, "errors": errors, "items": items, "provider_stop_reason": provider_stop_reason}
+        task_error = provider_stop_reason or ("; ".join(errors[:3]) if not success else "")
+        db.update_task(status=status, error=task_error, result_json=json.dumps(summary, ensure_ascii=False), finished_at=now_sql())
+        summary_message = f"注册任务总结：成功 {success}，失败 {len(errors)}，阶段未完成 {partial}，新注册 {registered}，登录更新 {logged_in}，跳过接码 {skipped_phone}，导入反代 {imported}"
+        if provider_stop_reason:
+            summary_message += f"；任务因供应商余额不足停止：{provider_stop_reason}"
+        db.event(summary_message, "error" if status == "failed" else "info", detail={"scope": "global", **summary})
     except Exception as exc:
         if _is_cancel_exception(exc):
             db.mark_cancelled("用户已中断注册任务")
