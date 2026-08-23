@@ -27,6 +27,7 @@ from .login_secret import setup_login_secret, setup_login_secret_protocol
 from .proxy import build_proxy, proxy_target_tls_check, redact_proxy_url
 from .smsbower import SMSBowerClient
 from .smspool import SMSPOOL_CODE_TIMEOUT_SECONDS, SMSPoolClient
+from .rebind import rebind_one
 
 REGISTER_ONLY = "register_only"
 CODEX_PHONE_BIND = "codex_phone_bind"
@@ -2779,6 +2780,38 @@ def _add_login_secrets(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[
     return success, errors, items
 
 
+def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
+    account_ids = _ids(payload.get("account_ids"))
+    accounts = db.fetch_accounts(account_ids or None)
+    if not accounts:
+        return 0, ["未找到需要换绑的账户"], []
+    proxy = _proxy_snapshot(payload).get("register", "")
+    success = 0
+    errors: list[str] = []
+    items: list[dict[str, Any]] = []
+    db.update_task(progress_total=len(accounts))
+    for index, account in enumerate(accounts, start=1):
+        db.ensure_not_cancelled()
+        email = str(account.get("email") or "").strip()
+        db.event(f"[{email}] 开始邮箱协议换绑", detail={"email": email, "module": "auth", "action": "rebind.start", "current": index - 1, "total": len(accounts)})
+        try:
+            result = rebind_one(db, account, proxy, lambda message: db.event(message, detail={"email": email, "module": "auth", "action": "rebind.progress"}))
+            items.append(result)
+            if result.get("status") == "success":
+                success += 1
+            elif result.get("status") == "skipped":
+                db.event(f"[{email}] 已跳过邮箱换绑：{result.get('reason') or '不满足条件'}", "warning", detail={"email": email, "module": "auth", "action": "rebind.skipped"})
+        except Exception as exc:
+            if db.cancel_requested():
+                raise SunnyTaskCancelled("Task cancelled by user") from exc
+            message = f"[{email}] 邮箱换绑失败：{exc}"
+            errors.append(message)
+            items.append({"email": email, "status": "failed", "error": str(exc)})
+            db.event(message, "error", detail={"email": email, "module": "auth", "action": "rebind.failed"})
+        db.update_task(progress_current=index, success_count=success, error_count=len(errors))
+    return success, errors, items
+
+
 def run_sunny_task(task_id: str) -> None:
     db = SunnyDB(task_id)
     try:
@@ -2813,6 +2846,15 @@ def run_sunny_task(task_id: str) -> None:
             result = {"success": ok, "failed": len(errors), "skipped": skipped, "partial": partial, "errors": errors, "items": items}
             db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps(result, ensure_ascii=False), error="; ".join(errors[:3]) if not ok else "", finished_at=now_sql())
             db.event(f"添加 LS 任务总结：成功 {ok}，跳过 {skipped}，部分完成 {partial}，失败 {len(errors)}", "info" if ok else "error", detail={"scope": "global", **result})
+            return
+        if task_type == "sunny_rebind":
+            ok, errors, items = _rebind_sessions(db, payload)
+            db.ensure_not_cancelled()
+            skipped = len([item for item in items if item.get("status") == "skipped"])
+            status = "succeeded" if not errors else "failed"
+            result = {"success": ok, "failed": len(errors), "skipped": skipped, "errors": errors, "items": items}
+            db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps(result, ensure_ascii=False), error="; ".join(errors[:3]) if errors else "", finished_at=now_sql())
+            db.event(f"邮箱换绑任务总结：成功 {ok}，跳过 {skipped}，失败 {len(errors)}", "info" if not errors else "error", detail={"scope": "global", **result})
             return
 
         is_remail_task = str(payload.get("identity") or "").strip().lower() == "remail"

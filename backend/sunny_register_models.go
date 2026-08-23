@@ -111,6 +111,8 @@ type SunnyAccount struct {
 	Sub2APIID               string     `gorm:"column:sub2api_id" json:"sub2api_id"`
 	LastError               string     `gorm:"type:text" json:"last_error"`
 	MetadataJSON            string     `gorm:"type:text;default:'{}'" json:"metadata_json"`
+	RebindEmail             string     `gorm:"index" json:"rebind_email"`
+	RebindMailboxAPI        string     `gorm:"type:text" json:"rebind_mailbox_api"`
 	LastHealthCheckedAt     *time.Time `gorm:"index" json:"last_health_checked_at"`
 	StatusChangedAt         *time.Time `gorm:"index" json:"status_changed_at"`
 	CreatedAt               time.Time  `json:"created_at"`

@@ -4214,9 +4214,11 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 	return map[string]any{
 		"id": sess.ID, "account_id": sess.AccountID, "mailbox_id": mb.ID, "email": sess.Email,
 		"status": status, "plan_type": plan, "group_id": mb.GroupID, "group_name": groupName,
-		"phone_bound":       sunnyPhoneBindingCompleted(acc.PhoneNumber, acc.Status, mb.Status),
-		"trial_eligibility": trialEligibility,
-		"access_token":      accessToken, "refresh_token": refreshToken, "id_token": sess.IDToken,
+		"phone_bound":        sunnyPhoneBindingCompleted(acc.PhoneNumber, acc.Status, mb.Status),
+		"rebind_email":       acc.RebindEmail,
+		"rebind_mailbox_api": acc.RebindMailboxAPI,
+		"trial_eligibility":  trialEligibility,
+		"access_token":       accessToken, "refresh_token": refreshToken, "id_token": sess.IDToken,
 		"session_json": sess.SessionJSON, "storage_state_json": sess.StorageStateJSON,
 		"raw_mailbox_line": raw,
 		"mailbox_password": mb.Password, "mailbox_client_id": mb.ClientID, "mailbox_refresh_token": mb.RefreshToken,
@@ -4273,6 +4275,7 @@ type sunnySessionAccountSummary struct {
 	HasAccessToken          int        `gorm:"column:has_access_token"`
 	HasRefreshToken         int        `gorm:"column:has_refresh_token"`
 	LastHealthCheckedAt     *time.Time `gorm:"column:last_health_checked_at"`
+	RebindEmail             string     `gorm:"column:rebind_email"`
 }
 
 type sunnySessionMailboxSummary struct {
@@ -4353,6 +4356,7 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 		"checkout_kind": checkoutKind, "checkout_result": sunnyCheckoutResultJSON(account.CheckoutResultJSON), "payment_methods": paymentMethods, "payment_probe_results": paymentProbeResults,
 		"payment_probe_error": account.PaymentProbeError, "payment_probed_at": nullableTime(account.PaymentProbedAt != nil, pointerTime(account.PaymentProbedAt)), "commerce_check_error": account.CommerceCheckError,
 		"phone_bound":          sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailbox.Status),
+		"rebind_email":         account.RebindEmail,
 		"has_access_token":     row.HasAccessToken != 0 || account.HasAccessToken != 0,
 		"has_refresh_token":    row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
 		"has_secret_key":       row.HasSecretKey != 0 || mailbox.HasSecretKey != 0,
@@ -4408,7 +4412,7 @@ func (s *Server) sunnySessionListSidecars(rows []sunnySessionListRow) (map[strin
 		return accounts, mailboxes
 	}
 	var accRows []sunnySessionAccountSummary
-	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, trial_eligibility, trial_checked_at, checkout_kind, checkout_result_json, payment_methods_json, payment_probe_methods_json, payment_probe_results_json, payment_probe_error, payment_probed_at, commerce_check_error, commerce_checked_at, access_token, phone_number, last_health_checked_at,
+	s.db.Model(&SunnyAccount{}).Select(`id, email, status, account_type, trial_eligibility, trial_checked_at, checkout_kind, checkout_result_json, payment_methods_json, payment_probe_methods_json, payment_probe_results_json, payment_probe_error, payment_probed_at, commerce_check_error, commerce_checked_at, access_token, phone_number, last_health_checked_at, rebind_email,
 		CASE WHEN access_token IS NOT NULL AND access_token <> '' THEN 1 ELSE 0 END AS has_access_token,
 		CASE WHEN openai_rt IS NOT NULL AND openai_rt <> '' THEN 1 ELSE 0 END AS has_refresh_token`).Where("email IN ?", emails).Find(&accRows)
 	for _, account := range accRows {
@@ -4699,6 +4703,20 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		writeJSON(w, http.StatusAccepted, serializeTask(task))
 		return
 	}
+	if len(parts) == 1 && parts[0] == "rebind" && r.Method == http.MethodPost {
+		body, err := parseBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		task, err := s.createSunnyRebindTask(body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, serializeTask(task))
+		return
+	}
 	if len(parts) == 1 && parts[0] == "export" && r.Method == http.MethodPost {
 		body, _ := parseBody(r)
 		format := fallback(text(body["format"]), "json")
@@ -4821,6 +4839,22 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 					sess.RefreshToken = text(body["refresh_token"])
 					accountUpdates["openai_rt"] = sess.RefreshToken
 					mailboxUpdates["openai_rt"] = sess.RefreshToken
+				}
+				if _, ok := body["rebind_email"]; ok {
+					accountUpdates["rebind_email"] = strings.TrimSpace(text(body["rebind_email"]))
+				}
+				if _, ok := body["rebind_mailbox_api"]; ok {
+					apiValue := text(body["rebind_mailbox_api"])
+					accountUpdates["rebind_mailbox_api"] = apiValue
+					var mailbox SunnyMailbox
+					mailboxErr := tx.Where("LOWER(email) = ?", sunnyEmailKey(targetEmail)).First(&mailbox).Error
+					if mailboxErr != nil && targetEmail != originalEmail {
+						mailboxErr = tx.Where("LOWER(email) = ?", sunnyEmailKey(originalEmail)).First(&mailbox).Error
+					}
+					if mailboxErr == nil {
+						mailboxUpdates["access_key"] = apiValue
+						mailboxUpdates["raw"] = sunnyURLAPIRaw(targetEmail, apiValue)
+					}
 				}
 				if v := text(body["session_json"]); v != "" {
 					sess.SessionJSON = v

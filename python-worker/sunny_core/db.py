@@ -284,6 +284,8 @@ class SunnyDB:
                 "sub2api_id": "text DEFAULT ''",
                 "last_error": "text DEFAULT ''",
                 "metadata_json": "text DEFAULT '{}'",
+                "rebind_email": "text DEFAULT ''",
+                "rebind_mailbox_api": "text DEFAULT ''",
                 "last_health_checked_at": "datetime",
                 "status_changed_at": "datetime",
                 "created_at": "datetime",
@@ -765,6 +767,68 @@ class SunnyDB:
     def fetch_session_by_email(self, email: str) -> dict[str, Any] | None:
         row = self.conn.execute("select * from sunny_sessions where email=?", (email,)).fetchone()
         return dict(row) if row else None
+
+    def persist_rebind(self, old_email: str, new_email: str, new_mailbox_api: str, session: dict[str, Any]) -> None:
+        """Atomically replace the mailbox identity and fresh ChatGPT session after rebind."""
+        old_email = str(old_email or '').strip()
+        new_email = str(new_email or '').strip()
+        if not old_email or not new_email or '@' not in new_email:
+            raise ValueError('换绑邮箱地址无效')
+        timestamp = now_sql()
+        access_token = str(session.get('access_token') or '')
+        refresh_token = str(session.get('refresh_token') or session.get('openai_rt') or '')
+        id_token = str(session.get('id_token') or access_token)
+        session_json = session.get('session_json', session)
+        if not isinstance(session_json, str):
+            session_json = json.dumps(session_json, ensure_ascii=False)
+        storage_state = session.get('storage_state_json', {})
+        if not isinstance(storage_state, str):
+            storage_state = json.dumps(storage_state, ensure_ascii=False)
+        raw = f"{new_email}----{new_mailbox_api}"
+        with self.conn:
+            group_name = f"domain-api-{datetime.now(app_timezone()).strftime('%m-%d')}"
+            self.conn.execute(
+                "insert into sunny_mailbox_groups(name,description,created_at,updated_at) values(?,?,?,?) on conflict(name) do nothing",
+                (group_name, "自建域名邮箱 API 换绑", timestamp, timestamp),
+            )
+            group = self.conn.execute("select id from sunny_mailbox_groups where name=?", (group_name,)).fetchone()
+            if not group:
+                raise ValueError('自建域名邮箱分组创建失败')
+            conflict = self.conn.execute(
+                "select email from sunny_mailboxes where lower(email)=lower(?) and lower(email)<>lower(?) limit 1",
+                (new_email, old_email),
+            ).fetchone()
+            if conflict:
+                raise ValueError('换绑邮箱已存在于邮箱池中')
+            conflict = self.conn.execute(
+                "select email from sunny_accounts where lower(email)=lower(?) and lower(email)<>lower(?) limit 1",
+                (new_email, old_email),
+            ).fetchone()
+            if conflict:
+                raise ValueError('换绑邮箱已被其他账户使用')
+            conflict = self.conn.execute(
+                "select email from sunny_sessions where lower(email)=lower(?) and lower(email)<>lower(?) limit 1",
+                (new_email, old_email),
+            ).fetchone()
+            if conflict:
+                raise ValueError('换绑邮箱已被其他会话使用')
+            mailbox = self.conn.execute("select id from sunny_mailboxes where lower(email)=lower(?) limit 1", (old_email,)).fetchone()
+            account = self.conn.execute("select id from sunny_accounts where lower(email)=lower(?) limit 1", (old_email,)).fetchone()
+            current_session = self.conn.execute("select id from sunny_sessions where lower(email)=lower(?) limit 1", (old_email,)).fetchone()
+            if not mailbox or not account or not current_session:
+                raise ValueError('换绑账户关联的邮箱、账户或会话记录不完整')
+            self.conn.execute(
+                """update sunny_mailboxes set group_id=?,email=?,mailbox_type='domain',mailbox_channel='domain_api',access_key=?,raw=?,last_error='',updated_at=? where id=?""",
+                (group['id'], new_email, new_mailbox_api, raw, timestamp, mailbox['id']),
+            )
+            self.conn.execute(
+                """update sunny_accounts set email=?,group_name=?,access_token=?,openai_rt=?,rebind_email=?,rebind_mailbox_api=?,last_error='',updated_at=? where id=?""",
+                (new_email, group_name, access_token, refresh_token, new_email, new_mailbox_api, timestamp, account['id']),
+            )
+            self.conn.execute(
+                """update sunny_sessions set email=?,access_token=?,refresh_token=?,id_token=?,session_json=?,storage_state_json=?,raw_mailbox_line=?,access_token_status=?,access_token_error='',access_token_checked_at=?,last_refresh_at=?,updated_at=? where id=?""",
+                (new_email, access_token, refresh_token, id_token, session_json, storage_state, raw, 'valid' if access_token else 'invalid', timestamp, timestamp, timestamp, current_session['id']),
+            )
 
     def reserve_phone(self) -> dict[str, Any] | None:
         phone_cfg = self.get_config("phone")

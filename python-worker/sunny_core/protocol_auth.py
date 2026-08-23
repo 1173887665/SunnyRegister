@@ -242,6 +242,8 @@ class ProtocolRegistrationFlow:
         mailbox_proxy_url: str | None = None,
         traffic_meter: ProxyTrafficMeter | None = None,
         post_registration_callback: Callable[[Any, dict[str, Any]], dict[str, Any] | None] | None = None,
+        keep_session: bool = False,
+        skip_mailbox: bool = False,
     ):
         self.account = account
         self.proxy_url = normalize_proxy_url(proxy_url)
@@ -264,6 +266,8 @@ class ProtocolRegistrationFlow:
         self.traffic = ProtocolTrafficMeter()
         self.traffic_meter = traffic_meter
         self.post_registration_callback = post_registration_callback
+        self.keep_session = keep_session
+        self.skip_mailbox = skip_mailbox
         self.challenge_strategy = (
             challenge_strategy if challenge_strategy in {"native_headless", "sentinel_protocol"} else "native_headless"
         )
@@ -1053,7 +1057,7 @@ class ProtocolRegistrationFlow:
                 self.log("[认证] 未检测到完整 LS，协议登录使用邮箱凭证")
         try:
             self._check_cancelled()
-            if not (self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key):
+            if not self.skip_mailbox and not (self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key):
                 self.reader = create_mailbox_reader(self.account, self.log, self.mailbox_proxy_url)
                 self.reader.connect()
             self.session = self.session or self._new_session()
@@ -1183,9 +1187,9 @@ class ProtocolRegistrationFlow:
         finally:
             if self._sentinel_runtime:
                 self._sentinel_runtime.close()
-            if self.reader:
+            if self.reader and not self.keep_session:
                 self.reader.close()
-            if self.session:
+            if self.session and not self.keep_session:
                 try:
                     self.session.close()
                 except Exception:
