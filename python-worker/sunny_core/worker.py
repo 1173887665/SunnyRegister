@@ -1521,11 +1521,11 @@ def _run_one(
         f"[{email}] [代理] ChatGPT 官方流量使用{chatgpt_proxy_label or '系统直连'}；其他流程使用{auxiliary_proxy_label or '系统直连'}",
         detail={"email": email, "scope": "selected", "chatgpt_proxy": chatgpt_proxy_label, "auxiliary_proxy": auxiliary_proxy_label, "proxy_all_traffic": payload.get("proxy_all_traffic") is True},
     )
-    execution_mode = str(payload.get("execution_mode") or payload.get("mode") or "background").strip().lower()
+    execution_mode = str(payload.get("execution_mode") or payload.get("mode") or "protocol").strip().lower()
     if execution_mode not in {"background", "visible", "protocol"}:
         execution_mode = "background"
     headless = execution_mode == "background"
-    protocol_challenge_strategy = str(payload.get("protocol_challenge_strategy") or "native_headless").strip().lower()
+    protocol_challenge_strategy = str(payload.get("protocol_challenge_strategy") or "sentinel_protocol").strip().lower()
     if protocol_challenge_strategy not in {"native_headless", "sentinel_protocol"}:
         protocol_challenge_strategy = "native_headless"
     account = account_from_row(mailbox)
@@ -1776,9 +1776,7 @@ def _run_one(
             except (ProtocolChallengeRequired, ProtocolRegistrationError) as protocol_error:
                 is_challenge = isinstance(protocol_error, ProtocolChallengeRequired)
                 retryable_transport_error = _is_retryable_protocol_transport_error(protocol_error)
-                if not is_challenge and not (
-                    protocol_challenge_strategy == "native_headless" and retryable_transport_error
-                ):
+                if not is_challenge and not retryable_transport_error:
                     raise
                 if protocol_batch_policy is not None and protocol_challenge_strategy == "native_headless" and is_challenge:
                     protocol_batch_policy.record_challenge()
@@ -1847,19 +1845,6 @@ def _run_one(
                             "protocol_fallback": "sentinel_protocol",
                         },
                     )
-                elif protocol_challenge_strategy == "sentinel_protocol":
-                    db.event(
-                        f"[{email}] [认证] Sentinel 协议运行时未能生成有效证明，任务不会切换到完整浏览器接管: {protocol_error}",
-                        "error",
-                        detail={
-                            "email": email,
-                            "scope": "selected",
-                            "execution_mode": "protocol",
-                            "protocol_challenge_strategy": protocol_challenge_strategy,
-                            "protocol_traffic": protocol_traffic if isinstance(protocol_traffic, dict) else {},
-                        },
-                    )
-                    raise
                 elif sentinel_recovery_session is None:
                     fallback_reason = "浏览器挑战" if is_challenge else "可恢复的网络传输错误"
                     db.event(
@@ -2403,7 +2388,7 @@ def _refresh_sessions_sequential(db: SunnyDB, payload: dict[str, Any]) -> tuple[
             fallback_payload.update(
                 {
                     "execution_mode": "protocol",
-                    "protocol_challenge_strategy": "native_headless",
+                    "protocol_challenge_strategy": "sentinel_protocol",
                     "registration_stage": "register_only",
                     "access_token_renewal": True,
                     "mailbox_ids": [int(mailbox.get("id") or 0)],
@@ -2412,8 +2397,8 @@ def _refresh_sessions_sequential(db: SunnyDB, payload: dict[str, Any]) -> tuple[
             renewal_current = 5
             _emit_renewal_progress(db, email, renewal_current, renewal_total, "protocol_login_started")
             db.event(
-                f"[{email}] [Session] 复用注册机登录链路更新 AT：协议登录优先，遇到浏览器挑战时由原生无头浏览器接管",
-                detail={"email": email, "scope": "selected", "renewal_login_mode": "protocol_native_headless"},
+                f"[{email}] [Session] 复用注册机登录链路更新 AT：协议登录优先，遇到挑战时先由窄范围 Sentinel 生成证明，失败再由无头浏览器接管",
+                detail={"email": email, "scope": "selected", "renewal_login_mode": "protocol_sentinel_headless_fallback"},
             )
             succeeded, result = _run_one(db, "sunny_login", fallback_payload, mailbox, idx, total_accounts)
             if not succeeded and _is_account_deactivated(result):
@@ -2596,7 +2581,8 @@ def _acquire_refresh_tokens(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, 
                 raise RuntimeError("找不到该账户对应的邮箱凭证")
             acquire_payload = dict(payload)
             acquire_payload.update({
-                "execution_mode": "background",
+                "execution_mode": "protocol",
+                "protocol_challenge_strategy": "sentinel_protocol",
                 "registration_stage": CODEX_PHONE_BIND,
                 "mailbox_ids": [int(mailbox.get("id") or 0)],
             })

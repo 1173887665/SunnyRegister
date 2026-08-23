@@ -85,7 +85,7 @@ class RefreshSessionTests(unittest.TestCase):
         self.assertEqual(items[0]["refresh_method"], "headless_login")
         payload = run_one.call_args.args[2]
         self.assertEqual(payload["execution_mode"], "protocol")
-        self.assertEqual(payload["protocol_challenge_strategy"], "native_headless")
+        self.assertEqual(payload["protocol_challenge_strategy"], "sentinel_protocol")
         self.assertEqual(payload["registration_stage"], "register_only")
         self.assertTrue(payload["access_token_renewal"])
         renewal = [item for item in db.event_details if item.get("progress_type") == "access_token_renewal"]
@@ -306,7 +306,7 @@ class AcquireRefreshTokenTests(unittest.TestCase):
         self.assertEqual(items[0]["acquire_method"], "existing")
         run_one.assert_not_called()
 
-    def test_missing_refresh_token_runs_background_codex_oauth(self):
+    def test_missing_refresh_token_runs_protocol_codex_oauth(self):
         db = FakeRefreshDB()
         with patch.object(worker, "_run_one", return_value=(True, {"has_refresh_token": True})) as run_one:
             ok, errors, items = worker._acquire_refresh_tokens(db, {"account_ids": [7]})
@@ -316,7 +316,8 @@ class AcquireRefreshTokenTests(unittest.TestCase):
         self.assertEqual(items[0]["acquire_method"], "codex_oauth")
         self.assertEqual(run_one.call_args.args[1], "sunny_acquire_rt")
         payload = run_one.call_args.args[2]
-        self.assertEqual(payload["execution_mode"], "background")
+        self.assertEqual(payload["execution_mode"], "protocol")
+        self.assertEqual(payload["protocol_challenge_strategy"], "sentinel_protocol")
         self.assertEqual(payload["registration_stage"], worker.CODEX_PHONE_BIND)
 
     def test_missing_refresh_token_reports_clear_failure(self):

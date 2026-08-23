@@ -56,7 +56,7 @@ func (s *Server) createSunnyAccessTokenRenewalTask(sourceTask *Task, source stri
 	}
 	refreshPayload := s.sunnyTaskProxySnapshot(map[string]any{
 		"account_ids": accountIDs, "automatic": true, "source": source, "source_task_id": sourceTask.ID,
-		"execution_mode": "background", "registration_stage": "register_only", "concurrency": concurrency,
+		"execution_mode": "protocol", "protocol_challenge_strategy": "sentinel_protocol", "registration_stage": "register_only", "concurrency": concurrency,
 	})
 	renewalTask := s.createTask("sunny_refresh_session", "sunny", refreshPayload, len(accountIDs))
 	s.appendTaskEvent(sourceTask.ID, fmt.Sprintf("检测到 %d 个无效 AT，已创建续期任务", len(accountIDs)), "log", "warning", map[string]any{"renewal_task_id": renewalTask.ID})

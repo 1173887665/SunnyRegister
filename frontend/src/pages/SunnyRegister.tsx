@@ -1105,8 +1105,8 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const [autoOpen, setAutoOpen] = useCachedState("workbench.autoOpen", false);
   const [modalConcurrency, setModalConcurrency] = useCachedState("workbench.concurrency", 1);
   const [identity, setIdentity] = useCachedState<"system" | "google" | "microsoft">("workbench.identity", "system");
-  const [mode, setMode] = useCachedState<"protocol" | "background" | "visible">("workbench.mode", "visible");
-  const [protocolChallengeStrategy, setProtocolChallengeStrategy] = useCachedState<ProtocolChallengeStrategy>("workbench.protocolChallengeStrategy", "native_headless");
+  const [mode, setMode] = useCachedState<"protocol" | "background" | "visible">("workbench.mode", "protocol");
+  const [protocolChallengeStrategy, setProtocolChallengeStrategy] = useCachedState<ProtocolChallengeStrategy>("workbench.protocolChallengeStrategy", "sentinel_protocol");
   const [stage, setStage] = useCachedState<RegisterStage>("workbench.stage", "register_only");
   const [setupLoginSecret, setSetupLoginSecret] = useCachedState("workbench.setupLoginSecret", false);
   const [allTrafficProxyPool, setAllTrafficProxyPool] = useState(false);

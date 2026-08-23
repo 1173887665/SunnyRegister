@@ -58,6 +58,12 @@ class FakeDB:
     def upsert_session(self, email, account_id, session, raw="") -> None:
         self.sessions.append({"email": email, "account_id": account_id, "session": session, "raw": raw})
 
+    def save_chatgpt_password(self, mailbox_id, password) -> None:
+        return None
+
+    def record_proxy_traffic(self, *args, **kwargs) -> None:
+        return None
+
     def set_account_sub2api_status(self, email, status, sub2api_id="", error="") -> None:
         self.sub2api_updates.append({"email": email, "status": status, "sub2api_id": sub2api_id, "error": error})
 
@@ -239,7 +245,7 @@ class StageStatusTests(unittest.TestCase):
         self.assertTrue(result["stage_complete"])
         browser_executor.assert_not_called()
         protocol_executor.assert_called_once()
-        self.assertEqual(protocol_executor.call_args.kwargs["challenge_strategy"], "native_headless")
+        self.assertEqual(protocol_executor.call_args.kwargs["challenge_strategy"], "sentinel_protocol")
         traffic_meter = protocol_executor.call_args.kwargs["traffic_meter"]
         self.assertTrue(traffic_meter.tracked_proxy)
         self.assertEqual(traffic_meter.proxy_url, "http://proxy.example:8080")
@@ -247,7 +253,11 @@ class StageStatusTests(unittest.TestCase):
 
     def test_protocol_challenge_falls_back_to_headless_browser_only(self):
         db = FakeDB()
-        payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "protocol"}
+        payload = {
+            "registration_stage": worker.REGISTER_ONLY,
+            "execution_mode": "protocol",
+            "protocol_challenge_strategy": "native_headless",
+        }
         challenge = ProtocolChallengeRequired("Sentinel requires a browser challenge")
         challenge.traffic = {"requests": 4, "total_bytes": 2048}
         browser_session = {
@@ -280,7 +290,11 @@ class StageStatusTests(unittest.TestCase):
 
     def test_initial_authorize_challenge_retries_with_narrow_sentinel_before_headless(self):
         db = FakeDB()
-        payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "protocol"}
+        payload = {
+            "registration_stage": worker.REGISTER_ONLY,
+            "execution_mode": "protocol",
+            "protocol_challenge_strategy": "native_headless",
+        }
         challenge = ProtocolChallengeRequired("Sentinel authorize_continue requires a browser challenge")
         challenge.traffic = {"requests": 4, "total_bytes": 2048}
         sentinel_session = {
@@ -306,7 +320,11 @@ class StageStatusTests(unittest.TestCase):
 
     def test_protocol_batch_fast_path_skips_repeated_protocol_attempt(self):
         db = FakeDB()
-        payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "protocol"}
+        payload = {
+            "registration_stage": worker.REGISTER_ONLY,
+            "execution_mode": "protocol",
+            "protocol_challenge_strategy": "native_headless",
+        }
         policy = worker._ProtocolBatchPolicy()
         policy.record_challenge()
         policy.record_challenge()
@@ -379,7 +397,7 @@ class StageStatusTests(unittest.TestCase):
         self.assertEqual(browser_executor.call_args.kwargs["execution_mode"], "protocol_headless_fallback")
         self.assertTrue(any("可恢复的网络传输错误" in str(args[0]) for args, _kwargs in db.events))
 
-    def test_sentinel_protocol_strategy_does_not_start_full_browser_on_challenge(self):
+    def test_sentinel_protocol_strategy_falls_back_to_full_browser_on_challenge(self):
         db = FakeDB()
         payload = {
             "registration_stage": worker.REGISTER_ONLY,
@@ -388,19 +406,26 @@ class StageStatusTests(unittest.TestCase):
         }
         challenge = ProtocolChallengeRequired("Sentinel runtime failed")
         challenge.traffic = {"requests": 2, "total_bytes": 512}
+        browser_session = {
+            "access_token": "browser-access",
+            "auth_action": "register",
+            "plan_type": "free",
+            "session_json": {"accessToken": "browser-access"},
+        }
         with (
             patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
             patch.object(worker, "login_or_register_protocol", side_effect=challenge) as protocol_executor,
-            patch.object(worker, "login_or_register") as browser_executor,
+            patch.object(worker, "login_or_register", return_value=browser_session) as browser_executor,
         ):
             ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
 
-        self.assertFalse(ok)
-        self.assertIn("Sentinel runtime failed", str(result))
+        self.assertTrue(ok)
+        self.assertTrue(result["stage_complete"])
         self.assertEqual(protocol_executor.call_args.kwargs["challenge_strategy"], "sentinel_protocol")
-        browser_executor.assert_not_called()
+        browser_executor.assert_called_once()
+        self.assertEqual(browser_executor.call_args.kwargs["execution_mode"], "protocol_headless_fallback")
 
-    def test_sentinel_protocol_transport_error_does_not_start_full_browser(self):
+    def test_sentinel_protocol_transport_error_falls_back_to_full_browser(self):
         db = FakeDB()
         payload = {
             "registration_stage": worker.REGISTER_ONLY,
@@ -410,16 +435,22 @@ class StageStatusTests(unittest.TestCase):
         error = ProtocolRegistrationError(
             "Sentinel oauth_create_account request failed: curl: (35) Recv failure: Connection reset by peer"
         )
+        browser_session = {
+            "access_token": "browser-access",
+            "auth_action": "register",
+            "plan_type": "free",
+            "session_json": {"accessToken": "browser-access"},
+        }
         with (
             patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
             patch.object(worker, "login_or_register_protocol", side_effect=error),
-            patch.object(worker, "login_or_register") as browser_executor,
+            patch.object(worker, "login_or_register", return_value=browser_session) as browser_executor,
         ):
             ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
 
-        self.assertFalse(ok)
-        self.assertIn("Connection reset by peer", str(result))
-        browser_executor.assert_not_called()
+        self.assertTrue(ok)
+        self.assertTrue(result["stage_complete"])
+        browser_executor.assert_called_once()
 
     def test_protocol_mode_continues_phone_stage_with_headless_oauth(self):
         db = FakeDB()
