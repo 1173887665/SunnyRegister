@@ -7,11 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
 
 const sunnyCfgRemail = "remail"
+
+var remailOTPPattern = regexp.MustCompile(`(?:^|\D)(\d{6})(?:\D|$)`)
 
 func defaultRemailConfig() map[string]any {
 	return map[string]any{
@@ -291,6 +294,15 @@ func (s *Server) remailConfigHandler(w http.ResponseWriter, r *http.Request, par
 	writeJSON(w, http.StatusOK, payload)
 }
 
+func remailPickupURL(baseURL, email, serviceToken string) string {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	// Keep the mailbox address readable while escaping all other query data.
+	encodedEmail := strings.ReplaceAll(url.QueryEscape(strings.TrimSpace(email)), "%40", "@")
+	return base + "/v1/pickup?email=" + encodedEmail + "&token=" + url.QueryEscape(strings.TrimSpace(serviceToken))
+}
+
+// remailTokenPayload is retained for reading legacy mailbox records created
+// before pickup URLs became the persisted credential format.
 func remailTokenPayload(baseURL, apiKey string, order remailOrder) string {
 	value := map[string]any{"base_url": baseURL, "api_key": apiKey, "order_no": order.OrderNo, "service_token": order.ServiceToken, "receive_until": order.ReceiveUntil}
 	b, _ := json.Marshal(value)
@@ -322,6 +334,16 @@ func remailBaseURLFromAccessKey(accessKey string) string {
 }
 
 func remailClientFromAccessKey(accessKey string) (*remailClient, string, error) {
+	accessKey = strings.TrimSpace(accessKey)
+	if parsed, err := url.Parse(accessKey); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		if !strings.EqualFold(parsed.Path, "/v1/pickup") {
+			return nil, "", fmt.Errorf("Remail 查询 Key 必须是 /v1/pickup 地址")
+		}
+		if strings.TrimSpace(parsed.Query().Get("token")) == "" || strings.TrimSpace(parsed.Query().Get("email")) == "" {
+			return nil, "", fmt.Errorf("Remail 查询 Key 缺少 email 或 token")
+		}
+		return &remailClient{baseURL: parsed.Scheme + "://" + parsed.Host, client: &http.Client{Timeout: 30 * time.Second}}, "", nil
+	}
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(accessKey), &payload); err != nil {
 		return nil, "", fmt.Errorf("Remail 凭证格式无效")
@@ -335,7 +357,63 @@ func remailClientFromAccessKey(accessKey string) (*remailClient, string, error) 
 	return &remailClient{baseURL: baseURL, apiKey: apiKey, client: &http.Client{Timeout: 30 * time.Second}}, orderNo, nil
 }
 
-func remailLatestMail(accessKey, email string) (map[string]any, error) {
+func remailMailItems(payload map[string]any, fallbackEmail string) []map[string]any {
+	raw, _ := payload["items"].([]any)
+	items := make([]map[string]any, 0, len(raw))
+	for _, value := range raw {
+		message, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		bodyPreview := firstText(message["bodyPreview"], message["body_preview"], message["body"], message["content"], message["html"])
+		body := firstText(message["body"], message["text"], bodyPreview)
+		otp := remailCodeFromPayload(message)
+		item := map[string]any{
+			"id": text(message["id"]), "email": firstText(message["recipient"], message["to"], fallbackEmail), "folder": "Remail",
+			"subject": text(message["subject"]), "from": firstText(message["sender"], message["from"]), "to": firstText(message["recipient"], message["to"], fallbackEmail),
+			"date": firstText(message["receivedAt"], message["received_at"], message["date"]), "body": body, "body_preview": bodyPreview,
+			"raw_html": bodyPreview, "otp": otp, "source": "remail_api",
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func remailLatestMail(accessKey, email string, limit int) (map[string]any, error) {
+	accessKey = strings.TrimSpace(accessKey)
+	if parsed, parseErr := url.Parse(accessKey); parseErr == nil && parsed.Scheme != "" && parsed.Host != "" && strings.EqualFold(parsed.Path, "/v1/pickup") {
+		client := &http.Client{Timeout: 30 * time.Second}
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, parsed.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "SunnyRegister/1.0")
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("Remail 取件请求失败：%w", err)
+		}
+		defer resp.Body.Close()
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		if readErr != nil {
+			return nil, readErr
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("Remail 取件请求失败：HTTP %d", resp.StatusCode)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return nil, fmt.Errorf("Remail 取件返回格式错误：%w", err)
+		}
+		items := remailMailItems(payload, firstText(parsed.Query().Get("email"), email))
+		if limit < 1 || limit > 50 {
+			limit = 5
+		}
+		if len(items) > limit {
+			items = items[:limit]
+		}
+		return map[string]any{"email": firstText(parsed.Query().Get("email"), email), "mailbox_type": "remail", "mailbox_channel": "remail_api", "mail_protocol": "remail_api", "items": items, "count": len(items), "limit": limit}, nil
+	}
 	client, orderNo, err := remailClientFromAccessKey(accessKey)
 	if err != nil {
 		return nil, err
@@ -354,7 +432,10 @@ func remailLatestMail(accessKey, email string) (map[string]any, error) {
 			order.VerificationCode = remailCodeFromPayload(pickup)
 		}
 	}
-	return map[string]any{"id": orderNo, "email": email, "folder": "Remail", "subject": "Remail verification", "body": dumpJSON(payload), "body_preview": dumpJSON(payload), "raw_html": "", "otp": order.VerificationCode, "source": "remail_api", "date": order.LastMailReceived}, nil
+	if items := remailMailItems(payload, email); len(items) > 0 {
+		return map[string]any{"email": email, "mailbox_type": "remail", "mailbox_channel": "remail_api", "mail_protocol": "remail_api", "items": items, "count": len(items), "limit": limit}, nil
+	}
+	return map[string]any{"email": email, "mailbox_type": "remail", "mailbox_channel": "remail_api", "mail_protocol": "remail_api", "items": []map[string]any{{"id": orderNo, "email": email, "folder": "Remail", "subject": "Remail verification", "body": dumpJSON(payload), "body_preview": dumpJSON(payload), "raw_html": "", "otp": order.VerificationCode, "source": "remail_api", "date": order.LastMailReceived}}, "count": 1, "limit": limit}, nil
 }
 
 func remailCodeFromPayload(value any) string {
@@ -372,6 +453,12 @@ func remailCodeFromPayload(value any) string {
 				if valid {
 					return candidate
 				}
+			}
+		}
+		for _, key := range []string{"bodyPreview", "body_preview", "body", "content", "html", "text"} {
+			candidate := text(obj[key])
+			if match := remailOTPPattern.FindStringSubmatch(candidate); len(match) > 1 {
+				return match[1]
 			}
 		}
 		for _, nested := range obj {
@@ -435,7 +522,8 @@ func (s *Server) prepareRemailRegistration(body map[string]any) error {
 			}
 			return fmt.Errorf("Remail 第 %d 个邮箱下单失败：%w", i+1, orderErr)
 		}
-		mailbox := SunnyMailbox{GroupID: gid, Email: order.DeliveryEmail, MailboxType: "remail", MailboxChannel: "remail_api", AccessKey: remailTokenPayload(client.baseURL, client.apiKey, order), Raw: order.DeliveryEmail + "----" + order.ServiceToken, AccountType: "free", Status: "未注册", Enabled: true, LatestMailJSON: "{}"}
+		pickupURL := remailPickupURL(client.baseURL, order.DeliveryEmail, order.ServiceToken)
+		mailbox := SunnyMailbox{GroupID: gid, Email: order.DeliveryEmail, MailboxType: "remail", MailboxChannel: "remail_api", AccessKey: pickupURL, Raw: order.DeliveryEmail + "----" + pickupURL, AccountType: "free", Status: "未注册", Enabled: true, LatestMailJSON: "{}"}
 		var existing SunnyMailbox
 		if err := s.db.Where("lower(email) = ?", sunnyEmailKey(mailbox.Email)).First(&existing).Error; err != nil {
 			if err := s.db.Create(&mailbox).Error; err != nil {

@@ -1084,8 +1084,17 @@ class RemailReader:
         self.account = account
         self.log = log or (lambda _m: None)
         self.proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+        self.pickup_url = ""
+        self.pickup_email = ""
         try:
-            metadata = json.loads(account.access_key)
+            parsed_access = urlparse(str(account.access_key or "").strip())
+            if parsed_access.scheme in {"http", "https"} and parsed_access.netloc and parsed_access.path.rstrip("/").lower() == "/v1/pickup":
+                self.pickup_url = parsed_access.geturl()
+                query = dict(parse_qsl(parsed_access.query, keep_blank_values=True))
+                self.pickup_email = str(query.get("email") or account.email).strip()
+                metadata = {"base_url": f"{parsed_access.scheme}://{parsed_access.netloc}", "service_token": query.get("token", "")}
+            else:
+                metadata = json.loads(account.access_key)
         except (TypeError, ValueError):
             metadata = {"service_token": account.access_key}
         self.base_url = str(metadata.get("base_url") or "https://remail.aishop6.com").strip().rstrip("/")
@@ -1144,10 +1153,12 @@ class RemailReader:
 
     def _latest(self) -> dict[str, Any]:
         payloads: list[Any] = []
-        if self.order_no:
+        if self.pickup_url:
+            payloads.append(self._request("/v1/pickup", {"email": self.pickup_email or self.account.email, "token": self.service_token}))
+        elif self.order_no:
             payloads.append(self._request(f"/v1/open/orders/{unquote(self.order_no)}"))
-        pickup_params = {"orderNo": self.order_no, "serviceToken": self.service_token, "token": self.service_token}
-        payloads.append(self._request("/v1/pickup", pickup_params))
+        else:
+            payloads.append(self._request("/v1/pickup", {"email": self.account.email, "token": self.service_token}))
         candidates: list[dict[str, Any]] = []
         for payload in payloads:
             for item in self._nested(payload):
@@ -1158,7 +1169,7 @@ class RemailReader:
                         code = candidate
                         break
                 if not code:
-                    for key in ("body", "content", "html", "text", "preview", "snippet"):
+                    for key in ("bodyPreview", "body_preview", "body", "content", "html", "text", "preview", "snippet"):
                         match = re.search(r"(?<!\d)(\d{6})(?!\d)", str(item.get(key) or ""))
                         if match:
                             code = match.group(1)
@@ -1171,7 +1182,8 @@ class RemailReader:
                     if timestamp:
                         break
                 key = f"{item.get('id') or item.get('messageId') or timestamp}:{code}"
-                candidates.append({"code": code, "key": key, "timestamp": timestamp, "body": str(item.get("body") or item.get("content") or "")})
+                body = str(item.get("body") or item.get("bodyPreview") or item.get("body_preview") or item.get("content") or item.get("html") or "")
+                candidates.append({"code": code, "key": key, "timestamp": timestamp, "body": body, "id": item.get("id"), "sender": item.get("sender") or item.get("from"), "recipient": item.get("recipient") or item.get("to"), "subject": item.get("subject"), "date": item.get("receivedAt") or item.get("received_at") or item.get("date")})
         candidate = max(candidates, key=lambda item: (float(item.get("timestamp") or 0), str(item.get("key") or "")), default=None)
         self._latest_snapshot = candidate or {}
         return candidate or {}
@@ -1193,7 +1205,7 @@ class RemailReader:
 
     def latest_message(self) -> dict[str, Any]:
         current = self._latest()
-        return {"id": current.get("key", "remail"), "email": self.account.email, "subject": "Remail", "body": current.get("body", ""), "otp": current.get("code", ""), "source": "remail_api"}
+        return {"id": current.get("id") or current.get("key", "remail"), "email": self.account.email, "from": current.get("sender", ""), "to": current.get("recipient", self.account.email), "subject": current.get("subject") or "Remail", "date": current.get("date", ""), "body": current.get("body", ""), "body_preview": current.get("body", ""), "otp": current.get("code", ""), "source": "remail_api"}
 
     def wait_for_code(self, min_timestamp: float, timeout: int = 120) -> str:
         started = time.monotonic()

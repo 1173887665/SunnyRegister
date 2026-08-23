@@ -116,3 +116,36 @@ func TestRemailTokenPayloadRoundTrip(t *testing.T) {
 		t.Fatalf("token payload helpers returned unexpected values: %#v", payload)
 	}
 }
+
+func TestRemailPickupURLAndMailItems(t *testing.T) {
+	pickup := remailPickupURL("https://remail.example/", "user@example.com", "st-1")
+	if pickup != "https://remail.example/v1/pickup?email=user@example.com&token=st-1" {
+		t.Fatalf("unexpected pickup URL: %s", pickup)
+	}
+	items := remailMailItems(map[string]any{"items": []any{map[string]any{
+		"id": 7, "sender": "noreply@tm.openai.com", "recipient": "user@example.com", "receivedAt": "2099-01-01T00:00:00Z", "subject": "Code", "bodyPreview": "code 323090", "verificationCode": "323090",
+	}}}, "user@example.com")
+	if len(items) != 1 || text(items[0]["otp"]) != "323090" || text(items[0]["from"]) != "noreply@tm.openai.com" || text(items[0]["date"]) == "" {
+		t.Fatalf("unexpected pickup items: %#v", items)
+	}
+}
+
+func TestRemailLatestMailPickupURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/pickup" || r.URL.Query().Get("token") != "st-1" {
+			t.Fatalf("unexpected pickup request: %s", r.URL.String())
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{map[string]any{
+			"id": 6667637, "sender": "noreply@tm.openai.com", "recipient": "user@example.com", "receivedAt": "2099-01-01T00:00:00Z", "subject": "ChatGPT code", "bodyPreview": "<html>code</html>", "verificationCode": "323090",
+		}}})
+	}))
+	defer server.Close()
+	payload, err := remailLatestMail(server.URL+"/v1/pickup?email=user@example.com&token=st-1", "user@example.com", 5)
+	if err != nil {
+		t.Fatalf("pickup query failed: %v", err)
+	}
+	items, ok := payload["items"].([]map[string]any)
+	if !ok || len(items) != 1 || text(items[0]["otp"]) != "323090" {
+		t.Fatalf("unexpected pickup response: %#v", payload)
+	}
+}

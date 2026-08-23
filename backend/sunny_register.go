@@ -1520,7 +1520,7 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 	var payload map[string]any
 	var err error
 	if normalizeSunnyMailboxType(m.MailboxType) == "remail" {
-		payload, err = remailLatestMail(m.AccessKey, m.Email)
+		payload, err = remailLatestMail(m.AccessKey, m.Email, limit)
 	} else if normalizeSunnyMailboxType(m.MailboxType) == "apple" {
 		switch normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel) {
 		case "url_api":

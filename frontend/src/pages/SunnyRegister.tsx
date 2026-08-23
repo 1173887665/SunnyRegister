@@ -2054,7 +2054,7 @@ function MailboxEditModal({ t, mailbox, groups, onClose, onSaved, notify }: { t:
       <div className="grid gap-4 md:grid-cols-2">
       <div><Label>{t.mailboxName}</Label><Input type="email" value={form.email||""} onChange={(e)=>setForm({...form,email:e.target.value})}/></div>
         <div><Label>{t.mailboxType}</Label><Input disabled value={isRemail ? "Remail邮箱" : isApple ? t.appleMailbox : t.microsoftMailbox}/></div>
-        {isRemail ? <><div><Label>{t.channelType}</Label><Input disabled value="remail_api"/></div><div><Label>Remail serviceToken / 凭证</Label><Input autoComplete="new-password" value={form.access_key||""} onChange={(e)=>setForm({...form,access_key:e.target.value})}/></div></> : isApple ? <>
+        {isRemail ? <><div><Label>{t.channelType}</Label><Input disabled value="remail_api"/></div><div><Label>查询 Key</Label><Input type="url" autoComplete="new-password" placeholder="https://remail.aishop6.com/v1/pickup?email=...&token=..." value={form.access_key||""} onChange={(e)=>setForm({...form,access_key:e.target.value})}/></div></> : isApple ? <>
           <div><Label>{t.channelType}</Label><Input disabled value={String(form.mailbox_channel || "xbovo") === "url_api" ? t.urlAPIChannel : t.xbovoChannel}/></div>
           <div><Label>{String(form.mailbox_channel || "xbovo") === "url_api" ? t.icloudQueryURL : t.icloudAccessKey}</Label><Input type={String(form.mailbox_channel || "xbovo") === "url_api" ? "url" : "password"} autoComplete="new-password" value={form.access_key||""} onChange={(e)=>setForm({...form,access_key:e.target.value})}/></div>
         </> : <>
