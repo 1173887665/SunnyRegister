@@ -1921,14 +1921,15 @@ function MailboxEditModal({ t, mailbox, groups, onClose, onSaved, notify }: { t:
   const [clearTOTPSecret,setClearTOTPSecret]=useState(false);
   const isApple = String(form.mailbox_type || "microsoft") === "apple";
   async function save() {
+    const email = String(form.email || "").trim();
     const urlAPI = isApple && String(form.mailbox_channel || "") === "url_api";
-    if (!String(form.email || "").includes("@") || (isApple ? (!urlAPI && !String(form.access_key || "").trim()) : (!String(form.client_id || "").trim() || !String(form.refresh_token || "").trim()))) {
+    if (!email.includes("@") || (isApple ? (!urlAPI && !String(form.access_key || "").trim()) : (!String(form.client_id || "").trim() || !String(form.refresh_token || "").trim()))) {
       notify("fail", t.validationFailed);
       return;
     }
     try {
       await apiFetch(`/sunny/mailboxes/${mailbox.id}`, { method:"PUT", body: JSON.stringify({
-        email: form.email, mailbox_type: isApple ? "apple" : "microsoft", mailbox_channel: isApple ? String(form.mailbox_channel || "xbovo") : "outlook",
+        email, mailbox_type: isApple ? "apple" : "microsoft", mailbox_channel: isApple ? String(form.mailbox_channel || "xbovo") : "outlook",
         access_key: isApple ? form.access_key : "", chatgpt_password: !clearChatGPTPassword && form.chatgpt_password ? form.chatgpt_password : undefined, clear_chatgpt_password: clearChatGPTPassword, totp_secret: !clearTOTPSecret && form.totp_secret ? form.totp_secret : undefined, clear_totp_secret: clearTOTPSecret, password: form.password, client_id: form.client_id, refresh_token: form.refresh_token,
         access_token: form.access_token, group_id: Number(form.group_id), status: form.status, plan_type: form.plan_type || form.account_type, trial_eligibility: form.trial_eligibility || "unknown", enabled: !!form.enabled,
       })});
@@ -1939,7 +1940,7 @@ function MailboxEditModal({ t, mailbox, groups, onClose, onSaved, notify }: { t:
     <div className="sr-modal-head"><h3>{t.edit} {t.mailbox}</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div>
     <div className="sr-modal-body space-y-4">
       <div className="grid gap-4 md:grid-cols-2">
-        <div><Label>{t.mailboxName}</Label><Input value={form.email||""} onChange={(e)=>setForm({...form,email:e.target.value})}/></div>
+      <div><Label>{t.mailboxName}</Label><Input type="email" value={form.email||""} onChange={(e)=>setForm({...form,email:e.target.value})}/></div>
         <div><Label>{t.mailboxType}</Label><Input disabled value={isApple ? t.appleMailbox : t.microsoftMailbox}/></div>
         {isApple ? <>
           <div><Label>{t.channelType}</Label><Input disabled value={String(form.mailbox_channel || "xbovo") === "url_api" ? t.urlAPIChannel : t.xbovoChannel}/></div>
@@ -3780,8 +3781,13 @@ function SessionEditModal({ t, item, groups, onClose, onSaved, notify }: { t: ty
   },[item.id]);
   async function save() {
     if (loading) return;
+    const email = String(form.email || "").trim();
+    if (!email || !email.includes("@")) {
+      notify("fail", t.validationFailed);
+      return;
+    }
     try {
-      await apiFetch(`/sunny/sessions/${item.id}`, { method:"PUT", body:JSON.stringify({ status:form.status, group_id:Number(form.group_id || 0), plan_type:form.plan_type, trial_eligibility:form.trial_eligibility || "unknown", access_token:form.access_token, refresh_token:form.refresh_token, session_json:form.session_json }) });
+      await apiFetch(`/sunny/sessions/${item.id}`, { method:"PUT", body:JSON.stringify({ email, status:form.status, group_id:Number(form.group_id || 0), plan_type:form.plan_type, trial_eligibility:form.trial_eligibility || "unknown", access_token:form.access_token, refresh_token:form.refresh_token, session_json:form.session_json }) });
       onSaved();
     } catch(e:any) { notify("fail", e.message || String(e)); }
   }
@@ -3790,7 +3796,7 @@ function SessionEditModal({ t, item, groups, onClose, onSaved, notify }: { t: ty
     <div className="sr-modal-head"><h3>{t.edit} Session</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div>
     <div className="sr-modal-body space-y-4">
       <div className="grid gap-4 md:grid-cols-2">
-        <div><Label>{t.email}</Label><Input value={form.email || ""} disabled /></div>
+        <div><Label>{t.email}</Label><Input type="email" value={form.email || ""} onChange={(e)=>setForm({...form,email:e.target.value})} /></div>
         <div><Label>{t.status}</Label><SelectBox value={form.status||"已注册"} onChange={(v)=>setForm({...form,status:String(v)})} options={SESSION_STATUS_OPTIONS.map((s)=>({value:s,label:t.statusLabels[s as keyof typeof t.statusLabels] || s}))} /></div>
         <div><Label>{t.trialEligibility}</Label><SelectBox value={form.trial_eligibility || "unknown"} onChange={(v)=>setForm({...form,trial_eligibility:String(v)})} options={TRIAL_ELIGIBILITY_OPTIONS.map((value)=>({value,label:trialEligibilityLabel(t,value)}))} /></div>
         <div><Label>{t.mailboxGroup}</Label><SelectBox value={String(form.group_id || "")} onChange={(v)=>setForm({...form,group_id:Number(v)})} options={groups.map((group)=>({value:String(group.id),label:String(group.name || group.id)}))} /></div>

@@ -331,6 +331,59 @@ func sunnyEmailKey(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
+func normalizeSunnyEditableEmail(value string) (string, error) {
+	email := strings.TrimSpace(value)
+	if email == "" {
+		return "", fmt.Errorf("邮箱地址不能为空")
+	}
+	if strings.ContainsAny(email, "\r\n") {
+		return "", fmt.Errorf("邮箱地址格式无效")
+	}
+	parsed, err := mail.ParseAddress(email)
+	if err != nil || parsed.Address != email || !strings.Contains(email, "@") {
+		return "", fmt.Errorf("邮箱地址格式无效")
+	}
+	return email, nil
+}
+
+func sunnyEmailRenameConflict(tx *gorm.DB, email string) error {
+	key := sunnyEmailKey(email)
+	for _, model := range []any{&SunnyMailbox{}, &SunnyAccount{}, &SunnySession{}} {
+		var count int64
+		if err := tx.Model(model).Where("LOWER(email) = ?", key).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return fmt.Errorf("邮箱地址已被其他邮箱、账户或会话使用")
+		}
+	}
+	return nil
+}
+
+func sunnyMailboxRawForEmail(mailbox SunnyMailbox, email string) string {
+	email = strings.TrimSpace(email)
+	mailboxType := normalizeSunnyMailboxType(mailbox.MailboxType)
+	mailboxChannel := normalizeSunnyMailboxChannel(mailbox.MailboxType, mailbox.MailboxChannel)
+	if mailboxType == "apple" {
+		if mailboxChannel == "url_api" || mailboxChannel == "xbovo" {
+			if strings.TrimSpace(mailbox.AccessKey) != "" {
+				return strings.Join([]string{email, strings.TrimSpace(mailbox.AccessKey)}, "----")
+			}
+		}
+	} else if strings.TrimSpace(mailbox.Password) != "" && strings.TrimSpace(mailbox.ClientID) != "" && strings.TrimSpace(mailbox.RefreshToken) != "" {
+		return sunnyMicrosoftRaw(email, mailbox.Password, mailbox.ClientID, mailbox.RefreshToken)
+	}
+	raw := strings.TrimSpace(mailbox.Raw)
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Split(raw, "----")
+	if len(parts) > 0 {
+		parts[0] = email
+	}
+	return strings.Join(parts, "----")
+}
+
 func sunnyMailboxStatusLooksRegistered(status string) bool {
 	status = strings.TrimSpace(strings.ToLower(status))
 	if status == "" || status == "unused" || status == "unregistered" || status == "未注册" {
@@ -698,12 +751,21 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		if len(parts) == 1 && r.Method == http.MethodPut {
 			body, _ := parseBody(r)
 			originalEmail := m.Email
+			requestedEmail := ""
+			emailProvided := false
 			trialUpdated := false
 			mailboxType := normalizeSunnyMailboxType(fallback(text(body["mailbox_type"]), m.MailboxType))
 			mailboxChannel := normalizeSunnyMailboxChannel(mailboxType, fallback(text(body["mailbox_channel"]), m.MailboxChannel))
 			m.MailboxType, m.MailboxChannel = mailboxType, mailboxChannel
-			if v := text(body["email"]); v != "" {
-				m.Email = v
+			if _, ok := body["email"]; ok {
+				var err error
+				requestedEmail, err = normalizeSunnyEditableEmail(text(body["email"]))
+				if err != nil {
+					writeError(w, http.StatusUnprocessableEntity, err.Error())
+					return
+				}
+				m.Email = requestedEmail
+				emailProvided = true
 			}
 			if _, ok := body["access_key"]; ok {
 				m.AccessKey = text(body["access_key"])
@@ -744,7 +806,9 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			}
 			if v := text(body["raw"]); v != "" {
 				if p, err := parseSunnyMailboxLineForProvider(v, mailboxType, mailboxChannel); err == nil {
-					m.Email = p["email"]
+					if !emailProvided {
+						m.Email = p["email"]
+					}
 					m.Password = p["password"]
 					m.ClientID = p["client_id"]
 					m.RefreshToken = p["refresh_token"]
@@ -755,6 +819,22 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 					if p["openai_rt"] != "" {
 						m.OpenAIRT = p["openai_rt"]
 					}
+				}
+			}
+			normalizedEmail, err := normalizeSunnyEditableEmail(m.Email)
+			if err != nil {
+				writeError(w, http.StatusUnprocessableEntity, err.Error())
+				return
+			}
+			m.Email = normalizedEmail
+			if sunnyEmailKey(originalEmail) != sunnyEmailKey(m.Email) {
+				if err := sunnyEmailRenameConflict(s.db, m.Email); err != nil {
+					if strings.Contains(err.Error(), "已被其他") {
+						writeError(w, http.StatusConflict, err.Error())
+					} else {
+						writeError(w, http.StatusInternalServerError, err.Error())
+					}
+					return
 				}
 			}
 			if mailboxType == "apple" {
@@ -805,10 +885,12 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 					return err
 				}
 				if originalEmail != m.Email {
-					if err := tx.Model(&SunnyAccount{}).Where("email = ?", originalEmail).Update("email", m.Email).Error; err != nil {
+					if err := tx.Model(&SunnyAccount{}).Where("LOWER(email) = ?", sunnyEmailKey(originalEmail)).Update("email", m.Email).Error; err != nil {
 						return err
 					}
-					if err := tx.Model(&SunnySession{}).Where("email = ?", originalEmail).Update("email", m.Email).Error; err != nil {
+					if err := tx.Model(&SunnySession{}).Where("LOWER(email) = ?", sunnyEmailKey(originalEmail)).Updates(map[string]any{
+						"email": m.Email, "raw_mailbox_line": sunnyMailboxRawForEmail(m, m.Email),
+					}).Error; err != nil {
 						return err
 					}
 				}
@@ -4580,6 +4662,28 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		}
 		if r.Method == http.MethodPut {
 			body, _ := parseBody(r)
+			originalEmail := sess.Email
+			targetEmail := originalEmail
+			if _, ok := body["email"]; ok {
+				var err error
+				targetEmail, err = normalizeSunnyEditableEmail(text(body["email"]))
+				if err != nil {
+					writeError(w, http.StatusUnprocessableEntity, err.Error())
+					return
+				}
+			}
+			if sunnyEmailKey(originalEmail) != sunnyEmailKey(targetEmail) {
+				if err := sunnyEmailRenameConflict(s.db, targetEmail); err != nil {
+					if strings.Contains(err.Error(), "已被其他") {
+						writeError(w, http.StatusConflict, err.Error())
+					} else {
+						writeError(w, http.StatusInternalServerError, err.Error())
+					}
+					return
+				}
+			}
+			emailChanged := originalEmail != targetEmail
+			sess.Email = targetEmail
 			status := strings.TrimSpace(text(body["status"]))
 			planType := ""
 			if _, ok := body["plan_type"]; ok {
@@ -4604,6 +4708,18 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			if err := s.db.Transaction(func(tx *gorm.DB) error {
 				accountUpdates := map[string]any{"updated_at": now}
 				mailboxUpdates := map[string]any{"updated_at": now}
+				if emailChanged {
+					var mailbox SunnyMailbox
+					mailboxErr := tx.Where("LOWER(email) = ?", sunnyEmailKey(originalEmail)).First(&mailbox).Error
+					if mailboxErr == nil {
+						mailboxUpdates["email"] = targetEmail
+						mailboxUpdates["raw"] = sunnyMailboxRawForEmail(mailbox, targetEmail)
+						sess.RawMailboxLine = mailboxUpdates["raw"].(string)
+					} else if mailboxErr != gorm.ErrRecordNotFound {
+						return mailboxErr
+					}
+					accountUpdates["email"] = targetEmail
+				}
 				if _, ok := body["access_token"]; ok {
 					sess.AccessToken = text(body["access_token"])
 					accountUpdates["access_token"] = sess.AccessToken
@@ -4643,10 +4759,10 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 					accountUpdates["group_name"] = targetGroup.Name
 					mailboxUpdates["group_id"] = targetGroup.ID
 				}
-				if err := tx.Model(&SunnyAccount{}).Where("email = ?", sess.Email).Updates(accountUpdates).Error; err != nil {
+				if err := tx.Model(&SunnyAccount{}).Where("LOWER(email) = ?", sunnyEmailKey(originalEmail)).Updates(accountUpdates).Error; err != nil {
 					return err
 				}
-				mailboxResult := tx.Model(&SunnyMailbox{}).Where("email = ?", sess.Email).Updates(mailboxUpdates)
+				mailboxResult := tx.Model(&SunnyMailbox{}).Where("LOWER(email) = ?", sunnyEmailKey(originalEmail)).Updates(mailboxUpdates)
 				if mailboxResult.Error != nil {
 					return mailboxResult.Error
 				}

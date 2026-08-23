@@ -249,6 +249,101 @@ func TestSunnySessionUpdateSynchronizesMailboxAndAccountMetadata(t *testing.T) {
 	}
 }
 
+func TestSunnySessionRenameSynchronizesMailboxAccountAndCredentialLine(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	body, err := json.Marshal(map[string]any{"email": "renamed@example.com"})
+	if err != nil {
+		t.Fatalf("encode rename request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/sunny/sessions/"+strconv.Itoa(int(session.ID)), bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.sunnySessions(rec, req, []string{strconv.Itoa(int(session.ID))})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rename status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var mailbox SunnyMailbox
+	if err := s.db.Where("email = ?", "renamed@example.com").First(&mailbox).Error; err != nil {
+		t.Fatalf("load renamed mailbox: %v", err)
+	}
+	if mailbox.Raw != "renamed@example.com----mailbox-password----client-id----mailbox-refresh-token" {
+		t.Fatalf("mailbox credential line was not renamed: %q", mailbox.Raw)
+	}
+	var account SunnyAccount
+	if err := s.db.Where("email = ?", "renamed@example.com").First(&account).Error; err != nil {
+		t.Fatalf("load renamed account: %v", err)
+	}
+	var updated SunnySession
+	if err := s.db.First(&updated, session.ID).Error; err != nil {
+		t.Fatalf("load renamed session: %v", err)
+	}
+	if updated.Email != "renamed@example.com" || updated.RawMailboxLine != mailbox.Raw {
+		t.Fatalf("session rename was not synchronized: %#v", updated)
+	}
+	var oldCount int64
+	s.db.Model(&SunnyMailbox{}).Where("email = ?", "session@example.com").Count(&oldCount)
+	if oldCount != 0 {
+		t.Fatalf("old mailbox email still exists: %d", oldCount)
+	}
+}
+
+func TestSunnyMailboxRenameSynchronizesLinkedRecords(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var mailbox SunnyMailbox
+	if err := s.db.Where("email = ?", "session@example.com").First(&mailbox).Error; err != nil {
+		t.Fatalf("load mailbox: %v", err)
+	}
+	body, err := json.Marshal(map[string]any{"email": "mailbox-renamed@example.com"})
+	if err != nil {
+		t.Fatalf("encode rename request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/sunny/mailboxes/"+strconv.Itoa(int(mailbox.ID)), bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.sunnyMailboxes(rec, req, []string{strconv.Itoa(int(mailbox.ID))})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rename status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var account SunnyAccount
+	if err := s.db.Where("email = ?", "mailbox-renamed@example.com").First(&account).Error; err != nil {
+		t.Fatalf("load renamed account: %v", err)
+	}
+	var session SunnySession
+	if err := s.db.Where("email = ?", "mailbox-renamed@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load renamed session: %v", err)
+	}
+	if session.RawMailboxLine != "mailbox-renamed@example.com----mailbox-password----client-id----mailbox-refresh-token" {
+		t.Fatalf("linked session credential line was not renamed: %q", session.RawMailboxLine)
+	}
+}
+
+func TestSunnySessionRenameRejectsExistingEmail(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	if err := s.db.Create(&SunnyMailbox{Email: "other@example.com", Status: "未注册", Enabled: true}).Error; err != nil {
+		t.Fatalf("create conflicting mailbox: %v", err)
+	}
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	body, _ := json.Marshal(map[string]any{"email": "other@example.com"})
+	req := httptest.NewRequest(http.MethodPut, "/api/sunny/sessions/"+strconv.Itoa(int(session.ID)), bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.sunnySessions(rec, req, []string{strconv.Itoa(int(session.ID))})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("conflict status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var unchanged SunnySession
+	if err := s.db.First(&unchanged, session.ID).Error; err != nil {
+		t.Fatalf("load unchanged session: %v", err)
+	}
+	if unchanged.Email != "session@example.com" {
+		t.Fatalf("conflicting rename changed session email: %q", unchanged.Email)
+	}
+}
+
 func TestSunnySessionListUsesJWTExpiryInShanghai(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	previousLocation := sunnyApplicationLocation
