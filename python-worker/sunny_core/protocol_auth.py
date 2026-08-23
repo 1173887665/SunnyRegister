@@ -910,7 +910,12 @@ class ProtocolRegistrationFlow:
         except ProtocolRegistrationError as exc:
             self.log(f"[认证] 协议状态推进请求未成功，继续创建账户：{exc}")
         response = None
-        for attempt in range(3):
+        # OpenAI may temporarily reject a fresh registration after the email
+        # OTP is accepted while its IP/Sentinel risk window settles. Remail
+        # addresses are especially sensitive to this window, so use a bounded
+        # long backoff only for that provider; keep legacy mailbox timing intact.
+        retry_delays = [8, 20, 45] if str(self.account.mailbox_type or "").lower() == "remail" else [2, 2]
+        for attempt in range(len(retry_delays) + 1):
             sentinel_headers = self._sentinel_headers("oauth_create_account")
             response = self._request(
                 "POST",
@@ -930,10 +935,13 @@ class ProtocolRegistrationFlow:
             if response.status_code == 200:
                 break
             body = str(getattr(response, "text", "") or "")
-            if "registration_disallowed" not in body or attempt >= 2:
+            if "registration_disallowed" not in body or attempt >= len(retry_delays):
                 raise _response_error(response, "Create ChatGPT account")
-            self.log(f"[认证] 创建账号被临时拒绝，刷新 Sentinel 证明后重试 {attempt + 1}/3")
-            time.sleep(2)
+            delay = retry_delays[attempt]
+            self.log(f"[认证] 创建账号被临时拒绝，等待 {delay} 秒后刷新 Sentinel 证明重试 {attempt + 1}/{len(retry_delays) + 1}")
+            self._check_cancelled()
+            time.sleep(delay)
+            self._check_cancelled()
         if response is None:
             raise ProtocolRegistrationError("Create ChatGPT account did not return a response")
         self.auth_action = "register"

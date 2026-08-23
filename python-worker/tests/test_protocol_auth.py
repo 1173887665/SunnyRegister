@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 
@@ -129,6 +129,25 @@ def test_protocol_request_retries_transient_connection_reset() -> None:
 
     assert response.status_code == 200
     assert len(flow.session.requests) == 2
+
+
+def test_remail_registration_disallowed_uses_long_bounded_backoff() -> None:
+    account = MailAccount("user@icloud.com", "", "", "", "raw", mailbox_type="remail", mailbox_channel="remail_api")
+    flow = ProtocolRegistrationFlow(account, session=FakeSession([]))
+    flow.device_id = "device-id"
+    responses = [
+        FakeResponse(status_code=200, payload={}),
+        FakeResponse(status_code=400, text='{"error":{"code":"registration_disallowed"}}'),
+        FakeResponse(status_code=400, text='{"error":{"code":"registration_disallowed"}}'),
+        FakeResponse(status_code=200, payload={"ok": True}),
+    ]
+    flow._request = Mock(side_effect=responses)
+    flow._sentinel_headers = Mock(return_value={"openai-sentinel-token": "sentinel"})
+    with patch("sunny_core.protocol_auth.time.sleep") as sleep:
+        result = flow._create_account()
+    assert result == {"ok": True}
+    assert sleep.call_args_list == [call(8), call(20)]
+    assert flow._request.call_count == 4
 
 
 def test_protocol_email_timeout_resends_once_before_validation() -> None:
