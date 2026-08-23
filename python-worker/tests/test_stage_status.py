@@ -251,6 +251,35 @@ class StageStatusTests(unittest.TestCase):
         self.assertEqual(traffic_meter.proxy_url, "http://proxy.example:8080")
         self.assertEqual(db.account_updates[-1]["account_type"], "plus")
 
+    def test_background_registration_directly_uses_protocol_headless_fallback(self):
+        db = FakeDB()
+        payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "background"}
+        browser_session = {
+            "access_token": "browser-access",
+            "auth_action": "register",
+            "plan_type": "free",
+            "session_json": {"accessToken": "browser-access"},
+        }
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
+            patch.object(worker, "login_or_register_protocol") as protocol_executor,
+            patch.object(worker, "login_or_register", return_value=browser_session) as browser_executor,
+        ):
+            ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
+
+        self.assertTrue(ok)
+        self.assertTrue(result["stage_complete"])
+        protocol_executor.assert_not_called()
+        browser_executor.assert_called_once()
+        self.assertIs(browser_executor.call_args.args[2], True)
+        self.assertEqual(browser_executor.call_args.kwargs["execution_mode"], "protocol_headless_fallback")
+        self.assertIsNone(browser_executor.call_args.kwargs["existing_session"])
+        saved_session = db.sessions[-1]["session"]
+        self.assertEqual(saved_session["requested_execution_mode"], "background")
+        self.assertEqual(saved_session["execution_mode"], "protocol_headless_fallback")
+        self.assertEqual(saved_session["protocol_fallback"], "direct_headless")
+        self.assertTrue(any("不预执行协议注册请求" in str(args[0]) for args, _kwargs in db.events))
+
     def test_protocol_challenge_falls_back_to_headless_browser_only(self):
         db = FakeDB()
         payload = {
@@ -260,6 +289,13 @@ class StageStatusTests(unittest.TestCase):
         }
         challenge = ProtocolChallengeRequired("Sentinel requires a browser challenge")
         challenge.traffic = {"requests": 4, "total_bytes": 2048}
+        challenge.browser_handoff = {
+            "protocol_browser_handoff": True,
+            "protocol_resume_url": "https://auth.openai.com/about-you",
+            "protocol_challenge_flow": "oauth_create_account",
+            "protocol_email_verified": True,
+            "storage_state_json": {"cookies": [{"name": "auth-session", "value": "state", "domain": "auth.openai.com", "path": "/"}], "origins": []},
+        }
         browser_session = {
             "access_token": "browser-access",
             "auth_action": "register",
@@ -283,12 +319,13 @@ class StageStatusTests(unittest.TestCase):
         self.assertIsNone(kwargs["phone_provider"])
         self.assertFalse(kwargs["require_refresh_token"])
         self.assertEqual(kwargs["execution_mode"], "protocol_headless_fallback")
+        self.assertIs(kwargs["existing_session"], challenge.browser_handoff)
         self.assertEqual(db.sessions[-1]["session"]["execution_mode"], "protocol_headless_fallback")
-        self.assertEqual(db.sessions[-1]["session"]["protocol_fallback"], "headless")
+        self.assertEqual(db.sessions[-1]["session"]["protocol_fallback"], "native_challenge_handoff")
         self.assertEqual(db.sessions[-1]["session"]["protocol_traffic"]["total_bytes"], 2048)
         self.assertTrue(any("后台无头浏览器" in str(args[0]) for args, _kwargs in db.events))
 
-    def test_initial_authorize_challenge_retries_with_narrow_sentinel_before_headless(self):
+    def test_initial_authorize_challenge_uses_native_browser_handoff(self):
         db = FakeDB()
         payload = {
             "registration_stage": worker.REGISTER_ONLY,
@@ -297,28 +334,71 @@ class StageStatusTests(unittest.TestCase):
         }
         challenge = ProtocolChallengeRequired("Sentinel authorize_continue requires a browser challenge")
         challenge.traffic = {"requests": 4, "total_bytes": 2048}
-        sentinel_session = {
-            "access_token": "sentinel-access",
+        challenge.browser_handoff = {
+            "protocol_browser_handoff": True,
+            "protocol_resume_url": "https://auth.openai.com/create-account",
+            "protocol_challenge_flow": "authorize_continue",
+            "protocol_email_verified": False,
+            "storage_state_json": {"cookies": [{"name": "auth-session", "value": "state", "domain": "auth.openai.com", "path": "/"}], "origins": []},
+        }
+        browser_session = {
+            "access_token": "browser-access",
             "auth_action": "register",
             "plan_type": "free",
-            "session_json": {"accessToken": "sentinel-access"},
+            "session_json": {"accessToken": "browser-access"},
         }
         with (
             patch.object(worker, "_prepare_register_proxy", return_value={"register": "http://proxy.example:8080", "mode": "pool"}),
-            patch.object(worker, "login_or_register_protocol", side_effect=[challenge, sentinel_session]) as protocol_executor,
-            patch.object(worker, "login_or_register") as browser_executor,
+            patch.object(worker, "login_or_register_protocol", side_effect=challenge) as protocol_executor,
+            patch.object(worker, "login_or_register", return_value=browser_session) as browser_executor,
         ):
             ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
 
         self.assertTrue(ok)
         self.assertTrue(result["stage_complete"])
-        browser_executor.assert_not_called()
-        self.assertEqual(protocol_executor.call_count, 2)
-        self.assertEqual(protocol_executor.call_args_list[0].kwargs["challenge_strategy"], "native_headless")
-        self.assertEqual(protocol_executor.call_args_list[1].kwargs["challenge_strategy"], "sentinel_protocol")
-        self.assertEqual(db.sessions[-1]["session"]["protocol_fallback"], "sentinel_protocol")
+        protocol_executor.assert_called_once()
+        browser_executor.assert_called_once()
+        self.assertEqual(protocol_executor.call_args.kwargs["challenge_strategy"], "native_headless")
+        self.assertIs(browser_executor.call_args.kwargs["existing_session"], challenge.browser_handoff)
+        self.assertEqual(db.sessions[-1]["session"]["protocol_fallback"], "native_challenge_handoff")
 
-    def test_protocol_batch_fast_path_skips_repeated_protocol_attempt(self):
+    def test_native_browser_handoff_failure_retries_one_fresh_headless_session(self):
+        db = FakeDB()
+        payload = {
+            "registration_stage": worker.REGISTER_ONLY,
+            "execution_mode": "protocol",
+            "protocol_challenge_strategy": "native_headless",
+        }
+        challenge = ProtocolChallengeRequired("Sentinel oauth_create_account requires a browser challenge")
+        challenge.browser_handoff = {
+            "protocol_browser_handoff": True,
+            "protocol_resume_url": "https://auth.openai.com/about-you",
+            "protocol_challenge_flow": "oauth_create_account",
+            "protocol_email_verified": True,
+            "storage_state_json": {"cookies": [{"name": "auth-session", "value": "state", "domain": "auth.openai.com", "path": "/"}], "origins": []},
+        }
+        browser_session = {
+            "access_token": "browser-access",
+            "auth_action": "register",
+            "plan_type": "free",
+            "session_json": {"accessToken": "browser-access"},
+        }
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
+            patch.object(worker, "login_or_register_protocol", side_effect=challenge),
+            patch.object(worker, "login_or_register", side_effect=[RuntimeError("handoff cookie expired"), browser_session]) as browser_executor,
+        ):
+            ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
+
+        self.assertTrue(ok)
+        self.assertTrue(result["stage_complete"])
+        self.assertEqual(browser_executor.call_count, 2)
+        self.assertIs(browser_executor.call_args_list[0].kwargs["existing_session"], challenge.browser_handoff)
+        self.assertIsNone(browser_executor.call_args_list[1].kwargs["existing_session"])
+        self.assertEqual(db.sessions[-1]["session"]["protocol_fallback"], "headless_after_handoff_failure")
+        self.assertTrue(any("清除失效断点" in str(args[0]) for args, _kwargs in db.events))
+
+    def test_protocol_batch_challenges_do_not_skip_protocol_checkpoint(self):
         db = FakeDB()
         payload = {
             "registration_stage": worker.REGISTER_ONLY,
@@ -328,16 +408,16 @@ class StageStatusTests(unittest.TestCase):
         policy = worker._ProtocolBatchPolicy()
         policy.record_challenge()
         policy.record_challenge()
-        browser_session = {
-            "access_token": "browser-access",
+        protocol_session = {
+            "access_token": "protocol-access",
             "auth_action": "register",
             "plan_type": "free",
-            "session_json": {"accessToken": "browser-access"},
+            "session_json": {"accessToken": "protocol-access"},
         }
         with (
             patch.object(worker, "_prepare_register_proxy", return_value={"register": "http://proxy.example:8080", "mode": "pool"}),
-            patch.object(worker, "login_or_register_protocol") as protocol_executor,
-            patch.object(worker, "login_or_register", return_value=browser_session) as browser_executor,
+            patch.object(worker, "login_or_register_protocol", return_value=protocol_session) as protocol_executor,
+            patch.object(worker, "login_or_register") as browser_executor,
         ):
             ok, result = worker._run_one(
                 db,
@@ -351,12 +431,10 @@ class StageStatusTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertTrue(result["stage_complete"])
-        protocol_executor.assert_not_called()
-        browser_executor.assert_called_once()
-        self.assertEqual(browser_executor.call_args.kwargs["execution_mode"], "protocol_headless_fallback")
-        self.assertEqual(db.sessions[-1]["session"]["requested_execution_mode"], "protocol")
-        self.assertEqual(db.sessions[-1]["session"]["protocol_fallback"], "batch_challenge_fast_path")
-        self.assertTrue(any("跳过重复协议验证" in str(args[0]) for args, _kwargs in db.events))
+        protocol_executor.assert_called_once()
+        browser_executor.assert_not_called()
+        self.assertNotIn("protocol_fallback", db.sessions[-1]["session"])
+        self.assertFalse(any("跳过重复协议验证" in str(args[0]) for args, _kwargs in db.events))
 
     def test_protocol_non_challenge_error_does_not_start_browser(self):
         db = FakeDB()

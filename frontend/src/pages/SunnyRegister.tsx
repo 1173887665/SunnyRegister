@@ -749,6 +749,14 @@ Object.assign(en, {
   allPaymentMethods: "All Payment Methods", paymentMethodFilter: "Payment methods (match all)", clearPaymentMethods: "Clear payment method filters",
 });
 
+Object.assign(zh, {
+  protocolNativeChallengeDesc: "遇到挑战时保存协议认证 Cookie 与当前步骤，由 Camoufox 从断点继续，不重新执行已完成的注册流程",
+  backgroundDesc: "直接使用协议模式降级时的 Camoufox 无头注册流程，不预执行协议注册请求",
+});
+Object.assign(en, {
+  protocolNativeChallengeDesc: "Preserve the protocol cookies and current step, then let Camoufox continue from that checkpoint without replaying completed registration steps",
+  backgroundDesc: "Start the same Camoufox headless flow used by protocol fallback, without a protocol registration attempt first",
+});
 Object.assign(zh.progressSteps, {
   login_secret_started: "开始补充登录密钥",
   login_secret_password: "正在添加 ChatGPT 密码",

@@ -185,6 +185,10 @@ def _goto_auth_page(page: Any, url: str, log: Callable[[str], None] | None = Non
     try:
         return page.goto(url, wait_until="domcontentloaded", timeout=timeout)
     except Exception as exc:
+        if "timeout" in str(exc or "").lower() and _auth_navigation_landed(page, previous_url):
+            if log:
+                log(f"[认证] 认证页面已进入 OpenAI 域，但 DOM 加载等待超时；继续处理当前页面：{page.url}")
+            return None
         if not _is_navigation_aborted(exc):
             raise
         try:
@@ -566,6 +570,30 @@ class OpenAIEmailRegisterFlow:
             return None
         return state
 
+    def _protocol_browser_handoff(self) -> dict[str, Any] | None:
+        if self.existing_session.get("protocol_browser_handoff") is not True:
+            return None
+        state = self.existing_session.get("storage_state_json")
+        cookies = state.get("cookies") if isinstance(state, dict) else None
+        resume_url = str(self.existing_session.get("protocol_resume_url") or "").strip()
+        try:
+            parsed = urlparse(resume_url)
+        except Exception:
+            return None
+        if (
+            not isinstance(cookies, list)
+            or not any(isinstance(item, dict) and item.get("name") and item.get("value") for item in cookies)
+            or parsed.scheme != "https"
+            or parsed.hostname not in {"auth.openai.com", "chatgpt.com"}
+        ):
+            return None
+        return {
+            "storage_state": state,
+            "resume_url": resume_url,
+            "challenge_flow": str(self.existing_session.get("protocol_challenge_flow") or "unknown"),
+            "email_verified": self.existing_session.get("protocol_email_verified") is True,
+        }
+
     def _browser_traffic_snapshot(self) -> dict[str, Any]:
         snapshot = self.traffic_meter.snapshot()
         snapshot["optimization"] = self.traffic_optimizer.snapshot()
@@ -594,15 +622,25 @@ class OpenAIEmailRegisterFlow:
         self.log(f"[认证] 开始注册或登录: {self.account.email}")
         try:
             self._check_cancelled()
-            reusable_storage_state = self._existing_storage_state() if self.require_refresh_token else None
+            protocol_handoff = self._protocol_browser_handoff()
+            reusable_storage_state = self._existing_storage_state() if self.require_refresh_token and protocol_handoff is None else None
+            browser_storage_state = protocol_handoff["storage_state"] if protocol_handoff else reusable_storage_state
             if (
-                reusable_storage_state is None
+                (browser_storage_state is None or (protocol_handoff and not protocol_handoff["email_verified"]))
                 and not self._uses_login_secret()
                 and not (self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key)
             ):
                 self._preconnect_otp_reader()
+            if protocol_handoff:
+                self.auth_action = str(self.existing_session.get("auth_action") or self.auth_action)
+                self.generated_password = str(self.existing_session.get("generated_chatgpt_password") or "")
             self._check_cancelled()
-            mode_label = "后台浏览器自动（Camoufox Headless，无窗口）" if self.headless else "可视浏览器自动（Chromium Visible，有窗口）"
+            if protocol_handoff:
+                mode_label = "协议断点原生无头接管（Camoufox，仅继续挑战后的剩余步骤）"
+            elif self.execution_mode == "protocol_headless_fallback":
+                mode_label = "协议降级 Camoufox 无头流程（无窗口）"
+            else:
+                mode_label = "后台浏览器自动（Camoufox Headless，无窗口）" if self.headless else "可视浏览器自动（Chromium Visible，有窗口）"
             self.log(f"[认证] 执行方式：{mode_label}")
             if self.existing_account:
                 if self._uses_login_secret():
@@ -616,7 +654,7 @@ class OpenAIEmailRegisterFlow:
                 proxy_url=self.proxy_url,
                 fingerprint=self.fingerprint,
                 log=self.log,
-                storage_state=reusable_storage_state,
+                storage_state=browser_storage_state,
             ) as browser_session:
                 context = browser_session.context
                 self.traffic_optimizer.attach(context)
@@ -626,7 +664,7 @@ class OpenAIEmailRegisterFlow:
                     self._install_stealth(context)
                 else:
                     context.set_extra_http_headers({"Accept-Language": self.fingerprint.accept_language})
-                if reusable_storage_state is None:
+                if browser_storage_state is None:
                     context.clear_cookies()
                 self.log(
                     f"[认证] 已启动隔离无痕浏览器上下文，后端 {self.browser_backend}，"
@@ -635,32 +673,42 @@ class OpenAIEmailRegisterFlow:
                 self._check_cancelled()
                 page = context.new_page()
                 self._log_runtime_fingerprint(page)
-                landing_response = _goto_chatgpt_page(page, self.log, timeout=60000)
-                if landing_response and landing_response.status >= 400:
-                    self.log(f"[认证] ChatGPT 首页返回 HTTP {landing_response.status}，继续尝试通过浏览器会话初始化认证")
-                self._check_cancelled()
-                if reusable_storage_state is not None:
-                    try:
-                        result = self._extract_session_info(context, page, emit_registered=False)
-                    except (TaskCancelledError, BrowserDriverDisconnectedError):
-                        raise
-                    except Exception as exc:
-                        self.log(f"[认证] 协议登录态无法继续 OAuth，降级为完整登录验证：{str(exc)[:300]}")
-                        context.clear_cookies()
-                        self._preconnect_otp_reader()
-                    else:
-                        for key in ("protocol_traffic", "plan_type", "session_token", "account_id"):
-                            if key in self.existing_session and key not in result:
-                                result[key] = self.existing_session[key]
-                        result["auth_action"] = str(self.existing_session.get("auth_action") or "login")
-                        self.log("[认证] 已复用协议登录态完成 OAuth 续段，未重复执行邮箱登录验证")
-                        return result
-                signin_url = self._create_openai_signin_url(context, page)
                 otp_min_timestamp = time.time() - 10
-                _goto_auth_page(page, signin_url, self.log, timeout=90000)
+                if protocol_handoff:
+                    self.log(
+                        f"[认证] 已恢复协议认证断点，使用无头浏览器原生控件接管挑战步骤："
+                        f"{protocol_handoff['challenge_flow']}"
+                    )
+                    _goto_auth_page(page, protocol_handoff["resume_url"], self.log, timeout=90000)
+                else:
+                    landing_response = _goto_chatgpt_page(page, self.log, timeout=60000)
+                    if landing_response and landing_response.status >= 400:
+                        self.log(f"[认证] ChatGPT 首页返回 HTTP {landing_response.status}，继续尝试通过浏览器会话初始化认证")
+                    self._check_cancelled()
+                    if reusable_storage_state is not None:
+                        try:
+                            result = self._extract_session_info(context, page, emit_registered=False)
+                        except (TaskCancelledError, BrowserDriverDisconnectedError):
+                            raise
+                        except Exception as exc:
+                            self.log(f"[认证] 协议登录态无法继续 OAuth，降级为完整登录验证：{str(exc)[:300]}")
+                            context.clear_cookies()
+                            self._preconnect_otp_reader()
+                        else:
+                            for key in ("protocol_traffic", "plan_type", "session_token", "account_id"):
+                                if key in self.existing_session and key not in result:
+                                    result[key] = self.existing_session[key]
+                            result["auth_action"] = str(self.existing_session.get("auth_action") or "login")
+                            self.log("[认证] 已复用协议登录态完成 OAuth 续段，未重复执行邮箱登录验证")
+                            return result
+                    signin_url = self._create_openai_signin_url(context, page)
+                    _goto_auth_page(page, signin_url, self.log, timeout=90000)
                 self._emit_progress("browser_started")
                 if self.headless:
-                    self.log("[认证] 已打开 OpenAI 认证页，后台状态机开始自动处理注册/登录")
+                    if protocol_handoff:
+                        self.log("[认证] 已打开协议断点页面，后台状态机仅继续处理挑战后的剩余注册/登录步骤")
+                    else:
+                        self.log("[认证] 已打开 OpenAI 认证页，后台状态机开始自动处理注册/登录")
                 else:
                     self.log("[认证] 已打开 OpenAI 认证页；如出现交互式验证，可在当前浏览器窗口处理")
                 try:
@@ -688,6 +736,9 @@ class OpenAIEmailRegisterFlow:
                 result = self._apply_post_registration_callback(context, page, result)
                 result["browser_traffic"] = self._browser_traffic_snapshot()
                 result["auth_action"] = self.auth_action if self.auth_action != "unknown" else "login"
+                if protocol_handoff:
+                    result["protocol_browser_handoff"] = True
+                    result["protocol_challenge_flow"] = protocol_handoff["challenge_flow"]
                 if self.generated_password:
                     result["generated_chatgpt_password"] = self.generated_password
                 self.log("[认证] 注册或登录完成，已读取 Session 信息")

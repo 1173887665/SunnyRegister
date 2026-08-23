@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -315,6 +316,34 @@ def test_sentinel_device_challenge_stops_protocol_flow() -> None:
         assert getattr(exc, "traffic")["requests"] == 1
     else:
         raise AssertionError("device challenge must stop protocol mode")
+
+
+def test_protocol_challenge_exports_browser_handoff_checkpoint() -> None:
+    flow = ProtocolRegistrationFlow(
+        MailAccount("user@outlook.com", "password", "client-id", "refresh-token", "raw"),
+        session=FakeSession([]),
+    )
+    flow.session.cookies.jar = [
+        SimpleNamespace(name="auth-session", value="state", domain="auth.openai.com", path="/", secure=True)
+    ]
+    flow.auth_page_url = "https://auth.openai.com/create-account"
+    flow.browser_resume_url = "https://auth.openai.com/about-you"
+    flow.email_verified = True
+    flow._start_next_auth = Mock()
+    challenge = ProtocolChallengeRequired("Sentinel oauth_create_account requires a browser challenge")
+    challenge.challenge_flow = "oauth_create_account"
+    flow._authorize_email = Mock(side_effect=challenge)
+
+    with patch("sunny_core.protocol_auth.create_mailbox_reader", FakeReader):
+        with pytest.raises(ProtocolChallengeRequired) as raised:
+            flow.run()
+
+    handoff = raised.value.browser_handoff
+    assert handoff["protocol_browser_handoff"] is True
+    assert handoff["protocol_resume_url"] == "https://auth.openai.com/about-you"
+    assert handoff["protocol_challenge_flow"] == "oauth_create_account"
+    assert handoff["protocol_email_verified"] is True
+    assert handoff["storage_state_json"]["cookies"][0]["name"] == "auth-session"
 
 
 def test_sentinel_protocol_strategy_uses_narrow_runtime_headers() -> None:

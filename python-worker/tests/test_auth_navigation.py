@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from unittest.mock import Mock
+from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -81,6 +83,22 @@ def test_auth_navigation_preserves_unrelated_failures() -> None:
         _goto_auth_page(page, "https://auth.openai.com/api/accounts/authorize")
 
 
+def test_auth_navigation_continues_when_dom_timeout_landed_on_auth_page() -> None:
+    page = Mock()
+    page.url = "about:blank"
+
+    def landed_before_timeout(*_args, **_kwargs):
+        page.url = "https://auth.openai.com/about-you"
+        raise RuntimeError("Page.goto: Timeout 90000ms exceeded")
+
+    page.goto.side_effect = landed_before_timeout
+    logs: list[str] = []
+
+    assert _goto_auth_page(page, "https://auth.openai.com/about-you", logs.append) is None
+    page.goto.assert_called_once()
+    assert any("DOM 加载等待超时" in message for message in logs)
+
+
 def test_email_step_waits_when_prefilled_input_is_disabled() -> None:
     logs: list[str] = []
     account = MailAccount("user@icloud.com", "", "", "", "raw")
@@ -114,3 +132,59 @@ def test_email_step_skips_duplicate_fill_for_matching_editable_value() -> None:
 
     email_input.fill.assert_not_called()
     flow._click_continue.assert_called_once()
+
+
+def test_native_protocol_handoff_resumes_without_new_signin() -> None:
+    account = MailAccount("user@outlook.com", "", "", "", "raw")
+    storage_state = {
+        "cookies": [{"name": "auth-session", "value": "state", "domain": "auth.openai.com", "path": "/"}],
+        "origins": [],
+    }
+    existing_session = {
+        "protocol_browser_handoff": True,
+        "protocol_resume_url": "https://auth.openai.com/about-you",
+        "protocol_challenge_flow": "oauth_create_account",
+        "protocol_email_verified": True,
+        "storage_state_json": storage_state,
+        "auth_action": "unknown",
+    }
+    logs: list[str] = []
+    flow = OpenAIEmailRegisterFlow(
+        account,
+        "",
+        True,
+        logs.append,
+        require_refresh_token=False,
+        existing_session=existing_session,
+        execution_mode="protocol_headless_fallback",
+    )
+    page = Mock()
+    context = Mock()
+    context.new_page.return_value = page
+
+    @contextmanager
+    def open_browser(**kwargs):
+        assert kwargs["storage_state"] is storage_state
+        yield SimpleNamespace(context=context, backend="camoufox")
+
+    flow.traffic_optimizer.attach = Mock()
+    flow.traffic_optimizer.detach = Mock()
+    flow._log_runtime_fingerprint = Mock()
+    flow._drive_register_or_login = Mock()
+    flow._extract_session_info = Mock(return_value={"access_token": "access", "session_json": {"accessToken": "access"}})
+    flow._create_openai_signin_url = Mock(side_effect=AssertionError("handoff must not create a new signin transaction"))
+
+    with (
+        patch("sunny_core.openai_auth.open_registration_browser", open_browser),
+        patch("sunny_core.openai_auth._goto_auth_page") as goto_auth,
+        patch("sunny_core.openai_auth._goto_chatgpt_page") as goto_chatgpt,
+    ):
+        result = flow.run()
+
+    goto_auth.assert_called_once_with(page, "https://auth.openai.com/about-you", logs.append, timeout=90000)
+    goto_chatgpt.assert_not_called()
+    flow._create_openai_signin_url.assert_not_called()
+    flow._drive_register_or_login.assert_called_once()
+    assert result["protocol_browser_handoff"] is True
+    assert result["protocol_challenge_flow"] == "oauth_create_account"
+    assert any("已恢复协议认证断点" in message for message in logs)

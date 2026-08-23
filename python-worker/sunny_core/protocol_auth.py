@@ -255,10 +255,12 @@ class ProtocolRegistrationFlow:
         self.device_id = ""
         self.auth_url = ""
         self.auth_page_url = ""
+        self.browser_resume_url = ""
         self.auth_action = "login" if existing_account else "unknown"
         self.generated_password = ""
         self.recent_email_code = ""
         self.recent_email_code_at = 0.0
+        self.email_verified = False
         self.traffic = ProtocolTrafficMeter()
         self.traffic_meter = traffic_meter
         self.post_registration_callback = post_registration_callback
@@ -371,6 +373,42 @@ class ProtocolRegistrationFlow:
                 pass
         return ""
 
+    def _browser_handoff_snapshot(self, challenge_flow: str = "") -> dict[str, Any]:
+        resume_by_flow = {
+            "authorize_continue": f"{AUTH_BASE_URL}/{'log-in' if self.existing_account else 'create-account'}",
+            "username_password_create": f"{AUTH_BASE_URL}/create-account/password",
+            "password_verify": self.browser_resume_url or self.auth_page_url,
+            "oauth_create_account": f"{AUTH_BASE_URL}/about-you",
+        }
+        resume_url = str(resume_by_flow.get(challenge_flow) or self.browser_resume_url or self.auth_page_url or self.auth_url)
+        cookies: list[dict[str, Any]] = []
+        try:
+            for item in self.session.cookies.jar:
+                cookie: dict[str, Any] = {
+                    "name": str(item.name),
+                    "value": str(item.value),
+                    "path": str(getattr(item, "path", "") or "/"),
+                    "secure": bool(getattr(item, "secure", False)),
+                }
+                domain = str(getattr(item, "domain", "") or "").strip()
+                if domain:
+                    cookie["domain"] = domain
+                else:
+                    cookie["url"] = AUTH_BASE_URL
+                cookies.append(cookie)
+        except Exception:
+            cookies = []
+        return {
+            "protocol_browser_handoff": True,
+            "protocol_resume_url": resume_url,
+            "protocol_challenge_flow": challenge_flow,
+            "protocol_email_verified": self.email_verified,
+            "storage_state_json": {"cookies": cookies, "origins": []},
+            "auth_action": self.auth_action,
+            "generated_chatgpt_password": self.generated_password,
+            "protocol_traffic": self.traffic.snapshot(),
+        }
+
     def _sentinel_headers(self, flow: str) -> dict[str, str]:
         self._check_cancelled()
         generator = SentinelTokenGenerator(self.device_id, USER_AGENT)
@@ -395,6 +433,7 @@ class ProtocolRegistrationFlow:
                 if self.should_cancel():
                     raise
                 error = ProtocolChallengeRequired(f"Sentinel 协议运行时初始化失败: {exc}")
+                error.challenge_flow = flow
                 error.traffic = self.traffic.snapshot()
                 raise error from exc
         proof = requirements_proof
@@ -447,12 +486,14 @@ class ProtocolRegistrationFlow:
                 if self.should_cancel():
                     raise
                 error = ProtocolChallengeRequired(f"Sentinel 协议运行时生成证明失败: {exc}")
+                error.challenge_flow = flow
                 error.traffic = self.traffic.snapshot()
                 raise error from exc
         if turnstile_required or has_device_challenge:
             error = ProtocolChallengeRequired(
                 f"Sentinel {flow} requires a browser challenge; protocol mode cannot continue safely"
             )
+            error.challenge_flow = flow
             error.traffic = self.traffic.snapshot()
             raise error
         return {
@@ -535,9 +576,11 @@ class ProtocolRegistrationFlow:
         if auth_page.status_code >= 400:
             raise _response_error(auth_page, "OpenAI authorization initialization")
         self.auth_page_url = str(getattr(auth_page, "url", "") or self.auth_url)
+        self.browser_resume_url = self.auth_page_url
         self.device_id = self._cookie("oai-did") or self.device_id
 
     def _authorize_email(self) -> dict[str, Any]:
+        self.browser_resume_url = f"{AUTH_BASE_URL}/{'log-in' if self.existing_account else 'create-account'}"
         sentinel_headers = self._sentinel_headers("authorize_continue")
         response = self._request(
             "POST",
@@ -578,6 +621,7 @@ class ProtocolRegistrationFlow:
         return self.generated_password
 
     def _submit_password(self) -> dict[str, Any]:
+        self.browser_resume_url = f"{AUTH_BASE_URL}/create-account/password"
         self._request(
             "GET",
             f"{AUTH_BASE_URL}/create-account/password",
@@ -628,6 +672,7 @@ class ProtocolRegistrationFlow:
         return _json_response(response, step)
 
     def _verify_login_password(self, referer: str) -> dict[str, Any]:
+        self.browser_resume_url = referer or self.auth_page_url or f"{AUTH_BASE_URL}/log-in/password"
         password = str(self.account.chatgpt_password or "")
         if not password:
             raise ProtocolRegistrationError("ChatGPT password login is required, but no ChatGPT password is configured")
@@ -799,6 +844,7 @@ class ProtocolRegistrationFlow:
         min_timestamp: float = 0.0,
     ) -> dict[str, Any]:
         verification_url = continue_url or f"{AUTH_BASE_URL}/email-verification"
+        self.browser_resume_url = verification_url
         if load_page:
             page = self._request(
                 "GET",
@@ -842,10 +888,14 @@ class ProtocolRegistrationFlow:
         )
         if validated.status_code != 200:
             raise _response_error(validated, "Validate email verification code")
+        result = _json_response(validated, "Validate email verification code")
+        self.email_verified = True
+        self.browser_resume_url = self._continue_url(result) or verification_url
         self._emit("email_verified")
-        return _json_response(validated, "Validate email verification code")
+        return result
 
     def _create_account(self) -> dict[str, Any]:
+        self.browser_resume_url = f"{AUTH_BASE_URL}/about-you"
         name = f"{random.choice(['Mia', 'Ella', 'Luna', 'Noah', 'Leo', 'Mason'])} {random.choice(['Adams', 'Clark', 'Smith', 'Walker', 'Young'])}"
         age = random.randint(25, 34)
         now = datetime.now(timezone.utc)
@@ -892,6 +942,7 @@ class ProtocolRegistrationFlow:
 
     def _finish_session(self, continue_url: str) -> dict[str, Any]:
         target = str(continue_url or self.auth_url or "").strip()
+        self.browser_resume_url = target or self.browser_resume_url
         if target:
             response = self._request(
                 "GET",
@@ -1113,6 +1164,8 @@ class ProtocolRegistrationFlow:
         except Exception as exc:
             if not hasattr(exc, "traffic"):
                 exc.traffic = self.traffic.snapshot()
+            if isinstance(exc, ProtocolChallengeRequired) and not hasattr(exc, "browser_handoff"):
+                exc.browser_handoff = self._browser_handoff_snapshot(str(getattr(exc, "challenge_flow", "") or ""))
             traffic = exc.traffic
             self.log(
                 f"[系统] 协议模式失败前 HTTP 应用层流量估算：{traffic['total_bytes']} bytes / "
