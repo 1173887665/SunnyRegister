@@ -2,7 +2,7 @@ import { Fragment, useDeferredValue, useEffect, useLayoutEffect, useRef, useStat
 import type { Dispatch, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
-import { Activity, ArrowLeft, ArrowRight, ChevronDown, CircleHelp, CreditCard, Crown, Download, Eye, EyeOff, Globe2, Inbox, KeyRound, ListChecks, Loader2, Pencil, Plus, RefreshCw, RotateCw, Save, Search, Settings2, Sparkles, Trash2, Upload, X } from "lucide-react";
+import { Activity, ArrowLeft, ArrowRight, ChevronDown, ChevronUp, CircleHelp, CreditCard, Crown, Download, Eye, EyeOff, Globe2, Inbox, KeyRound, ListChecks, Loader2, Pencil, Plus, RefreshCw, RotateCw, Save, ScrollText, Search, Settings2, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -257,6 +257,61 @@ function useCachedState<T>(key: string, initial: T | (() => T)): [T, Dispatch<Se
 }
 
 type PersistentSessionTaskKind = "refresh-at" | "acquire-rt" | "add-ls" | "trial-check" | "checkout-probe" | "payment-probe" | "access-token-check" | "health-check" | "subscription-check" | "sub2-import" | "rebind";
+type AccountLogKind = PersistentSessionTaskKind | "mail-query" | "edit" | "export" | "delete" | "reverse-proxy";
+type AccountOperationLog = { id: string; kind: AccountLogKind; phase: "process" | "result"; createdAt: string; level: string; message: string; email?: string; detail?: AnyObj };
+type AccountLogSnapshot = Record<AccountLogKind, AccountOperationLog[]>;
+const ACCOUNT_LOG_KINDS: AccountLogKind[] = ["mail-query", "edit", "export", "delete", "reverse-proxy", "trial-check", "checkout-probe", "payment-probe", "add-ls", "access-token-check", "refresh-at", "health-check", "subscription-check", "rebind"];
+const ACCOUNT_LOG_STORAGE_KEY = "sunnyregister.account-operation-logs";
+const emptyAccountLogSnapshot = (): AccountLogSnapshot => Object.fromEntries(ACCOUNT_LOG_KINDS.map((kind) => [kind, []])) as unknown as AccountLogSnapshot;
+let accountLogSnapshot: AccountLogSnapshot = (() => {
+  if (typeof window === "undefined") return emptyAccountLogSnapshot();
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(ACCOUNT_LOG_STORAGE_KEY) || "{}");
+    return { ...emptyAccountLogSnapshot(), ...Object.fromEntries(ACCOUNT_LOG_KINDS.map((kind) => [kind, Array.isArray(parsed?.[kind]) ? parsed[kind].slice(-300) : []])) } as AccountLogSnapshot;
+  } catch { return emptyAccountLogSnapshot(); }
+})();
+const accountLogListeners = new Set<() => void>();
+function publishAccountLogs(next: AccountLogSnapshot) {
+  accountLogSnapshot = next;
+  try { window.localStorage.setItem(ACCOUNT_LOG_STORAGE_KEY, JSON.stringify(next)); } catch { /* log visibility remains available in memory */ }
+  accountLogListeners.forEach((listener) => listener());
+}
+function appendAccountOperationLog(kind: AccountLogKind, phase: "process" | "result", message: string, level = "info", email?: string, detail?: AnyObj) {
+  const entry: AccountOperationLog = { id: `${kind}:${Date.now()}:${Math.random()}`, kind, phase, createdAt: new Date().toISOString(), level, message, email, detail };
+  const current = accountLogSnapshot[kind] || [];
+  publishAccountLogs({ ...accountLogSnapshot, [kind]: [...current, entry].slice(-300) });
+}
+function appendAccountTaskEvents(kind: PersistentSessionTaskKind, events: AnyObj[]) {
+  if (!events.length) return;
+  const current = accountLogSnapshot[kind] || [];
+  const known = new Set(current.map((item) => String(item.detail?.eventId || "")));
+  const entries = events.map((event) => ({
+    id: `event:${event.id || `${kind}:${Date.now()}:${Math.random()}`}`,
+    kind,
+    phase: "process" as const,
+    createdAt: String(event.created_at || new Date().toISOString()),
+    level: String(event.level || "info"),
+    message: String(event.message || event.detail?.current_log || event.line || ""),
+    email: String(event.email || event.detail?.email || "") || undefined,
+    detail: { ...(event.detail || {}), eventId: event.id },
+  })).filter((entry) => entry.message && !known.has(String(entry.detail?.eventId || "")));
+  if (entries.length) publishAccountLogs({ ...accountLogSnapshot, [kind]: [...current, ...entries].slice(-300) });
+}
+function appendAccountTaskResult(kind: PersistentSessionTaskKind, task: AnyObj) {
+  const result = task?.result || {};
+  const items = Array.isArray(result.items) ? result.items : [];
+  const summary = [
+    result.success != null ? `成功 ${Number(result.success || 0)}` : "",
+    result.failed != null ? `失败 ${Number(result.failed || 0)}` : "",
+    result.skipped != null ? `跳过 ${Number(result.skipped || 0)}` : "",
+  ].filter(Boolean).join("，");
+  const messages = [summary ? `任务完成：${summary}` : `任务${task?.status === "succeeded" ? "完成" : "结束"}`];
+  if (kind === "rebind") items.forEach((item: AnyObj) => { if (item.new_email) messages.push(`${item.email || "未知账户"} -> ${item.new_email}（${item.status || "完成"}）`); });
+  if (Array.isArray(result.errors)) result.errors.slice(0, 20).forEach((error: unknown) => messages.push(String(error)));
+  messages.forEach((message, index) => appendAccountOperationLog(kind, "result", message, task?.status === "failed" || (index > 0 && /失败|error|failed/i.test(message)) ? "error" : "info", undefined, { task_id: task?.id, result }));
+}
+function subscribeAccountLogs(listener: () => void) { accountLogListeners.add(listener); return () => accountLogListeners.delete(listener); }
+function useAccountLogs() { return useSyncExternalStore(subscribeAccountLogs, () => accountLogSnapshot, () => accountLogSnapshot); }
 type SessionTaskState = "running" | "succeeded" | "failed" | "cancelled";
 type SessionRenewalProgress = {
   email: string;
@@ -478,31 +533,54 @@ function ensureSessionTaskPolling(task: PersistentSessionTask, initial?: AnyObj)
   if (existing) return existing;
   const promise = (async () => {
     let since = 0;
+    let stream: EventSource | null = null;
+    let streamDone = false;
     let current = initial || await apiFetch(`/tasks/${task.taskId}`);
+    const applyEvents = (events: AnyObj[]) => {
+      if (!events.length) return;
+      since = Math.max(since, ...events.map((event: AnyObj) => Number(event.id || 0)));
+      appendAccountTaskEvents(task.kind, events);
+      applySessionTaskEvents(task.clientId, events);
+    };
+    const openStream = () => {
+      if (stream || streamDone || typeof EventSource === "undefined" || !task.taskId || task.taskId.startsWith("local:")) return;
+      const apiBase = String(API_BASE || "/api").replace(/\/$/, "");
+      const source = new EventSource(`${apiBase}/tasks/${encodeURIComponent(task.taskId)}/logs/stream?since=${since}`, { withCredentials: true });
+      stream = source;
+      source.onmessage = (message) => {
+        try {
+          const payload = JSON.parse(message.data || "{}");
+          if (payload.done) { streamDone = true; source.close(); stream = null; return; }
+          applyEvents([payload]);
+        } catch { /* malformed SSE data is recovered by the incremental poll */ }
+      };
+      source.onerror = () => { source.close(); if (stream === source) stream = null; };
+    };
     const syncTaskProgress = (payload: AnyObj) => {
       const progress = taskProgressFromPayload(payload, task.sessionIds.length);
       if (progress) updateSessionTask(task.clientId, (item) => ({ ...item, taskProgress: progress }));
     };
     syncTaskProgress(current);
+    openStream();
     if (!current.terminal && task.kind === "refresh-at" && task.renewalNeedsVerification) {
       updateSessionTask(task.clientId, (item) => ({ ...item, renewalNeedsVerification: false }));
     }
     while (!current.terminal) {
       const eventResult = await apiFetch(`/tasks/${task.taskId}/events?since=${since}`).catch(() => ({ items: [] }));
       const events = Array.isArray(eventResult.items) ? eventResult.items : [];
-      if (events.length) {
-        since = Math.max(since, ...events.map((event: AnyObj) => Number(event.id || 0)));
-        applySessionTaskEvents(task.clientId, events);
-      }
+      applyEvents(events);
       await new Promise((resolve) => window.setTimeout(resolve, 1200));
       current = await apiFetch(`/tasks/${task.taskId}`);
       syncTaskProgress(current);
     }
     const finalEvents = await apiFetch(`/tasks/${task.taskId}/events?since=${since}`).catch(() => ({ items: [] }));
-    applySessionTaskEvents(task.clientId, Array.isArray(finalEvents.items) ? finalEvents.items : []);
+    applyEvents(Array.isArray(finalEvents.items) ? finalEvents.items : []);
+    appendAccountTaskResult(task.kind, current);
+    (stream as EventSource | null)?.close();
     markSessionTaskTerminal(task.clientId, current);
     return current;
   })().catch((error) => {
+    appendAccountOperationLog(task.kind, "result", `任务失败：${error instanceof Error ? error.message : String(error)}`, "error", task.email);
     updateSessionTask(task.clientId, (item) => ({ ...item, state: "failed", error: error instanceof Error ? error.message : String(error) }));
     throw error;
   }).finally(() => {
@@ -524,6 +602,7 @@ async function runPersistentSessionTask(
   clearPreviousSessionTaskResults(kind, sessionIds);
   const pending: PersistentSessionTask = { clientId, taskId: "", kind, sessionIds, email, isBatch: !email, state: "running", progress: {}, dismissedEmails: [] };
   upsertSessionTask(pending);
+  appendAccountOperationLog(kind, "process", `${email ? `[${email}] ` : ""}开始执行任务`, "info", email, { session_ids: sessionIds });
   try {
     const created = await createTask();
     const active = { ...pending, taskId: String(created.id || "") };
@@ -559,11 +638,14 @@ async function runPersistentLocalSessionTask(
     dismissedEmails: [],
   };
   upsertSessionTask(pending);
+  appendAccountOperationLog(kind, "process", `${email ? `[${email}] ` : ""}开始执行本地操作`, "info", email, { session_ids: sessionIds });
   try {
     const result = await work();
+    appendAccountTaskResult(kind, { id: pending.taskId, status: "succeeded", result });
     updateSessionTask(clientId, (task) => ({ ...task, state: "succeeded" }));
     return result;
   } catch (error) {
+    appendAccountOperationLog(kind, "result", `操作失败：${error instanceof Error ? error.message : String(error)}`, "error", email);
     updateSessionTask(clientId, (task) => ({ ...task, state: "failed", error: error instanceof Error ? error.message : String(error) }));
     throw error;
   }
@@ -3513,6 +3595,9 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const [maintenanceOpen,setMaintenanceOpen]=useState(false);
   const [failureDetail,setFailureDetail]=useState<{title:string;content:string}|null>(null);
   const persistentTasks = usePersistentSessionTasks();
+  const accountLogs = useAccountLogs();
+  const [accountLogOpen,setAccountLogOpen]=useState(false);
+  const [accountLogKind,setAccountLogKind]=useState<AccountLogKind>("mail-query");
   const activeSessionTasks = persistentTasks.filter((task)=>task.state === "running");
   const activeTaskForKind = (kind: PersistentSessionTaskKind) => activeSessionTasks.filter((task)=>task.kind === kind);
   const sessionIdsForKind = (kind: PersistentSessionTaskKind) => Array.from(new Set(activeTaskForKind(kind).flatMap((task)=>task.sessionIds.map(Number))));
@@ -3605,12 +3690,15 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   async function exp(ids?: number[], format = exportFormat){
     const sessionIds = ids?.length ? ids : selected;
     if (!sessionIds.length) { notify("fail", t.selectExportRows); return; }
+    appendAccountOperationLog("export", "process", `开始导出 ${sessionIds.length} 个账户（${format.toUpperCase()}）`, "info");
     try{const {blob,filename}=await apiDownload("/sunny/sessions/export",{method:"POST",body:JSON.stringify({format, session_ids: sessionIds})});triggerBrowserDownload(blob,filename);notify("ok",t.done)}
-    catch(e:any){notify("fail",e.message||String(e))}
+    catch(e:any){appendAccountOperationLog("export", "result", `导出失败：${e.message||String(e)}`, "error");notify("fail",e.message||String(e))}
+    finally { appendAccountOperationLog("export", "result", "导出操作结束"); }
   }
   async function del(row: AnyObj) {
-    try { await apiFetch(`/sunny/sessions/${row.id}`, { method:"DELETE" }); notify("ok", t.done); setSelected((old)=>old.filter((id)=>id!==row.id)); void load(); }
-    catch(e:any){ notify("fail", e.message || String(e)); }
+    appendAccountOperationLog("delete", "process", `开始删除账户：${row.email || row.id}`, "info", row.email);
+    try { await apiFetch(`/sunny/sessions/${row.id}`, { method:"DELETE" }); appendAccountOperationLog("delete", "result", `删除完成：${row.email || row.id}`, "info", row.email); notify("ok", t.done); setSelected((old)=>old.filter((id)=>id!==row.id)); void load(); }
+    catch(e:any){ appendAccountOperationLog("delete", "result", `删除失败：${e.message || String(e)}`, "error", row.email); notify("fail", e.message || String(e)); }
   }
   async function refreshSessionList() {
     try { await load(); notify("ok", t.refreshDone); }
@@ -3761,8 +3849,9 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   }
   async function openSessionMail(row: AnyObj) {
     if (!row.mailbox_id) { notify("fail", t.noMailbox); return; }
-    try { setMailboxForMail(await apiFetch(`/sunny/mailboxes/${row.mailbox_id}`)); }
-    catch(e:any) { notify("fail", e.message || String(e)); }
+    appendAccountOperationLog("mail-query", "process", `开始查询邮件：${row.email || "未知邮箱"}`, "info", row.email);
+    try { setMailboxForMail(await apiFetch(`/sunny/mailboxes/${row.mailbox_id}`)); appendAccountOperationLog("mail-query", "result", `邮件查询完成：${row.email || "未知邮箱"}`, "info", row.email); }
+    catch(e:any) { appendAccountOperationLog("mail-query", "result", `邮件查询失败：${e.message || String(e)}`, "error", row.email); notify("fail", e.message || String(e)); }
   }
   async function copySessionField(row: AnyObj, field: SessionFieldName) {
     const key = `${row.id}:${field}`;
@@ -3938,11 +4027,45 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       </ResizableDataTable>
     </div>
     <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
-    {editing && <SessionEditModal t={t} item={editing} groups={groups} onClose={()=>setEditing(null)} onSaved={()=>{setEditing(null); notify("ok", t.done); void load();}} notify={notify}/>}
+    {editing && <SessionEditModal t={t} item={editing} groups={groups} onClose={()=>setEditing(null)} onSaved={()=>{ appendAccountOperationLog("edit", "result", `编辑完成：${editing.email || editing.id}`, "info", editing.email); setEditing(null); notify("ok", t.done); void load(); }} notify={notify}/>}
     {mailboxForMail && <MailboxMailModal t={t} mailbox={mailboxForMail} onClose={()=>setMailboxForMail(null)} notify={notify}/>}
     {maintenanceOpen && <MaintenanceSettingsModal t={t} notify={notify} onClose={()=>setMaintenanceOpen(false)}/>}
     {failureDetail && <FailureDetailModal t={t} value={failureDetail} onClose={()=>setFailureDetail(null)}/>}
+    <AccountLogFloat open={accountLogOpen} kind={accountLogKind} logs={accountLogs[accountLogKind] || []} onToggle={()=>setAccountLogOpen((value)=>!value)} onKindChange={setAccountLogKind} onClear={()=>publishAccountLogs({ ...accountLogSnapshot, [accountLogKind]: [] })} />
   </Card>;
+}
+
+const ACCOUNT_LOG_LABELS: Record<AccountLogKind, string> = {
+  "mail-query": "邮件查询", edit: "编辑", export: "导出", delete: "删除", "reverse-proxy": "反代",
+  "trial-check": "试用检测", "checkout-probe": "Checkout检测", "payment-probe": "支付检测", "add-ls": "添加LS",
+  "access-token-check": "AT检测", "refresh-at": "AT续期", "health-check": "测活", "subscription-check": "订阅检测", rebind: "邮箱换绑",
+  "acquire-rt": "获取RT", "sub2-import": "反代导入",
+};
+
+function AccountLogFloat({ open, kind, logs, onToggle, onKindChange, onClear }: { open: boolean; kind: AccountLogKind; logs: AccountOperationLog[]; onToggle: () => void; onKindChange: (kind: AccountLogKind) => void; onClear: () => void }) {
+  const [size, setSize] = useState({ width: 530, height: 560 });
+  const processLogs = logs.filter((item) => item.phase === "process");
+  const resultLogs = logs.filter((item) => item.phase === "result");
+  const scrollProcess = useRef<HTMLDivElement | null>(null);
+  const scrollResult = useRef<HTMLDivElement | null>(null);
+  useEffect(() => { if (open) { if (scrollProcess.current) scrollProcess.current.scrollTop = scrollProcess.current.scrollHeight; if (scrollResult.current) scrollResult.current.scrollTop = scrollResult.current.scrollHeight; } }, [open, logs.length]);
+  function beginResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startX = event.clientX, startY = event.clientY, start = size;
+    const move = (current: PointerEvent) => setSize({ width: Math.max(360, Math.min(760, start.width + startX - current.clientX)), height: Math.max(300, Math.min(760, start.height + startY - current.clientY)) });
+    const stop = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", stop); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", stop, { once: true });
+  }
+  const renderLog = (item: AccountOperationLog, index: number) => <div key={item.id || index} className="grid grid-cols-[62px_8px_minmax(0,1fr)] gap-2"><span className="text-[var(--text-muted)]">{String(item.createdAt || "").slice(11, 19) || "--:--:--"}</span><span className={item.level === "error" ? "text-red-400" : item.level === "warning" ? "text-amber-400" : "text-emerald-400"}>●</span><span className="break-words">{item.message}{item.email ? <span className="ml-1 text-[var(--text-muted)]">[{item.email}]</span> : null}</span></div>;
+  return <div className="fixed bottom-5 right-5 z-[500] flex flex-col items-end gap-2">
+    {open && <div className="relative flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" style={{ width: size.width, height: size.height }}>
+      <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2.5"><div className="flex min-w-0 items-center gap-2"><ScrollText className="h-4 w-4 shrink-0 text-[var(--accent)]"/><span className="text-sm font-bold">账户管理日志</span><span className="truncate text-[11px] text-[var(--text-muted)]">{ACCOUNT_LOG_LABELS[kind]}</span></div><div className="flex items-center gap-1"><button className="round-tool h-7 w-7" title="清除当前日志" onClick={onClear}><Trash2 className="h-3.5 w-3.5"/></button><button className="round-tool h-7 w-7" title="隐藏日志" onClick={onToggle}><ChevronDown className="h-4 w-4"/></button></div></div>
+      <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--border)] bg-[var(--bg-main)] p-2">{ACCOUNT_LOG_KINDS.map((value) => <button key={value} type="button" className={cn("whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-semibold", value === kind ? "bg-[var(--accent)] text-white" : "text-[var(--text-muted)] hover:bg-[var(--bg-card)]")} onClick={() => onKindChange(value)}>{ACCOUNT_LOG_LABELS[value]}</button>)}</div>
+      <div className="grid min-h-0 flex-1 grid-rows-[1fr_0.72fr] divide-y divide-[var(--border)]"><section className="flex min-h-0 flex-col"><div className="flex items-center justify-between px-3 py-1.5 text-[11px] font-bold text-[var(--text-muted)]"><span>过程日志</span><span>{processLogs.length}</span></div><div ref={scrollProcess} className="min-h-0 flex-1 overflow-y-auto bg-[var(--bg-main)] px-3 pb-3 font-mono text-[11px] leading-5 text-[var(--text-secondary)]">{processLogs.length ? processLogs.map(renderLog) : <div className="flex h-full items-center justify-center text-[var(--text-muted)]">暂无过程日志</div>}</div></section><section className="flex min-h-0 flex-col"><div className="flex items-center justify-between px-3 py-1.5 text-[11px] font-bold text-[var(--text-muted)]"><span>结果日志</span><span>{resultLogs.length}</span></div><div ref={scrollResult} className="min-h-0 flex-1 overflow-y-auto bg-[var(--bg-main)] px-3 pb-3 font-mono text-[11px] leading-5 text-[var(--text-secondary)]">{resultLogs.length ? resultLogs.map(renderLog) : <div className="flex h-full items-center justify-center text-[var(--text-muted)]">暂无结果日志</div>}</div></section></div>
+      <button type="button" aria-label="调整日志窗口大小" title="拖动调整日志窗口大小" className="absolute left-0 top-0 h-4 w-4 cursor-nwse-resize opacity-60 hover:opacity-100" onPointerDown={beginResize}><span className="absolute left-1 top-1 h-2 w-2 border-l-2 border-t-2 border-[var(--accent)]"/></button>
+    </div>}
+    <button className="inline-flex h-10 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] px-3 text-sm font-semibold shadow-lg hover:border-[var(--accent)]" title={open ? "隐藏账户管理日志" : "显示账户管理日志"} onClick={onToggle}><ScrollText className="h-4 w-4 text-[var(--accent)]"/>日志{open ? <ChevronDown className="h-4 w-4"/> : <ChevronUp className="h-4 w-4"/>}</button>
+  </div>;
 }
 
 function FailureState({label,detail,onOpen}:{label:string;detail:string;onOpen:(value:{title:string;content:string})=>void}) {
@@ -3972,6 +4095,7 @@ function SessionEditModal({ t, item, groups, onClose, onSaved, notify }: { t: ty
   const [loading,setLoading]=useState(true);
   useEffect(()=>{
     let active=true;
+    appendAccountOperationLog("edit", "process", `开始编辑：${item.email || item.id}`, "info", item.email);
     setLoading(true);
     apiFetch(`/sunny/sessions/${item.id}`)
       .then((res)=>{if(active)setForm(res||item);})
