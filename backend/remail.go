@@ -476,68 +476,20 @@ func remailCodeFromPayload(value any) string {
 	return ""
 }
 
-func remailDateGroupName(now time.Time) string {
-	return "rm-api-" + now.In(applicationLocation()).Format("01-02")
-}
-
-func isRemailInsufficientBalance(err error) bool {
-	if err == nil {
-		return false
-	}
-	lower := strings.ToLower(err.Error())
-	return strings.Contains(lower, "余额不足") || strings.Contains(lower, "insufficient funds") || (strings.Contains(lower, "insufficient") && strings.Contains(lower, "balance"))
-}
-
-func (s *Server) prepareRemailRegistration(body map[string]any) error {
+func (s *Server) validateRemailRegistration(body map[string]any) error {
 	cfg := s.sunnyGetConfig(sunnyCfgRemail, defaultRemailConfig())
 	if !boolValue(cfg["enabled"], false) {
 		return fmt.Errorf("Remail 未启用，请先在邮箱配置中启用并保存")
 	}
-	client, err := newRemailClient(cfg)
-	if err != nil {
+	if _, err := newRemailClient(cfg); err != nil {
 		return err
+	}
+	if intValue(cfg["project_id"], 0) <= 0 {
+		return fmt.Errorf("Remail 未配置项目 ID")
 	}
 	count := intValue(body["count"], 1)
 	if count < 1 || count > 200 {
-		return fmt.Errorf("Remail 注册数量必须在 1 到 200 之间")
+		return fmt.Errorf("Remail 获取邮箱数量必须在 1 到 200 之间")
 	}
-	gid := uint(0)
-	group := SunnyMailboxGroup{Name: remailDateGroupName(time.Now())}
-	if err := s.db.FirstOrCreate(&group, SunnyMailboxGroup{Name: group.Name}).Error; err != nil {
-		return err
-	}
-	gid = group.ID
-	ids := make([]uint, 0, count)
-	requestedCount := count
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(45+count*5)*time.Second)
-	defer cancel()
-	for i := 0; i < count; i++ {
-		order, _, orderErr := client.createOrder(ctx, cfg)
-		if orderErr != nil {
-			if isRemailInsufficientBalance(orderErr) && len(ids) > 0 {
-				reason := fmt.Sprintf("Remail 余额不足：已成功下单 %d/%d 个邮箱；已下单账户将继续处理，未下单账户已停止", len(ids), requestedCount)
-				body["provider_stop_reason"] = reason
-				body["provider_requested_count"] = requestedCount
-				break
-			}
-			return fmt.Errorf("Remail 第 %d 个邮箱下单失败：%w", i+1, orderErr)
-		}
-		pickupURL := remailPickupURL(client.baseURL, order.DeliveryEmail, order.ServiceToken)
-		mailbox := SunnyMailbox{GroupID: gid, Email: order.DeliveryEmail, MailboxType: "remail", MailboxChannel: "remail_api", AccessKey: pickupURL, Raw: order.DeliveryEmail + "----" + pickupURL, AccountType: "free", Status: "未注册", Enabled: true, LatestMailJSON: "{}"}
-		var existing SunnyMailbox
-		if err := s.db.Where("lower(email) = ?", sunnyEmailKey(mailbox.Email)).First(&existing).Error; err != nil {
-			if err := s.db.Create(&mailbox).Error; err != nil {
-				return err
-			}
-		} else {
-			mailbox.ID = existing.ID
-			if err := s.db.Model(&existing).Updates(map[string]any{"group_id": gid, "mailbox_type": "remail", "mailbox_channel": "remail_api", "access_key": mailbox.AccessKey, "raw": mailbox.Raw, "status": "未注册", "enabled": true, "last_error": ""}).Error; err != nil {
-				return err
-			}
-		}
-		ids = append(ids, mailbox.ID)
-	}
-	body["mailbox_ids"] = ids
-	body["count"] = len(ids)
 	return nil
 }

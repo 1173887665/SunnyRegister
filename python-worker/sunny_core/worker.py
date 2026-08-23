@@ -10,7 +10,7 @@ import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from threading import Lock
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 import requests
 
@@ -32,6 +32,104 @@ REGISTER_ONLY = "register_only"
 CODEX_PHONE_BIND = "codex_phone_bind"
 IMPORT_REVERSE_PROXY = "import_reverse_proxy"
 AGENT_IDENTITY_REVERSE_PROXY = "agent_identity_reverse_proxy"
+
+
+class RemailOrderError(RuntimeError):
+    def __init__(self, message: str, *, insufficient_balance: bool = False):
+        super().__init__(message)
+        self.insufficient_balance = insufficient_balance
+
+
+class RemailMailboxProvisioner:
+    """Purchase and persist one Remail mailbox for each available task slot."""
+
+    def __init__(self, db: SunnyDB):
+        self.db = db
+        cfg = db.get_config("remail")
+        self.base_url = str(cfg.get("base_url") or "https://remail.aishop6.com").strip().rstrip("/")
+        self.api_key = str(cfg.get("api_key") or "").strip()
+        self.project_id = int(cfg.get("project_id") or 0)
+        self.email_suffix = str(cfg.get("email_suffix") or "").strip()
+        self.service_mode = str(cfg.get("service_mode") or "purchase").strip() or "purchase"
+        if self.service_mode == "code" and cfg.get("service_mode_explicit") is not True:
+            self.service_mode = "purchase"
+        self.supply = str(cfg.get("supply") or "private_first").strip() or "private_first"
+        if cfg.get("enabled") is not True or not self.base_url or not self.api_key or self.project_id <= 0:
+            raise RemailOrderError("Remail 配置不完整或未启用")
+
+    @staticmethod
+    def _detail(payload: Any, fallback: str) -> str:
+        if isinstance(payload, dict):
+            for key in ("message", "error", "detail"):
+                if payload.get(key):
+                    return str(payload[key])
+        return fallback
+
+    @staticmethod
+    def _order(payload: Any) -> dict[str, Any]:
+        current = payload if isinstance(payload, dict) else {}
+        for key in ("data", "order", "result"):
+            if isinstance(current.get(key), dict):
+                current = current[key]
+                break
+        return current
+
+    def _request(self, method: str, path: str, *, params: dict[str, Any] | None = None, body: dict[str, Any] | None = None, idempotency_key: str = "") -> dict[str, Any]:
+        headers = {"Accept": "application/json", "User-Agent": "SunnyRegister/1.0", "X-API-Key": self.api_key, "Authorization": f"Bearer {self.api_key}"}
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+        try:
+            response = requests.request(method, self.base_url + path, params=params, json=body, headers=headers, timeout=30)
+        except requests.RequestException as exc:
+            raise RemailOrderError(f"Remail 下单请求失败：{exc}") from exc
+        try:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            if not response.ok:
+                detail = self._detail(payload, response.text[:500])
+                lower = detail.lower()
+                insufficient = "余额不足" in detail or "insufficient" in lower and "balance" in lower
+                raise RemailOrderError(f"Remail HTTP {response.status_code}：{detail}", insufficient_balance=insufficient)
+            return payload if isinstance(payload, dict) else {}
+        finally:
+            response.close()
+
+    def purchase(self, sequence: int) -> dict[str, Any]:
+        self.db.ensure_not_cancelled()
+        body: dict[str, Any] = {"projectId": self.project_id}
+        if self.email_suffix:
+            body["emailSuffix"] = self.email_suffix
+        payload = self._request(
+            "POST", "/v1/open/orders",
+            params={"serviceMode": self.service_mode, "supply": self.supply},
+            body=body,
+            idempotency_key=f"sunny-{self.db.task_id}-{sequence}-{uuid.uuid4().hex[:8]}",
+        )
+        order = self._order(payload)
+        order_no = str(order.get("orderNo") or "").strip()
+        email = str(order.get("deliveryEmail") or "").strip()
+        service_token = str(order.get("serviceToken") or "").strip()
+        for _attempt in range(20):
+            if email and service_token:
+                break
+            self.db.ensure_not_cancelled()
+            if not order_no:
+                break
+            time.sleep(2)
+            order = self._order(self._request("GET", f"/v1/open/orders/{quote(order_no, safe='')}"))
+            email = str(order.get("deliveryEmail") or "").strip()
+            service_token = str(order.get("serviceToken") or "").strip()
+        if not email or not service_token:
+            raise RemailOrderError("Remail 下单成功但未返回邮箱或 serviceToken")
+        pickup_url = self.base_url + "/v1/pickup?" + urlencode({"email": email, "token": service_token}, safe="@")
+        mailbox = self.db.create_remail_mailbox(email, pickup_url)
+        self.db.event(
+            f"[Remail] 已按需下单第 {sequence} 个邮箱：{email}",
+            detail={"scope": "global", "provider": "remail", "mailbox_id": mailbox.get("id"), "sequence": sequence},
+        )
+        return mailbox
 
 _REGISTRATION_PROGRESS_STEPS = {
     "initializing": 1,
@@ -2717,10 +2815,13 @@ def run_sunny_task(task_id: str) -> None:
             db.event(f"添加 LS 任务总结：成功 {ok}，跳过 {skipped}，部分完成 {partial}，失败 {len(errors)}", "info" if ok else "error", detail={"scope": "global", **result})
             return
 
-        mailboxes = _choose_mailboxes(db, payload)
-        if not mailboxes:
+        is_remail_task = str(payload.get("identity") or "").strip().lower() == "remail"
+        requested_total = max(1, int(payload.get("count") or 1))
+        existing_remail_ids = _ids(payload.get("mailbox_ids")) if is_remail_task else []
+        mailboxes = db.fetch_mailboxes(existing_remail_ids) if existing_remail_ids else ([] if is_remail_task else _choose_mailboxes(db, payload))
+        if not is_remail_task and not mailboxes:
             raise RuntimeError("邮箱配置不可用：请先导入并启用 Outlook 邮箱池")
-        total = len(mailboxes)
+        total = requested_total if is_remail_task else len(mailboxes)
         stage = _stage(payload)
         provider_stop_reason = str(payload.get("provider_stop_reason") or "").strip()
         db.update_task(progress_total=total)
@@ -2742,7 +2843,7 @@ def run_sunny_task(task_id: str) -> None:
             for item in mailboxes
             if str(item.get("mailbox_channel") or "").strip().lower() == "url_api"
         )
-        if url_api_count == total and concurrency > 3:
+        if not is_remail_task and url_api_count == total and concurrency > 3:
             db.event(
                 f"[系统] 本批次全部使用 url_api 邮箱，为避免取码服务被高并发轮询压垮，并发数由 {concurrency} 限制为 3",
                 "warning",
@@ -2763,27 +2864,75 @@ def run_sunny_task(task_id: str) -> None:
         errors: list[str] = []
         items: list[dict[str, Any]] = []
         protocol_batch_policy = _ProtocolBatchPolicy()
+
+        def record_result(ok: bool, result: dict[str, Any] | str) -> None:
+            nonlocal success, completed
+            completed += 1
+            if ok:
+                success += 1
+                assert isinstance(result, dict)
+                items.append(result)
+            else:
+                errors.append(str(result))
+            db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
+
+        provisioner = RemailMailboxProvisioner(db) if is_remail_task and len(mailboxes) < total and not provider_stop_reason else None
+
+        def purchase(sequence: int) -> dict[str, Any] | None:
+            nonlocal provider_stop_reason
+            if provisioner is None:
+                return None
+            try:
+                return provisioner.purchase(sequence)
+            except RemailOrderError as exc:
+                if exc.insufficient_balance:
+                    provider_stop_reason = f"Remail 余额不足：已下单 {sequence - 1}/{total} 个邮箱；当前正在注册的邮箱将继续处理，后续下单已停止"
+                else:
+                    provider_stop_reason = f"Remail 第 {sequence} 个邮箱下单失败，后续下单已停止：{exc}"
+                db.event(f"[Remail] {provider_stop_reason}", "error", detail={"scope": "global", "provider": "remail", "sequence": sequence})
+                return None
+
         if concurrency <= 1:
-            for idx, mailbox in enumerate(mailboxes, start=1):
+            source = range(1, total + 1) if is_remail_task else enumerate(mailboxes, start=1)
+            for entry in source:
                 db.ensure_not_cancelled()
+                if is_remail_task:
+                    idx = int(entry)
+                    if idx <= len(mailboxes):
+                        mailbox = mailboxes[idx - 1]
+                    else:
+                        mailbox = purchase(idx)
+                        if mailbox is None:
+                            break
+                else:
+                    idx, mailbox = entry
                 ok, result = _run_one(db, task_type, payload, mailbox, idx, total, protocol_batch_policy)
                 db.ensure_not_cancelled()
-                completed += 1
-                if ok:
-                    success += 1
-                    assert isinstance(result, dict)
-                    items.append(result)
-                else:
-                    errors.append(str(result))
-                db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
+                record_result(ok, result)
         else:
             pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sunny-register")
             try:
-                futures = [
-                    pool.submit(_run_one_isolated, db.task_id, task_type, payload, mailbox, idx, total, protocol_batch_policy)
-                    for idx, mailbox in enumerate(mailboxes, start=1)
-                ]
-                pending = set(futures)
+                pending = set()
+                next_sequence = 1
+
+                def submit_next() -> bool:
+                    nonlocal next_sequence
+                    if next_sequence > total or (provider_stop_reason and next_sequence > len(mailboxes)):
+                        return False
+                    if is_remail_task and next_sequence <= len(mailboxes):
+                        mailbox = mailboxes[next_sequence - 1]
+                    elif is_remail_task:
+                        mailbox = purchase(next_sequence)
+                        if mailbox is None:
+                            return False
+                    else:
+                        mailbox = mailboxes[next_sequence - 1]
+                    pending.add(pool.submit(_run_one_isolated, db.task_id, task_type, payload, mailbox, next_sequence, total, protocol_batch_policy))
+                    next_sequence += 1
+                    return True
+
+                while len(pending) < concurrency and submit_next():
+                    pass
                 while pending:
                     if db.cancel_requested():
                         for future in pending:
@@ -2794,7 +2943,6 @@ def run_sunny_task(task_id: str) -> None:
                     if not done:
                         continue
                     for future in done:
-                        completed += 1
                         try:
                             _idx, ok, result = future.result()
                         except Exception as exc:
@@ -2803,13 +2951,8 @@ def run_sunny_task(task_id: str) -> None:
                                 return
                             ok, result = False, f"parallel worker failed: {exc}"
                         db.ensure_not_cancelled()
-                        if ok:
-                            success += 1
-                            assert isinstance(result, dict)
-                            items.append(result)
-                        else:
-                            errors.append(str(result))
-                        db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
+                        record_result(ok, result)
+                        submit_next()
             finally:
                 # Do not let browser/OTP threads outlive the task. Running flows
                 # observe the cancelled task state through should_cancel and then

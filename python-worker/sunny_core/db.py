@@ -690,6 +690,47 @@ class SunnyDB:
             self._hydrate_mailbox_auth(item)
         return items
 
+    def create_remail_mailbox(self, email: str, pickup_url: str) -> dict[str, Any]:
+        group_name = f"rm-api-{datetime.now(app_timezone()).strftime('%m-%d')}"
+        stamp = now_sql()
+        self.conn.execute(
+            "insert into sunny_mailbox_groups(name,description,created_at,updated_at) values(?,?,?,?) on conflict(name) do nothing",
+            (group_name, "", stamp, stamp),
+        )
+        group = self.conn.execute("select id from sunny_mailbox_groups where name=?", (group_name,)).fetchone()
+        if not group:
+            raise RuntimeError("Remail 邮箱分组创建失败")
+        row = self.conn.execute("select id from sunny_mailboxes where lower(email)=lower(?)", (email,)).fetchone()
+        raw = f"{email}----{pickup_url}"
+        if row:
+            mailbox_id = int(row["id"])
+            self.conn.execute(
+                "update sunny_mailboxes set group_id=?,mailbox_type='remail',mailbox_channel='remail_api',access_key=?,raw=?,status='未注册',enabled=1,last_error='',updated_at=? where id=?",
+                (int(group["id"]), pickup_url, raw, stamp, mailbox_id),
+            )
+        else:
+            values = (int(group["id"]), email, "remail", "remail_api", pickup_url, raw, "free", "unknown", "未注册", True, "{}", stamp, stamp)
+            sql = "insert into sunny_mailboxes(group_id,email,mailbox_type,mailbox_channel,access_key,raw,account_type,trial_eligibility,status,enabled,latest_mail_json,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            if self.postgres:
+                mailbox_id = int(self.conn.execute(sql + " returning id", values).fetchone()["id"])
+            else:
+                mailbox_id = int(self.conn.execute(sql, values).lastrowid)
+        task = self.task()
+        try:
+            payload = json.loads(task.get("payload_json") or "{}")
+        except Exception:
+            payload = {}
+        ids = [int(value) for value in payload.get("mailbox_ids") or [] if int(value or 0) > 0]
+        if mailbox_id not in ids:
+            ids.append(mailbox_id)
+            payload["mailbox_ids"] = ids
+            self.conn.execute("update tasks set payload_json=?,updated_at=? where id=?", (json.dumps(payload, ensure_ascii=False), stamp, self.task_id))
+        self.conn.commit()
+        mailbox = self.conn.execute("select * from sunny_mailboxes where id=?", (mailbox_id,)).fetchone()
+        item = dict(mailbox)
+        self._hydrate_mailbox_auth(item)
+        return item
+
     def _hydrate_mailbox_auth(self, mailbox: dict[str, Any]) -> None:
         """Fill mailbox OpenAI RT from account/session tables when the mailbox row is stale."""
         if mailbox.get("openai_rt"):

@@ -26,9 +26,6 @@ func TestRemailDefaultsUsePurchaseMode(t *testing.T) {
 	if got := text(defaultRemailConfig()["service_mode"]); got != "purchase" {
 		t.Fatalf("default service mode = %q, want purchase", got)
 	}
-	if !isRemailInsufficientBalance(&remailAPIError{StatusCode: 422, Message: "Consumer balance is insufficient"}) {
-		t.Fatal("expected insufficient balance error to be detected")
-	}
 }
 
 func TestRemailConfigRouteAcceptsConfigSegment(t *testing.T) {
@@ -68,40 +65,6 @@ func TestRemailWalletUsesDocumentedEndpoint(t *testing.T) {
 	}
 	if text(wallet["consumerBalance"]) != "168.50" || intValue(wallet["orderCount"], 0) != 486 {
 		t.Fatalf("unexpected wallet: %#v", wallet)
-	}
-}
-
-func TestPrepareRemailRegistrationKeepsPurchasedMailboxesWhenBalanceRunsOut(t *testing.T) {
-	var orderCalls atomic.Int32
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/open/orders" {
-			writeError(w, http.StatusNotFound, "not found")
-			return
-		}
-		if orderCalls.Add(1) == 1 {
-			writeJSON(w, http.StatusOK, map[string]any{"orderNo": "R-1", "deliveryEmail": "purchased@example.com", "serviceToken": "st-1"})
-			return
-		}
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"message": "Consumer balance is insufficient"})
-	}))
-	defer provider.Close()
-
-	s := newSunnySessionTestServer(t)
-	s.sunnySaveConfig(sunnyCfgRemail, map[string]any{"enabled": true, "base_url": provider.URL, "api_key": "secret", "project_id": 2, "service_mode": "purchase", "service_mode_explicit": true, "supply": "private_first"})
-	body := map[string]any{"count": 2}
-	if err := s.prepareRemailRegistration(body); err != nil {
-		t.Fatalf("prepare registration: %v", err)
-	}
-	ids := uintSlice(body["mailbox_ids"])
-	if len(ids) != 1 || !strings.Contains(text(body["provider_stop_reason"]), "余额不足") {
-		t.Fatalf("unexpected partial preparation: %#v", body)
-	}
-	var mailbox SunnyMailbox
-	if err := s.db.First(&mailbox, ids[0]).Error; err != nil {
-		t.Fatal(err)
-	}
-	if mailbox.MailboxType != "remail" || mailbox.MailboxChannel != "remail_api" || mailbox.Email != "purchased@example.com" {
-		t.Fatalf("unexpected persisted mailbox: %#v", mailbox)
 	}
 }
 
@@ -147,5 +110,35 @@ func TestRemailLatestMailPickupURL(t *testing.T) {
 	items, ok := payload["items"].([]map[string]any)
 	if !ok || len(items) != 1 || text(items[0]["otp"]) != "323090" {
 		t.Fatalf("unexpected pickup response: %#v", payload)
+	}
+}
+
+func TestRemailRegisterTaskDefersOrdersToWorker(t *testing.T) {
+	var orderCalls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		orderCalls.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{})
+	}))
+	defer provider.Close()
+	s := newSunnySessionTestServer(t)
+	s.sunnySaveConfig(sunnyCfgRemail, map[string]any{"enabled": true, "base_url": provider.URL, "api_key": "secret", "project_id": 2})
+	s.sunnySaveConfig(sunnyCfgProxy, mergeConfig(defaultProxyConfig(), map[string]any{"proxy_enabled": false}))
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/register", strings.NewReader(`{"identity":"remail","count":10,"concurrency":3}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	s.handleSunny(recorder, req, "tasks/register")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("create task status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if orderCalls.Load() != 0 {
+		t.Fatalf("task creation placed %d eager orders", orderCalls.Load())
+	}
+	var task Task
+	if err := s.db.Order("created_at desc").First(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	payload := jsonMap(task.PayloadJSON)
+	if task.ProgressTotal != 10 || intValue(payload["count"], 0) != 10 || len(uintSlice(payload["mailbox_ids"])) != 0 {
+		t.Fatalf("unexpected deferred task: %#v, payload=%#v", task, payload)
 	}
 }

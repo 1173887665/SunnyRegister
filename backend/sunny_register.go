@@ -4976,7 +4976,7 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 	}
 	if typ == "sunny_register" {
 		if strings.EqualFold(strings.TrimSpace(text(body["identity"])), "remail") {
-			if err := s.prepareRemailRegistration(body); err != nil {
+			if err := s.validateRemailRegistration(body); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
@@ -5061,9 +5061,6 @@ func sunnySortClause(sortBy string, sortOrder string, allowed map[string]string,
 
 func (s *Server) sunnyValidateRegisterStageResources(body map[string]any) error {
 	if strings.EqualFold(strings.TrimSpace(text(body["identity"])), "remail") {
-		if len(uintSlice(body["mailbox_ids"])) == 0 {
-			return fmt.Errorf("Remail 未生成可用邮箱，请检查供应商配置")
-		}
 		return s.sunnyValidateProxyForRegisterTask()
 	}
 	mailboxCfg := s.sunnyGetConfig(sunnyCfgMailbox, defaultMailboxConfig())
