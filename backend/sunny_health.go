@@ -170,7 +170,7 @@ func (s *Server) sunnyHealthCandidates(ids []uint, all bool) ([]sunnyHealthCandi
 			continue
 		}
 		mailboxType := normalizeSunnyMailboxType(mailbox.MailboxType)
-		if (mailboxType == "apple" && strings.TrimSpace(mailbox.AccessKey) == "") || (mailboxType == "microsoft" && (strings.TrimSpace(mailbox.ClientID) == "" || strings.TrimSpace(mailbox.RefreshToken) == "")) {
+		if (mailboxType == "apple" && strings.TrimSpace(mailbox.AccessKey) == "") || (mailboxType == "remail" && strings.TrimSpace(mailbox.AccessKey) == "") || (mailboxType == "microsoft" && (strings.TrimSpace(mailbox.ClientID) == "" || strings.TrimSpace(mailbox.RefreshToken) == "")) {
 			candidates = append(candidates, sunnyHealthCandidate{SessionID: session.ID, Email: email, Error: "邮箱凭证不完整"})
 			continue
 		}
@@ -244,7 +244,13 @@ func (s *Server) executeSunnyAccountHealthCheckTask(task *Task, payload map[stri
 					var subjects []string
 					var fetchErr error
 					meter := &sunnyTrafficMeter{}
-					if candidate.MailboxType == "apple" && candidate.Channel == "xbovo" {
+					if candidate.MailboxType == "remail" {
+						var latest map[string]any
+						latest, fetchErr = remailLatestMail(candidate.AccessKey, candidate.Email)
+						if fetchErr == nil {
+							subjects = []string{text(latest["subject"]), text(latest["body"])}
+						}
+					} else if candidate.MailboxType == "apple" && candidate.Channel == "xbovo" {
 						subjects, fetchErr = fetchXbovoMailSubjects(candidate.Email, candidate.AccessKey, 5, proxyURL)
 					} else if candidate.MailboxType == "apple" && candidate.Channel == "url_api" {
 						subjects, fetchErr = fetchURLAPIMailSubjects(candidate.Email, candidate.AccessKey, 5, proxyURL)

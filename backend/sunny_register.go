@@ -62,6 +62,9 @@ func (s *Server) handleSunny(w http.ResponseWriter, r *http.Request, rest string
 	case "mailboxes":
 		s.sunnyMailboxes(w, r, parts[1:])
 		return
+	case "remail":
+		s.remailConfigHandler(w, r, parts[1:])
+		return
 	case "phones":
 		s.sunnyPhones(w, r, parts[1:])
 		return
@@ -364,7 +367,11 @@ func sunnyMailboxRawForEmail(mailbox SunnyMailbox, email string) string {
 	email = strings.TrimSpace(email)
 	mailboxType := normalizeSunnyMailboxType(mailbox.MailboxType)
 	mailboxChannel := normalizeSunnyMailboxChannel(mailbox.MailboxType, mailbox.MailboxChannel)
-	if mailboxType == "apple" {
+	if mailboxType == "remail" {
+		if strings.TrimSpace(mailbox.AccessKey) != "" {
+			return strings.Join([]string{email, strings.TrimSpace(mailbox.AccessKey)}, "----")
+		}
+	} else if mailboxType == "apple" {
 		if mailboxChannel == "url_api" || mailboxChannel == "xbovo" {
 			if strings.TrimSpace(mailbox.AccessKey) != "" {
 				return strings.Join([]string{email, strings.TrimSpace(mailbox.AccessKey)}, "----")
@@ -837,7 +844,14 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 					return
 				}
 			}
-			if mailboxType == "apple" {
+			if mailboxType == "remail" {
+				if strings.TrimSpace(m.AccessKey) == "" {
+					writeError(w, http.StatusUnprocessableEntity, sunnyMailboxFormatHint(mailboxType, mailboxChannel))
+					return
+				}
+				m.Password, m.ClientID, m.RefreshToken = "", "", ""
+				m.Raw = strings.Join([]string{strings.TrimSpace(m.Email), strings.TrimSpace(m.AccessKey)}, "----")
+			} else if mailboxType == "apple" {
 				if mailboxChannel != "xbovo" && mailboxChannel != "url_api" {
 					writeError(w, http.StatusUnprocessableEntity, "暂不支持该 iCloud 邮箱渠道")
 					return
@@ -970,7 +984,9 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 			return SunnyMailbox{}, err
 		}
 		email, password, chatgptPassword, totpSecret, clientID, refreshToken, accessKey, openaiRT = p["email"], p["password"], p["chatgpt_password"], p["totp_secret"], p["client_id"], p["refresh_token"], p["access_key"], p["openai_rt"]
-		if mailboxType == "microsoft" {
+		if mailboxType == "remail" {
+			raw = strings.Join([]string{email, accessKey}, "----")
+		} else if mailboxType == "microsoft" {
 			raw = sunnyMicrosoftRaw(email, password, clientID, refreshToken)
 		} else if mailboxChannel == "url_api" {
 			raw = sunnyURLAPIRaw(email, accessKey)
@@ -979,7 +995,9 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 		}
 	} else {
 		email, password, chatgptPassword, totpSecret, clientID, refreshToken, accessKey, openaiRT = text(body["email"]), text(body["password"]), text(body["chatgpt_password"]), text(body["totp_secret"]), text(body["client_id"]), text(body["refresh_token"]), text(body["access_key"]), text(body["openai_rt"])
-		if mailboxType == "apple" {
+		if mailboxType == "remail" {
+			raw = strings.Join([]string{email, accessKey}, "----")
+		} else if mailboxType == "apple" {
 			if mailboxChannel == "url_api" {
 				raw = sunnyURLAPIRaw(email, accessKey)
 			} else {
@@ -989,7 +1007,7 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 			raw = sunnyMicrosoftRaw(email, password, clientID, refreshToken)
 		}
 	}
-	if email == "" || !strings.Contains(email, "@") || (mailboxType == "apple" && mailboxChannel != "url_api" && accessKey == "") || (mailboxType == "microsoft" && (clientID == "" || refreshToken == "")) {
+	if email == "" || !strings.Contains(email, "@") || (mailboxType == "apple" && mailboxChannel != "url_api" && accessKey == "") || (mailboxType == "microsoft" && (clientID == "" || refreshToken == "")) || (mailboxType == "remail" && accessKey == "") {
 		return SunnyMailbox{}, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, mailboxChannel))
 	}
 	if mailboxType == "apple" {
@@ -1016,6 +1034,8 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 
 func normalizeSunnyMailboxType(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "remail", "remail邮箱", "rm":
+		return "remail"
 	case "apple", "icloud":
 		return "apple"
 	default:
@@ -1024,6 +1044,9 @@ func normalizeSunnyMailboxType(value string) string {
 }
 
 func normalizeSunnyMailboxChannel(mailboxType, value string) string {
+	if normalizeSunnyMailboxType(mailboxType) == "remail" {
+		return "remail_api"
+	}
 	if normalizeSunnyMailboxType(mailboxType) == "apple" {
 		normalized := strings.ToLower(strings.TrimSpace(value))
 		if normalized == "xbovo" || normalized == "" {
@@ -1038,6 +1061,9 @@ func normalizeSunnyMailboxChannel(mailboxType, value string) string {
 }
 
 func sunnyMailboxFormatHint(mailboxType, channel string) string {
+	if normalizeSunnyMailboxType(mailboxType) == "remail" {
+		return "Remail 邮箱凭证格式必须为 email----serviceToken 或 email----Remail 凭证 JSON"
+	}
 	if normalizeSunnyMailboxType(mailboxType) == "apple" {
 		if normalizeSunnyMailboxChannel(mailboxType, channel) == "url_api" {
 			return "url_api 苹果邮箱凭证支持 邮箱、邮箱----密码、邮箱----取码URL，以及可选的备用取码URL和2FA密钥"
@@ -1280,6 +1306,12 @@ func sunnyURLAPIRaw(email, accessKey string) string {
 func sunnyMailboxCredentialLine(mailbox SunnyMailbox) string {
 	mailboxType := normalizeSunnyMailboxType(mailbox.MailboxType)
 	mailboxChannel := normalizeSunnyMailboxChannel(mailbox.MailboxType, mailbox.MailboxChannel)
+	if mailboxType == "remail" {
+		if strings.TrimSpace(mailbox.Email) != "" && strings.TrimSpace(mailbox.AccessKey) != "" {
+			return strings.Join([]string{strings.TrimSpace(mailbox.Email), strings.TrimSpace(mailbox.AccessKey)}, "----")
+		}
+		return sunnyCanonicalMailboxCredential(mailbox.Raw, mailboxType, mailboxChannel)
+	}
 	if mailboxType == "apple" {
 		if mailboxChannel == "url_api" {
 			if strings.TrimSpace(mailbox.Email) == "" || strings.TrimSpace(mailbox.AccessKey) == "" {
@@ -1352,6 +1384,13 @@ func sunnySub2Notes(mailbox SunnyMailbox, secretKey string) string {
 }
 
 func parseSunnyMailboxLineForProvider(raw, mailboxType, channel string) (map[string]string, error) {
+	if normalizeSunnyMailboxType(mailboxType) == "remail" {
+		parts := strings.Split(strings.TrimSpace(raw), "----")
+		if len(parts) < 2 || strings.TrimSpace(parts[0]) == "" || !strings.Contains(parts[0], "@") || strings.TrimSpace(parts[1]) == "" {
+			return nil, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, channel))
+		}
+		return map[string]string{"email": strings.TrimSpace(parts[0]), "password": "", "chatgpt_password": "", "totp_secret": "", "client_id": "", "refresh_token": "", "access_key": strings.TrimSpace(strings.Join(parts[1:], "----")), "openai_rt": ""}, nil
+	}
 	if normalizeSunnyMailboxType(mailboxType) != "apple" {
 		return parseSunnyMailboxLine(raw)
 	}
@@ -1480,7 +1519,9 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 	proxyURL := s.sunnyMailboxProxyURL()
 	var payload map[string]any
 	var err error
-	if normalizeSunnyMailboxType(m.MailboxType) == "apple" {
+	if normalizeSunnyMailboxType(m.MailboxType) == "remail" {
+		payload, err = remailLatestMail(m.AccessKey, m.Email)
+	} else if normalizeSunnyMailboxType(m.MailboxType) == "apple" {
 		switch normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel) {
 		case "url_api":
 			if strings.TrimSpace(m.AccessKey) == "" {
@@ -4934,6 +4975,12 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 		return
 	}
 	if typ == "sunny_register" {
+		if strings.EqualFold(strings.TrimSpace(text(body["identity"])), "remail") {
+			if err := s.prepareRemailRegistration(body); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
 		if err := s.sunnyValidateRegisterStageResources(body); err != nil {
 			writeError(w, 400, err.Error())
 			return
@@ -5013,6 +5060,12 @@ func sunnySortClause(sortBy string, sortOrder string, allowed map[string]string,
 }
 
 func (s *Server) sunnyValidateRegisterStageResources(body map[string]any) error {
+	if strings.EqualFold(strings.TrimSpace(text(body["identity"])), "remail") {
+		if len(uintSlice(body["mailbox_ids"])) == 0 {
+			return fmt.Errorf("Remail 未生成可用邮箱，请检查供应商配置")
+		}
+		return s.sunnyValidateProxyForRegisterTask()
+	}
 	mailboxCfg := s.sunnyGetConfig(sunnyCfgMailbox, defaultMailboxConfig())
 	if !boolValue(mailboxCfg["pool_enabled"], true) {
 		return fmt.Errorf("mailbox config is unavailable: enable the self-managed mailbox pool first")

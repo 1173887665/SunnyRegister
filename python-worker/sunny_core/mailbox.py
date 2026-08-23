@@ -197,6 +197,23 @@ def parse_account_line(line: str) -> MailAccount:
 
 def account_from_row(row: dict[str, Any]) -> MailAccount:
     mailbox_type = str(row.get("mailbox_type") or "microsoft").strip().lower()
+    if mailbox_type == "remail" or str(row.get("mailbox_channel") or "").strip().lower() == "remail_api":
+        email = str(row.get("email") or "").strip()
+        access_key = str(row.get("access_key") or "").strip()
+        raw = str(row.get("raw") or "").strip()
+        if raw and (not email or not access_key):
+            parts = [part.strip() for part in raw.split("----", 1)]
+            email = email or (parts[0] if parts else "")
+            access_key = access_key or (parts[1] if len(parts) > 1 else "")
+        if not email or "@" not in email or not access_key:
+            raise ValueError("Invalid Remail mailbox row; expected delivery email and service token")
+        return MailAccount(
+            email=email, password="", client_id="", refresh_token="", raw=raw or f"{email}----{access_key}",
+            account_type=str(row.get("account_type") or "free"), openai_rt=str(row.get("openai_rt") or ""),
+            mailbox_type="remail", mailbox_channel="remail_api", access_key=access_key,
+            chatgpt_password=str(row.get("chat_gpt_password") or row.get("chatgpt_password") or ""),
+            totp_secret=str(row.get("totp_secret") or "").strip(),
+        )
     if mailbox_type in {"apple", "icloud"}:
         email = str(row.get("email") or "").strip()
         access_key = str(row.get("access_key") or "").strip()
@@ -1060,6 +1077,145 @@ class XbovoICloudReader:
         raise TimeoutError("Timed out waiting for OpenAI email OTP")
 
 
+class RemailReader:
+    """Remail order/pickup adapter. Every Remail domain uses this API channel."""
+
+    def __init__(self, account: MailAccount, log: Callable[[str], None] | None, proxy_url: str = ""):
+        self.account = account
+        self.log = log or (lambda _m: None)
+        self.proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+        try:
+            metadata = json.loads(account.access_key)
+        except (TypeError, ValueError):
+            metadata = {"service_token": account.access_key}
+        self.base_url = str(metadata.get("base_url") or "https://remail.aishop6.com").strip().rstrip("/")
+        self.api_key = str(metadata.get("api_key") or "").strip()
+        self.order_no = str(metadata.get("order_no") or "").strip()
+        self.service_token = str(metadata.get("service_token") or account.access_key).strip()
+        self.receive_until = str(metadata.get("receive_until") or "").strip()
+        self.seen_keys: set[str] = set()
+        self._latest_snapshot: dict[str, Any] = {}
+
+    def _request(self, path: str, params: dict[str, str] | None = None) -> Any:
+        headers = {"Accept": "application/json", "User-Agent": "SunnyRegister/1.0"}
+        if self.api_key:
+            headers.update({"X-API-Key": self.api_key, "Authorization": f"Bearer {self.api_key}"})
+        try:
+            response = requests.get(self.base_url + path, params=params or {}, headers=headers, timeout=25, proxies=self.proxies)
+        except requests.RequestException as exc:
+            raise MailboxAccessError("remail_network_error", "Remail 邮箱接口连接失败", str(exc)) from exc
+        try:
+            if response.status_code in {401, 403}:
+                raise MailboxAccessError("remail_credential_invalid", "Remail API Key 无效或已失效", f"HTTP {response.status_code}", terminal=True)
+            if response.status_code == 404:
+                return {}
+            if not response.ok:
+                raise MailboxAccessError("remail_provider_failed", "Remail 邮箱接口请求失败", f"HTTP {response.status_code}")
+            try:
+                return response.json()
+            except ValueError:
+                return json.loads(response.text or "{}")
+        finally:
+            response.close()
+
+    @staticmethod
+    def _nested(payload: Any) -> list[Any]:
+        values: list[Any] = []
+        if isinstance(payload, dict):
+            values.append(payload)
+            for key in ("data", "order", "message", "messages", "items", "result"):
+                if key in payload:
+                    values.extend(RemailReader._nested(payload[key]))
+        elif isinstance(payload, list):
+            for item in payload:
+                values.extend(RemailReader._nested(item))
+        return values
+
+    @staticmethod
+    def _timestamp(value: Any) -> float:
+        raw = str(value or "").strip()
+        if not raw:
+            return 0.0
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return parsed.timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
+    def _latest(self) -> dict[str, Any]:
+        payloads: list[Any] = []
+        if self.order_no:
+            payloads.append(self._request(f"/v1/open/orders/{unquote(self.order_no)}"))
+        pickup_params = {"orderNo": self.order_no, "serviceToken": self.service_token, "token": self.service_token}
+        payloads.append(self._request("/v1/pickup", pickup_params))
+        candidates: list[dict[str, Any]] = []
+        for payload in payloads:
+            for item in self._nested(payload):
+                code = ""
+                for key in ("verificationCode", "verification_code", "otp", "code"):
+                    candidate = str(item.get(key) or "").strip()
+                    if re.fullmatch(r"\d{6}", candidate):
+                        code = candidate
+                        break
+                if not code:
+                    for key in ("body", "content", "html", "text", "preview", "snippet"):
+                        match = re.search(r"(?<!\d)(\d{6})(?!\d)", str(item.get(key) or ""))
+                        if match:
+                            code = match.group(1)
+                            break
+                if not code:
+                    continue
+                timestamp = 0.0
+                for key in ("lastMailReceivedAt", "receivedAt", "received_at", "createdAt", "created_at", "date"):
+                    timestamp = self._timestamp(item.get(key))
+                    if timestamp:
+                        break
+                key = f"{item.get('id') or item.get('messageId') or timestamp}:{code}"
+                candidates.append({"code": code, "key": key, "timestamp": timestamp, "body": str(item.get("body") or item.get("content") or "")})
+        candidate = max(candidates, key=lambda item: (float(item.get("timestamp") or 0), str(item.get("key") or "")), default=None)
+        self._latest_snapshot = candidate or {}
+        return candidate or {}
+
+    def connect(self, access_token: str | None = None) -> None:
+        if not self.service_token:
+            raise MailboxAccessError("remail_credential_invalid", "Remail serviceToken 缺失", terminal=True)
+        try:
+            current = self._latest()
+            if current.get("key"):
+                self.seen_keys.add(str(current["key"]))
+        except MailboxAccessError as exc:
+            if exc.terminal:
+                raise
+            self.log(f"[{self.account.email}] Remail 建立取件基线暂时失败，将在验证码阶段重试：{exc}")
+
+    def close(self) -> None:
+        return None
+
+    def latest_message(self) -> dict[str, Any]:
+        current = self._latest()
+        return {"id": current.get("key", "remail"), "email": self.account.email, "subject": "Remail", "body": current.get("body", ""), "otp": current.get("code", ""), "source": "remail_api"}
+
+    def wait_for_code(self, min_timestamp: float, timeout: int = 120) -> str:
+        started = time.monotonic()
+        while time.monotonic() - started < timeout:
+            try:
+                current = self._latest()
+            except MailboxAccessError as exc:
+                if exc.terminal:
+                    raise
+                time.sleep(2)
+                continue
+            timestamp = float(current.get("timestamp") or 0)
+            key = str(current.get("key") or "")
+            code = str(current.get("code") or "").strip()
+            if code and re.fullmatch(r"\d{6}", code) and key not in self.seen_keys and (not timestamp or timestamp >= float(min_timestamp or 0)):
+                self.seen_keys.add(key)
+                self.log(f"[{self.account.email}] 已通过 Remail API 收到邮箱验证码（已脱敏）")
+                return code
+            time.sleep(2)
+        raise TimeoutError("Timed out waiting for OpenAI email OTP via Remail API")
+
+
 class URLAPIICloudReader:
     """Slow URL-based iCloud adapter returning the newest mailbox message page."""
 
@@ -1368,6 +1524,8 @@ class URLAPIICloudReader:
 
 
 def create_mailbox_reader(account: MailAccount, log: Callable[[str], None] | None, proxy_url: str = ""):
+    if account.mailbox_type == "remail" or account.mailbox_channel == "remail_api":
+        return RemailReader(account, log, proxy_url)
     if account.mailbox_type == "apple":
         if account.mailbox_channel == "xbovo":
             return XbovoICloudReader(account, log, proxy_url)
