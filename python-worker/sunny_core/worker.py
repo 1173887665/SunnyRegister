@@ -113,6 +113,18 @@ def _is_retryable_protocol_transport_error(error: Exception) -> bool:
         "unexpected eof while reading",
     ))
 
+
+def _can_retry_registration_with_sentinel(error: Exception) -> bool:
+    """Only retry the pre-OTP Sentinel bootstrap challenge in protocol mode.
+
+    Replaying a flow after email verification would create a second auth
+    transaction and potentially send another mailbox OTP. The initial
+    ``authorize_continue`` challenge happens before that state is created, so
+    it is the only safe point for a narrow Sentinel-runtime retry.
+    """
+    message = str(error or "").lower()
+    return "sentinel authorize_continue" in message
+
 _DEFAULT_SUB2API_MODELS = (
     "codex-auto-review", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6",
     "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-image-1.5", "gpt-image-2",
@@ -1772,7 +1784,70 @@ def _run_one(
                     protocol_batch_policy.record_challenge()
                 db.ensure_not_cancelled()
                 protocol_traffic = getattr(protocol_error, "traffic", None)
-                if protocol_challenge_strategy == "sentinel_protocol":
+                sentinel_recovery_session: dict[str, Any] | None = None
+                if (
+                    is_challenge
+                    and task_type == "sunny_register"
+                    and protocol_challenge_strategy == "native_headless"
+                    and _can_retry_registration_with_sentinel(protocol_error)
+                ):
+                    db.event(
+                        f"[{email}] [认证] 注册初始 Sentinel 挑战，将先使用窄范围浏览器证明重试协议流程",
+                        "warning",
+                        detail={
+                            "email": email,
+                            "scope": "selected",
+                            "execution_mode": "protocol_sentinel_fallback",
+                            "protocol_fallback": "sentinel_protocol",
+                        },
+                    )
+                    try:
+                        sentinel_recovery_session = login_or_register_protocol(
+                            account,
+                            proxies["register"],
+                            lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
+                            phone_provider=phone_provider,
+                            existing_account=is_registered_mailbox or task_type == "sunny_login",
+                            require_refresh_token=require_refresh_token,
+                            should_cancel=db.cancel_requested,
+                            on_progress=save_progress,
+                            challenge_strategy="sentinel_protocol",
+                            mailbox_proxy_url=mailbox_proxy_url,
+                            traffic_meter=traffic_meter,
+                            post_registration_callback=setup_login_secret_in_protocol if setup_login_secret_enabled else None,
+                        )
+                    except Exception as sentinel_error:
+                        if _is_cancel_exception(sentinel_error):
+                            raise
+                        db.event(
+                            f"[{email}] [认证] Sentinel 窄范围证明重试未完成，将切换完整无头浏览器：{sentinel_error}",
+                            "warning",
+                            detail={
+                                "email": email,
+                                "scope": "selected",
+                                "execution_mode": "protocol_headless_fallback",
+                                "protocol_fallback": "sentinel_protocol_failed",
+                            },
+                        )
+                if sentinel_recovery_session is not None:
+                    if protocol_batch_policy is not None:
+                        protocol_batch_policy.record_success()
+                    session = sentinel_recovery_session
+                    session["requested_execution_mode"] = "protocol"
+                    session["execution_mode"] = "protocol_sentinel_fallback"
+                    session["protocol_fallback"] = "sentinel_protocol"
+                    if isinstance(protocol_traffic, dict):
+                        session["protocol_traffic_initial"] = protocol_traffic
+                    db.event(
+                        f"[{email}] [认证] Sentinel 窄范围证明重试成功，继续使用协议注册结果",
+                        detail={
+                            "email": email,
+                            "scope": "selected",
+                            "execution_mode": "protocol_sentinel_fallback",
+                            "protocol_fallback": "sentinel_protocol",
+                        },
+                    )
+                elif protocol_challenge_strategy == "sentinel_protocol":
                     db.event(
                         f"[{email}] [认证] Sentinel 协议运行时未能生成有效证明，任务不会切换到完整浏览器接管: {protocol_error}",
                         "error",
@@ -1785,47 +1860,48 @@ def _run_one(
                         },
                     )
                     raise
-                fallback_reason = "浏览器挑战" if is_challenge else "可恢复的网络传输错误"
-                db.event(
-                    f"[{email}] [认证] 协议模式遇到{fallback_reason}，切换到后台无头浏览器继续注册/登录",
-                    "warning",
-                    detail={
-                        "email": email,
-                        "scope": "selected",
-                        "execution_mode": "protocol_headless_fallback",
-                        "protocol_error": str(protocol_error),
-                        "protocol_traffic": protocol_traffic if isinstance(protocol_traffic, dict) else {},
-                    },
-                )
-                session = login_or_register(
-                    account,
-                    proxies["register"],
-                    True,
-                    lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
-                    phone_provider=phone_provider,
-                    existing_account=is_registered_mailbox or task_type == "sunny_login",
-                    require_refresh_token=require_refresh_token,
-                    should_cancel=db.cancel_requested,
-                    execution_mode="protocol_headless_fallback",
-                    on_progress=save_progress,
-                    mailbox_proxy_url=mailbox_proxy_url,
-                    traffic_meter=traffic_meter,
-                    traffic_config=payload.get("browser_traffic_optimization"),
-                    post_registration_callback=setup_login_secret_in_browser if setup_login_secret_enabled else None,
-                )
-                session["requested_execution_mode"] = "protocol"
-                session["execution_mode"] = "protocol_headless_fallback"
-                session["protocol_fallback"] = "headless"
-                if isinstance(protocol_traffic, dict):
-                    session["protocol_traffic"] = protocol_traffic
-                db.event(
-                    f"[{email}] [认证] 协议模式的后台无头浏览器接管已完成",
-                    detail={
-                        "email": email,
-                        "scope": "selected",
-                        "execution_mode": "protocol_headless_fallback",
-                    },
-                )
+                elif sentinel_recovery_session is None:
+                    fallback_reason = "浏览器挑战" if is_challenge else "可恢复的网络传输错误"
+                    db.event(
+                        f"[{email}] [认证] 协议模式遇到{fallback_reason}，切换到后台无头浏览器继续注册/登录",
+                        "warning",
+                        detail={
+                            "email": email,
+                            "scope": "selected",
+                            "execution_mode": "protocol_headless_fallback",
+                            "protocol_error": str(protocol_error),
+                            "protocol_traffic": protocol_traffic if isinstance(protocol_traffic, dict) else {},
+                        },
+                    )
+                    session = login_or_register(
+                        account,
+                        proxies["register"],
+                        True,
+                        lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
+                        phone_provider=phone_provider,
+                        existing_account=is_registered_mailbox or task_type == "sunny_login",
+                        require_refresh_token=require_refresh_token,
+                        should_cancel=db.cancel_requested,
+                        execution_mode="protocol_headless_fallback",
+                        on_progress=save_progress,
+                        mailbox_proxy_url=mailbox_proxy_url,
+                        traffic_meter=traffic_meter,
+                        traffic_config=payload.get("browser_traffic_optimization"),
+                        post_registration_callback=setup_login_secret_in_browser if setup_login_secret_enabled else None,
+                    )
+                    session["requested_execution_mode"] = "protocol"
+                    session["execution_mode"] = "protocol_headless_fallback"
+                    session["protocol_fallback"] = "headless"
+                    if isinstance(protocol_traffic, dict):
+                        session["protocol_traffic"] = protocol_traffic
+                    db.event(
+                        f"[{email}] [认证] 协议模式的后台无头浏览器接管已完成",
+                        detail={
+                            "email": email,
+                            "scope": "selected",
+                            "execution_mode": "protocol_headless_fallback",
+                        },
+                    )
             else:
                 if protocol_batch_policy is not None:
                     protocol_batch_policy.record_success()

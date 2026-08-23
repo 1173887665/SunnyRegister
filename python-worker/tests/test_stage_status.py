@@ -278,6 +278,32 @@ class StageStatusTests(unittest.TestCase):
         self.assertEqual(db.sessions[-1]["session"]["protocol_traffic"]["total_bytes"], 2048)
         self.assertTrue(any("后台无头浏览器" in str(args[0]) for args, _kwargs in db.events))
 
+    def test_initial_authorize_challenge_retries_with_narrow_sentinel_before_headless(self):
+        db = FakeDB()
+        payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "protocol"}
+        challenge = ProtocolChallengeRequired("Sentinel authorize_continue requires a browser challenge")
+        challenge.traffic = {"requests": 4, "total_bytes": 2048}
+        sentinel_session = {
+            "access_token": "sentinel-access",
+            "auth_action": "register",
+            "plan_type": "free",
+            "session_json": {"accessToken": "sentinel-access"},
+        }
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "http://proxy.example:8080", "mode": "pool"}),
+            patch.object(worker, "login_or_register_protocol", side_effect=[challenge, sentinel_session]) as protocol_executor,
+            patch.object(worker, "login_or_register") as browser_executor,
+        ):
+            ok, result = worker._run_one(db, "sunny_register", payload, mailbox(), 1, 1)
+
+        self.assertTrue(ok)
+        self.assertTrue(result["stage_complete"])
+        browser_executor.assert_not_called()
+        self.assertEqual(protocol_executor.call_count, 2)
+        self.assertEqual(protocol_executor.call_args_list[0].kwargs["challenge_strategy"], "native_headless")
+        self.assertEqual(protocol_executor.call_args_list[1].kwargs["challenge_strategy"], "sentinel_protocol")
+        self.assertEqual(db.sessions[-1]["session"]["protocol_fallback"], "sentinel_protocol")
+
     def test_protocol_batch_fast_path_skips_repeated_protocol_attempt(self):
         db = FakeDB()
         payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "protocol"}
