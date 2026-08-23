@@ -63,7 +63,7 @@ def test_abnormal_progress_exposes_only_bounded_error_summary() -> None:
     assert len(event["detail"]["error"]) == 500
 
 
-def test_login_secret_progress_extends_total_after_base_registration() -> None:
+def test_login_secret_two_factor_progress_extends_total_after_base_registration() -> None:
     recorder = EventRecorder()
     _emit_registration_progress(
         recorder,
@@ -74,11 +74,11 @@ def test_login_secret_progress_extends_total_after_base_registration() -> None:
     )
 
     event = recorder.events[0]
-    assert event["detail"]["current"] == 9
+    assert event["detail"]["current"] == 10
     assert event["detail"]["total"] == 12
 
 
-def test_login_secret_password_follows_two_factor_progress() -> None:
+def test_login_secret_password_precedes_two_factor_progress() -> None:
     recorder = EventRecorder()
     _emit_registration_progress(
         recorder,
@@ -89,7 +89,7 @@ def test_login_secret_password_follows_two_factor_progress() -> None:
     )
 
     event = recorder.events[0]
-    assert event["detail"]["current"] == 10
+    assert event["detail"]["current"] == 9
     assert event["detail"]["total"] == 12
 
 

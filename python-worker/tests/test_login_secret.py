@@ -371,16 +371,16 @@ class LoginSecretTests(unittest.TestCase):
         self.assertEqual(result["totp_secret"], "NEW-TOTP-SECRET")
         self.assertEqual(account.totp_secret, "NEW-TOTP-SECRET")
 
-    def test_browser_two_factor_failure_skips_password_step(self):
+    def test_browser_password_failure_skips_two_factor_step(self):
         class Flow(LoginSecretSetupFlow):
             def _session_json(self, _page):
                 return {"accessToken": "current-token"}
 
             def _add_password(self, _page):
-                raise AssertionError("password must not run before 2FA succeeds")
+                raise RuntimeError("password failed")
 
             def _setup_2fa(self, _page, _password):
-                raise RuntimeError("2FA failed")
+                raise AssertionError("2FA must not run before password succeeds")
 
         account = self._account()
         account.chatgpt_password = ""
@@ -389,29 +389,29 @@ class LoginSecretTests(unittest.TestCase):
             Mock(), Mock(storage_state=lambda: {"cookies": []})
         )
         self.assertFalse(result["complete"])
-        self.assertTrue(any("添加2FA失败" in error for error in result["errors"]))
-        self.assertTrue(any("添加密码未执行" in error for error in result["errors"]))
+        self.assertTrue(any("添加密码失败" in error for error in result["errors"]))
+        self.assertTrue(any("添加2FA未执行" in error for error in result["errors"]))
 
-    def test_protocol_two_factor_failure_skips_password_step(self):
+    def test_protocol_password_failure_skips_two_factor_step(self):
         class Flow(ProtocolLoginSecretSetupFlow):
             def _session_json(self):
                 return {"accessToken": "current-token"}
 
             def _add_password(self, _password):
-                raise AssertionError("password must not run before 2FA succeeds")
+                raise RuntimeError("password failed")
 
             def _setup_2fa(self, _access_token):
-                raise RuntimeError("2FA failed")
+                raise AssertionError("2FA must not run before password succeeds")
 
         account = self._account()
         account.chatgpt_password = ""
         account.totp_secret = ""
         result = Flow(account, {"access_token": "current-token"}, object()).run()
         self.assertFalse(result["complete"])
-        self.assertTrue(any("添加2FA失败" in error for error in result["errors"]))
-        self.assertTrue(any("添加密码未执行" in error for error in result["errors"]))
+        self.assertTrue(any("添加密码失败" in error for error in result["errors"]))
+        self.assertTrue(any("添加2FA未执行" in error for error in result["errors"]))
 
-    def test_browser_new_login_secret_sets_two_factor_before_password(self):
+    def test_browser_new_login_secret_sets_password_before_two_factor(self):
         operations = []
 
         class Flow(LoginSecretSetupFlow):
@@ -437,10 +437,10 @@ class LoginSecretTests(unittest.TestCase):
             Mock(), Mock(storage_state=lambda: {"cookies": []})
         )
 
-        self.assertEqual(operations, ["2fa", "password"])
+        self.assertEqual(operations, ["password", "2fa"])
         self.assertTrue(result["complete"])
 
-    def test_protocol_new_login_secret_sets_two_factor_before_password(self):
+    def test_protocol_new_login_secret_sets_password_before_two_factor(self):
         operations = []
 
         class Flow(ProtocolLoginSecretSetupFlow):
@@ -466,9 +466,70 @@ class LoginSecretTests(unittest.TestCase):
         account.totp_secret = ""
         result = Flow(account, {"access_token": "current-token"}, object()).run()
 
-        self.assertEqual(operations, ["2fa", "password"])
+        self.assertEqual(operations, ["password", "2fa"])
         self.assertTrue(result["complete"])
         self.assertEqual(result["session"]["access_token"], "fresh-token")
+
+    def test_browser_existing_password_skips_password_and_adds_two_factor(self):
+        operations = []
+
+        class Flow(LoginSecretSetupFlow):
+            def _session_json(self, _page):
+                return {"accessToken": "current-token"}
+
+            def _add_password(self, _page):
+                raise AssertionError("existing password must skip password setup")
+
+            def _setup_2fa(self, _page, password):
+                operations.append(("2fa", password))
+                return "NEW-TOTP-SECRET", {"accessToken": "current-token"}
+
+            def _access_token_is_valid(self, _page, _token):
+                return True
+
+        account = self._account()
+        account.chatgpt_password = "existing-password"
+        account.totp_secret = ""
+        result = Flow(account, {"access_token": "current-token"}, "")._run_on_page(
+            Mock(), Mock(storage_state=lambda: {"cookies": []})
+        )
+
+        self.assertEqual(operations, [("2fa", "existing-password")])
+        self.assertTrue(result["complete"])
+        self.assertFalse(result["password_added"])
+        self.assertTrue(result["totp_added"])
+
+    def test_protocol_existing_two_factor_skips_two_factor_and_refreshes(self):
+        operations = []
+
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def _session_json(self):
+                return {"accessToken": "current-token"}
+
+            def _add_password(self, password):
+                operations.append(("password", password))
+                return {"accessToken": "current-token"}
+
+            def _setup_2fa(self, _access_token):
+                raise AssertionError("existing 2FA must skip 2FA setup")
+
+            def _access_token_is_valid(self, token):
+                return token == "fresh-token"
+
+            def _refresh_session_with_login_secret(self):
+                return {"accessToken": "fresh-token"}
+
+        account = self._account()
+        account.chatgpt_password = ""
+        account.totp_secret = "existing-totp-secret"
+        result = Flow(account, {"access_token": "current-token"}, object()).run()
+
+        self.assertEqual(len(operations), 1)
+        self.assertEqual(operations[0][0], "password")
+        self.assertTrue(result["complete"])
+        self.assertTrue(result["password_added"])
+        self.assertFalse(result["totp_added"])
+        self.assertTrue(result["access_token_refreshed"])
 
     def test_login_secret_is_incomplete_when_reauthentication_returns_old_access_token(self):
         class Flow(LoginSecretSetupFlow):
