@@ -880,8 +880,11 @@ class LoginSecretSetupFlow:
         prefer_recent_email_code: bool = False,
     ) -> dict[str, Any]:
         """Validate reauth OTP, optionally trying the just-used registration code first."""
-        page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
+        # url_api readers establish a latest-message baseline in connect().
+        # Connect before loading auth_url because that navigation sends the new
+        # OTP; otherwise the newly delivered mail can be mistaken for history.
         reader = self._reader_instance()
+        page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
         code_timestamp = min_timestamp
         resend_attempted = False
         rejected_codes: set[str] = set()
@@ -1515,11 +1518,13 @@ class ProtocolLoginSecretSetupFlow:
         auth_url = str(((payload or {}).get("url") or ((payload or {}).get("data") or {}).get("url") or "")) if isinstance(payload, dict) else ""
         if not auth_url:
             raise RuntimeError("ChatGPT 重认证响应缺少认证地址")
+        # Snapshot the mailbox before GET auth_url triggers OTP delivery. This
+        # prevents URL-based readers from recording the new OTP as baseline.
+        reader = self._reader_instance()
         sent_at = time.time()
         status, _data, text = self._request("GET", auth_url, headers={"accept": "text/html,application/xhtml+xml"}, allow_redirects=True)
         if status >= 400:
             raise RuntimeError(f"加载 ChatGPT 重认证页面失败: HTTP {status} {text[:180]}")
-        reader = self._reader_instance()
         code_timestamp = sent_at
         rejected_codes: set[str] = set()
         resend_attempted = False

@@ -75,6 +75,39 @@ class LoginSecretTests(unittest.TestCase):
         self.assertEqual([timeout for _timestamp, timeout in flow.reader.calls], [120, 60])
         resend.assert_called_once_with(page)
 
+    def test_browser_reauthentication_snapshots_mailbox_before_auth_url_sends_code(self):
+        events = []
+
+        class Reader:
+            @staticmethod
+            def wait_for_code(_timestamp, _timeout):
+                return "654321"
+
+        class Page:
+            url = ""
+
+            def goto(self, url, **_kwargs):
+                events.append(("goto", url))
+                self.url = url
+
+            @staticmethod
+            def evaluate(script, _code=None):
+                if "email-otp/validate" in script:
+                    return {"ok": True, "status": 200, "data": {"continue_url": "https://chatgpt.com/api/auth/callback/openai"}}
+                if "api/auth/session" in script:
+                    return {"ok": True, "status": 200, "data": {"accessToken": "access-token"}}
+                return False
+
+        flow = LoginSecretSetupFlow(self._account(), {}, "")
+        flow._reader_instance = Mock(side_effect=lambda: events.append(("mailbox", "connect")) or Reader())
+
+        result = flow._reauthenticate_with_fresh_email_code(
+            Page(), "https://auth.openai.com/authorize", time.time()
+        )
+
+        self.assertEqual(result["accessToken"], "access-token")
+        self.assertEqual(events[:2], [("mailbox", "connect"), ("goto", "https://auth.openai.com/authorize")])
+
     def test_password_reauthentication_tries_recent_registration_code_before_mailbox(self):
         class Reader:
             def wait_for_code(self, *_args):
@@ -582,6 +615,39 @@ class LoginSecretTests(unittest.TestCase):
         self.assertEqual(result["accessToken"], "access-token")
         self.assertEqual(flow.codes, ["123456", "654321"])
         self.assertEqual(flow.reader.calls, [10])
+
+    def test_protocol_reauthentication_snapshots_mailbox_before_auth_url_sends_code(self):
+        events = []
+
+        class Reader:
+            @staticmethod
+            def wait_for_code(_timestamp, _timeout):
+                return "654321"
+
+        class Flow(ProtocolLoginSecretSetupFlow):
+            def _reader_instance(self):
+                events.append(("mailbox", "connect"))
+                return Reader()
+
+            def _request(self, method, url, **kwargs):
+                if url.endswith("/api/auth/csrf"):
+                    return 200, {"csrfToken": "csrf-token"}, ""
+                if "/api/auth/signin/openai?" in url:
+                    return 200, {"url": "https://auth.openai.com/authorize"}, ""
+                if method == "GET" and url == "https://auth.openai.com/authorize":
+                    events.append(("auth", "send"))
+                    return 200, {}, ""
+                if url.endswith("/api/accounts/email-otp/validate"):
+                    return 200, {"continue_url": "https://chatgpt.com/api/auth/callback/openai"}, ""
+                if url.endswith("/api/auth/session"):
+                    return 200, {"accessToken": "access-token"}, ""
+                return 200, {}, ""
+
+        flow = Flow(self._account(), {}, object())
+        result = flow._reauthenticate("https://chatgpt.com/?action=add_password")
+
+        self.assertEqual(result["accessToken"], "access-token")
+        self.assertEqual(events[:2], [("mailbox", "connect"), ("auth", "send")])
 
     def test_protocol_reauthentication_reads_mailbox_when_recent_code_expired(self):
         class Reader:
