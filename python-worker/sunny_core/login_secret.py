@@ -1504,6 +1504,10 @@ class ProtocolLoginSecretSetupFlow:
             "reauth": "password",
             "max_age": "0",
         }
+        protocol_flow = getattr(self.http, "_flow", None)
+        device_id = str(getattr(protocol_flow, "device_id", "") or "").strip()
+        if device_id:
+            query_params["ext-oai-did"] = device_id
         if post_login_add_password:
             query_params["post_login_add_password"] = "true"
         query = urlencode(query_params)
@@ -1511,7 +1515,12 @@ class ProtocolLoginSecretSetupFlow:
         status, payload, text = self._request(
             "POST",
             f"{CHATGPT_BASE_URL}/api/auth/signin/openai?{query}",
-            headers={"accept": "application/json", "content-type": "application/x-www-form-urlencoded"},
+            headers={
+                "accept": "application/json",
+                "content-type": "application/x-www-form-urlencoded",
+                "origin": CHATGPT_BASE_URL,
+                "referer": f"{CHATGPT_BASE_URL}/",
+            },
             data=body,
         )
         payload = self._require_ok(status, payload, text, "发起 ChatGPT 重认证")
@@ -1522,7 +1531,15 @@ class ProtocolLoginSecretSetupFlow:
         # prevents URL-based readers from recording the new OTP as baseline.
         reader = self._reader_instance()
         sent_at = time.time()
-        status, _data, text = self._request("GET", auth_url, headers={"accept": "text/html,application/xhtml+xml"}, allow_redirects=True)
+        status, _data, text = self._request(
+            "GET",
+            auth_url,
+            headers={
+                "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "referer": f"{CHATGPT_BASE_URL}/",
+            },
+            allow_redirects=True,
+        )
         if status >= 400:
             raise RuntimeError(f"加载 ChatGPT 重认证页面失败: HTTP {status} {text[:180]}")
         code_timestamp = sent_at
@@ -1612,8 +1629,17 @@ class ProtocolLoginSecretSetupFlow:
             self._require_ok(status, payload, text, "邮箱重认证验证码校验")
         payload = self._require_ok(status, payload, text, "邮箱重认证验证码校验")
         continue_url = str((payload or {}).get("continue_url") or "") if isinstance(payload, dict) else ""
-        if continue_url:
-            self._request("GET", continue_url, headers={"accept": "text/html,application/xhtml+xml"}, allow_redirects=True)
+        if not continue_url:
+            raise RuntimeError("邮箱重认证验证码校验成功，但响应缺少 continue_url")
+        self._request(
+            "GET",
+            continue_url,
+            headers={
+                "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "referer": f"{AUTH_BASE_URL}/email-verification",
+            },
+            allow_redirects=True,
+        )
         return self._session_json()
 
     def _add_password(self, password: str) -> dict[str, Any]:
@@ -1638,21 +1664,15 @@ class ProtocolLoginSecretSetupFlow:
             invalid_step = _invalid_auth_step(result, text)
             invalid_state = _invalid_auth_state(result, text)
             if invalid_step or invalid_state:
-                if attempt == 0:
-                    reason = "认证步骤不匹配" if invalid_step else "认证状态已失效"
-                    self.log(
-                        f"[登录密钥] 密码{reason}，将在当前协议 Cookie 会话中创建一次新的添加密码专用认证事务后重试"
-                    )
-                    self._reauthenticate(
-                        f"{CHATGPT_BASE_URL}/?action=add_password",
-                        prefer_recent_email_code=True,
-                        post_login_add_password=True,
-                    )
-                    continue
                 from .protocol_auth import ProtocolChallengeRequired
 
+                reason = "认证步骤不匹配" if invalid_step else "认证状态已失效"
+                self.log(
+                    f"[登录密钥] 邮箱重认证已成功，但添加密码专用认证事务{reason}，"
+                    "将携带当前 Cookie 会话由浏览器设置页接管，不再重复获取邮箱验证码"
+                )
                 raise ProtocolChallengeRequired(
-                    "OpenAI 拒绝协议添加密码专用认证事务，需由当前流程的浏览器设置页接管"
+                    "OpenAI 拒绝协议添加密码专用认证事务，需由当前 Cookie 会话的浏览器设置页接管"
                 )
             if attempt == 0 and status == 409:
                 self.log("[登录密钥] 密码协议接口正在同步认证状态，将保持当前登录态后重试")

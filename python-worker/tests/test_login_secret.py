@@ -695,21 +695,19 @@ class LoginSecretTests(unittest.TestCase):
         self.assertTrue(any("已超过复用窗口" in item for item in flow.logs))
         self.assertTrue(any("已使用邮箱渠道最新验证码完成重认证" in item for item in flow.logs))
 
-    def test_protocol_password_invalid_state_reauthenticates_before_retry(self):
+    def test_protocol_password_invalid_state_switches_to_browser_takeover(self):
         flow = ProtocolLoginSecretSetupFlow(self._account(), {}, object())
         flow._reauthenticate = Mock(return_value={"accessToken": "access-token"})
-        flow._request = Mock(side_effect=[
-            (409, {"error": {"code": "invalid_state", "message": "Your sign-in session is no longer valid."}}, "invalid_state"),
-            (200, {"ok": True}, ""),
-        ])
-        flow._session_json = Mock(return_value={"accessToken": "new-access-token"})
+        flow._request = Mock(return_value=(409, {"error": {"code": "invalid_state", "message": "Your sign-in session is no longer valid."}}, "invalid_state"))
 
-        result = flow._add_password("Strong-password-1!")
+        with self.assertRaises(ProtocolChallengeRequired):
+            flow._add_password("Strong-password-1!")
 
-        self.assertEqual(result["accessToken"], "new-access-token")
-        self.assertEqual(flow._reauthenticate.call_count, 2)
-        for call in flow._reauthenticate.call_args_list:
-            self.assertTrue(call.kwargs["post_login_add_password"])
+        flow._reauthenticate.assert_called_once_with(
+            "https://chatgpt.com/?action=add_password",
+            prefer_recent_email_code=True,
+            post_login_add_password=True,
+        )
 
     def test_protocol_password_reauthentication_uses_dedicated_add_password_transaction(self):
         class Flow(ProtocolLoginSecretSetupFlow):
@@ -755,9 +753,11 @@ class LoginSecretTests(unittest.TestCase):
         with self.assertRaises(ProtocolChallengeRequired):
             flow._add_password("Strong-password-1!")
 
-        self.assertEqual(flow._reauthenticate.call_count, 2)
-        for call in flow._reauthenticate.call_args_list:
-            self.assertTrue(call.kwargs["post_login_add_password"])
+        flow._reauthenticate.assert_called_once_with(
+            "https://chatgpt.com/?action=add_password",
+            prefer_recent_email_code=True,
+            post_login_add_password=True,
+        )
 
     def test_protocol_recent_registration_code_is_attempted_only_once_across_reauthentication(self):
         class Reader:
