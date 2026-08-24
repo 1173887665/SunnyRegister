@@ -256,7 +256,7 @@ func randomDomainPickupToken() (string, error) {
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("生成邮箱取件 Token 失败：%w", err)
 	}
-	return "dmail_" + base64.RawURLEncoding.EncodeToString(raw), nil
+	return "dmsk_" + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 func domainMailboxPickupTokenHash(token string) string {

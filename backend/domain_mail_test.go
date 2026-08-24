@@ -39,6 +39,23 @@ func TestDomainMailboxCredentialAndTypeHelpers(t *testing.T) {
 	}
 }
 
+func TestRandomDomainPickupTokenUsesDMSKPrefix(t *testing.T) {
+	first, err := randomDomainPickupToken()
+	if err != nil {
+		t.Fatalf("generate first pickup token: %v", err)
+	}
+	second, err := randomDomainPickupToken()
+	if err != nil {
+		t.Fatalf("generate second pickup token: %v", err)
+	}
+	if !strings.HasPrefix(first, "dmsk_") || !strings.HasPrefix(second, "dmsk_") {
+		t.Fatalf("pickup tokens must use dmsk_ prefix: %q %q", first, second)
+	}
+	if first == second {
+		t.Fatal("pickup tokens must be unique")
+	}
+}
+
 func TestDomainMailboxLatestMailUsesEmailListAndExtractsCode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/public/emailList" {

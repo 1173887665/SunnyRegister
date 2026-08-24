@@ -138,7 +138,7 @@ def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str, 
             if response.ok and provider_code not in {"", "0", "200"}:
                 last = f"provider code {provider_code}: {str(payload.get('message') or payload.get('error') or '')[:180]}"
             elif response.ok:
-                pickup_token = "dmail_" + secrets.token_urlsafe(32)
+                pickup_token = "dmsk_" + secrets.token_urlsafe(32)
                 credential = pickup_base + "/api/sunny/domain-mail/pickup?" + urlencode({"email": email, "token": pickup_token})
                 token_hash = hashlib.sha256(pickup_token.encode("utf-8")).hexdigest()
                 log(f"[{email}] 已从自建域名邮箱池生成换绑邮箱")

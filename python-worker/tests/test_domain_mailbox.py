@@ -54,7 +54,7 @@ def test_domain_reader_filters_old_message(monkeypatch):
 
 
 def test_domain_reader_uses_individual_pickup_url(monkeypatch):
-    pickup_url = "https://sunny.example/api/sunny/domain-mail/pickup?email=user%40example.com&token=dmail_one"
+    pickup_url = "https://sunny.example/api/sunny/domain-mail/pickup?email=user%40example.com&token=dmsk_one"
     reader = DomainMailReader(
         account_from_row({"email": "user@example.com", "mailbox_type": "domain", "access_key": pickup_url}),
         None,
@@ -114,6 +114,6 @@ def test_rebind_domain_mailbox_creates_individual_pickup_credential(monkeypatch)
     pickup_token = query["token"][0]
     assert parsed.netloc == "sunny.example"
     assert query["email"] == [email]
-    assert pickup_token.startswith("dmail_")
+    assert pickup_token.startswith("dmsk_")
     assert token_hash == hashlib.sha256(pickup_token.encode("utf-8")).hexdigest()
     assert "global-manager-token" not in credential
