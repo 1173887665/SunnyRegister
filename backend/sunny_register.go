@@ -250,7 +250,7 @@ func serializeSunnyMailbox(m SunnyMailbox, groups map[uint]string, planType ...s
 		"mailbox_type": normalizeSunnyMailboxType(m.MailboxType), "mailbox_channel": normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel), "access_key": m.AccessKey,
 		"password": m.Password, "chatgpt_password": m.ChatGPTPassword, "totp_secret": m.TOTPSecret, "client_id": m.ClientID, "refresh_token": m.RefreshToken, "openai_rt": m.OpenAIRT, "access_token": accessToken,
 		"has_chatgpt_password": strings.TrimSpace(m.ChatGPTPassword) != "", "has_totp_secret": strings.TrimSpace(m.TOTPSecret) != "",
-		"has_login_secret": sunnyLoginSecretLine(m) != "", "chatgpt_password_preview": sunnyCredentialPreview(m.ChatGPTPassword), "totp_secret_preview": sunnyCredentialPreview(m.TOTPSecret),
+		"has_login_secret": sunnyLoginSecretLine(m) != "", "has_secret_key": sunnyMailboxCredentialLine(m) != "", "chatgpt_password_preview": sunnyCredentialPreview(m.ChatGPTPassword), "totp_secret_preview": sunnyCredentialPreview(m.TOTPSecret),
 		"raw": m.Raw, "account_type": fallback(m.AccountType, "free"), "plan_type": plan, "trial_eligibility": trialEligibility, "status": status, "enabled": m.Enabled,
 		"chatgpt_register_traffic_bytes": m.ChatGPTRegisterTrafficBytes, "proxy_traffic_bytes": m.ProxyTrafficBytes,
 		"last_error": m.LastError, "latest_mail": jsonMap(m.LatestMailJSON),
@@ -466,8 +466,10 @@ func (s *Server) sunnyMailboxAccessTokensByEmail(emails []string) map[string]str
 	s.db.Select("email", "access_token", "session_json").Where("email IN ?", emails).Find(&sessions)
 	for _, sess := range sessions {
 		key := sunnyEmailKey(sess.Email)
-		if out[key] == "" {
-			out[key] = fallback(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON))
+		if token := fallback(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON)); token != "" {
+			// Sessions contain the latest login result; keep mailbox and account
+			// tables aligned when the legacy account copy is stale.
+			out[key] = token
 		}
 	}
 	return out
@@ -571,8 +573,8 @@ func (s *Server) sunnyMailboxLinkedDataByEmail(emails []string) sunnyMailboxLink
 		} else if linked.sessionPlans[key] == "" {
 			linked.sessionPlans[key] = "free"
 		}
-		if linked.accessTokens[key] == "" {
-			linked.accessTokens[key] = fallback(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON))
+		if token := fallback(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON)); token != "" {
+			linked.accessTokens[key] = token
 		}
 	}
 	return linked
@@ -4321,8 +4323,11 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 		displayEmail = mbEmail
 	}
 	statusSource := acc.Status
-	if mb.ID != 0 && strings.TrimSpace(mb.Status) != "" {
+	if mb.ID != 0 {
 		statusSource = mb.Status
+		if strings.TrimSpace(statusSource) == "" {
+			statusSource = "unused"
+		}
 	}
 	status := normalizeSunnyDisplayStatus(statusSource)
 	sessionPlan := sunnyPlanTypeFromSessionJSON(sess.SessionJSON)
@@ -4467,8 +4472,11 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 		displayEmail = mailboxEmail
 	}
 	statusSource := account.Status
-	if strings.TrimSpace(mailbox.Status) != "" {
+	if mailbox.ID != 0 {
 		statusSource = mailbox.Status
+		if strings.TrimSpace(statusSource) == "" {
+			statusSource = "unused"
+		}
 	}
 	status := normalizeSunnyDisplayStatus(statusSource)
 	plan := normalizeSunnyPlanType(account.AccountType)
@@ -4511,17 +4519,21 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 	if accountID == 0 {
 		accountID = account.ID
 	}
+	hasSecretKey := row.HasSecretKey != 0
+	if mailbox.ID != 0 {
+		hasSecretKey = mailbox.HasSecretKey != 0
+	}
 	return map[string]any{
 		"id": row.ID, "account_id": accountID, "mailbox_id": mailbox.ID, "email": displayEmail,
 		"status": status, "plan_type": plan, "trial_eligibility": trialEligibility, "group_id": mailbox.GroupID, "group_name": mailbox.GroupName,
 		"trial_country_results": sunnyTrialCountryResults(account.TrialCountryResultsJSON, mailbox.TrialCountryResultsJSON),
 		"checkout_kind":         checkoutKind, "checkout_result": sunnyCheckoutResultJSON(account.CheckoutResultJSON), "payment_methods": paymentMethods, "payment_probe_results": paymentProbeResults,
 		"payment_probe_error": account.PaymentProbeError, "payment_probed_at": nullableTime(account.PaymentProbedAt != nil, pointerTime(account.PaymentProbedAt)), "commerce_check_error": account.CommerceCheckError,
-		"phone_bound":          sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailbox.Status),
-		"rebind_email":         account.RebindEmail,
-		"has_access_token":     row.HasAccessToken != 0 || account.HasAccessToken != 0,
-		"has_refresh_token":    row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
-		"has_secret_key":       row.HasSecretKey != 0 || mailbox.HasSecretKey != 0,
+		"phone_bound":       sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailbox.Status),
+		"rebind_email":      fallback(strings.TrimSpace(mailbox.RebindEmail), strings.TrimSpace(account.RebindEmail)),
+		"has_access_token":  row.HasAccessToken != 0 || account.HasAccessToken != 0,
+		"has_refresh_token": row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
+		"has_secret_key":       hasSecretKey,
 		"has_chatgpt_password": mailbox.HasChatGPTPassword != 0,
 		"has_totp_secret":      mailbox.HasTOTPSecret != 0,
 		"has_login_secret":     mailbox.HasChatGPTPassword != 0 && mailbox.HasTOTPSecret != 0,
