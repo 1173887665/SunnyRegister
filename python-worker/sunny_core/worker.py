@@ -2833,35 +2833,117 @@ def _add_login_secrets(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[
     return success, errors, items
 
 
+def _rebind_one_isolated(
+    task_id: str,
+    payload: dict[str, Any],
+    account_id: int,
+    index: int,
+    total: int,
+) -> tuple[int, dict[str, Any]]:
+    worker_db = SunnyDB(task_id, ensure_schema=False)
+    try:
+        accounts = worker_db.fetch_accounts([account_id])
+        if not accounts:
+            raise RuntimeError(f"账户 {account_id} 不存在")
+        email = str(accounts[0].get("email") or "").strip()
+        worker_db.event(
+            f"[{email}] 开始邮箱协议换绑",
+            detail={"email": email, "module": "auth", "action": "rebind.start", "current": index - 1, "total": total},
+        )
+        proxy = _proxy_snapshot(payload).get("register", "")
+        result = rebind_one(worker_db, accounts[0], proxy, lambda message: worker_db.event(message, detail={"email": email, "module": "auth", "action": "rebind.progress"}))
+        return index, result
+    finally:
+        worker_db.close()
+
+
 def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
     account_ids = _ids(payload.get("account_ids"))
     accounts = db.fetch_accounts(account_ids or None)
     if not accounts:
         return 0, ["未找到需要换绑的账户"], []
-    proxy = _proxy_snapshot(payload).get("register", "")
     success = 0
     errors: list[str] = []
     items: list[dict[str, Any]] = []
     db.update_task(progress_total=len(accounts))
-    for index, account in enumerate(accounts, start=1):
-        db.ensure_not_cancelled()
-        email = str(account.get("email") or "").strip()
-        db.event(f"[{email}] 开始邮箱协议换绑", detail={"email": email, "module": "auth", "action": "rebind.start", "current": index - 1, "total": len(accounts)})
+    cpu_count = max(1, int(os.cpu_count() or 1))
+    default_concurrency = max(1, (cpu_count * 3 + 1) // 2)
+    try:
+        requested_concurrency = int(payload.get("concurrency") or default_concurrency)
+    except (TypeError, ValueError):
+        requested_concurrency = default_concurrency
+    concurrency = max(1, min(requested_concurrency, len(accounts)))
+    db.event(
+        f"[系统] 邮箱换绑并发数：{concurrency}（CPU {cpu_count} 核，默认并发 {default_concurrency}）",
+        detail={"scope": "global", "concurrency": concurrency, "cpu_count": cpu_count, "default_concurrency": default_concurrency, "total": len(accounts), "operation": "rebind"},
+    )
+
+    def handle_result(index: int, result: dict[str, Any]) -> None:
+        nonlocal success
+        email = str(result.get("email") or "").strip()
+        items.append(result)
+        if result.get("status") == "success":
+            success += 1
+        elif result.get("status") == "skipped":
+            db.event(f"[{email}] 已跳过邮箱换绑：{result.get('reason') or '不满足条件'}", "warning", detail={"email": email, "module": "auth", "action": "rebind.skipped"})
+
+    if concurrency <= 1:
+        for index, account in enumerate(accounts, start=1):
+            db.ensure_not_cancelled()
+            email = str(account.get("email") or "").strip()
+            db.event(f"[{email}] 开始邮箱协议换绑", detail={"email": email, "module": "auth", "action": "rebind.start", "current": index - 1, "total": len(accounts)})
+            try:
+                result = rebind_one(db, account, _proxy_snapshot(payload).get("register", ""), lambda message: db.event(message, detail={"email": email, "module": "auth", "action": "rebind.progress"}))
+                handle_result(index, result)
+            except Exception as exc:
+                if db.cancel_requested():
+                    raise SunnyTaskCancelled("Task cancelled by user") from exc
+                message = f"[{email}] 邮箱换绑失败：{exc}"
+                errors.append(message)
+                items.append({"email": email, "status": "failed", "error": str(exc)})
+                db.event(message, "error", detail={"email": email, "module": "auth", "action": "rebind.failed"})
+            db.update_task(progress_current=index, success_count=success, error_count=len(errors))
+        return success, errors, items
+
+    completed = 0
+    for batch_start in range(0, len(accounts), concurrency):
+        batch = accounts[batch_start : batch_start + concurrency]
+        pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sunny-rebind")
         try:
-            result = rebind_one(db, account, proxy, lambda message: db.event(message, detail={"email": email, "module": "auth", "action": "rebind.progress"}))
-            items.append(result)
-            if result.get("status") == "success":
-                success += 1
-            elif result.get("status") == "skipped":
-                db.event(f"[{email}] 已跳过邮箱换绑：{result.get('reason') or '不满足条件'}", "warning", detail={"email": email, "module": "auth", "action": "rebind.skipped"})
-        except Exception as exc:
-            if db.cancel_requested():
-                raise SunnyTaskCancelled("Task cancelled by user") from exc
-            message = f"[{email}] 邮箱换绑失败：{exc}"
-            errors.append(message)
-            items.append({"email": email, "status": "failed", "error": str(exc)})
-            db.event(message, "error", detail={"email": email, "module": "auth", "action": "rebind.failed"})
-        db.update_task(progress_current=index, success_count=success, error_count=len(errors))
+            futures = {
+                pool.submit(
+                    _rebind_one_isolated,
+                    db.task_id,
+                    payload,
+                    int(account.get("id") or 0),
+                    batch_start + offset,
+                    len(accounts),
+                ): str(account.get("email") or "")
+                for offset, account in enumerate(batch, start=1)
+            }
+            pending = set(futures)
+            while pending:
+                if db.cancel_requested():
+                    for future in pending:
+                        future.cancel()
+                    raise SunnyTaskCancelled("Task cancelled by user")
+                done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                for future in done:
+                    email = futures[future]
+                    try:
+                        index, result = future.result()
+                        handle_result(index, result)
+                    except Exception as exc:
+                        if _is_cancel_exception(exc):
+                            raise
+                        message = f"[{email}] 邮箱换绑并行 Worker 失败：{exc}"
+                        errors.append(message)
+                        items.append({"email": email, "status": "failed", "error": str(exc)})
+                        db.event(message, "error", detail={"email": email, "module": "auth", "action": "rebind.failed"})
+                    completed += 1
+                    db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
     return success, errors, items
 
 

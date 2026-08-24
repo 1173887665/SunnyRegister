@@ -4017,7 +4017,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     if (row && ["已封禁", "banned", "disabled"].includes(String(row.status || ""))) { notify("ok", "已跳过已封禁账户"); return; }
     const targetIds = Array.from(new Set(ids.map(Number).filter(Boolean)));
     try {
-      const task = await runPersistentSessionTask("rebind", targetIds, row?.email, () => apiFetch("/sunny/sessions/rebind", { method:"POST", body:JSON.stringify({ session_ids: targetIds, concurrency: 1 }) }));
+      const task = await runPersistentSessionTask("rebind", targetIds, row?.email, () => apiFetch("/sunny/sessions/rebind", { method:"POST", body:JSON.stringify({ session_ids: targetIds }) }));
       const result = task.result || {};
       const failed = Number(result.failed || 0);
       const skipped = Number(result.skipped || 0);

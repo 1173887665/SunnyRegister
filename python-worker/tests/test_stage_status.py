@@ -1804,6 +1804,32 @@ class AddLoginSecretTaskTests(unittest.TestCase):
         self.assertEqual(concurrency_events[0]["default_concurrency"], 3)
         self.assertEqual(concurrency_events[0]["concurrency"], 3)
 
+
+class RebindTaskTests(unittest.TestCase):
+    def test_default_concurrency_is_one_and_a_half_times_cpu_count(self):
+        db = MagicMock()
+        db.task_id = "task-rebind"
+        db.cancel_requested.return_value = False
+        db.fetch_accounts.return_value = [
+            {"id": index, "email": f"user-{index}@example.com"}
+            for index in range(1, 5)
+        ]
+
+        def isolated(_task_id, _payload, account_id, index, _total):
+            return index, {"email": f"user-{account_id}@example.com", "status": "success", "new_email": f"rebound-{account_id}@example.com"}
+
+        with (
+            patch.object(worker.os, "cpu_count", return_value=2),
+            patch.object(worker, "_rebind_one_isolated", side_effect=isolated),
+        ):
+            success, errors, items = worker._rebind_sessions(db, {})
+
+        self.assertEqual((success, errors, len(items)), (4, [], 4))
+        concurrency_events = [call.kwargs.get("detail", {}) for call in db.event.call_args_list if "邮箱换绑并发数" in str(call.args[0])]
+        self.assertEqual(concurrency_events[0]["cpu_count"], 2)
+        self.assertEqual(concurrency_events[0]["default_concurrency"], 3)
+        self.assertEqual(concurrency_events[0]["concurrency"], 3)
+
     def test_all_prefiltered_accounts_do_not_expand_to_all_database_accounts(self):
         db = MagicMock()
         skipped = {"email": "complete@example.com", "status": "skipped", "login_secret_complete": True}
