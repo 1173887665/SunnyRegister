@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -228,6 +229,71 @@ func TestSunnySubscriptionTaskUsesAccessTokenFallbackWhenMailDoesNotMatch(t *tes
 	result := jsonMap(saved.ResultJSON)
 	if intValue(result["subscribed"], 0) != 1 || intValue(result["not_subscribed"], 0) != 0 || intValue(result["failed"], 0) != 0 {
 		t.Fatalf("unexpected AT fallback result: %#v", result)
+	}
+}
+
+func TestSunnySubscriptionCandidatesPreferReboundDomainMailbox(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	pickup, _ := domainMailboxPickupCredential("https://mail-api.example", "rebound@example.com", "dmsk_subscription")
+	if err := s.db.Model(&SunnyMailbox{}).Where("email = ?", "session@example.com").Updates(map[string]any{
+		"rebind_email":       "rebound@example.com",
+		"rebind_mailbox_api": pickup,
+		"mailbox_type":       "domain",
+		"mailbox_channel":    "domain_api",
+		"access_key":         pickup,
+		"pickup_token_hash":  domainMailboxPickupTokenHash("dmsk_subscription"),
+	}).Error; err != nil {
+		t.Fatalf("save rebound mailbox: %v", err)
+	}
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	candidates, err := s.sunnySubscriptionCandidates([]uint{session.ID})
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("subscription candidates: err=%v candidates=%#v", err, candidates)
+	}
+	candidate := candidates[0]
+	if candidate.Email != "session@example.com" || candidate.MailEmail != "rebound@example.com" || candidate.MailboxType != "domain" || candidate.Channel != "domain_api" || candidate.AccessKey != pickup {
+		t.Fatalf("rebound mailbox was not selected: %#v", candidate)
+	}
+}
+
+func TestSunnySubscriptionUsesReboundDomainMailAPI(t *testing.T) {
+	requestedEmail := ""
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		requestedEmail = text(body["toEmail"])
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{
+			map[string]any{"id": 1, "receivedAt": time.Now().Format(time.RFC3339), "subject": "ChatGPT - Your new plan", "body": "Manage your subscription"},
+		}})
+	}))
+	defer upstream.Close()
+	s := newSunnySessionTestServer(t)
+	s.sunnySaveConfig(sunnyCfgDomainMailbox, map[string]any{
+		"enabled": true, "base_url": upstream.URL, "auth_token": "cloudmail-token", "site_password": "site-password", "domains": []string{"example.com"},
+	})
+	pickup, _ := domainMailboxPickupCredential("https://mail-api.example", "rebound@example.com", "dmsk_subscription")
+	if err := s.db.Model(&SunnyMailbox{}).Where("email = ?", "session@example.com").Updates(map[string]any{
+		"rebind_email":       "rebound@example.com",
+		"rebind_mailbox_api": pickup,
+		"mailbox_type":       "domain",
+		"mailbox_channel":    "domain_api",
+		"access_key":         pickup,
+		"pickup_token_hash":  domainMailboxPickupTokenHash("dmsk_subscription"),
+	}).Error; err != nil {
+		t.Fatalf("save rebound mailbox: %v", err)
+	}
+	var session SunnySession
+	s.db.Where("email = ?", "session@example.com").First(&session)
+	candidates, err := s.sunnySubscriptionCandidates([]uint{session.ID})
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("subscription candidates: err=%v candidates=%#v", err, candidates)
+	}
+	matched, subject, err := s.detectSunnySubscriptionMail(candidates[0], "")
+	if err != nil || !matched || subject == "" || requestedEmail != "rebound@example.com" {
+		t.Fatalf("rebound subscription lookup failed: matched=%v subject=%q requested=%q err=%v", matched, subject, requestedEmail, err)
 	}
 }
 

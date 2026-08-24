@@ -42,6 +42,7 @@ type sunnySubscriptionCandidate struct {
 	SessionID    uint
 	AccountID    uint
 	Email        string
+	MailEmail    string
 	MailboxType  string
 	Channel      string
 	AccessKey    string
@@ -197,6 +198,18 @@ func detectSunnySubscriptionMail(candidate sunnySubscriptionCandidate, proxyURL 
 	return matched, subject, nil
 }
 
+func (s *Server) detectSunnySubscriptionMail(candidate sunnySubscriptionCandidate, proxyURL string) (bool, string, error) {
+	if candidate.MailboxType == "domain" && candidate.Channel == "domain_api" {
+		payload, err := s.domainMailLatestMail(candidate.AccessKey, candidate.MailEmail, 5)
+		if err != nil {
+			return false, "", err
+		}
+		matched, subject := sunnySubscriptionPayloadConfirmed(payload)
+		return matched, subject, nil
+	}
+	return sunnyDetectSubscriptionMail(candidate, proxyURL)
+}
+
 func (s *Server) sunnySubscriptionConcurrency() int {
 	value := intValue(strings.TrimSpace(os.Getenv("SUNNY_SUBSCRIPTION_CONCURRENCY")), 4)
 	if value < 1 {
@@ -249,7 +262,7 @@ func (s *Server) sunnySubscriptionCandidates(ids []uint) ([]sunnySubscriptionCan
 			accountID = account.ID
 		}
 		candidate := sunnySubscriptionCandidate{
-			SessionID: session.ID, AccountID: accountID, Email: session.Email,
+			SessionID: session.ID, AccountID: accountID, Email: session.Email, MailEmail: session.Email,
 			AccessToken: fallback(session.AccessToken, fallback(sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken)),
 		}
 		if !ok {
@@ -258,11 +271,24 @@ func (s *Server) sunnySubscriptionCandidates(ids []uint) ([]sunnySubscriptionCan
 			continue
 		}
 		candidate.Email = mailbox.Email
+		candidate.MailEmail = mailbox.Email
 		candidate.MailboxType = normalizeSunnyMailboxType(mailbox.MailboxType)
 		candidate.Channel = normalizeSunnyMailboxChannel(candidate.MailboxType, mailbox.MailboxChannel)
 		candidate.AccessKey = mailbox.AccessKey
 		candidate.ClientID = mailbox.ClientID
 		candidate.RefreshToken = mailbox.RefreshToken
+		if strings.TrimSpace(mailbox.RebindEmail) != "" || strings.TrimSpace(mailbox.RebindMailboxAPI) != "" {
+			if strings.TrimSpace(mailbox.RebindEmail) == "" || strings.TrimSpace(mailbox.RebindMailboxAPI) == "" {
+				candidate.Error = "换绑邮箱凭证不完整"
+			} else {
+				candidate.MailEmail = strings.TrimSpace(mailbox.RebindEmail)
+				candidate.MailboxType = "domain"
+				candidate.Channel = "domain_api"
+				candidate.AccessKey = strings.TrimSpace(mailbox.RebindMailboxAPI)
+				candidate.ClientID = ""
+				candidate.RefreshToken = ""
+			}
+		}
 		if (candidate.MailboxType == "apple" && strings.TrimSpace(candidate.AccessKey) == "") ||
 			(candidate.MailboxType == "microsoft" && (strings.TrimSpace(candidate.ClientID) == "" || strings.TrimSpace(candidate.RefreshToken) == "")) {
 			candidate.Error = "邮箱凭证不完整"
@@ -430,7 +456,7 @@ func (s *Server) executeSunnySubscriptionTask(task *Task, payload map[string]any
 			if candidate.Error != "" {
 				return sunnySubscriptionResult{SessionID: candidate.SessionID, Email: candidate.Email, Error: candidate.Error}
 			}
-			subscribed, subject, detectErr := sunnyDetectSubscriptionMail(candidate, proxyURL)
+			subscribed, subject, detectErr := s.detectSunnySubscriptionMail(candidate, proxyURL)
 			outcome := sunnySubscriptionResult{SessionID: candidate.SessionID, Email: candidate.Email, Subscribed: subscribed, Subject: subject}
 			if detectErr != nil {
 				outcome.Error = detectErr.Error()
@@ -440,6 +466,12 @@ func (s *Server) executeSunnySubscriptionTask(task *Task, payload map[string]any
 		for outcome := range results {
 			item := map[string]any{"email": outcome.Email}
 			if outcome.Error != "" {
+				candidate := candidateBySession[outcome.SessionID]
+				if strings.TrimSpace(candidate.AccessToken) != "" {
+					noMailCandidates = append(noMailCandidates, candidate)
+					s.appendAccountTaskEvent(task.ID, outcome.Email, "subscription", "subscription.mail_fallback", fmt.Sprintf("账户 %s 邮箱订阅检测未完成，改用 AT 兜底：%s", outcome.Email, outcome.Error), "warning", map[string]any{"error": outcome.Error})
+					continue
+				}
 				result["failed"] = result["failed"].(int) + 1
 				item["status"] = "failed"
 				item["error"] = outcome.Error
