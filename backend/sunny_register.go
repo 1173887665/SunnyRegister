@@ -4316,6 +4316,10 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 	key := sunnyEmailKey(sess.Email)
 	acc := accounts[key]
 	mb := mailboxes[key]
+	displayEmail := strings.TrimSpace(sess.Email)
+	if mbEmail := strings.TrimSpace(mb.Email); mbEmail != "" {
+		displayEmail = mbEmail
+	}
 	statusSource := acc.Status
 	if mb.ID != 0 && strings.TrimSpace(mb.Status) != "" {
 		statusSource = mb.Status
@@ -4360,7 +4364,7 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 		groupName = s.sunnyGroupMap()[mb.GroupID]
 	}
 	return map[string]any{
-		"id": sess.ID, "account_id": sess.AccountID, "mailbox_id": mb.ID, "email": sess.Email,
+		"id": sess.ID, "account_id": sess.AccountID, "mailbox_id": mb.ID, "email": displayEmail,
 		"status": status, "plan_type": plan, "group_id": mb.GroupID, "group_name": groupName,
 		"phone_bound":           sunnyPhoneBindingCompleted(acc.PhoneNumber, acc.Status, mb.Status),
 		"rebind_email":          acc.RebindEmail,
@@ -4458,6 +4462,10 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 	key := sunnyEmailKey(row.Email)
 	account := accounts[key]
 	mailbox := mailboxes[key]
+	displayEmail := strings.TrimSpace(row.Email)
+	if mailboxEmail := strings.TrimSpace(mailbox.Email); mailboxEmail != "" {
+		displayEmail = mailboxEmail
+	}
 	statusSource := account.Status
 	if strings.TrimSpace(mailbox.Status) != "" {
 		statusSource = mailbox.Status
@@ -4504,7 +4512,7 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 		accountID = account.ID
 	}
 	return map[string]any{
-		"id": row.ID, "account_id": accountID, "mailbox_id": mailbox.ID, "email": row.Email,
+		"id": row.ID, "account_id": accountID, "mailbox_id": mailbox.ID, "email": displayEmail,
 		"status": status, "plan_type": plan, "trial_eligibility": trialEligibility, "group_id": mailbox.GroupID, "group_name": mailbox.GroupName,
 		"trial_country_results": sunnyTrialCountryResults(account.TrialCountryResultsJSON, mailbox.TrialCountryResultsJSON),
 		"checkout_kind":         checkoutKind, "checkout_result": sunnyCheckoutResultJSON(account.CheckoutResultJSON), "payment_methods": paymentMethods, "payment_probe_results": paymentProbeResults,

@@ -780,7 +780,7 @@ class SunnyDB:
         return dict(row) if row else None
 
     def persist_rebind(self, old_email: str, new_email: str, new_mailbox_api: str, pickup_token_hash: str, session: dict[str, Any]) -> None:
-        """Atomically replace the mailbox identity and fresh ChatGPT session after rebind."""
+        """Persist rebind metadata while keeping the original mailbox identity."""
         old_email = str(old_email or '').strip()
         new_email = str(new_email or '').strip()
         if not old_email or not new_email or '@' not in new_email:
@@ -830,12 +830,12 @@ class SunnyDB:
                 (new_email, new_mailbox_api, new_mailbox_api, pickup_token_hash, raw, timestamp, mailbox['id']),
             )
             self.conn.execute(
-                """update sunny_accounts set email=?,access_token=?,openai_rt=?,rebind_email=?,rebind_mailbox_api=?,last_error='',updated_at=? where id=?""",
-                (new_email, access_token, refresh_token, new_email, new_mailbox_api, timestamp, account['id']),
+                """update sunny_accounts set access_token=?,openai_rt=?,rebind_email=?,rebind_mailbox_api=?,last_error='',updated_at=? where id=?""",
+                (access_token, refresh_token, new_email, new_mailbox_api, timestamp, account['id']),
             )
             self.conn.execute(
-                """update sunny_sessions set email=?,access_token=?,refresh_token=?,id_token=?,session_json=?,storage_state_json=?,raw_mailbox_line=?,access_token_status=?,access_token_error='',access_token_checked_at=?,last_refresh_at=?,updated_at=? where id=?""",
-                (new_email, access_token, refresh_token, id_token, session_json, storage_state, raw, 'valid' if access_token else 'invalid', timestamp, timestamp, timestamp, current_session['id']),
+                """update sunny_sessions set access_token=?,refresh_token=?,id_token=?,session_json=?,storage_state_json=?,raw_mailbox_line=?,access_token_status=?,access_token_error='',access_token_checked_at=?,last_refresh_at=?,updated_at=? where id=?""",
+                (access_token, refresh_token, id_token, session_json, storage_state, raw, 'valid' if access_token else 'invalid', timestamp, timestamp, timestamp, current_session['id']),
             )
             if pending_id:
                 self.conn.execute("delete from sunny_mailboxes where id=?", (pending_id,))

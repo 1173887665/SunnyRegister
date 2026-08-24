@@ -510,6 +510,12 @@ func TestReconcileSunnyRebindCredentialsBackfillsMailboxAndSession(t *testing.T)
 	if err := s.db.Model(&account).Updates(map[string]any{"rebind_email": "existing-rebind@example.com", "rebind_mailbox_api": pickup}).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := s.db.Model(&account).Update("email", "existing-rebind@example.com").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Model(&session).Update("email", "existing-rebind@example.com").Error; err != nil {
+		t.Fatal(err)
+	}
 	reconcileSunnyRebindCredentials(s.db)
 	var mailbox SunnyMailbox
 	if err := s.db.First(&mailbox, account.MailboxID).Error; err != nil {
@@ -520,6 +526,12 @@ func TestReconcileSunnyRebindCredentialsBackfillsMailboxAndSession(t *testing.T)
 	}
 	if err := s.db.First(&session, session.ID).Error; err != nil {
 		t.Fatal(err)
+	}
+	if err := s.db.First(&account, account.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if account.Email != "session@example.com" || session.Email != "session@example.com" {
+		t.Fatalf("rebind identity was not restored: account=%q session=%q", account.Email, session.Email)
 	}
 	if session.RawMailboxLine != pickupWithEmail(mailbox.RebindEmail, pickup) {
 		t.Fatalf("session credential was not reconciled: %q", session.RawMailboxLine)

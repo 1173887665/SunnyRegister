@@ -353,6 +353,7 @@ func reconcileSunnyRebindCredentials(db *gorm.DB) {
 			continue
 		}
 		raw := sunnyURLAPIRaw(rebindEmail, rebindAPI)
+		canonicalEmail := strings.TrimSpace(mailbox.Email)
 		_ = db.Transaction(func(tx *gorm.DB) error {
 			if err := tx.Model(&SunnyMailbox{}).Where("id = ?", mailbox.ID).Updates(map[string]any{
 				"rebind_email": rebindEmail, "rebind_mailbox_api": rebindAPI,
@@ -363,6 +364,18 @@ func reconcileSunnyRebindCredentials(db *gorm.DB) {
 			}
 			if account.MailboxID != mailbox.ID {
 				if err := tx.Model(&SunnyAccount{}).Where("id = ?", account.ID).Update("mailbox_id", mailbox.ID).Error; err != nil {
+					return err
+				}
+			}
+			if canonicalEmail != "" && strings.EqualFold(strings.TrimSpace(account.Email), rebindEmail) && !strings.EqualFold(strings.TrimSpace(account.Email), canonicalEmail) {
+				if err := tx.Model(&SunnyAccount{}).Where("id = ?", account.ID).Update("email", canonicalEmail).Error; err != nil {
+					return err
+				}
+				sessionQuery := tx.Model(&SunnySession{}).Where("LOWER(email) = ?", sunnyEmailKey(rebindEmail))
+				if account.ID != 0 {
+					sessionQuery = sessionQuery.Or("account_id = ?", account.ID)
+				}
+				if err := sessionQuery.Update("email", canonicalEmail).Error; err != nil {
 					return err
 				}
 			}
