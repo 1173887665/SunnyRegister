@@ -331,8 +331,8 @@ func TestSunnyTrialRouteCreatesLocalTask(t *testing.T) {
 func TestSunnyTrialCountryRouteUsesEnabledCommerceCountries(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	proxies := []SunnyProxy{
-		{Address: "http://commerce-us.example:8080", Country: "US", PurposeTags: "commerce", Status: "enabled", Enabled: true},
-		{Address: "http://commerce-jp.example:8080", Country: "JP", PurposeTags: "commerce", Status: "enabled", Enabled: true},
+		{Address: "http://commerce-us.example:8080", Country: "US", PurposeTags: "commerce,payment_probe", Status: "enabled", Enabled: true},
+		{Address: "http://commerce-jp.example:8080", Country: "JP", PurposeTags: "commerce,payment_probe", Status: "enabled", Enabled: true},
 		{Address: "http://register-br.example:8080", Country: "BR", PurposeTags: "register", Status: "enabled", Enabled: true},
 	}
 	if err := s.db.Create(&proxies).Error; err != nil {

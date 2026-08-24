@@ -673,7 +673,7 @@ func (s *Server) sunnyCommerceProxyGroups() (map[string][]SunnyProxy, error) {
 	var proxies []SunnyProxy
 	purposeQuery := "(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?"
 	if err := s.db.Where("status = ? AND enabled = ?", "enabled", true).
-		Where(purposeQuery, ","+sunnyProxyPurposeCommerce+",").Order("id asc").Find(&proxies).Error; err != nil {
+		Where(purposeQuery, "%,"+sunnyProxyPurposeCommerce+",%").Order("id asc").Find(&proxies).Error; err != nil {
 		return nil, err
 	}
 	groups := map[string][]SunnyProxy{}
