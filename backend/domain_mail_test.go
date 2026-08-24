@@ -329,10 +329,14 @@ func TestDomainMailboxPublicPickupBindsTokenToMailbox(t *testing.T) {
 	tokenA, tokenB := "mailbox-token-a", "mailbox-token-b"
 	mailboxA := SunnyMailbox{Email: "a@example.com", MailboxType: "domain", MailboxChannel: "domain_api", AccessKey: "unused", PickupTokenHash: domainMailboxPickupTokenHash(tokenA), Status: "未注册", Enabled: true}
 	mailboxB := SunnyMailbox{Email: "b@example.com", MailboxType: "domain", MailboxChannel: "domain_api", AccessKey: "unused", PickupTokenHash: domainMailboxPickupTokenHash(tokenB), Status: "未注册", Enabled: true}
+	mailboxC := SunnyMailbox{Email: "legacy@example.com", RebindEmail: "new@example.com", RebindMailboxAPI: "https://sunny.example/api/sunny/domain-mail/pickup?email=new%40example.com&token=" + tokenA, MailboxType: "domain", MailboxChannel: "domain_api", AccessKey: "https://sunny.example/api/sunny/domain-mail/pickup?email=new%40example.com&token=" + tokenA, PickupTokenHash: domainMailboxPickupTokenHash(tokenA), Status: "已注册", Enabled: true}
 	if err := s.db.Create(&mailboxA).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := s.db.Create(&mailboxB).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Create(&mailboxC).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -366,6 +370,9 @@ func TestDomainMailboxPublicPickupBindsTokenToMailbox(t *testing.T) {
 	}
 	if recorder := request(mailboxA.Email, "wrong-token"); recorder.Code != http.StatusForbidden {
 		t.Fatalf("wrong token must be rejected: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := request(mailboxC.RebindEmail, tokenA); recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "978744") {
+		t.Fatalf("rebound mailbox pickup failed: %d %s", recorder.Code, recorder.Body.String())
 	}
 	if err := s.db.Model(&mailboxA).Update("enabled", false).Error; err != nil {
 		t.Fatal(err)

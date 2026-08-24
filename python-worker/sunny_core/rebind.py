@@ -225,6 +225,14 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         db.persist_rebind(old_email, new_email, new_api, new_api_token_hash, new_result)
         log(f"[{old_email}] 换绑成功：{new_email}")
         return {"email": old_email, "new_email": new_email, "status": "success"}
+    except Exception as exc:
+        if new_email and new_api:
+            try:
+                db.persist_rebind_failure(old_email, new_email, new_api, new_api_token_hash, str(exc))
+                log(f"[{old_email}] 换绑失败邮箱已保存到自建域名邮箱池：{new_email}")
+            except Exception as persist_exc:
+                log(f"[{old_email}] 保存失败邮箱记录失败：{persist_exc}")
+        raise
     finally:
         for flow in (old_flow, new_flow):
             if flow is None:

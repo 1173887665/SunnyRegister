@@ -294,6 +294,8 @@ class SunnyDB:
             "sunny_mailboxes": {
                 "mailbox_type": "text DEFAULT 'microsoft'",
                 "mailbox_channel": "text DEFAULT 'outlook'",
+                "rebind_email": "text DEFAULT ''",
+                "rebind_mailbox_api": "text DEFAULT ''",
                 "access_key": "text DEFAULT ''",
                 "pickup_token_hash": "text DEFAULT ''",
                 "chat_gpt_password": "text DEFAULT ''",
@@ -758,10 +760,17 @@ class SunnyDB:
         return [dict(r) for r in rows]
 
     def fetch_mailbox_by_email(self, email: str) -> dict[str, Any] | None:
-        row = self.conn.execute("select * from sunny_mailboxes where lower(email)=lower(?) limit 1", (email,)).fetchone()
+        requested = str(email or "").strip()
+        row = self.conn.execute("select * from sunny_mailboxes where lower(email)=lower(?) or lower(rebind_email)=lower(?) limit 1", (requested, requested)).fetchone()
         if not row:
             return None
         item = dict(row)
+        if str(item.get("email") or "").strip().lower() != requested.lower() and str(item.get("rebind_email") or "").strip().lower() == requested.lower():
+            item["email"] = requested
+            item["access_key"] = str(item.get("rebind_mailbox_api") or item.get("access_key") or "")
+            item["raw"] = f"{requested}----{item['access_key']}"
+            item["mailbox_type"] = "domain"
+            item["mailbox_channel"] = "domain_api"
         self._hydrate_mailbox_auth(item)
         return item
 
@@ -787,17 +796,9 @@ class SunnyDB:
             storage_state = json.dumps(storage_state, ensure_ascii=False)
         raw = f"{new_email}----{new_mailbox_api}"
         with self.conn:
-            group_name = f"domain-api-{datetime.now(app_timezone()).strftime('%m-%d')}"
-            self.conn.execute(
-                "insert into sunny_mailbox_groups(name,description,created_at,updated_at) values(?,?,?,?) on conflict(name) do nothing",
-                (group_name, "自建域名邮箱 API 换绑", timestamp, timestamp),
-            )
-            group = self.conn.execute("select id from sunny_mailbox_groups where name=?", (group_name,)).fetchone()
-            if not group:
-                raise ValueError('自建域名邮箱分组创建失败')
             conflict = self.conn.execute(
-                "select email from sunny_mailboxes where lower(email)=lower(?) and lower(email)<>lower(?) limit 1",
-                (new_email, old_email),
+                "select email from sunny_mailboxes where (lower(email)=lower(?) or lower(rebind_email)=lower(?)) and lower(email)<>lower(?) limit 1",
+                (new_email, new_email, old_email),
             ).fetchone()
             if conflict:
                 raise ValueError('换绑邮箱已存在于邮箱池中')
@@ -819,16 +820,41 @@ class SunnyDB:
             if not mailbox or not account or not current_session:
                 raise ValueError('换绑账户关联的邮箱、账户或会话记录不完整')
             self.conn.execute(
-                """update sunny_mailboxes set group_id=?,email=?,mailbox_type='domain',mailbox_channel='domain_api',access_key=?,pickup_token_hash=?,raw=?,last_error='',updated_at=? where id=?""",
-                (group['id'], new_email, new_mailbox_api, pickup_token_hash, raw, timestamp, mailbox['id']),
+                """update sunny_mailboxes set rebind_email=?,rebind_mailbox_api=?,mailbox_type='domain',mailbox_channel='domain_api',access_key=?,pickup_token_hash=?,raw=?,last_error='',updated_at=? where id=?""",
+                (new_email, new_mailbox_api, new_mailbox_api, pickup_token_hash, raw, timestamp, mailbox['id']),
             )
             self.conn.execute(
-                """update sunny_accounts set email=?,group_name=?,access_token=?,openai_rt=?,rebind_email=?,rebind_mailbox_api=?,last_error='',updated_at=? where id=?""",
-                (new_email, group_name, access_token, refresh_token, new_email, new_mailbox_api, timestamp, account['id']),
+                """update sunny_accounts set email=?,access_token=?,openai_rt=?,rebind_email=?,rebind_mailbox_api=?,last_error='',updated_at=? where id=?""",
+                (new_email, access_token, refresh_token, new_email, new_mailbox_api, timestamp, account['id']),
             )
             self.conn.execute(
                 """update sunny_sessions set email=?,access_token=?,refresh_token=?,id_token=?,session_json=?,storage_state_json=?,raw_mailbox_line=?,access_token_status=?,access_token_error='',access_token_checked_at=?,last_refresh_at=?,updated_at=? where id=?""",
                 (new_email, access_token, refresh_token, id_token, session_json, storage_state, raw, 'valid' if access_token else 'invalid', timestamp, timestamp, timestamp, current_session['id']),
+            )
+
+    def persist_rebind_failure(self, email: str, new_email: str, new_mailbox_api: str, pickup_token_hash: str, error: str) -> None:
+        """Keep a generated replacement mailbox visible when the rebind flow fails later."""
+        email = str(email or '').strip()
+        new_email = str(new_email or '').strip()
+        if not new_email or '@' not in new_email:
+            return
+        timestamp = now_sql()
+        raw = f"{new_email}----{new_mailbox_api}"
+        with self.conn:
+            group_name = f"domain-api-{datetime.now(app_timezone()).strftime('%m-%d')}"
+            self.conn.execute(
+                "insert into sunny_mailbox_groups(name,description,created_at,updated_at) values(?,?,?,?) on conflict(name) do nothing",
+                (group_name, "自建域名邮箱 API 换绑失败邮箱", timestamp, timestamp),
+            )
+            group = self.conn.execute("select id from sunny_mailbox_groups where name=?", (group_name,)).fetchone()
+            if not group:
+                return
+            exists = self.conn.execute("select id from sunny_mailboxes where lower(email)=lower(?)", (new_email,)).fetchone()
+            if exists:
+                return
+            self.conn.execute(
+                """insert into sunny_mailboxes(group_id,email,mailbox_type,mailbox_channel,access_key,pickup_token_hash,raw,status,enabled,last_error,latest_mail_json,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (group['id'], new_email, 'domain', 'domain_api', new_mailbox_api, pickup_token_hash, raw, '失败', 1, error, '{}', timestamp, timestamp),
             )
 
     def reserve_phone(self) -> dict[str, Any] | None:

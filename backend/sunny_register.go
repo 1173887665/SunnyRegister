@@ -246,7 +246,7 @@ func serializeSunnyMailbox(m SunnyMailbox, groups map[uint]string, planType ...s
 		trialEligibility = normalizeSunnyTrialEligibility(planType[3])
 	}
 	return map[string]any{
-		"id": m.ID, "account_id": accountID, "group_id": m.GroupID, "group_name": groups[m.GroupID], "email": m.Email,
+		"id": m.ID, "account_id": accountID, "group_id": m.GroupID, "group_name": groups[m.GroupID], "email": m.Email, "rebind_email": m.RebindEmail, "rebind_mailbox_api": m.RebindMailboxAPI,
 		"mailbox_type": normalizeSunnyMailboxType(m.MailboxType), "mailbox_channel": normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel), "access_key": m.AccessKey,
 		"password": m.Password, "chatgpt_password": m.ChatGPTPassword, "totp_secret": m.TOTPSecret, "client_id": m.ClientID, "refresh_token": m.RefreshToken, "openai_rt": m.OpenAIRT, "access_token": accessToken,
 		"has_chatgpt_password": strings.TrimSpace(m.ChatGPTPassword) != "", "has_totp_secret": strings.TrimSpace(m.TOTPSecret) != "",
@@ -276,7 +276,7 @@ func serializeSunnyMailboxList(m SunnyMailbox, groups map[uint]string, plan, acc
 	}
 	item["has_openai_rt"] = strings.TrimSpace(m.OpenAIRT) != ""
 	item["has_access_token"] = strings.TrimSpace(accessToken) != ""
-	for _, key := range []string{"password", "chatgpt_password", "totp_secret", "client_id", "refresh_token", "access_key", "openai_rt", "access_token", "raw", "last_error", "latest_mail", "last_mail_at"} {
+	for _, key := range []string{"password", "chatgpt_password", "totp_secret", "client_id", "refresh_token", "access_key", "rebind_mailbox_api", "openai_rt", "access_token", "raw", "last_error", "latest_mail", "last_mail_at"} {
 		delete(item, key)
 	}
 	return item
@@ -354,7 +354,14 @@ func normalizeSunnyEditableEmail(value string) (string, error) {
 
 func sunnyEmailRenameConflict(tx *gorm.DB, email string) error {
 	key := sunnyEmailKey(email)
-	for _, model := range []any{&SunnyMailbox{}, &SunnyAccount{}, &SunnySession{}} {
+	var mailboxCount int64
+	if err := tx.Model(&SunnyMailbox{}).Where("LOWER(email) = ? OR LOWER(rebind_email) = ?", key, key).Count(&mailboxCount).Error; err != nil {
+		return err
+	}
+	if mailboxCount > 0 {
+		return fmt.Errorf("邮箱地址已被其他邮箱、账户或会话使用")
+	}
+	for _, model := range []any{&SunnyAccount{}, &SunnySession{}} {
 		var count int64
 		if err := tx.Model(model).Where("LOWER(email) = ?", key).Count(&count).Error; err != nil {
 			return err
@@ -376,7 +383,15 @@ func sunnyMailboxRawForEmail(mailbox SunnyMailbox, email string) string {
 		}
 	} else if mailboxType == "domain" {
 		if strings.TrimSpace(mailbox.AccessKey) != "" {
-			return strings.Join([]string{email, strings.TrimSpace(mailbox.AccessKey)}, "----")
+			credentialEmail := email
+			if strings.TrimSpace(mailbox.RebindEmail) != "" {
+				credentialEmail = strings.TrimSpace(mailbox.RebindEmail)
+			}
+			accessKey := strings.TrimSpace(mailbox.AccessKey)
+			if strings.TrimSpace(mailbox.RebindMailboxAPI) != "" {
+				accessKey = strings.TrimSpace(mailbox.RebindMailboxAPI)
+			}
+			return strings.Join([]string{credentialEmail, accessKey}, "----")
 		}
 	} else if mailboxType == "apple" {
 		if mailboxChannel == "url_api" || mailboxChannel == "xbovo" {
@@ -565,6 +580,9 @@ func (s *Server) sunnyMailboxLinkedDataByEmail(emails []string) sunnyMailboxLink
 
 func sunnyPlanTypeForMailbox(m SunnyMailbox, sessionPlans map[string]string, accountExists map[string]bool) string {
 	key := sunnyEmailKey(m.Email)
+	if m.RebindEmail != "" && !accountExists[key] {
+		key = sunnyEmailKey(m.RebindEmail)
+	}
 	if plan := normalizeSunnyPlanType(m.AccountType); plan != "" && plan != "free" {
 		return plan
 	}
@@ -627,7 +645,8 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			query = query.Where("enabled = ?", boolValue(enabled, true))
 		}
 		if kw := strings.TrimSpace(q.Get("q")); kw != "" {
-			query = query.Where("email LIKE ?", "%"+kw+"%")
+			like := "%" + kw + "%"
+			query = query.Where("email LIKE ? OR rebind_email LIKE ?", like, like)
 		}
 		planFilter := normalizeSunnyPlanType(q.Get("plan_type"))
 		trialFilter := normalizeSunnyTrialFilter(q.Get("trial_eligibility"))
@@ -635,18 +654,24 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			var allRows []SunnyMailbox
 			allQuery := query
 			if summary {
-				allQuery = allQuery.Select("id", "group_id", "email", "mailbox_type", "mailbox_channel", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
+				allQuery = allQuery.Select("id", "group_id", "email", "rebind_email", "rebind_mailbox_api", "mailbox_type", "mailbox_channel", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
 			}
 			allQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "status_changed_at": "status_changed_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Find(&allRows)
 			gm := s.sunnyGroupMap()
 			emails := []string{}
 			for _, m := range allRows {
 				emails = append(emails, m.Email)
+				if m.RebindEmail != "" {
+					emails = append(emails, m.RebindEmail)
+				}
 			}
 			linked := s.sunnyMailboxLinkedDataByEmail(emails)
 			filtered := []map[string]any{}
 			for _, m := range allRows {
 				key := sunnyEmailKey(m.Email)
+				if m.RebindEmail != "" && !linked.accountExists[key] {
+					key = sunnyEmailKey(m.RebindEmail)
+				}
 				plan := sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists)
 				if planFilter != "" && normalizeSunnyPlanType(plan) != planFilter {
 					continue
@@ -710,18 +735,24 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		var rows []SunnyMailbox
 		listQuery := query
 		if summary {
-			listQuery = listQuery.Select("id", "group_id", "email", "mailbox_type", "mailbox_channel", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
+			listQuery = listQuery.Select("id", "group_id", "email", "rebind_email", "rebind_mailbox_api", "mailbox_type", "mailbox_channel", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
 		}
 		listQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "status_changed_at": "status_changed_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Offset((page - 1) * size).Limit(size).Find(&rows)
 		gm := s.sunnyGroupMap()
 		emails := []string{}
 		for _, m := range rows {
 			emails = append(emails, m.Email)
+			if m.RebindEmail != "" {
+				emails = append(emails, m.RebindEmail)
+			}
 		}
 		linked := s.sunnyMailboxLinkedDataByEmail(emails)
 		items := []map[string]any{}
 		for _, m := range rows {
 			key := sunnyEmailKey(m.Email)
+			if m.RebindEmail != "" && !linked.accountExists[key] {
+				key = sunnyEmailKey(m.RebindEmail)
+			}
 			item := serializeSunnyMailboxList(m, gm, sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists), linked.accessTokens[key], linked.accountIDs[key], linked.trialEligibility[key], summary)
 			if summary && strings.TrimSpace(linked.accountRTs[key]) != "" {
 				item["has_openai_rt"] = true
@@ -758,7 +789,14 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		}
 		if len(parts) == 1 && r.Method == http.MethodGet {
 			key := sunnyEmailKey(m.Email)
-			linked := s.sunnyMailboxLinkedDataByEmail([]string{m.Email})
+			emails := []string{m.Email}
+			if m.RebindEmail != "" {
+				emails = append(emails, m.RebindEmail)
+			}
+			linked := s.sunnyMailboxLinkedDataByEmail(emails)
+			if m.RebindEmail != "" && !linked.accountExists[key] {
+				key = sunnyEmailKey(m.RebindEmail)
+			}
 			writeJSON(w, 200, serializeSunnyMailboxList(m, s.sunnyGroupMap(), sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists), linked.accessTokens[key], linked.accountIDs[key], linked.trialEligibility[key], false))
 			return
 		}
@@ -780,6 +818,21 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				}
 				m.Email = requestedEmail
 				emailProvided = true
+			}
+			if _, ok := body["rebind_email"]; ok {
+				value := strings.TrimSpace(text(body["rebind_email"]))
+				if value != "" {
+					normalized, err := normalizeSunnyEditableEmail(value)
+					if err != nil {
+						writeError(w, http.StatusUnprocessableEntity, err.Error())
+						return
+					}
+					value = normalized
+				}
+				m.RebindEmail = value
+			}
+			if _, ok := body["rebind_mailbox_api"]; ok {
+				m.RebindMailboxAPI = strings.TrimSpace(text(body["rebind_mailbox_api"]))
 			}
 			if _, ok := body["access_key"]; ok {
 				m.AccessKey = text(body["access_key"])
@@ -863,13 +916,20 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 					writeError(w, http.StatusUnprocessableEntity, sunnyMailboxFormatHint(mailboxType, mailboxChannel))
 					return
 				}
-				if err := validateDomainMailboxAccessKey(m.AccessKey, m.Email); err != nil {
+				credentialEmail := m.Email
+				if m.RebindEmail != "" {
+					credentialEmail = m.RebindEmail
+				}
+				if m.RebindMailboxAPI != "" {
+					m.AccessKey = m.RebindMailboxAPI
+				}
+				if err := validateDomainMailboxAccessKey(m.AccessKey, credentialEmail); err != nil {
 					writeError(w, http.StatusUnprocessableEntity, sunnyMailboxFormatHint(mailboxType, mailboxChannel))
 					return
 				}
-				m.PickupTokenHash = domainMailboxTokenHashFromCredential(m.AccessKey, m.Email)
+				m.PickupTokenHash = domainMailboxTokenHashFromCredential(m.AccessKey, credentialEmail)
 				m.Password, m.ClientID, m.RefreshToken = "", "", ""
-				m.Raw = strings.Join([]string{strings.TrimSpace(m.Email), strings.TrimSpace(m.AccessKey)}, "----")
+				m.Raw = strings.Join([]string{strings.TrimSpace(credentialEmail), strings.TrimSpace(m.AccessKey)}, "----")
 			} else if mailboxType == "apple" {
 				if mailboxChannel != "xbovo" && mailboxChannel != "url_api" {
 					writeError(w, http.StatusUnprocessableEntity, "暂不支持该 iCloud 邮箱渠道")
@@ -1591,12 +1651,20 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 		limit = 50
 	}
 	proxyURL := s.sunnyMailboxProxyURL()
+	mailEmail := m.Email
+	mailAccessKey := m.AccessKey
+	if strings.TrimSpace(m.RebindEmail) != "" {
+		mailEmail = m.RebindEmail
+		if strings.TrimSpace(m.RebindMailboxAPI) != "" {
+			mailAccessKey = m.RebindMailboxAPI
+		}
+	}
 	var payload map[string]any
 	var err error
 	if normalizeSunnyMailboxType(m.MailboxType) == "remail" {
-		payload, err = remailLatestMail(m.AccessKey, m.Email, limit)
+		payload, err = remailLatestMail(mailAccessKey, mailEmail, limit)
 	} else if normalizeSunnyMailboxType(m.MailboxType) == "domain" {
-		payload, err = s.domainMailLatestMail(m.AccessKey, m.Email, limit)
+		payload, err = s.domainMailLatestMail(mailAccessKey, mailEmail, limit)
 	} else if normalizeSunnyMailboxType(m.MailboxType) == "apple" {
 		switch normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel) {
 		case "url_api":

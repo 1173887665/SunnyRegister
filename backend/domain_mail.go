@@ -438,7 +438,8 @@ func domainMailPublicPayload(messages []map[string]any, email string) map[string
 
 func (s *Server) domainMailboxMessagesForToken(ctx context.Context, email, token string) ([]map[string]any, error) {
 	var mailbox SunnyMailbox
-	if err := s.db.Where("LOWER(email) = ?", sunnyEmailKey(email)).First(&mailbox).Error; err != nil {
+	requestedEmail := strings.TrimSpace(email)
+	if err := s.db.Where("LOWER(email) = ? OR LOWER(rebind_email) = ?", sunnyEmailKey(requestedEmail), sunnyEmailKey(requestedEmail)).First(&mailbox).Error; err != nil {
 		return nil, fmt.Errorf("邮箱或取件 Token 无效")
 	}
 	expectedHash := strings.TrimSpace(mailbox.PickupTokenHash)
@@ -460,7 +461,7 @@ func (s *Server) domainMailboxMessagesForToken(ctx context.Context, email, token
 	if err != nil {
 		return nil, err
 	}
-	return client.listMessages(ctx, mailbox.Email)
+	return client.listMessages(ctx, requestedEmail)
 }
 
 func (s *Server) domainMailLatestMail(accessKey, email string, limit int) (map[string]any, error) {

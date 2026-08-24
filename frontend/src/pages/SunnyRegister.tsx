@@ -25,7 +25,7 @@ const DATA_TABLE_COLUMNS: Record<string, DataTableColumn[]> = {
     { width: 120, minWidth: 90 }, { width: 120, minWidth: 90 }, { width: 130, minWidth: 100 }, { width: 190, minWidth: 150 }, { width: 110, minWidth: 88, maxWidth: 320 },
   ],
   mailboxes: [
-    { width: 44, minWidth: 44, maxWidth: 72 }, { width: 300, minWidth: 180 }, { width: 160, minWidth: 110 },
+    { width: 44, minWidth: 44, maxWidth: 72 }, { width: 300, minWidth: 180 }, { width: 220, minWidth: 150 }, { width: 160, minWidth: 110 },
     { width: 110, minWidth: 88 }, { width: 110, minWidth: 88 }, { width: 80, minWidth: 64 }, { width: 120, minWidth: 96 }, { width: 100, minWidth: 80 }, { width: 80, minWidth: 64 },
     { width: 100, minWidth: 82 }, { width: 150, minWidth: 120 }, { width: 190, minWidth: 150 }, { width: 200, minWidth: 150, maxWidth: 520 },
   ],
@@ -1981,10 +1981,11 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
         </div>
         <div className="sr-table-card sr-mailbox-table-panel overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
           <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
-          <div className="sr-table-scroll"><ResizableDataTable tableKey="mailboxes" columns={DATA_TABLE_COLUMNS.mailboxes} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/>,t.mailbox,t.mailboxGroup,t.status,t.planType,"AT","SK",t.chatgptPasswordColumn,t.twoFactorColumn,t.enabled,t.trafficUsage,<SortTimeHeader label={t.updatedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.actions]}>
+          <div className="sr-table-scroll"><ResizableDataTable tableKey="mailboxes" columns={DATA_TABLE_COLUMNS.mailboxes} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/>,t.mailbox,"换绑邮箱",t.mailboxGroup,t.status,t.planType,"AT","SK",t.chatgptPasswordColumn,t.twoFactorColumn,t.enabled,t.trafficUsage,<SortTimeHeader label={t.updatedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.actions]}>
             <tbody>{items.length ? items.map((m)=><tr key={m.id}>
               <td><input type="checkbox" checked={selected.includes(m.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,m.id])) : selected.filter((id)=>id!==m.id))}/></td>
               <td title={m.email}><div className="font-semibold">{m.email}</div></td>
+              <td title={m.rebind_email || "-"}>{m.rebind_email || "-"}</td>
               <td title={m.group_name || t.defaultGroup}>{m.group_name || t.defaultGroup}</td>
               <td><StatusBadge t={t} status={m.status || "未注册"} /></td>
               <td><PlanTypeBadge value={m.plan_type} /></td>
@@ -1996,7 +1997,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
               <td className="whitespace-nowrap text-xs tabular-nums" title={`${t.trafficUsageTip}: ${formatTrafficUsage(m)}`}>{formatTrafficUsage(m)}</td>
               <td>{formatDateTime(m.updated_at)}</td>
               <td><div className="flex flex-wrap gap-2"><button className="sr-link" onClick={()=>void openMailboxMail(m)}>{t.queryMail}</button><button className="sr-link" onClick={()=>void openMailboxEditor(m)}>{t.edit}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={m.email || ""} onConfirm={()=>deleteMailbox(m)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td>
-            </tr>) : <tr><td colSpan={13}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noMailbox}</div><p className="mt-2 text-sm text-slate-400">{emptyMailboxDescription}</p></div></td></tr>}</tbody>
+            </tr>) : <tr><td colSpan={14}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noMailbox}</div><p className="mt-2 text-sm text-slate-400">{emptyMailboxDescription}</p></div></td></tr>}</tbody>
           </ResizableDataTable></div>
           <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
         </div>
@@ -2201,7 +2202,7 @@ function MailboxEditModal({ t, mailbox, groups, onClose, onSaved, notify }: { t:
     try {
       await apiFetch(`/sunny/mailboxes/${mailbox.id}`, { method:"PUT", body: JSON.stringify({
         email, mailbox_type: isRemail ? "remail" : isDomain ? "domain" : isApple ? "apple" : "microsoft", mailbox_channel: isRemail ? "remail_api" : isDomain ? "domain_api" : isApple ? String(form.mailbox_channel || "xbovo") : "outlook",
-        access_key: isRemail || isDomain || isApple ? form.access_key : "", chatgpt_password: !clearChatGPTPassword && form.chatgpt_password ? form.chatgpt_password : undefined, clear_chatgpt_password: clearChatGPTPassword, totp_secret: !clearTOTPSecret && form.totp_secret ? form.totp_secret : undefined, clear_totp_secret: clearTOTPSecret, password: form.password, client_id: form.client_id, refresh_token: form.refresh_token,
+        access_key: isRemail || isDomain || isApple ? (isDomain && form.rebind_mailbox_api ? form.rebind_mailbox_api : form.access_key) : "", rebind_email: isDomain ? String(form.rebind_email || "").trim() : undefined, rebind_mailbox_api: isDomain ? String(form.rebind_mailbox_api || "").trim() : undefined, chatgpt_password: !clearChatGPTPassword && form.chatgpt_password ? form.chatgpt_password : undefined, clear_chatgpt_password: clearChatGPTPassword, totp_secret: !clearTOTPSecret && form.totp_secret ? form.totp_secret : undefined, clear_totp_secret: clearTOTPSecret, password: form.password, client_id: form.client_id, refresh_token: form.refresh_token,
         access_token: form.access_token, group_id: Number(form.group_id), status: form.status, plan_type: form.plan_type || form.account_type, trial_eligibility: form.trial_eligibility || "unknown", enabled: !!form.enabled,
       })});
       onSaved();
@@ -2212,6 +2213,7 @@ function MailboxEditModal({ t, mailbox, groups, onClose, onSaved, notify }: { t:
     <div className="sr-modal-body space-y-4">
       <div className="grid gap-4 md:grid-cols-2">
       <div><Label>{t.mailboxName}</Label><Input type="email" value={form.email||""} onChange={(e)=>setForm({...form,email:e.target.value})}/></div>
+        {isDomain && <><div><Label>换绑邮箱名</Label><Input type="email" placeholder="未换绑" value={form.rebind_email||""} onChange={(e)=>setForm({...form,rebind_email:e.target.value})}/></div><div className="md:col-span-2"><Label>换绑邮箱 API</Label><Input type="url" autoComplete="new-password" placeholder="https://sunny.example.com/api/sunny/domain-mail/pickup?..." value={form.rebind_mailbox_api||""} onChange={(e)=>setForm({...form,rebind_mailbox_api:e.target.value})}/></div></>}
         <div><Label>{t.mailboxType}</Label><Input disabled value={isRemail ? "Remail邮箱" : isDomain ? t.domainMailboxIdentity : isApple ? t.appleMailbox : t.microsoftMailbox}/></div>
         {isRemail ? <><div><Label>{t.channelType}</Label><Input disabled value="remail_api"/></div><div><Label>查询 Key</Label><Input type="url" autoComplete="new-password" placeholder="https://remail.aishop6.com/v1/pickup?email=...&token=..." value={form.access_key||""} onChange={(e)=>setForm({...form,access_key:e.target.value})}/></div></> : isDomain ? <>
           <div><Label>{t.channelType}</Label><Input disabled value="domain_api"/></div><div><Label>{t.domainMailboxPickupURL}</Label><Input type="text" autoComplete="new-password" placeholder="https://sunny.example.com/api/sunny/domain-mail/pickup?email=...&token=..." value={form.access_key||""} onChange={(e)=>setForm({...form,access_key:e.target.value})}/></div>
