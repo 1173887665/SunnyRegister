@@ -4063,7 +4063,7 @@ function AccountLogFloat({ open, kind, logs, onToggle, onKindChange, onClear }: 
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", stop, { once: true });
   }
   const renderLog = (item: AccountOperationLog, index: number) => <div key={item.id || index} className="grid grid-cols-[62px_8px_minmax(0,1fr)] gap-2"><span className="text-[var(--text-muted)]">{String(item.createdAt || "").slice(11, 19) || "--:--:--"}</span><span className={item.level === "error" ? "text-red-400" : item.level === "warning" ? "text-amber-400" : "text-emerald-400"}>●</span><span className="break-words">{item.message}{item.email ? <span className="ml-1 text-[var(--text-muted)]">[{item.email}]</span> : null}</span></div>;
-  return <div className="fixed bottom-5 right-5 z-[500] flex flex-col items-end gap-2">
+  return createPortal(<div className="sr-account-log-float fixed right-5 z-[500] flex flex-col items-end gap-2">
     {open && <div className="relative flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" style={{ width: size.width, height: size.height }}>
       <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2.5"><div className="flex min-w-0 items-center gap-2"><ScrollText className="h-4 w-4 shrink-0 text-[var(--accent)]"/><span className="text-sm font-bold">账户管理日志</span><span className="truncate text-[11px] text-[var(--text-muted)]">{ACCOUNT_LOG_LABELS[kind]}</span></div><div className="flex items-center gap-1"><button className="round-tool h-7 w-7" title="清除当前日志" onClick={onClear}><Trash2 className="h-3.5 w-3.5"/></button><button className="round-tool h-7 w-7" title="隐藏日志" onClick={onToggle}><ChevronDown className="h-4 w-4"/></button></div></div>
       <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--border)] bg-[var(--bg-main)] p-2">{ACCOUNT_LOG_KINDS.map((value) => <button key={value} type="button" className={cn("whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-semibold", value === kind ? "bg-[var(--accent)] text-white" : "text-[var(--text-muted)] hover:bg-[var(--bg-card)]")} onClick={() => onKindChange(value)}>{ACCOUNT_LOG_LABELS[value]}</button>)}</div>
@@ -4071,7 +4071,7 @@ function AccountLogFloat({ open, kind, logs, onToggle, onKindChange, onClear }: 
       <button type="button" aria-label="调整日志窗口大小" title="拖动调整日志窗口大小" className="absolute left-0 top-0 h-4 w-4 cursor-nwse-resize opacity-60 hover:opacity-100" onPointerDown={beginResize}><span className="absolute left-1 top-1 h-2 w-2 border-l-2 border-t-2 border-[var(--accent)]"/></button>
     </div>}
     <button className="inline-flex h-10 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] px-3 text-sm font-semibold shadow-lg hover:border-[var(--accent)]" title={open ? "隐藏账户管理日志" : "显示账户管理日志"} onClick={onToggle}><ScrollText className="h-4 w-4 text-[var(--accent)]"/>日志{open ? <ChevronDown className="h-4 w-4"/> : <ChevronUp className="h-4 w-4"/>}</button>
-  </div>;
+  </div>, document.body);
 }
 
 function FailureState({label,detail,onOpen}:{label:string;detail:string;onOpen:(value:{title:string;content:string})=>void}) {
