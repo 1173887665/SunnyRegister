@@ -4703,6 +4703,15 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		writeJSON(w, http.StatusAccepted, serializeTask(task))
 		return
 	}
+	if len(parts) == 2 && parts[0] == "payment-probe" && parts[1] == "countries" && r.Method == http.MethodGet {
+		groups, err := s.sunnyPaymentProxyGroups()
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"countries": sunnyPaymentProbeCountryList(groups)})
+		return
+	}
 	if len(parts) == 1 && parts[0] == "payment-probe" && r.Method == http.MethodPost {
 		body, err := parseBody(r)
 		if err != nil {

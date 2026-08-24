@@ -257,6 +257,44 @@ func (s *Server) sunnyPaymentProxyGroups() (map[string][]SunnyProxy, error) {
 	return groups, nil
 }
 
+func sunnyPaymentProbeCountryList(groups map[string][]SunnyProxy) []string {
+	countries := make([]string, 0, len(groups))
+	for country := range groups {
+		countries = append(countries, country)
+	}
+	sort.Strings(countries)
+	return countries
+}
+
+func selectSunnyPaymentProxyGroups(groups map[string][]SunnyProxy, requested []string) (map[string][]SunnyProxy, []string, error) {
+	if requested == nil {
+		countries := sunnyPaymentProbeCountryList(groups)
+		return groups, countries, nil
+	}
+	selected := map[string][]SunnyProxy{}
+	seen := map[string]bool{}
+	for _, value := range requested {
+		country, err := normalizeSunnyProxyCountry(value)
+		if err != nil {
+			return nil, nil, err
+		}
+		if seen[country] {
+			continue
+		}
+		proxies := groups[country]
+		if len(proxies) == 0 {
+			return nil, nil, fmt.Errorf("国家 %s 没有已启用的支付探测代理", country)
+		}
+		seen[country] = true
+		selected[country] = proxies
+	}
+	if len(selected) == 0 {
+		return nil, nil, fmt.Errorf("请至少选择一个支付探测国家")
+	}
+	countries := sunnyPaymentProbeCountryList(selected)
+	return selected, countries, nil
+}
+
 func (s *Server) activeSunnyPaymentProbeSessionIDs() (map[uint]bool, error) {
 	var tasks []Task
 	if err := s.db.Where("type = ? AND status NOT IN ?", sunnyPaymentProbeTaskType, []string{TaskSucceeded, TaskFailed, TaskInterrupted, TaskCancelled}).Find(&tasks).Error; err != nil {
@@ -289,7 +327,16 @@ func (s *Server) createSunnyPaymentProbeTask(body map[string]any) (Task, error) 
 	if len(candidates) == 0 {
 		return Task{}, fmt.Errorf("未找到需要探测支付方式的账户")
 	}
-	if _, err := s.sunnyPaymentProxyGroups(); err != nil {
+	groups, err := s.sunnyPaymentProxyGroups()
+	if err != nil {
+		return Task{}, err
+	}
+	var requestedCountries []string
+	if raw, exists := body["countries"]; exists {
+		requestedCountries = stringSlice(raw)
+	}
+	_, countries, err := selectSunnyPaymentProxyGroups(groups, requestedCountries)
+	if err != nil {
 		return Task{}, err
 	}
 	active, err := s.activeSunnyPaymentProbeSessionIDs()
@@ -302,7 +349,7 @@ func (s *Server) createSunnyPaymentProbeTask(body map[string]any) (Task, error) 
 			skipped = append(skipped, candidate.SessionID)
 		}
 	}
-	payload := map[string]any{"session_ids": ids, "skip_session_ids": skipped}
+	payload := map[string]any{"session_ids": ids, "skip_session_ids": skipped, "countries": countries}
 	return s.createTask(sunnyPaymentProbeTaskType, "sunny", payload, len(candidates)), nil
 }
 
@@ -371,6 +418,41 @@ func (s *Server) probeSunnyPaymentAccount(candidate sunnyPaymentProbeCandidate, 
 	return result
 }
 
+func mergeSunnyPaymentProbeResults(existingJSON string, current map[string]any) (map[string]any, []string) {
+	merged := jsonMap(existingJSON)
+	for country, currentValue := range current {
+		currentDetail, ok := currentValue.(map[string]any)
+		if !ok {
+			currentDetail = map[string]any{}
+		}
+		if text(currentDetail["error"]) != "" {
+			if existingDetail, ok := merged[country].(map[string]any); ok {
+				preserved := make(map[string]any, len(existingDetail)+len(currentDetail))
+				for key, value := range existingDetail {
+					preserved[key] = value
+				}
+				for key, value := range currentDetail {
+					if key == "methods" {
+						continue
+					}
+					preserved[key] = value
+				}
+				currentDetail = preserved
+			}
+		}
+		merged[country] = currentDetail
+	}
+	methods := []string{}
+	for _, value := range merged {
+		detail, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		methods = append(methods, stringSlice(detail["methods"])...)
+	}
+	return merged, normalizeSunnyPaymentMethods(methods)
+}
+
 func (s *Server) executeSunnyPaymentProbeTask(task *Task, payload map[string]any) {
 	task.Status = TaskRunning
 	task.StartedAt = sql.NullTime{Time: time.Now(), Valid: true}
@@ -381,6 +463,15 @@ func (s *Server) executeSunnyPaymentProbeTask(task *Task, payload map[string]any
 		return
 	}
 	groups, err := s.sunnyPaymentProxyGroups()
+	if err != nil {
+		s.failSunnyPaymentProbeTask(task, err.Error())
+		return
+	}
+	var requestedCountries []string
+	if _, exists := payload["countries"]; exists {
+		requestedCountries = stringSlice(payload["countries"])
+	}
+	groups, _, err = selectSunnyPaymentProxyGroups(groups, requestedCountries)
 	if err != nil {
 		s.failSunnyPaymentProbeTask(task, err.Error())
 		return
@@ -420,7 +511,12 @@ func (s *Server) executeSunnyPaymentProbeTask(task *Task, payload map[string]any
 				message := strings.Join(outcome.Errors, "; ")
 				result["failed"] = result["failed"].(int) + 1
 				item["status"], item["error"] = "failed", message
-				s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Candidate.Email).Updates(map[string]any{"payment_probe_results_json": dumpJSON(outcome.Countries), "payment_probe_error": message})
+				var account SunnyAccount
+				if queryErr := s.db.Where("email = ?", outcome.Candidate.Email).First(&account).Error; queryErr == nil {
+					mergedCountries, mergedMethods := mergeSunnyPaymentProbeResults(account.PaymentProbeResultsJSON, outcome.Countries)
+					item["payment_methods"] = mergedMethods
+					s.db.Model(&SunnyAccount{}).Where("id = ?", account.ID).Updates(map[string]any{"payment_methods_json": dumpJSON(mergedMethods), "payment_probe_methods_json": dumpJSON(mergedMethods), "payment_probe_results_json": dumpJSON(mergedCountries), "payment_probe_error": message})
+				}
 			default:
 				message := strings.Join(outcome.Errors, "; ")
 				status := "detected"
@@ -434,8 +530,16 @@ func (s *Server) executeSunnyPaymentProbeTask(task *Task, payload map[string]any
 				if message != "" {
 					item["error"] = message
 				}
-				updates := map[string]any{"payment_methods_json": dumpJSON(outcome.Methods), "payment_probe_methods_json": dumpJSON(outcome.Methods), "payment_probe_results_json": dumpJSON(outcome.Countries), "payment_probe_error": message, "payment_probed_at": now}
-				if updateErr := s.db.Model(&SunnyAccount{}).Where("email = ?", outcome.Candidate.Email).Updates(updates).Error; updateErr != nil {
+				var account SunnyAccount
+				queryErr := s.db.Where("email = ?", outcome.Candidate.Email).First(&account).Error
+				mergedCountries, mergedMethods := mergeSunnyPaymentProbeResults(account.PaymentProbeResultsJSON, outcome.Countries)
+				item["payment_methods"] = mergedMethods
+				updates := map[string]any{"payment_methods_json": dumpJSON(mergedMethods), "payment_probe_methods_json": dumpJSON(mergedMethods), "payment_probe_results_json": dumpJSON(mergedCountries), "payment_probe_error": message, "payment_probed_at": now}
+				updateErr := queryErr
+				if updateErr == nil {
+					updateErr = s.db.Model(&SunnyAccount{}).Where("id = ?", account.ID).Updates(updates).Error
+				}
+				if updateErr != nil {
 					result[status] = result[status].(int) - 1
 					result["failed"] = result["failed"].(int) + 1
 					item["status"], item["error"] = "failed", updateErr.Error()

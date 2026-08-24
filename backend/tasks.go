@@ -784,7 +784,7 @@ func (s *Server) executeTask(taskID string) {
 func pythonWorkerTypes() map[string]bool {
 	raw := strings.TrimSpace(os.Getenv("PYTHON_TASK_TYPES"))
 	if raw == "" {
-		raw = "sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt,sunny_add_ls,register,account_check,account_check_all,platform_action,phone_bind,codex_oauth,get_rt,get_rt_bypass,gopay_pay_chatgpt,gopay_register_account"
+		raw = "sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt,sunny_rebind,sunny_add_ls,register,account_check,account_check_all,platform_action,phone_bind,codex_oauth,get_rt,get_rt_bypass,gopay_pay_chatgpt,gopay_register_account"
 	}
 	out := map[string]bool{}
 	for _, item := range strings.Split(raw, ",") {
@@ -793,12 +793,13 @@ func pythonWorkerTypes() map[string]bool {
 			out[key] = true
 		}
 	}
-	// SunnyRegister 的核心注册/登录任务必须始终允许派发给本项目 Python Worker。
+	// SunnyRegister 的核心注册/登录/换绑任务必须始终允许派发给本项目 Python Worker。
 	// 这样即使用户系统环境变量里残留了旧的 PYTHON_TASK_TYPES，也不会把注册机流程误判为不支持。
 	out["sunny_register"] = true
 	out["sunny_login"] = true
 	out["sunny_refresh_session"] = true
 	out["sunny_acquire_rt"] = true
+	out["sunny_rebind"] = true
 	out["sunny_add_ls"] = true
 	return out
 }
@@ -816,7 +817,7 @@ func (s *Server) tryDispatchPythonWorker(task *Task) bool {
 	}
 	if !pythonWorkerTypes()[task.Type] {
 		if strings.HasPrefix(task.Type, "sunny_") {
-			s.failPythonDispatch(task, "SunnyRegister 任务未包含在 PYTHON_TASK_TYPES 中，请加入 sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt 后重启后端")
+			s.failPythonDispatch(task, "SunnyRegister 任务未包含在 PYTHON_TASK_TYPES 中，请加入 sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt,sunny_rebind 后重启后端")
 			return true
 		}
 		return false

@@ -53,7 +53,7 @@ services:
       DATABASE_URL_FILE: /run/secrets/database_url
       PYTHON_WORKER_URL: http://python-worker:8765
       PYTHON_WORKER_TOKEN_FILE: /run/secrets/python_worker_token
-      PYTHON_TASK_TYPES: ${PYTHON_TASK_TYPES:-sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt}
+      PYTHON_TASK_TYPES: ${PYTHON_TASK_TYPES:-sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt,sunny_rebind}
       TZ: ${TZ:-Asia/Shanghai}
       SUNNY_TIMEZONE: ${SUNNY_TIMEZONE:-Asia/Shanghai}
       SUNNY_HEALTHCHECK_ENABLED: ${SUNNY_HEALTHCHECK_ENABLED:-true}

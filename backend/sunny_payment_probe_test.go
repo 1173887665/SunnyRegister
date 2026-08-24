@@ -138,6 +138,77 @@ func TestSunnyPaymentProbeTasksSkipOverlappingSessions(t *testing.T) {
 	}
 }
 
+func TestSunnyPaymentProbeTaskUsesSelectedCountries(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatal(err)
+	}
+	proxies := []SunnyProxy{
+		{Address: "http://jp.example:8080", Country: "JP", PurposeTags: sunnyProxyPurposePayment, Status: "enabled", Enabled: true},
+		{Address: "http://ph.example:8080", Country: "PH", PurposeTags: sunnyProxyPurposePayment, Status: "enabled", Enabled: true},
+		{Address: "http://disabled.example:8080", Country: "NL", PurposeTags: sunnyProxyPurposePayment, Status: "disabled", Enabled: false},
+	}
+	if err := s.db.Create(&proxies).Error; err != nil {
+		t.Fatal(err)
+	}
+	previousProbe := sunnyProbePaymentMethods
+	calledCountries := []string{}
+	sunnyProbePaymentMethods = func(_ context.Context, _, country, _, _ string) sunnyPaymentProbeResponse {
+		calledCountries = append(calledCountries, country)
+		return sunnyPaymentProbeResponse{Methods: []string{"gcash"}, HTTP: http.StatusOK}
+	}
+	t.Cleanup(func() { sunnyProbePaymentMethods = previousProbe })
+
+	task, err := s.createSunnyPaymentProbeTask(map[string]any{"session_ids": []uint{session.ID}, "countries": []any{"PH", "PH"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := jsonMap(task.PayloadJSON)
+	if got := strings.Join(stringSlice(payload["countries"]), ","); got != "PH" {
+		t.Fatalf("countries payload=%q", got)
+	}
+	s.executeSunnyPaymentProbeTask(&task, payload)
+	if got := strings.Join(calledCountries, ","); got != "PH" {
+		t.Fatalf("probed countries=%q", got)
+	}
+	if _, err := s.createSunnyPaymentProbeTask(map[string]any{"session_ids": []uint{session.ID}, "countries": []any{"NL"}}); err == nil || !strings.Contains(err.Error(), "NL") {
+		t.Fatalf("expected unavailable country error, got %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	s.sunnySessions(recorder, httptest.NewRequest(http.MethodGet, "/api/sunny/sessions/payment-probe/countries", nil), []string{"payment-probe", "countries"})
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"countries":["JP","PH"]`) {
+		t.Fatalf("countries endpoint status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestSunnyPaymentProbeMergesCountrySnapshots(t *testing.T) {
+	existing := `{"JP":{"methods":["paypal","card"]},"NL":{"methods":["ideal"]},"PH":{"methods":["gcash"]}}`
+
+	merged, methods := mergeSunnyPaymentProbeResults(existing, map[string]any{
+		"PH": map[string]any{"methods": []string{}, "http": http.StatusOK},
+	})
+	if got := strings.Join(methods, ","); got != "paypal,card,ideal" {
+		t.Fatalf("methods after successful empty PH snapshot=%q", got)
+	}
+	ph := merged["PH"].(map[string]any)
+	if len(stringSlice(ph["methods"])) != 0 || text(ph["error"]) != "" {
+		t.Fatalf("PH snapshot was not replaced: %#v", ph)
+	}
+
+	merged, methods = mergeSunnyPaymentProbeResults(existing, map[string]any{
+		"PH": map[string]any{"methods": []string{}, "http": 0, "error": "proxy timeout", "attempts": 2},
+	})
+	if got := strings.Join(methods, ","); got != "paypal,card,gcash,ideal" {
+		t.Fatalf("methods after failed PH snapshot=%q", got)
+	}
+	ph = merged["PH"].(map[string]any)
+	if got := strings.Join(stringSlice(ph["methods"]), ","); got != "gcash" || text(ph["error"]) != "proxy timeout" {
+		t.Fatalf("PH previous methods were not preserved with latest error: %#v", ph)
+	}
+}
+
 func TestSunnySessionPaymentMethodFilterUsesANDSemantics(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	if err := s.db.Model(&SunnyAccount{}).Where("email = ?", "session@example.com").Update("payment_methods_json", `["paypal","card"]`).Error; err != nil {

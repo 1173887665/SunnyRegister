@@ -38,7 +38,7 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
   exit 1
 fi
 export PYTHON_WORKER_URL="http://127.0.0.1:8765"
-export PYTHON_TASK_TYPES="sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt"
+export PYTHON_TASK_TYPES="sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt,sunny_rebind"
 export PORT="${SUNNYREGISTER_PORT:-8000}"
 export DISPLAY="${WORKER_DISPLAY:-${DISPLAY:-:99}}"
 

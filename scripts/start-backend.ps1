@@ -11,7 +11,7 @@ if (-not $env:DATABASE_URL) {
   throw "DATABASE_URL is required. Configure PostgreSQL before starting the backend."
 }
 $env:PYTHON_WORKER_URL = "http://127.0.0.1:8765"
-$env:PYTHON_TASK_TYPES = "sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt"
+$env:PYTHON_TASK_TYPES = "sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt,sunny_rebind"
 $env:TZ = "Asia/Shanghai"
 $env:SUNNY_TIMEZONE = "Asia/Shanghai"
 $env:SUNNY_HEALTHCHECK_ENABLED = if ($env:SUNNY_HEALTHCHECK_ENABLED) { $env:SUNNY_HEALTHCHECK_ENABLED } else { "true" }
