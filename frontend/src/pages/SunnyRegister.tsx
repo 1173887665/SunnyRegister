@@ -388,7 +388,7 @@ function updateSessionTask(clientId: string, updater: (task: PersistentSessionTa
   publishSessionTasks(sessionTaskSnapshot.tasks.map((task) => task.clientId === clientId ? updater(task) : task));
 }
 
-function dismissSessionRenewal(clientId: string, email: string) {
+function dismissSessionProgress(clientId: string, email: string) {
   const key = email.toLowerCase();
   updateSessionTask(clientId, (task) => ({ ...task, dismissedEmails: Array.from(new Set([...task.dismissedEmails, key])) }));
 }
@@ -468,6 +468,24 @@ function applySessionTaskEvents(clientId: string, events: AnyObj[]) {
         return;
       }
       if (event.type === "registration_progress" || detail.progress_type === "account_registration") {
+        if (task.kind === "add-ls") {
+          const existing = progress[key];
+          const eventState: SessionTaskState = detail.state === "completed"
+            ? "succeeded"
+            : detail.state === "abnormal"
+              ? "failed"
+              : "running";
+          progress[key] = {
+            email,
+            current: Math.max(existing?.current || 0, Number(detail.current || 0)),
+            total: Math.max(existing?.total || 1, Number(detail.total || 12)),
+            checkpoint: String(detail.checkpoint || existing?.checkpoint || "initializing"),
+            state: eventState,
+            error: String(detail.error || existing?.error || ""),
+            updatedAt: Date.now(),
+          };
+          return;
+        }
         if (task.kind === "acquire-rt") {
           progress[key] = {
             email,
@@ -515,14 +533,30 @@ function markSessionTaskTerminal(clientId: string, current: AnyObj) {
       const key = email.toLowerCase();
       const error = errors.find((message) => message.toLowerCase().includes(`[${key}]`)) || "";
       const existing = progress[key];
-      const succeeded = items.some((entry: AnyObj) => String(entry.email || "").toLowerCase() === key) && !error;
+      const resultItem = items.find((entry: AnyObj) => String(entry.email || "").toLowerCase() === key);
+      const resultStatus = String(resultItem?.status || "").toLowerCase();
+      const succeeded = Boolean(resultItem) && !error && (task.kind !== "add-ls" || ["success", "skipped"].includes(resultStatus));
+      const terminalCheckpoint = task.kind === "add-ls"
+        ? resultStatus === "skipped"
+          ? "login_secret_skipped"
+          : succeeded
+            ? "login_secret_completed"
+            : cancelled
+              ? "cancelled"
+              : "login_secret_failed"
+        : succeeded
+          ? "completed"
+          : cancelled
+            ? "cancelled"
+            : "failed";
+      const total = existing?.total || (task.kind === "add-ls" ? 12 : succeeded ? 1 : 9);
       progress[key] = {
         email,
-        current: succeeded ? Math.max(existing?.total || 1, existing?.current || 0) : existing?.current || 0,
-        total: existing?.total || (succeeded ? 1 : 9),
-        checkpoint: succeeded ? "completed" : cancelled ? "cancelled" : "failed",
+        current: succeeded ? Math.max(total, existing?.current || 0) : existing?.current || 0,
+        total,
+        checkpoint: terminalCheckpoint,
         state: succeeded ? "succeeded" : cancelled ? "cancelled" : "failed",
-        error: error || (!succeeded ? String(current.error || "") : ""),
+        error: error || String(resultItem?.error || "") || (!succeeded ? String(current.error || "") : ""),
         updatedAt: Date.now(),
       };
     });
@@ -790,6 +824,7 @@ Object.assign(zh, {
   addLoginSecretSummary: "LS 添加完成：成功 {success} 个，跳过 {skipped} 个，部分完成 {partial} 个，失败 {failed} 个",
   addLoginSecretDone: "账户 {email} 的 LS 已添加",
   addLoginSecretFailed: "账户 {email} 的 LS 添加失败",
+  closeLoginSecretProgress: "关闭添加 LS 进度",
   showCredential: "显示明文",
   hideCredential: "隐藏明文",
   exportLS: "导出LS",
@@ -824,6 +859,7 @@ Object.assign(en, {
   addLoginSecretSummary: "LS setup complete: {success} succeeded, {skipped} skipped, {partial} partial, {failed} failed",
   addLoginSecretDone: "LS added for {email}",
   addLoginSecretFailed: "Failed to add LS for {email}",
+  closeLoginSecretProgress: "Close Add LS progress",
   showCredential: "Show plaintext",
   hideCredential: "Hide plaintext",
   exportLS: "Export LS",
@@ -862,6 +898,7 @@ Object.assign(zh.progressSteps, {
   login_secret_2fa: "正在绑定 ChatGPT 2FA",
   login_secret_at_refresh: "正在检测并更新 Access Token",
   login_secret_completed: "登录密钥已完成",
+  login_secret_skipped: "账户已存在完整 LS，已跳过",
   login_secret_failed: "登录密钥未全部完成",
 });
 Object.assign(en.progressSteps, {
@@ -870,6 +907,7 @@ Object.assign(en.progressSteps, {
   login_secret_2fa: "Binding ChatGPT 2FA",
   login_secret_at_refresh: "Checking and updating Access Token",
   login_secret_completed: "Login Secret completed",
+  login_secret_skipped: "Complete Login Secret already exists; skipped",
   login_secret_failed: "Login Secret setup incomplete",
 });
 
@@ -3603,9 +3641,32 @@ function renewalViewForSession(tasks: PersistentSessionTask[], row: AnyObj) {
   return { task, progress };
 }
 
+function loginSecretViewForSession(tasks: PersistentSessionTask[], row: AnyObj) {
+  const task = [...tasks].reverse().find((item) => item.kind === "add-ls"
+    && item.sessionIds.some((id) => Number(id) === Number(row.id))
+    && !item.dismissedEmails.includes(String(row.email || "").toLowerCase()));
+  if (!task) return null;
+  const key = String(row.email || "").toLowerCase();
+  const progress = task.progress[key] || {
+    email: String(row.email || ""),
+    current: task.state === "succeeded" ? 12 : 0,
+    total: 12,
+    checkpoint: task.state === "succeeded" ? "login_secret_completed" : task.state === "failed" ? "login_secret_failed" : task.state === "cancelled" ? "cancelled" : "queued",
+    state: task.state,
+    error: task.error,
+    updatedAt: Date.now(),
+  };
+  return { task, progress };
+}
+
 function renewalStepLabel(t: AnyObj, checkpoint: string) {
   if (checkpoint === "account_deactivated") return t.statusLabels?.["已封禁"] || "Account banned";
   return t.renewalSteps?.[checkpoint] || checkpoint;
+}
+
+function SessionInlineProgressRow({ view, label, closeTitle }: { view: { task: PersistentSessionTask; progress: SessionRenewalProgress }; label: string; closeTitle: string }) {
+  const percent = Math.min(100, Math.max(0, (view.progress.current / Math.max(1, view.progress.total)) * 100));
+  return <tr className="sr-renewal-progress-row"><td/><td colSpan={15}><div className={cn("sr-renewal-progress",`is-${view.progress.state}`)}><strong className="sr-renewal-progress-count">{view.progress.current}/{view.progress.total}</strong><div className="sr-renewal-progress-main"><div className="sr-renewal-progress-label">{label}</div><div className="sr-renewal-progress-track"><span style={{width:`${percent}%`}}/></div>{view.progress.error && <div className="sr-renewal-progress-error">{view.progress.error}</div>}</div><button className="sr-renewal-progress-close" title={closeTitle} onClick={()=>dismissSessionProgress(view.task.clientId,view.progress.email)}><X className="h-4 w-4"/></button></div></td></tr>;
 }
 
 function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", text: string) => void }) {
@@ -4082,11 +4143,12 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
           const lsLoading=fieldLoading[`${s.id}:login_secret`];
           const atLoading=fieldLoading[`${s.id}:access_token`];
           const rtLoading=fieldLoading[`${s.id}:refresh_token`];
+          const loginSecretView=loginSecretViewForSession(persistentTasks,s);
           const renewalView=renewalViewForSession(persistentTasks,s);
-          const renewalPercent=renewalView ? Math.min(100, Math.max(0, (renewalView.progress.current / renewalView.progress.total) * 100)) : 0;
           return <Fragment key={s.id}>
             <tr><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td title={s.email}>{s.email}</td><td title={s.rebind_email || "-"}>{s.rebind_email || "-"}</td><td title={s.group_name || "-"}>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_login_secret ? <button className="sr-session-field-button" disabled={lsLoading} onClick={()=>void copySessionField(s,"login_secret")}>{lsLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "LS"}</button> : "-"}</td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td><TrialEligibilityBadge t={t} row={s}/></td><td><CheckoutBadge t={t} row={s}/></td><td><PaymentMethodsBadge row={s}/></td><td>{s.access_token_status === "renewal_failed" ? <FailureState label={t.atRenewalFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "invalid" ? <FailureState label={t.atInvalidOrExpired} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_blocked" ? <FailureState label={t.atProbeBlocked} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_failed" ? <FailureState label={t.atProbeFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : formatDateTime(s.access_token_expires_at)}</td><td>{s.health_check_status === "failed" ? <FailureState label={t.accountHealthCheckFailed} detail={s.health_check_error} onOpen={setFailureDetail}/> : formatDateTime(s.last_health_checked_at)}</td><td><div className="sr-session-actions flex flex-wrap gap-1"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link inline-flex items-center gap-1" disabled={rebinding} onClick={()=>void rebindAccounts([s.id],s)}>{rebinding?<Loader2 className="h-4 w-4 animate-spin"/>:<RotateCw className="h-4 w-4"/>}{rebinding?"换绑中":"换绑"}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble><button className="sr-link inline-flex items-center gap-1" disabled={importingSub2} onClick={()=>void importSub2API([s.id],s)}>{importingSub2?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>}{importingSub2?t.importingSub2API:"反代"}</button><button className="sr-link inline-flex items-center gap-1" disabled={!trialCheckable(s) || checkingTrial} title={!trialCheckable(s) ? t.trialUnavailable : t.trialCheck} onClick={()=>runTrialCheck([s.id],s)}>{checkingTrial ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{checkingTrial ? t.trialChecking : t.trialCheck}</button><button className="sr-link inline-flex items-center gap-1" disabled={!trialCheckable(s) || probingCheckout} title={!trialCheckable(s)?t.checkoutProbeUnavailable:t.checkoutProbe} onClick={()=>runCheckoutProbe([s.id],s)}>{probingCheckout?<Loader2 className="h-4 w-4 animate-spin"/>:<Globe2 className="h-4 w-4"/>}{probingCheckout?t.checkoutProbing:t.checkoutProbe}</button><button className="sr-link inline-flex items-center gap-1" disabled={!s.has_access_token || probingPayment} title={!s.has_access_token?t.paymentProbeUnavailable:t.paymentProbe} onClick={()=>void openPaymentProbeDialog([s.id],s)}>{probingPayment?<Loader2 className="h-4 w-4 animate-spin"/>:<CreditCard className="h-4 w-4"/>}{probingPayment?t.paymentProbing:t.paymentProbe}</button><button className="sr-link inline-flex items-center gap-1" disabled={addingLoginSecretSessionIds.includes(Number(s.id))} title={t.addLoginSecret} onClick={()=>addLoginSecrets([s.id],s)}>{addingLoginSecretSessionIds.includes(Number(s.id))?<Loader2 className="h-4 w-4 animate-spin"/>:<KeyRound className="h-4 w-4"/>}{addingLoginSecretSessionIds.includes(Number(s.id))?t.addingLoginSecret:t.addLoginSecret}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing || checkingAT} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing || checkingAT ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link inline-flex items-center gap-1" disabled={checkingHealth} onClick={()=>runHealthCheck([s.id],s)}>{checkingHealth ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Activity className="inline h-4 w-4"/>}{checkingHealth ? t.healthChecking : t.healthCheck}</button><button className="sr-link" disabled={subscriptionCheckingSessionIds.length > 0} onClick={()=>runSubscriptionCheck([s.id],s)}>{checkingSubscription ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Crown className="inline h-4 w-4"/>}{checkingSubscription ? t.subscriptionChecking : t.subscriptionCheck}</button></div></td></tr>
-            {renewalView && <tr className="sr-renewal-progress-row"><td/><td colSpan={15}><div className={cn("sr-renewal-progress",`is-${renewalView.progress.state}`)}><strong className="sr-renewal-progress-count">{renewalView.progress.current}/{renewalView.progress.total}</strong><div className="sr-renewal-progress-main"><div className="sr-renewal-progress-label">{renewalStepLabel(t,renewalView.progress.checkpoint)}</div><div className="sr-renewal-progress-track"><span style={{width:`${renewalPercent}%`}}/></div>{renewalView.progress.error && <div className="sr-renewal-progress-error">{renewalView.progress.error}</div>}</div><button className="sr-renewal-progress-close" title={t.closeRenewalProgress} onClick={()=>dismissSessionRenewal(renewalView.task.clientId,s.email)}><X className="h-4 w-4"/></button></div></td></tr>}
+            {loginSecretView && <SessionInlineProgressRow view={loginSecretView} label={t.progressSteps?.[loginSecretView.progress.checkpoint] || loginSecretView.progress.checkpoint} closeTitle={t.closeLoginSecretProgress}/>}
+            {renewalView && <SessionInlineProgressRow view={renewalView} label={renewalStepLabel(t,renewalView.progress.checkpoint)} closeTitle={t.closeRenewalProgress}/>}
           </Fragment>;
         }) : <tr><td colSpan={16}><div className="sr-empty !min-h-[260px]"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><p className="mt-3 text-sm text-slate-400">{t.noData}</p></div></td></tr>}</tbody>
       </ResizableDataTable>
