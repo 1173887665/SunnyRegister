@@ -57,6 +57,24 @@ func TestRandomDomainPickupTokenUsesDMSKPrefix(t *testing.T) {
 	}
 }
 
+func TestDomainMailboxDomainsRotateAndKeepLegacyFallback(t *testing.T) {
+	first, err := nextDomainMailboxDomain(map[string]any{"domains": "one.example\ntwo.example"})
+	if err != nil {
+		t.Fatalf("select first domain: %v", err)
+	}
+	second, err := nextDomainMailboxDomain(map[string]any{"domains": []any{"one.example", "two.example"}})
+	if err != nil {
+		t.Fatalf("select second domain: %v", err)
+	}
+	if first == second {
+		t.Fatalf("domains should rotate, got %q twice", first)
+	}
+	legacy, err := domainMailboxDomains(map[string]any{"domain": "legacy.example"})
+	if err != nil || len(legacy) != 1 || legacy[0] != "legacy.example" {
+		t.Fatalf("legacy domain fallback failed: %#v %v", legacy, err)
+	}
+}
+
 func TestDomainMailboxPublicItemsUseRemailShapeAndRecentLimit(t *testing.T) {
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	messages := make([]map[string]any, 0, 13)

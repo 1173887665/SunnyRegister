@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
@@ -35,6 +36,7 @@ func defaultDomainMailboxConfig() map[string]any {
 		"site_password":            "",
 		"pickup_base_url":          "",
 		"domain":                   "",
+		"domains":                  []string{},
 		"random_local_length":      12,
 		"auto_add_user":            true,
 	}
@@ -51,18 +53,83 @@ func newDomainMailClient(cfg map[string]any) (*domainMailClient, error) {
 	base := strings.TrimRight(strings.TrimSpace(text(cfg["base_url"])), "/")
 	token := strings.TrimSpace(text(cfg["auth_token"]))
 	sitePassword := strings.TrimSpace(text(cfg["site_password"]))
-	domain := strings.TrimSpace(text(cfg["domain"]))
-	if base == "" || token == "" || sitePassword == "" || domain == "" {
+	if base == "" || token == "" || sitePassword == "" {
 		return nil, fmt.Errorf("自建域名邮箱配置不完整：请填写 API 地址、PUBLIC_API_TOKEN、站点密码和邮箱域名")
+	}
+	if _, err := domainMailboxDomains(cfg); err != nil {
+		return nil, err
 	}
 	parsed, err := url.Parse(base)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return nil, fmt.Errorf("自建域名邮箱 API 地址无效")
 	}
-	if strings.ContainsAny(domain, " @\t\r\n") || !strings.Contains(domain, ".") {
-		return nil, fmt.Errorf("自建域名邮箱域名无效")
-	}
 	return &domainMailClient{baseURL: base, token: token, sitePassword: sitePassword, client: &http.Client{Timeout: 30 * time.Second}}, nil
+}
+
+func domainMailboxDomains(cfg map[string]any) ([]string, error) {
+	values := make([]string, 0)
+	domainsExplicitlyConfigured := false
+	var appendValue func(any)
+	appendValue = func(value any) {
+		switch item := value.(type) {
+		case []string:
+			for _, entry := range item {
+				appendValue(entry)
+			}
+		case []any:
+			for _, entry := range item {
+				appendValue(entry)
+			}
+		default:
+			for _, entry := range strings.FieldsFunc(text(item), func(r rune) bool { return r == ',' || r == ';' || r == '\n' || r == '\r' }) {
+				domain := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(entry, "@")))
+				if domain != "" {
+					values = append(values, domain)
+				}
+			}
+		}
+	}
+	if raw, ok := cfg["domains"]; ok {
+		switch value := raw.(type) {
+		case string:
+			domainsExplicitlyConfigured = true
+		case []any:
+			domainsExplicitlyConfigured = len(value) > 0
+		case []string:
+			domainsExplicitlyConfigured = len(value) > 0
+		}
+		appendValue(raw)
+	}
+	if len(values) == 0 && !domainsExplicitlyConfigured {
+		appendValue(cfg["domain"])
+	}
+	unique := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, domain := range values {
+		if seen[domain] {
+			continue
+		}
+		if strings.ContainsAny(domain, " @\t\r\n") || !strings.Contains(domain, ".") {
+			return nil, fmt.Errorf("自建域名无效：%s", domain)
+		}
+		seen[domain] = true
+		unique = append(unique, domain)
+	}
+	if len(unique) == 0 {
+		return nil, fmt.Errorf("自建域名邮箱配置不完整：请至少填写一个邮箱域名")
+	}
+	return unique, nil
+}
+
+var domainMailboxRotation uint64
+
+func nextDomainMailboxDomain(cfg map[string]any) (string, error) {
+	domains, err := domainMailboxDomains(cfg)
+	if err != nil {
+		return "", err
+	}
+	index := atomic.AddUint64(&domainMailboxRotation, 1) - 1
+	return domains[index%uint64(len(domains))], nil
 }
 
 func domainMailResponseSummary(raw []byte) string {
@@ -515,7 +582,11 @@ func (s *Server) createDomainMailbox(ctx context.Context, cfg map[string]any, cl
 	length := intValue(cfg["random_local_length"], 12)
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
-		email := randomDomainEmail(text(cfg["domain"]), length)
+		domain, domainErr := nextDomainMailboxDomain(cfg)
+		if domainErr != nil {
+			return SunnyMailbox{}, domainErr
+		}
+		email := randomDomainEmail(domain, length)
 		var existing SunnyMailbox
 		if s.db.Where("LOWER(email) = ?", sunnyEmailKey(email)).First(&existing).Error == nil {
 			continue
@@ -609,6 +680,10 @@ func (s *Server) migrateLegacyDomainMailboxCredentials(cfg map[string]any) (int,
 func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Request, parts []string) {
 	if len(parts) == 1 && parts[0] == "config" && r.Method == http.MethodGet {
 		cfg := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
+		if domains, err := domainMailboxDomains(cfg); err == nil {
+			cfg["domains"] = domains
+			cfg["domain"] = domains[0]
+		}
 		cfg["auth_token_configured"] = strings.TrimSpace(text(cfg["auth_token"])) != ""
 		cfg["site_password_configured"] = strings.TrimSpace(text(cfg["site_password"])) != ""
 		cfg["auth_token"] = ""
@@ -627,6 +702,13 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 			body["site_password"] = text(current["site_password"])
 		}
 		cfg := mergeConfig(defaultDomainMailboxConfig(), body)
+		domains, domainErr := domainMailboxDomains(cfg)
+		if domainErr != nil {
+			writeError(w, http.StatusBadRequest, domainErr.Error())
+			return
+		}
+		cfg["domains"] = domains
+		cfg["domain"] = domains[0]
 		s.sunnySaveConfig(sunnyCfgDomainMailbox, cfg)
 		migrated := 0
 		if _, pickupErr := domainMailboxPickupBaseURL(cfg); pickupErr == nil {
@@ -674,7 +756,7 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 	case "check":
 		_, err = client.listMessages(ctx, "healthcheck@"+strings.TrimSpace(text(cfg["domain"])))
 		if err == nil {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "domain": text(cfg["domain"])})
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "domain": text(cfg["domain"]), "domains": cfg["domains"]})
 			return
 		}
 	case "generate":

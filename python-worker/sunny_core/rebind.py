@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -22,6 +23,7 @@ BEGIN_PATH = "/backend-api/accounts/change_email/begin"
 VERIFY_PATH = "/backend-api/accounts/change_email/verify"
 CLIENT_VERSION = "prod-46437587156517d920436051cb9ab60a95f0503a"
 CLIENT_BUILD = "9723596"
+_DOMAIN_ROTATION = itertools.count()
 
 
 class RebindError(RuntimeError):
@@ -109,14 +111,23 @@ def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str, 
     base = str(cfg.get("base_url") or "").strip().rstrip("/")
     token = str(cfg.get("auth_token") or "").strip()
     site_password = str(cfg.get("site_password") or "").strip()
-    domain = str(cfg.get("domain") or "").strip().lower()
+    raw_domains = cfg.get("domains")
+    if isinstance(raw_domains, (list, tuple)):
+        domain_values = [str(value or "") for value in raw_domains]
+    else:
+        domain_values = re.split(r"[,;\r\n]+", str(raw_domains or ""))
+    domain_values = [value.strip().lstrip("@").lower() for value in domain_values if value.strip()]
+    if not domain_values and str(cfg.get("domain") or "").strip():
+        domain_values = [str(cfg.get("domain") or "").strip().lstrip("@").lower()]
+    domains = list(dict.fromkeys(domain_values))
     pickup_base = str(cfg.get("pickup_base_url") or os.getenv("SUNNY_PUBLIC_ORIGIN") or "").strip().rstrip("/")
     pickup_parts = urlsplit(pickup_base)
-    if not base or not token or not site_password or "@" in domain or "." not in domain:
+    if not base or not token or not site_password or not domains or any("@" in domain or "." not in domain or any(char.isspace() for char in domain) for domain in domains):
         raise RebindError("自建域名邮箱配置不完整，请填写 CloudMail API、PUBLIC_API_TOKEN、PASSWORDS 和域名")
     if pickup_parts.scheme not in {"http", "https"} or not pickup_parts.netloc:
         raise RebindError("请先配置可公网访问的 SunnyRegister 取件 API 地址")
     length = max(6, min(32, int(cfg.get("random_local_length") or 12)))
+    domain = domains[next(_DOMAIN_ROTATION) % len(domains)]
     proxies = None
     for _ in range(8):
         local = re.sub(r"[^a-z0-9]", "", secrets.token_urlsafe(length + 4).lower())[:length]
