@@ -30,6 +30,7 @@ func defaultDomainMailboxConfig() map[string]any {
 		"enabled_for_rebinding":    false,
 		"base_url":                 "",
 		"auth_token":               "",
+		"site_password":            "",
 		"pickup_base_url":          "",
 		"domain":                   "",
 		"random_local_length":      12,
@@ -38,17 +39,19 @@ func defaultDomainMailboxConfig() map[string]any {
 }
 
 type domainMailClient struct {
-	baseURL string
-	token   string
-	client  *http.Client
+	baseURL      string
+	token        string
+	sitePassword string
+	client       *http.Client
 }
 
 func newDomainMailClient(cfg map[string]any) (*domainMailClient, error) {
 	base := strings.TrimRight(strings.TrimSpace(text(cfg["base_url"])), "/")
 	token := strings.TrimSpace(text(cfg["auth_token"]))
+	sitePassword := strings.TrimSpace(text(cfg["site_password"]))
 	domain := strings.TrimSpace(text(cfg["domain"]))
-	if base == "" || token == "" || domain == "" {
-		return nil, fmt.Errorf("自建域名邮箱配置不完整：请填写 API 地址、Authorization Token 和邮箱域名")
+	if base == "" || token == "" || sitePassword == "" || domain == "" {
+		return nil, fmt.Errorf("自建域名邮箱配置不完整：请填写 API 地址、PUBLIC_API_TOKEN、站点密码和邮箱域名")
 	}
 	parsed, err := url.Parse(base)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
@@ -57,7 +60,7 @@ func newDomainMailClient(cfg map[string]any) (*domainMailClient, error) {
 	if strings.ContainsAny(domain, " @\t\r\n") || !strings.Contains(domain, ".") {
 		return nil, fmt.Errorf("自建域名邮箱域名无效")
 	}
-	return &domainMailClient{baseURL: base, token: token, client: &http.Client{Timeout: 30 * time.Second}}, nil
+	return &domainMailClient{baseURL: base, token: token, sitePassword: sitePassword, client: &http.Client{Timeout: 30 * time.Second}}, nil
 }
 
 func domainMailResponseSummary(raw []byte) string {
@@ -105,6 +108,7 @@ func (c *domainMailClient) request(ctx context.Context, method, path string, bod
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", c.token)
 	req.Header.Set("X-Auth-Token", c.token)
+	req.Header.Set("x-custom-auth", c.sitePassword)
 	req.Header.Set("User-Agent", "SunnyRegister/1.0")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -390,7 +394,8 @@ func (s *Server) domainMailLatestMail(accessKey, email string, limit int) (map[s
 		if parseErr != nil {
 			return nil, parseErr
 		}
-		client := &domainMailClient{baseURL: base, token: token, client: &http.Client{Timeout: 30 * time.Second}}
+		cfg := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
+		client := &domainMailClient{baseURL: base, token: token, sitePassword: strings.TrimSpace(text(cfg["site_password"])), client: &http.Client{Timeout: 30 * time.Second}}
 		messages, err = client.listMessages(context.Background(), email)
 	}
 	if err != nil {
@@ -518,7 +523,9 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 	if len(parts) == 1 && parts[0] == "config" && r.Method == http.MethodGet {
 		cfg := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
 		cfg["auth_token_configured"] = strings.TrimSpace(text(cfg["auth_token"])) != ""
+		cfg["site_password_configured"] = strings.TrimSpace(text(cfg["site_password"])) != ""
 		cfg["auth_token"] = ""
+		cfg["site_password"] = ""
 		writeJSON(w, http.StatusOK, cfg)
 		return
 	}
@@ -527,6 +534,10 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 		if strings.TrimSpace(text(body["auth_token"])) == "" {
 			current := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
 			body["auth_token"] = text(current["auth_token"])
+		}
+		if strings.TrimSpace(text(body["site_password"])) == "" {
+			current := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
+			body["site_password"] = text(current["site_password"])
 		}
 		cfg := mergeConfig(defaultDomainMailboxConfig(), body)
 		s.sunnySaveConfig(sunnyCfgDomainMailbox, cfg)
@@ -540,7 +551,9 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 			}
 		}
 		cfg["auth_token_configured"] = strings.TrimSpace(text(cfg["auth_token"])) != ""
+		cfg["site_password_configured"] = strings.TrimSpace(text(cfg["site_password"])) != ""
 		cfg["auth_token"] = ""
+		cfg["site_password"] = ""
 		cfg["migrated_mailboxes"] = migrated
 		writeJSON(w, http.StatusOK, cfg)
 		return
@@ -554,6 +567,9 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 		enabled := cfg["enabled"]
 		if strings.TrimSpace(text(body["auth_token"])) == "" {
 			body["auth_token"] = text(cfg["auth_token"])
+		}
+		if strings.TrimSpace(text(body["site_password"])) == "" {
+			body["site_password"] = text(cfg["site_password"])
 		}
 		cfg = mergeConfig(cfg, body)
 		// Operational requests may test unsaved connection fields, but the

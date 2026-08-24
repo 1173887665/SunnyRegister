@@ -23,6 +23,7 @@ func TestSunnyRebindTaskCreatesWorkerTask(t *testing.T) {
 		"enabled_for_rebinding": true,
 		"base_url":              "https://mail.example",
 		"auth_token":            "token-1",
+		"site_password":         "site-password",
 		"pickup_base_url":       "https://sunny.example",
 		"domain":                "example.com",
 	}))

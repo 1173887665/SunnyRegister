@@ -92,6 +92,7 @@ def test_rebind_domain_mailbox_creates_individual_pickup_credential(monkeypatch)
                 "enabled_for_rebinding": True,
                 "base_url": "https://cloudmail.example",
                 "auth_token": "global-manager-token",
+                "site_password": "site-password",
                 "pickup_base_url": "https://sunny.example",
                 "domain": "example.com",
                 "random_local_length": 10,

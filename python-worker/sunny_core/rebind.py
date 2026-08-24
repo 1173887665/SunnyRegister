@@ -108,11 +108,12 @@ def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str, 
         raise RebindError("自建域名邮箱未启用邮箱换绑")
     base = str(cfg.get("base_url") or "").strip().rstrip("/")
     token = str(cfg.get("auth_token") or "").strip()
+    site_password = str(cfg.get("site_password") or "").strip()
     domain = str(cfg.get("domain") or "").strip().lower()
     pickup_base = str(cfg.get("pickup_base_url") or os.getenv("SUNNY_PUBLIC_ORIGIN") or "").strip().rstrip("/")
     pickup_parts = urlsplit(pickup_base)
-    if not base or not token or "@" in domain or "." not in domain:
-        raise RebindError("自建域名邮箱配置不完整")
+    if not base or not token or not site_password or "@" in domain or "." not in domain:
+        raise RebindError("自建域名邮箱配置不完整，请填写 CloudMail API、PUBLIC_API_TOKEN、PASSWORDS 和域名")
     if pickup_parts.scheme not in {"http", "https"} or not pickup_parts.netloc:
         raise RebindError("请先配置可公网访问的 SunnyRegister 取件 API 地址")
     length = max(6, min(32, int(cfg.get("random_local_length") or 12)))
@@ -124,7 +125,7 @@ def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str, 
             response = requests.post(
                 base + "/api/public/addUser",
                 json={"list": [{"email": email, "password": secrets.token_urlsafe(18)}]},
-                headers={"Accept": "application/json", "Authorization": token, "X-Auth-Token": token, "User-Agent": "SunnyRegister/1.0"},
+                headers={"Accept": "application/json", "Authorization": token, "X-Auth-Token": token, "x-custom-auth": site_password, "User-Agent": "SunnyRegister/1.0"},
                 timeout=30,
                 proxies=proxies,
             )

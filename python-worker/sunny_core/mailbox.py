@@ -1267,6 +1267,7 @@ class DomainMailReader:
         self.pickup_url = ""
         self.base_url = ""
         self.auth_token = ""
+        self.site_password = ""
         access_key = str(account.access_key or "").strip()
         if access_key.startswith(("http://", "https://")):
             parsed = urlparse(access_key)
@@ -1282,6 +1283,7 @@ class DomainMailReader:
                 raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱凭证格式无效", terminal=True) from exc
             self.base_url = str(metadata.get("base_url") or "").strip().rstrip("/")
             self.auth_token = str(metadata.get("auth_token") or "").strip()
+            self.site_password = str(metadata.get("site_password") or os.getenv("CLOUDMAIL_SITE_PASSWORD") or "").strip()
             if not self.base_url or not self.auth_token:
                 raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱凭证缺少 API 地址或 Authorization Token", terminal=True)
         self.seen_keys: set[str] = set()
@@ -1321,7 +1323,7 @@ class DomainMailReader:
                 response = requests.post(
                     self.base_url + "/api/public/emailList",
                     json={"toEmail": self.account.email, "timeSort": "desc", "type": 0, "isDel": 0, "num": 1, "size": 20},
-                    headers={"Authorization": self.auth_token, "X-Auth-Token": self.auth_token, "Accept": "application/json", "User-Agent": "SunnyRegister/1.0"},
+                    headers={"Authorization": self.auth_token, "X-Auth-Token": self.auth_token, "x-custom-auth": self.site_password, "Accept": "application/json", "User-Agent": "SunnyRegister/1.0"},
                     timeout=30,
                     proxies=self.proxies,
                 )

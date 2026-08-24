@@ -44,7 +44,7 @@ func TestDomainMailboxLatestMailUsesEmailListAndExtractsCode(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/public/emailList" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
-		if r.Header.Get("Authorization") != "token-1" || r.Header.Get("X-Auth-Token") != "token-1" {
+		if r.Header.Get("Authorization") != "token-1" || r.Header.Get("X-Auth-Token") != "token-1" || r.Header.Get("x-custom-auth") != "site-password" {
 			t.Errorf("missing auth headers")
 		}
 		var body map[string]any
@@ -58,6 +58,7 @@ func TestDomainMailboxLatestMailUsesEmailListAndExtractsCode(t *testing.T) {
 	}))
 	defer server.Close()
 	s := newSunnySessionTestServer(t)
+	s.sunnySaveConfig(sunnyCfgDomainMailbox, map[string]any{"site_password": "site-password"})
 	payload, err := s.domainMailLatestMail(domainMailboxCredential(server.URL, "token-1"), "user@example.com", 5)
 	if err != nil {
 		t.Fatalf("latest domain mail: %v", err)
@@ -75,7 +76,7 @@ func TestDomainMailAddUserAcceptsPlainTextSuccess(t *testing.T) {
 		_, _ = w.Write([]byte("邮箱用户创建成功"))
 	}))
 	defer server.Close()
-	client := &domainMailClient{baseURL: server.URL, token: "token-1", client: server.Client()}
+	client := &domainMailClient{baseURL: server.URL, token: "token-1", sitePassword: "site-password", client: server.Client()}
 	if err := client.addUser(context.Background(), "user@example.com"); err != nil {
 		t.Fatalf("plain-text addUser success must be accepted: %v", err)
 	}
@@ -88,7 +89,7 @@ func TestDomainMailResponsesKeepJSONStrictAndReportHTTPStatus(t *testing.T) {
 			_, _ = w.Write([]byte("请求参数不完整"))
 		}))
 		defer server.Close()
-		client := &domainMailClient{baseURL: server.URL, token: "token-1", client: server.Client()}
+		client := &domainMailClient{baseURL: server.URL, token: "token-1", sitePassword: "site-password", client: server.Client()}
 		err := client.addUser(context.Background(), "user@example.com")
 		if err == nil || !strings.Contains(err.Error(), "请求参数不完整") {
 			t.Fatalf("unexpected plain-text failure result: %v", err)
@@ -101,7 +102,7 @@ func TestDomainMailResponsesKeepJSONStrictAndReportHTTPStatus(t *testing.T) {
 			_, _ = w.Write([]byte("邮件服务暂时不可用"))
 		}))
 		defer server.Close()
-		client := &domainMailClient{baseURL: server.URL, token: "token-1", client: server.Client()}
+		client := &domainMailClient{baseURL: server.URL, token: "token-1", sitePassword: "site-password", client: server.Client()}
 		_, err := client.listMessages(context.Background(), "user@example.com")
 		if err == nil || !strings.Contains(err.Error(), "不是有效 JSON") || strings.Contains(err.Error(), "invalid character") {
 			t.Fatalf("unexpected strict JSON error: %v", err)
@@ -114,7 +115,7 @@ func TestDomainMailResponsesKeepJSONStrictAndReportHTTPStatus(t *testing.T) {
 			_, _ = w.Write([]byte("上游服务异常"))
 		}))
 		defer server.Close()
-		client := &domainMailClient{baseURL: server.URL, token: "token-1", client: server.Client()}
+		client := &domainMailClient{baseURL: server.URL, token: "token-1", sitePassword: "site-password", client: server.Client()}
 		err := client.addUser(context.Background(), "user@example.com")
 		if err == nil || !strings.Contains(err.Error(), "HTTP 502") || !strings.Contains(err.Error(), "上游服务异常") {
 			t.Fatalf("unexpected HTTP error: %v", err)
@@ -139,7 +140,7 @@ func TestDomainMailboxGenerateCreatesMailboxRecord(t *testing.T) {
 	defer server.Close()
 	s := newSunnySessionTestServer(t)
 	s.sunnySaveConfig(sunnyCfgDomainMailbox, map[string]any{
-		"base_url": server.URL, "auth_token": "token-1", "pickup_base_url": "https://sunny.example", "domain": "example.com", "random_local_length": 10, "auto_add_user": true,
+		"base_url": server.URL, "auth_token": "token-1", "site_password": "site-password", "pickup_base_url": "https://sunny.example", "domain": "example.com", "random_local_length": 10, "auto_add_user": true,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/sunny/domain-mail/generate", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -177,7 +178,7 @@ func TestDomainMailboxRegisterTaskPreparesMailboxIds(t *testing.T) {
 	defer server.Close()
 	s := newSunnySessionTestServer(t)
 	s.sunnySaveConfig(sunnyCfgDomainMailbox, map[string]any{
-		"enabled_for_registration": true, "base_url": server.URL, "auth_token": "token-1", "pickup_base_url": "https://sunny.example", "domain": "example.com", "auto_add_user": true,
+		"enabled_for_registration": true, "base_url": server.URL, "auth_token": "token-1", "site_password": "site-password", "pickup_base_url": "https://sunny.example", "domain": "example.com", "auto_add_user": true,
 	})
 	s.sunnySaveConfig(sunnyCfgProxy, mergeConfig(defaultProxyConfig(), map[string]any{"proxy_enabled": false}))
 	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/register", strings.NewReader(`{"identity":"domain","count":2,"concurrency":1}`))
@@ -212,7 +213,7 @@ func TestDomainMailboxGenerateRejectsWhenPoolDisabled(t *testing.T) {
 	defer server.Close()
 	s := newSunnySessionTestServer(t)
 	s.sunnySaveConfig(sunnyCfgDomainMailbox, map[string]any{
-		"enabled": false, "base_url": server.URL, "auth_token": "token-1", "pickup_base_url": "https://sunny.example", "domain": "example.com",
+		"enabled": false, "base_url": server.URL, "auth_token": "token-1", "site_password": "site-password", "pickup_base_url": "https://sunny.example", "domain": "example.com",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/sunny/domain-mail/generate", strings.NewReader(`{"enabled":true}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -234,7 +235,7 @@ func TestDomainMailboxPublicPickupBindsTokenToMailbox(t *testing.T) {
 	defer upstream.Close()
 	s := newSunnySessionTestServer(t)
 	s.sunnySaveConfig(sunnyCfgDomainMailbox, map[string]any{
-		"enabled": true, "base_url": upstream.URL, "auth_token": "manager-token", "pickup_base_url": "https://sunny.example", "domain": "example.com",
+		"enabled": true, "base_url": upstream.URL, "auth_token": "manager-token", "site_password": "site-password", "pickup_base_url": "https://sunny.example", "domain": "example.com",
 	})
 	tokenA, tokenB := "mailbox-token-a", "mailbox-token-b"
 	mailboxA := SunnyMailbox{Email: "a@example.com", MailboxType: "domain", MailboxChannel: "domain_api", AccessKey: "unused", PickupTokenHash: domainMailboxPickupTokenHash(tokenA), Status: "未注册", Enabled: true}
@@ -271,7 +272,7 @@ func TestDomainMailboxPublicPickupBindsTokenToMailbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.sunnySaveConfig(sunnyCfgDomainMailbox, map[string]any{
-		"enabled": false, "base_url": upstream.URL, "auth_token": "manager-token", "pickup_base_url": "https://sunny.example", "domain": "example.com",
+		"enabled": false, "base_url": upstream.URL, "auth_token": "manager-token", "site_password": "site-password", "pickup_base_url": "https://sunny.example", "domain": "example.com",
 	})
 	if recorder := request(mailboxA.Email, tokenA); recorder.Code != http.StatusForbidden {
 		t.Fatalf("disabled pool must reject pickup: %d %s", recorder.Code, recorder.Body.String())
@@ -290,7 +291,7 @@ func TestSavingDomainMailboxConfigMigratesLegacyGlobalCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPut, "/api/sunny/domain-mail/config", strings.NewReader(`{
-		"enabled":true,"base_url":"https://cloudmail.example","auth_token":"manager-token",
+		"enabled":true,"base_url":"https://cloudmail.example","auth_token":"manager-token","site_password":"site-password",
 		"pickup_base_url":"https://sunny.example","domain":"example.com"
 	}`))
 	req.Header.Set("Content-Type", "application/json")
