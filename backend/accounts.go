@@ -919,12 +919,16 @@ func chatGPTPayload(item AccountRecord) map[string]any {
 }
 
 func (s *Server) sub2APIAccountNotes(item AccountRecord) string {
+	cfg := defaultSub2APIConfig()
+	if s != nil && s.db != nil {
+		cfg = s.sunnyGetConfig(sunnyCfgSub2API, cfg)
+	}
 	var mailbox SunnyMailbox
 	var session SunnySession
 	if s != nil && s.db != nil && strings.TrimSpace(item.Email) != "" {
 		s.db.Where("LOWER(email) = LOWER(?)", item.Email).Limit(1).Find(&mailbox)
 		s.db.Where("LOWER(email) = LOWER(?)", item.Email).Limit(1).Find(&session)
-		if notes := sunnySub2Notes(mailbox, sunnySessionSecretKey(session, mailbox)); notes != "" {
+		if notes := sunnySub2NotesWithConfig(mailbox, sunnySessionSecretKey(session, mailbox), cfg); notes != "" {
 			return notes
 		}
 	}
@@ -951,7 +955,7 @@ func (s *Server) sub2APIAccountNotes(item AccountRecord) string {
 				if secretKey == "" {
 					secretKey = sunnyCanonicalMailboxCredential(notes, mailbox.MailboxType, mailbox.MailboxChannel)
 				}
-				return sunnySub2Notes(mailbox, secretKey)
+				return sunnySub2NotesWithConfig(mailbox, secretKey, cfg)
 			}
 		}
 		value := func(keys ...string) string {
@@ -973,11 +977,11 @@ func (s *Server) sub2APIAccountNotes(item AccountRecord) string {
 			ChatGPTPassword: value("chatgpt_password", "chat_gpt_password"),
 			TOTPSecret:      value("totp_secret", "totpSecret"),
 		}
-		if notes := sunnySub2Notes(mailbox, sunnyMailboxCredentialLine(mailbox)); notes != "" {
+		if notes := sunnySub2NotesWithConfig(mailbox, sunnyMailboxCredentialLine(mailbox), cfg); notes != "" {
 			return notes
 		}
 	}
-	return ""
+	return sunnySub2NotesWithConfig(SunnyMailbox{}, "", cfg)
 }
 
 func (s *Server) handleBatchExport(w http.ResponseWriter, r *http.Request, format string) {

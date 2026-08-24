@@ -1423,6 +1423,26 @@ func sunnySub2Notes(mailbox SunnyMailbox, secretKey string) string {
 	return strings.Join(lines, "\n")
 }
 
+func sunnySub2NotesWithConfig(mailbox SunnyMailbox, secretKey string, cfg map[string]any) string {
+	lines := []string{}
+	if boolValue(cfg["notes_include_sk"], false) {
+		if value := strings.TrimSpace(secretKey); value != "" {
+			lines = append(lines, "邮箱凭证："+value)
+		}
+	}
+	if boolValue(cfg["notes_include_ls"], false) {
+		if value := sunnyLoginSecretLine(mailbox); value != "" {
+			lines = append(lines, "密码2FA："+value)
+		}
+	}
+	if boolValue(cfg["notes_include_custom"], false) {
+		if value := strings.TrimSpace(text(cfg["notes_custom_text"])); value != "" {
+			lines = append(lines, value)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func parseSunnyMailboxLineForProvider(raw, mailboxType, channel string) (map[string]string, error) {
 	if normalizeSunnyMailboxType(mailboxType) == "remail" {
 		parts := strings.Split(strings.TrimSpace(raw), "----")
@@ -3847,7 +3867,11 @@ func (s *Server) sunnySub2APIConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func defaultSub2APIConfig() map[string]any {
-	return map[string]any{"enabled": true, "base_url": "", "admin_token": "", "name_prefix": "", "codex_image_bridge": false, "group_ids": []any{}, "proxy_id": 0, "concurrency": 3, "load_factor": 0, "priority": 50, "model_whitelist": []any{}}
+	return map[string]any{
+		"enabled": true, "base_url": "", "admin_token": "", "name_prefix": "", "codex_image_bridge": false,
+		"group_ids": []any{}, "proxy_id": 0, "concurrency": 3, "load_factor": 0, "priority": 50, "model_whitelist": []any{},
+		"notes_include_sk": false, "notes_include_ls": false, "notes_include_custom": false, "notes_custom_text": "",
+	}
 }
 
 func firstNonNil(values ...any) any {
@@ -4097,7 +4121,7 @@ func buildSunnySub2AccountPayload(sess SunnySession, cfg map[string]any, mailbox
 		mailbox = mailboxes[0]
 	}
 	payload := map[string]any{
-		"name": fallback(text(cfg["name_prefix"])+sess.Email, sess.Email), "notes": sunnySub2Notes(mailbox, sess.RawMailboxLine), "platform": "openai", "type": "oauth",
+		"name": fallback(text(cfg["name_prefix"])+sess.Email, sess.Email), "notes": sunnySub2NotesWithConfig(mailbox, sess.RawMailboxLine, cfg), "platform": "openai", "type": "oauth",
 		"credentials": credentials,
 		"extra":       extra, "group_ids": groupIDs, "concurrency": intValue(cfg["concurrency"], 3), "priority": intValue(cfg["priority"], 50),
 		"rate_multiplier": 1, "auto_pause_on_expired": true,

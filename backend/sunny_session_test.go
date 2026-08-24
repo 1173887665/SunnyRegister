@@ -888,6 +888,7 @@ func TestSunnyAccountExportsUseStableNamesAndFormats(t *testing.T) {
 	if strings.TrimSpace(at.Body.String()) != "session-access-token" {
 		t.Fatalf("unexpected AT export: %q", at.Body.String())
 	}
+	s.sunnySaveConfig(sunnyCfgSub2API, mergeConfig(defaultSub2APIConfig(), map[string]any{"notes_include_sk": true}))
 	sub := httptest.NewRecorder()
 	s.sunnyExportSessions(sub, rows, "sub")
 	var payload map[string]any

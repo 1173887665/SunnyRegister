@@ -722,6 +722,7 @@ const accountDetectionSummaryCopy = {
 };
 
 const zh: AnyObj = new Proxy(Object.assign({
+  notesContent: "备注内容", addSKInfo: "添加SK信息", addLSInfo: "添加LS信息", addCustomInfo: "添加自定义信息", customNotesPlaceholder: "请输入自定义备注内容",
   workbench: "工作台", mailbox: "邮箱配置", phone: "接码配置", sub2api: "反代配置", proxy: "代理配置", session: "账户管理",
   title: "SunnyRegister 注册机控制台", desc: "使用自建邮箱池注册/登录 GPT 账户，并统一管理账户状态、Session、RT 和日志。",
   register: "注册或登录", refresh: "刷新", import: "导入", save: "保存", export: "导出", copy: "复制", close: "关闭", copySuccess: "复制成功", secretKeyUnavailable: "该邮箱凭证信息不完整，无法复制 SK", newGroup: "新建分组", move: "迁移到分组",
@@ -752,6 +753,7 @@ const zh: AnyObj = new Proxy(Object.assign({
   }
 }) as AnyObj;
 const en = Object.assign({
+  notesContent: "Note Content", addSKInfo: "Add SK info", addLSInfo: "Add LS info", addCustomInfo: "Add custom info", customNotesPlaceholder: "Enter custom note content",
   workbench: "Workbench", mailbox: "Mailbox", phone: "SMS", sub2api: "Reverse Proxy", proxy: "Proxy", session: "Account Management",
   title: "SunnyRegister Console", desc: "Register/login GPT accounts with a self-managed mailbox pool, then manage account status, sessions, RTs and logs.",
   register: "Register / Login", refresh: "Refresh", import: "Import", save: "Save", export: "Export", copy: "Copy", close: "Close", copySuccess: "Copied", secretKeyUnavailable: "This mailbox credential is incomplete and its SK cannot be copied", newGroup: "New Group", move: "Move Group",
@@ -3067,6 +3069,10 @@ function normalizeSub2APIConfig(cfg: AnyObj) {
     load_factor: Number(cfg.load_factor || 0),
     priority: Number(cfg.priority || 50),
     model_whitelist: Array.isArray(cfg.model_whitelist) ? cfg.model_whitelist.map(String).filter(Boolean) : String(cfg.model_whitelist||"").split(/[\n,]+/).map((x)=>x.trim()).filter(Boolean),
+    notes_include_sk: cfg.notes_include_sk === true,
+    notes_include_ls: cfg.notes_include_ls === true,
+    notes_include_custom: cfg.notes_include_custom === true,
+    notes_custom_text: String(cfg.notes_custom_text || "").trim(),
     codex_image_bridge: false,
   };
 }
@@ -3239,6 +3245,17 @@ function Sub2APIConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
       <div><Label>{t.remoteProxy}</Label><SelectBox value={String(cfg.proxy_id||0)} onChange={(value)=>setCfg({...cfg,proxy_id:Number(value)})} options={[{value:"0",label:t.noRemoteProxy},...proxies.map((proxy)=>({value:proxy.id,label:`${proxy.id} · ${proxy.name}`}))]}/></div>
       <div><Label>{t.loadFactor}</Label><Input type="number" min={0} value={cfg.load_factor||0} onChange={(e)=>setCfg({...cfg,load_factor:Number(e.target.value||0)})}/></div>
       <div><Label>{t.priority}</Label><Input type="number" value={cfg.priority||50} onChange={(e)=>setCfg({...cfg,priority:Number(e.target.value||50)})}/></div>
+      <div className="md:col-span-2">
+        <Label>{t.notesContent}</Label>
+        <div className="mt-2 space-y-3">
+          <label className="flex min-h-8 items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={cfg.notes_include_sk === true} onChange={(e)=>setCfg({...cfg,notes_include_sk:e.target.checked})}/><span>{t.addSKInfo}</span></label>
+          <label className="flex min-h-8 items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={cfg.notes_include_ls === true} onChange={(e)=>setCfg({...cfg,notes_include_ls:e.target.checked})}/><span>{t.addLSInfo}</span></label>
+          <div className="flex min-h-11 flex-col gap-2 sm:flex-row sm:items-center">
+            <label className="flex shrink-0 items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={cfg.notes_include_custom === true} onChange={(e)=>setCfg({...cfg,notes_include_custom:e.target.checked})}/><span>{t.addCustomInfo}</span></label>
+            {cfg.notes_include_custom === true && <Input className="min-w-0 flex-1" placeholder={t.customNotesPlaceholder} value={cfg.notes_custom_text||""} onChange={(e)=>setCfg({...cfg,notes_custom_text:e.target.value})}/>}
+          </div>
+        </div>
+      </div>
       <div className="md:col-span-2"><Label>{t.modelWhitelist}</Label><Textarea className="min-h-28 rounded-xl" value={Array.isArray(cfg.model_whitelist)?cfg.model_whitelist.join("\n"):String(cfg.model_whitelist||"")} onChange={(e)=>setCfg({...cfg,model_whitelist:e.target.value.split(/[\n,]+/).map((x)=>x.trim()).filter(Boolean)})}/></div>
     </div>}
     {sub2apiEnabled && <div className="mt-5 flex items-center justify-end gap-3">

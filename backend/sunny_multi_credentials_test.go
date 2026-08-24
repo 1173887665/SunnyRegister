@@ -249,7 +249,7 @@ func TestSunnySub2APIOptionsAndBatchImport(t *testing.T) {
 	defer remote.Close()
 	s.sunnySaveConfig(sunnyCfgSub2API, mergeConfig(defaultSub2APIConfig(), map[string]any{
 		"base_url": remote.URL, "admin_token": "admin-key", "group_ids": []any{7}, "proxy_id": 9, "load_factor": 80,
-		"model_whitelist": []any{"gpt-5.6-sol"},
+		"model_whitelist": []any{"gpt-5.6-sol"}, "notes_include_sk": true,
 	}))
 
 	optionsRecorder := httptest.NewRecorder()
@@ -276,6 +276,7 @@ func TestSunnySub2APIOptionsAndBatchImport(t *testing.T) {
 
 func TestSub2APIGenericPayloadUsesMatchingMailboxSecretKey(t *testing.T) {
 	s := newSunnySessionTestServer(t)
+	s.sunnySaveConfig(sunnyCfgSub2API, mergeConfig(defaultSub2APIConfig(), map[string]any{"notes_include_sk": true}))
 	payload := s.sub2APIAccountPayload(
 		AccountRecord{ID: 12, Email: "session@example.com"},
 		"openai",

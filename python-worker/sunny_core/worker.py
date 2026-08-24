@@ -1186,14 +1186,20 @@ def _sub2api_secret_key(db: SunnyDB, email: str, session: dict[str, Any]) -> str
     return str(session.get("raw_mailbox_line") or session.get("mailbox_raw") or "").strip()
 
 
-def _sub2api_notes(db: SunnyDB, email: str, session: dict[str, Any]) -> str:
+def _sub2api_notes(db: SunnyDB, email: str, session: dict[str, Any], cfg: dict[str, Any]) -> str:
     lines: list[str] = []
-    secret_key = _sub2api_secret_key(db, email, session)
-    if secret_key:
-        lines.append(f"邮箱凭证：{secret_key}")
-    login_secret = _sub2api_login_secret(db, email, session)
-    if login_secret:
-        lines.append(f"密码2FA：{login_secret}")
+    if cfg.get("notes_include_sk") is True:
+        secret_key = _sub2api_secret_key(db, email, session)
+        if secret_key:
+            lines.append(f"邮箱凭证：{secret_key}")
+    if cfg.get("notes_include_ls") is True:
+        login_secret = _sub2api_login_secret(db, email, session)
+        if login_secret:
+            lines.append(f"密码2FA：{login_secret}")
+    if cfg.get("notes_include_custom") is True:
+        custom_text = str(cfg.get("notes_custom_text") or "").strip()
+        if custom_text:
+            lines.append(custom_text)
     return "\n".join(lines)
 
 
@@ -1231,7 +1237,7 @@ def _import_sub2api(db: SunnyDB, email: str, account_id: int, session: dict[str,
         credentials["model_mapping"] = model_mapping
     account_payload = {
         "name": f"{str(cfg.get('name_prefix') or '')}{email}",
-        "notes": _sub2api_notes(db, email, session),
+        "notes": _sub2api_notes(db, email, session, cfg),
         "platform": "openai",
         "type": "oauth",
         "credentials": credentials,
@@ -1332,7 +1338,7 @@ def _import_sub2api_agent_identity(
     session: dict[str, Any],
     proxy_url: str,
 ) -> dict[str, Any]:
-    _cfg, base_url, token = _sub2api_config(db)
+    cfg, base_url, token = _sub2api_config(db)
     access_token = str(session.get("access_token") or "").strip()
     if not access_token:
         raise RuntimeError("当前账号没有 Access Token，无法创建 Agent Identity")
@@ -1365,7 +1371,7 @@ def _import_sub2api_agent_identity(
         if _is_cancel_exception(exc):
             raise
         raise RuntimeError(f"Agent Identity 凭证创建失败: {exc}") from exc
-    auth_json["notes"] = _sub2api_notes(db, email, session)
+    auth_json["notes"] = _sub2api_notes(db, email, session, cfg)
     auth_content = json.dumps(auth_json, ensure_ascii=False, separators=(",", ":"))
     payload = {
         "contents": [auth_content],

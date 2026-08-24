@@ -1622,10 +1622,22 @@ class Sub2APIImportPayloadTests(unittest.TestCase):
             "chat_gpt_password": "ChatGPT-password",
             "totp_secret": "JBSWY3DPEHPK3PXP",
         }
-        notes = worker._sub2api_notes(db, "user@example.com", {})
+        cfg = {
+            "notes_include_sk": True,
+            "notes_include_ls": True,
+            "notes_include_custom": True,
+            "notes_custom_text": "自定义备注",
+        }
+        notes = worker._sub2api_notes(db, "user@example.com", {}, cfg)
         self.assertEqual(
             notes,
             "邮箱凭证：user@example.com----password----client-id----refresh-token\n"
+            "密码2FA：user@example.com----ChatGPT-password----JBSWY3DPEHPK3PXP\n"
+            "自定义备注",
+        )
+        self.assertEqual(worker._sub2api_notes(db, "user@example.com", {}, {}), "")
+        self.assertEqual(
+            worker._sub2api_notes(db, "user@example.com", {}, {"notes_include_ls": True}),
             "密码2FA：user@example.com----ChatGPT-password----JBSWY3DPEHPK3PXP",
         )
 
@@ -1641,6 +1653,7 @@ class Sub2APIImportPayloadTests(unittest.TestCase):
             "group_ids": [2, 3],
             "concurrency": 5,
             "priority": 1,
+            "notes_include_sk": True,
         }
         response = Mock(status_code=200, text='{"success":1,"failed":0}')
         response.json.return_value = {"success": 1, "failed": 0, "results": []}
