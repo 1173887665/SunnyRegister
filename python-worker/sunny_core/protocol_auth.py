@@ -583,7 +583,27 @@ class ProtocolRegistrationFlow:
         self.browser_resume_url = self.auth_page_url
         self.device_id = self._cookie("oai-did") or self.device_id
 
-    def _authorize_email(self) -> dict[str, Any]:
+    def _rebuild_auth_session_for_retry(self) -> None:
+        """Discard stale OAuth cookies and bootstrap a fresh authorization transaction."""
+        if self._sentinel_runtime is not None:
+            try:
+                self._sentinel_runtime.close()
+            finally:
+                self._sentinel_runtime = None
+        old_session = self.session
+        if old_session is not None:
+            try:
+                old_session.close()
+            except Exception:
+                pass
+        self.session = self._new_session()
+        self.device_id = ""
+        self.auth_url = ""
+        self.auth_page_url = ""
+        self.browser_resume_url = ""
+        self._start_next_auth()
+
+    def _authorize_email(self, *, allow_retry: bool = True) -> dict[str, Any]:
         self.browser_resume_url = f"{AUTH_BASE_URL}/{'log-in' if self.existing_account else 'create-account'}"
         sentinel_headers = self._sentinel_headers("authorize_continue")
         response = self._request(
@@ -608,6 +628,12 @@ class ProtocolRegistrationFlow:
             ),
         )
         if response.status_code != 200:
+            body_lower = str(getattr(response, "text", "") or "").lower()
+            invalid_state = "invalid_state" in body_lower or "no longer valid" in body_lower
+            if allow_retry and response.status_code in {400, 409} and invalid_state:
+                self.log("[认证] authorize_continue 会话已失效，正在重建 OAuth 会话并重试一次")
+                self._rebuild_auth_session_for_retry()
+                return self._authorize_email(allow_retry=False)
             raise _response_error(response, "Submit registration email")
         self._emit("email_submitted")
         return _json_response(response, "Submit registration email")

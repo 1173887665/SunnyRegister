@@ -220,6 +220,39 @@ def test_protocol_homepage_reset_falls_back_to_lightweight_csrf() -> None:
     assert flow.auth_page_url == "https://auth.openai.com/authorize"
 
 
+def test_protocol_authorize_email_rebuilds_stale_oauth_session_once() -> None:
+    account = MailAccount("user@outlook.com", "password", "client", "refresh", "raw")
+    stale_session = FakeSession([
+        FakeResponse(
+            status_code=409,
+            text='{"error":{"message":"Your sign-in session is no longer valid.","code":"invalid_state"}}',
+            url="https://auth.openai.com/api/accounts/authorize/continue",
+        ),
+    ])
+    fresh_session = FakeSession([
+        FakeResponse(
+            payload={"page": {"type": "login_password"}, "continue_url": "https://auth.openai.com/log-in/password"},
+            url="https://auth.openai.com/api/accounts/authorize/continue",
+        ),
+    ])
+    flow = ProtocolRegistrationFlow(account, session=stale_session, existing_account=True)
+    flow.device_id = "stale-device"
+    flow._sentinel_headers = Mock(return_value={"openai-sentinel-token": "sentinel"})
+    flow._new_session = Mock(return_value=fresh_session)
+    flow._start_next_auth = Mock()
+    logs: list[str] = []
+    flow.log = logs.append
+
+    result = flow._authorize_email()
+
+    assert result["page"]["type"] == "login_password"
+    assert stale_session.closed is True
+    assert flow.session is fresh_session
+    flow._start_next_auth.assert_called_once_with()
+    assert any("重建 OAuth 会话并重试一次" in message for message in logs)
+    assert len(fresh_session.requests) == 1
+
+
 def sentinel_response():
     return FakeResponse(payload={"token": "sentinel-challenge", "proofofwork": {"required": False}})
 
