@@ -73,9 +73,10 @@ def test_domain_reader_filters_old_message(monkeypatch):
 
 def test_domain_reader_uses_individual_pickup_url(monkeypatch):
     pickup_url = "https://sunny.example/api/sunny/domain-mail/pickup?email=user%40example.com&token=dmsk_one"
+    logs = []
     reader = DomainMailReader(
         account_from_row({"email": "user@example.com", "mailbox_type": "domain", "access_key": pickup_url}),
-        None,
+        logs.append,
     )
 
     class Response:
@@ -100,6 +101,7 @@ def test_domain_reader_uses_individual_pickup_url(monkeypatch):
     assert reader._latest()["code"] == "978744"
     assert calls[0][0] == pickup_url
     assert "Authorization" not in calls[0][1]["headers"]
+    assert any("HTTP 200" in message and "识别到 1 封验证码邮件" in message for message in logs)
 
 
 def test_rebind_domain_mailbox_creates_individual_pickup_credential(monkeypatch):

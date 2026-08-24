@@ -1287,6 +1287,10 @@ class DomainMailReader:
             if not self.base_url or not self.auth_token:
                 raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱凭证缺少 API 地址或 Authorization Token", terminal=True)
         self.seen_keys: set[str] = set()
+        self.request_count = 0
+        self.last_status = 0
+        self.last_candidate_count = 0
+        self.last_error = ""
 
     @staticmethod
     def _nested(payload: Any) -> list[Any]:
@@ -1315,6 +1319,7 @@ class DomainMailReader:
             return 0.0
 
     def _request(self) -> Any:
+        self.request_count += 1
         try:
             if self.pickup_url:
                 response = requests.get(
@@ -1332,15 +1337,26 @@ class DomainMailReader:
                     proxies=self.proxies,
                 )
         except requests.RequestException as exc:
+            self.last_error = str(exc)
+            if self.request_count == 1 or self.request_count % 10 == 0:
+                self.log(f"[{self.account.email}] 自建域名邮箱取件 API 网络请求失败（第 {self.request_count} 次）：{str(exc)[:220]}")
             raise MailboxAccessError("domain_network_error", "自建域名邮箱接口连接失败", str(exc)) from exc
         try:
+            self.last_status = int(response.status_code or 0)
             if response.status_code in {401, 403}:
+                self.last_error = f"HTTP {response.status_code}"
+                self.log(f"[{self.account.email}] 自建域名邮箱取件 API 返回 HTTP {response.status_code}，凭证或邮箱状态校验失败")
                 raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱取件凭证无效或邮箱已停用", f"HTTP {response.status_code}", terminal=True)
             if not response.ok:
+                self.last_error = f"HTTP {response.status_code}"
+                if self.request_count == 1 or self.request_count % 10 == 0:
+                    self.log(f"[{self.account.email}] 自建域名邮箱取件 API 返回 HTTP {response.status_code}（第 {self.request_count} 次）")
                 raise MailboxAccessError("domain_provider_failed", "自建域名邮箱接口请求失败", f"HTTP {response.status_code}")
             try:
                 return response.json()
             except ValueError as exc:
+                self.last_error = "invalid_json"
+                self.log(f"[{self.account.email}] 自建域名邮箱取件 API 返回内容不是有效 JSON（HTTP {response.status_code}）")
                 raise MailboxAccessError("domain_response_invalid", "自建域名邮箱接口返回了无法解析的 JSON", str(exc), terminal=True) from exc
         finally:
             response.close()
@@ -1370,6 +1386,9 @@ class DomainMailReader:
                     break
             message_id = item.get("emailId") or item.get("id") or item.get("messageId") or timestamp
             candidates.append({"code": code, "key": f"{message_id}:{code}", "timestamp": timestamp, "order": order, "body": body, "id": message_id, "sender": item.get("sendEmail") or item.get("sender") or item.get("from"), "recipient": item.get("toEmail") or item.get("recipient") or item.get("to"), "subject": item.get("subject"), "date": item.get("createTime") or item.get("receivedAt") or item.get("date")})
+        self.last_candidate_count = len(candidates)
+        if self.request_count == 1 or self.request_count % 10 == 0:
+            self.log(f"[{self.account.email}] 自建域名邮箱取件 API：HTTP {self.last_status or '未知'}，第 {self.request_count} 次查询，识别到 {self.last_candidate_count} 封验证码邮件")
         return max(candidates, key=lambda item: (float(item.get("timestamp") or 0), -int(item.get("order") or 0)), default={})
 
     def connect(self, access_token: str | None = None) -> None:
@@ -1407,7 +1426,10 @@ class DomainMailReader:
                 self.log(f"[{self.account.email}] 已通过自建域名邮箱 API 收到验证码（已脱敏）")
                 return code
             time.sleep(min(2, remaining))
-        raise TimeoutError("Timed out waiting for OpenAI email OTP via domain mailbox API")
+        detail = f"HTTP {self.last_status or '未知'}，累计查询 {self.request_count} 次，最近识别到 {self.last_candidate_count} 封验证码邮件"
+        if self.last_error:
+            detail += f"，最近错误：{self.last_error[:180]}"
+        raise TimeoutError(f"Timed out waiting for OpenAI email OTP via domain mailbox API（{detail}）")
 
 
 class URLAPIICloudReader:

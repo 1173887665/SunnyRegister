@@ -41,10 +41,11 @@ def _cookie_header(session: Any) -> str:
 
 
 class ChangeEmailClient:
-    def __init__(self, flow: ProtocolRegistrationFlow, account_id: str = ""):
+    def __init__(self, flow: ProtocolRegistrationFlow, account_id: str = "", log: Callable[[str], None] | None = None):
         self.flow = flow
         self.session = flow.session
         self.account_id = str(account_id or "").strip()
+        self.log = log or (lambda _message: None)
         if self.session is None or not flow.device_id or not self._access_token:
             raise RebindError("旧账号登录态不完整，缺少设备 ID 或 Access Token")
         self.session_id = str(uuid.uuid4())
@@ -79,8 +80,16 @@ class ChangeEmailClient:
         return headers
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        response = self.session.request(method, f"{CHATGPT_ORIGIN}{path}", headers=self._headers(path, kwargs.get("json") is not None), timeout=30, **kwargs)
+        started = time.monotonic()
+        try:
+            response = self.session.request(method, f"{CHATGPT_ORIGIN}{path}", headers=self._headers(path, kwargs.get("json") is not None), timeout=30, **kwargs)
+        except requests.RequestException as exc:
+            self.log(f"[换绑接口] {method} {path} 网络请求失败（耗时 {time.monotonic() - started:.1f}s）：{str(exc)[:300]}")
+            raise RebindError(f"换绑接口网络请求失败：{method} {path}: {exc}") from exc
         body = str(getattr(response, "text", "") or "")[:1000]
+        request_id = str(getattr(response, "headers", {}).get("x-request-id") or "").strip()
+        request_suffix = f"，request_id={request_id}" if request_id else ""
+        self.log(f"[换绑接口] {method} {path} -> HTTP {response.status_code}（耗时 {time.monotonic() - started:.1f}s{request_suffix}）")
         if response.status_code < 200 or response.status_code >= 300:
             if response.status_code in {401, 403} or "reauth" in body.lower() or "recent" in body.lower():
                 raise RebindError(f"换绑接口需要重新认证：HTTP {response.status_code} {body}")
@@ -199,37 +208,41 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
     try:
         log(f"[{old_email}] 开始协议换绑")
         old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
-        client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""))
+        client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""), log)
         client.set_access_token(str(old_result.get("access_token") or ""))
         client.eligibility()
         new_email, new_api, new_api_token_hash = _domain_mailbox(db, log)
         # Register the one-time pickup credential before ChatGPT sends the verification mail.
         # The public pickup endpoint validates the token against this database row.
         db.persist_rebind_pending(new_email, new_api, new_api_token_hash)
-        issued_after = time.time() - 3
-        try:
-            client.begin(new_email)
-        except RebindError as exc:
-            if "重新认证" not in str(exc):
-                raise
-            previous_flow = old_flow
-            old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
-            try:
-                if previous_flow and previous_flow.session:
-                    previous_flow.session.close()
-            except Exception:
-                pass
-            client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""))
-            client.set_access_token(str(old_result.get("access_token") or ""))
-            client.begin(new_email)
         reader_account = MailAccount(email=new_email, password="", client_id="", refresh_token="", raw=f"{new_email}----{new_api}", mailbox_type="domain", mailbox_channel="domain_api", access_key=new_api)
         reader = DomainMailReader(reader_account, log)
         try:
             reader.connect()
+            issued_after = time.time()
+            log(f"[{old_email}] 已建立换绑邮箱取件监听，准备请求 ChatGPT 发送验证码")
+            try:
+                client.begin(new_email)
+                log(f"[{old_email}] ChatGPT 换绑验证码请求已接受，等待新邮箱验证码")
+            except RebindError as exc:
+                if "重新认证" not in str(exc):
+                    raise
+                previous_flow = old_flow
+                old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
+                try:
+                    if previous_flow and previous_flow.session:
+                        previous_flow.session.close()
+                except Exception:
+                    pass
+                client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""), log)
+                client.set_access_token(str(old_result.get("access_token") or ""))
+                client.begin(new_email)
+                log(f"[{old_email}] 重新认证后已重新提交换绑验证码请求，等待新邮箱验证码")
             code = reader.wait_for_code(issued_after, timeout=120)
         finally:
             reader.close()
         client.verify(new_email, code)
+        log(f"[{old_email}] 已向 ChatGPT 提交换绑邮箱验证码")
         new_account = MailAccount(email=new_email, password="", client_id="", refresh_token="", raw=f"{new_email}----{new_api}", mailbox_type="domain", mailbox_channel="domain_api", access_key=new_api, chatgpt_password=account.chatgpt_password, totp_secret=account.totp_secret)
         new_flow, new_result = _login_flow(new_account, proxy, log, keep_session=False, should_cancel=db.cancel_requested)
         if str(new_result.get("access_token") or "").strip() == "":
