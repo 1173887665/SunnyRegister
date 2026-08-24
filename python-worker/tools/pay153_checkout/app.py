@@ -1225,9 +1225,11 @@ def submit_custom_checkout_taxes(
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Origin": "https://chatgpt.com",
             "Referer": f"https://chatgpt.com/checkout/{processor_entity}/{session_id}",
             "User-Agent": sc.CHROME_UA,
+            "OAI-Language": "zh-CN",
             "OAI-Device-Id": device_id,
             "x-openai-target-path": "/backend-api/payments/checkout/taxes",
             "x-openai-target-route": "/backend-api/payments/checkout/taxes",
@@ -1276,9 +1278,11 @@ def confirm_custom_checkout_method(
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Origin": "https://chatgpt.com",
             "Referer": f"https://chatgpt.com/checkout/{processor_entity}/{session_id}",
             "User-Agent": sc.CHROME_UA,
+            "OAI-Language": "zh-CN",
             "OAI-Device-Id": device_id,
             "x-openai-target-path": "/backend-api/payments/checkout/confirm",
             "x-openai-target-route": "/backend-api/payments/checkout/confirm",
@@ -1296,7 +1300,20 @@ def confirm_custom_checkout_method(
     if str(payload.get("status") or "").lower() != "success":
         status = str(payload.get("status") or "unknown").lower()
         if status == "blocked":
-            raise RuntimeError(f"CUSTOM_CONFIRM_BLOCKED: {method_name} 支付方式确认被上游拦截")
+            detail = ""
+            if isinstance(payload, dict):
+                for key in ("code", "reason", "error", "message", "detail"):
+                    candidate = payload.get(key)
+                    if isinstance(candidate, (str, int, float)) and str(candidate).strip():
+                        detail = str(candidate).strip()
+                        break
+            detail = re.sub(r"eyJ[A-Za-z0-9_.-]{40,}", "[TOKEN]", detail)[:240]
+            if log:
+                log(f"{method_name} confirm 被上游标记 blocked" + (f"：{detail}" if detail else "，响应未提供原因"))
+            raise RuntimeError(
+                f"CUSTOM_CONFIRM_BLOCKED: {method_name} 支付方式确认被上游拦截"
+                + (f"（{detail}）" if detail else "")
+            )
         raise RuntimeError(f"确认 {method_name} 支付方式失败：status={status}；{text[:300]}")
     return payload
 
@@ -3168,6 +3185,14 @@ class JobStore:
                     if custom_amount is None and tax_checkout:
                         custom_amount = custom_checkout_amount_minor(tax_checkout)
                     custom_currency = custom_checkout_currency(custom_state) or custom_currency
+                    self.log(
+                        job_id,
+                        f"GCash taxes 后 Checkout 应付金额：{custom_amount if custom_amount is not None else '?'} {custom_currency}",
+                    )
+                    if promo_requested and custom_amount not in {None, 0}:
+                        raise RuntimeError(
+                            f"GCASH_ZERO_DUE_REQUIRED: GCash 优惠未生效，confirm 前应付金额为 {custom_amount} {custom_currency}"
+                        )
                     custom_method_id = custom_payment_method_id_for(custom_state, "gcash")
                     if not custom_method_id:
                         raise RuntimeError("GCASH_METHOD_UNAVAILABLE: 当前 PH Checkout 尚未返回 GCash 支付方式，将更换代理重建")

@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 PAY153_DIR = Path(__file__).parents[1] / "tools" / "pay153_checkout"
 if str(PAY153_DIR) not in sys.path:
@@ -138,6 +140,30 @@ class _FakeHTTP:
     def post(self, url, **kwargs):
         self.calls.append((url, kwargs))
         return _FakeResponse()
+
+
+def test_gcash_confirm_blocked_preserves_upstream_reason_in_sanitized_error() -> None:
+    class BlockedResponse(_FakeResponse):
+        text = '{"status":"blocked","code":"risk_check"}'
+
+        def json(self):
+            return {"status": "blocked", "code": "risk_check"}
+
+    class BlockedHTTP(_FakeHTTP):
+        def post(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return BlockedResponse()
+
+    logs: list[str] = []
+    with (
+        patch.object(checkout_app, "resolve_payment_sentinel_headers", return_value={}),
+        pytest.raises(RuntimeError, match=r"CUSTOM_CONFIRM_BLOCKED.*risk_check"),
+    ):
+        checkout_app.confirm_custom_checkout_method(
+            BlockedHTTP(), "at", "oaics_12345678", "openai_ie", "cpmt_gcash", "proxy", "device", "did",
+            log=logs.append,
+        )
+    assert "risk_check" in logs[0]
 
 
 def test_gcash_continuation_uses_same_checkout_session_and_redirect_result() -> None:
