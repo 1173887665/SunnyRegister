@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
 from sunny_core import mailbox as mailbox_module
+from sunny_core import domain_mail_cleanup as cleanup_module
 from sunny_core import rebind as rebind_module
 from sunny_core.db import SunnyDB
 from sunny_core.mailbox import DomainMailReader, account_from_row
@@ -219,6 +220,55 @@ def test_rebind_begin_retries_transient_network_error():
     assert rebind_module._begin_with_retry(Client(), "new@example.com", logs.append) == {"success": True}
     assert calls == ["new@example.com", "new@example.com"]
     assert any("瞬时网络错误" in message for message in logs)
+
+
+def test_failed_domain_mailbox_retention_defaults_to_enabled():
+    assert cleanup_module.retain_failed_mailbox({}) is True
+    assert cleanup_module.retain_failed_mailbox({"retain_failed_mailboxes": False}) is False
+    assert cleanup_module.retain_failed_mailbox({"retain_failed_mailboxes": "off"}) is False
+
+
+def test_cloudmail_failed_mailbox_delete_accepts_public_delete_extension(monkeypatch):
+    calls = []
+
+    class Response:
+        ok = True
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"code": 200, "message": "success"}
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return Response()
+
+    monkeypatch.setattr(cleanup_module.requests, "request", request)
+    cleanup_module.delete_cloudmail_user({"base_url": "https://cloudmail.example", "auth_token": "token", "site_password": "password"}, "failed@example.com")
+    assert calls[0][0] == "DELETE"
+    assert calls[0][1].endswith("/api/public/deleteUser")
+    assert calls[0][2]["params"] == {"email": "failed@example.com"}
+    assert calls[0][2]["headers"]["x-custom-auth"] == "password"
+
+
+def test_failed_mailbox_cleanup_keeps_local_row_when_cloudmail_delete_fails(monkeypatch):
+    class DB:
+        deleted = False
+
+        def delete_failed_domain_mailbox(self, email, pickup_token_hash):
+            self.deleted = True
+            return True
+
+    monkeypatch.setattr(cleanup_module, "delete_cloudmail_user", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("HTTP 404")))
+    db = DB()
+    try:
+        cleanup_module.cleanup_failed_mailbox(db, {"retain_failed_mailboxes": False}, "failed@example.com", "hash", lambda _: None)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("CloudMail deletion failure must be surfaced")
+    assert db.deleted is False
 
 
 def test_rebind_client_observation_header_matches_web_format():

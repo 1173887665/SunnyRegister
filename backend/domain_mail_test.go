@@ -235,6 +235,23 @@ func TestDomainMailAddUserAcceptsPlainTextSuccess(t *testing.T) {
 	}
 }
 
+func TestDomainMailDeleteUserAcceptsPublicDeleteExtension(t *testing.T) {
+	var method string
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		writeJSON(w, http.StatusOK, map[string]any{"code": 200})
+	}))
+	defer server.Close()
+	client := &domainMailClient{baseURL: server.URL, token: "token-1", sitePassword: "site-password", client: server.Client()}
+	if err := client.deleteUser(context.Background(), "failed@example.com"); err != nil {
+		t.Fatalf("deleteUser failed: %v", err)
+	}
+	if method != http.MethodDelete || path != "/api/public/deleteUser" {
+		t.Fatalf("unexpected delete request: %s %s", method, path)
+	}
+}
+
 func TestDomainMailResponsesKeepJSONStrictAndReportHTTPStatus(t *testing.T) {
 	t.Run("add user rejects plain-text failure with HTTP 200", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

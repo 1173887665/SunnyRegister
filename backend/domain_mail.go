@@ -40,6 +40,7 @@ func defaultDomainMailboxConfig() map[string]any {
 		"domains":                  []string{},
 		"random_local_length":      12,
 		"auto_add_user":            true,
+		"retain_failed_mailboxes":  true,
 	}
 }
 
@@ -219,6 +220,28 @@ func (c *domainMailClient) addUser(ctx context.Context, email string) error {
 		"list": []map[string]string{{"email": email, "password": password}},
 	}, true)
 	return err
+}
+
+func (c *domainMailClient) deleteUser(ctx context.Context, email string) error {
+	var lastErr error
+	for _, method := range []string{http.MethodDelete, http.MethodPost} {
+		for _, body := range []any{
+			map[string]any{"email": email},
+			map[string]any{"emails": []string{email}},
+			map[string]any{"list": []string{email}},
+			map[string]any{"list": []map[string]string{{"email": email}}},
+		} {
+			_, err := c.request(ctx, method, "/api/public/deleteUser", body, true)
+			if err == nil {
+				return nil
+			}
+			lastErr = err
+			if !strings.Contains(err.Error(), "HTTP 404") && !strings.Contains(err.Error(), "HTTP 405") && !strings.Contains(err.Error(), "HTTP 501") {
+				return err
+			}
+		}
+	}
+	return lastErr
 }
 
 func (c *domainMailClient) listMessages(ctx context.Context, email string) ([]map[string]any, error) {
@@ -861,6 +884,18 @@ func (s *Server) prepareDomainMailboxRegistration(body map[string]any) error {
 		mailbox, createErr := s.createDomainMailbox(context.Background(), cfg, client, group.ID)
 		if createErr != nil || mailbox.ID == 0 {
 			for _, id := range created {
+				var generated SunnyMailbox
+				if s.db.First(&generated, id).Error != nil {
+					continue
+				}
+				if boolValue(cfg["retain_failed_mailboxes"], true) {
+					s.db.Model(&SunnyMailbox{}).Where("id = ?", id).Updates(map[string]any{"status": "失败", "last_error": "批量生成域名邮箱未完成"})
+					continue
+				}
+				if deleteErr := client.deleteUser(context.Background(), generated.Email); deleteErr != nil {
+					s.db.Model(&SunnyMailbox{}).Where("id = ?", id).Updates(map[string]any{"status": "失败", "last_error": "CloudMail 删除失败：" + deleteErr.Error()})
+					continue
+				}
 				s.db.Delete(&SunnyMailbox{}, id)
 			}
 			if createErr == nil {

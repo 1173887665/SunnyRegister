@@ -14,6 +14,7 @@ from urllib.parse import urlencode, urlsplit
 import requests
 
 from .db import SunnyDB
+from .domain_mail_cleanup import cleanup_failed_mailbox
 from .mailbox import DomainMailReader, MailAccount, account_from_row
 from .protocol_auth import ProtocolRegistrationFlow
 
@@ -302,11 +303,18 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         return {"email": old_email, "new_email": new_email, "status": "success"}
     except Exception as exc:
         if new_email and new_api:
+            cfg = db.get_config("domain_mailbox")
             try:
                 db.persist_rebind_failure(old_email, new_email, new_api, new_api_token_hash, str(exc))
-                log(f"[{old_email}] 换绑失败邮箱已保存到自建域名邮箱池：{new_email}")
             except Exception as persist_exc:
                 log(f"[{old_email}] 保存失败邮箱记录失败：{persist_exc}")
+            try:
+                if cleanup_failed_mailbox(db, cfg, new_email, new_api_token_hash, log):
+                    log(f"[{old_email}] 换绑失败邮箱已按配置清理：{new_email}")
+                else:
+                    log(f"[{old_email}] 换绑失败邮箱已保存到自建域名邮箱池：{new_email}")
+            except Exception as cleanup_exc:
+                log(f"[{old_email}] 失败邮箱清理失败：{cleanup_exc}")
         raise
     finally:
         for flow in (old_flow, new_flow):

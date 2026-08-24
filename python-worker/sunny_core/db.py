@@ -921,6 +921,23 @@ class SunnyDB:
                 (group['id'], new_email, 'domain', 'domain_api', new_mailbox_api, pickup_token_hash, raw, '失败', True, error, '{}', timestamp, timestamp),
             )
 
+    def delete_failed_domain_mailbox(self, email: str, pickup_token_hash: str = "") -> bool:
+        """Delete only a failed domain mailbox created by the current flow."""
+        email = str(email or '').strip()
+        if not email or '@' not in email:
+            return False
+        query = "select id from sunny_mailboxes where lower(email)=lower(?) and mailbox_type='domain' and status='失败'"
+        params: list[Any] = [email]
+        if pickup_token_hash:
+            query += " and pickup_token_hash=?"
+            params.append(pickup_token_hash)
+        row = self.conn.execute(query + " limit 1", params).fetchone()
+        if not row:
+            return False
+        self.conn.execute("delete from sunny_mailboxes where id=?", (int(row['id']),))
+        self.conn.commit()
+        return True
+
     def reserve_phone(self) -> dict[str, Any] | None:
         phone_cfg = self.get_config("phone")
         if phone_cfg and phone_cfg.get("pool_enabled") is False:

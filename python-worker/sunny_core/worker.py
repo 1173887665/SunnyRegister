@@ -17,6 +17,7 @@ import requests
 from .agent_identity import AgentIdentityUnavailableError, create_agent_identity_auth
 from .browser_traffic import ProxyTrafficMeter, use_traffic_meter
 from .db import SunnyDB, SunnyTaskCancelled, now_sql
+from .domain_mail_cleanup import cleanup_failed_mailbox
 from .firefox_sms import FIREFOX_RELEASE_DELAY_SECONDS, FireFoxSMSClient
 from .luban_sms import LubanSMSClient
 from .mailbox import account_from_row, parse_account_line
@@ -1601,6 +1602,11 @@ def _run_one(
         else:
             db.mark_mailbox(mailbox_id, "失败", err_text)
             db.upsert_account(str(email), mailbox_id=mailbox_id, status="failed", last_error=err_text)
+            if str(payload.get("identity") or "").strip().lower() in {"domain", "domain_mailbox", "自建域名邮箱"}:
+                try:
+                    cleanup_failed_mailbox(db, db.get_config("domain_mailbox"), str(email), str(mailbox.get("pickup_token_hash") or ""), db.event)
+                except Exception as cleanup_exc:
+                    db.event(f"[{email}] 失败域名邮箱清理失败：{cleanup_exc}", "warning", detail={"email": email, "scope": "selected"})
         db.event(
             err,
             "error",
@@ -2345,6 +2351,11 @@ def _run_one(
         else:
             db.mark_mailbox(mailbox_id, "失败", err_text)
             db.upsert_account(email, mailbox_id=mailbox_id, status="failed", last_error=err_text)
+            if str(payload.get("identity") or "").strip().lower() in {"domain", "domain_mailbox", "自建域名邮箱"}:
+                try:
+                    cleanup_failed_mailbox(db, db.get_config("domain_mailbox"), str(email), str(mailbox.get("pickup_token_hash") or ""), db.event)
+                except Exception as cleanup_exc:
+                    db.event(f"[{email}] 失败域名邮箱清理失败：{cleanup_exc}", "warning", detail={"email": email, "scope": "selected"})
         error_detail = {"email": email, "scope": "selected", "traceback": traceback.format_exc()[-3000:]}
         if isinstance(traffic, dict):
             error_detail["protocol_traffic"] = traffic
