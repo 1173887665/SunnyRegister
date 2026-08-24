@@ -475,23 +475,80 @@ func (s *Server) sunnyMailboxAccessTokensByEmail(emails []string) map[string]str
 	return out
 }
 
+func sunnyMailboxCredentialEmails(mailbox SunnyMailbox) []string {
+	emails := []string{}
+	for _, value := range []string{mailbox.Email, mailbox.RebindEmail} {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		seen := false
+		for _, existing := range emails {
+			if sunnyEmailKey(existing) == sunnyEmailKey(value) {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			emails = append(emails, value)
+		}
+	}
+	return emails
+}
+
+func (s *Server) sunnyMailboxAccessToken(mailbox SunnyMailbox) string {
+	linked := s.sunnyMailboxLinkedDataByEmail(sunnyMailboxCredentialEmails(mailbox))
+	return sunnyMailboxAccessTokenFromLinked(mailbox, linked)
+}
+
+func sunnyMailboxAccessTokenFromLinked(mailbox SunnyMailbox, linked sunnyMailboxLinkedData) string {
+	for _, email := range sunnyMailboxCredentialEmails(mailbox) {
+		if token := linked.accessTokens[sunnyEmailKey(email)]; token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
 func sunnySaveMailboxAccessToken(tx *gorm.DB, mailbox SunnyMailbox, groupName, accessToken string) error {
+	emails := sunnyMailboxCredentialEmails(mailbox)
 	if strings.TrimSpace(accessToken) == "" {
-		if err := tx.Model(&SunnyAccount{}).Where("email = ?", mailbox.Email).Update("access_token", "").Error; err != nil {
+		var accounts []SunnyAccount
+		accountQuery := tx.Where("mailbox_id = ?", mailbox.ID).Or("email IN ?", emails)
+		if err := accountQuery.Find(&accounts).Error; err != nil {
 			return err
 		}
-		return tx.Model(&SunnySession{}).Where("email = ?", mailbox.Email).Updates(map[string]any{
+		accountIDs := make([]uint, 0, len(accounts))
+		for _, account := range accounts {
+			accountIDs = append(accountIDs, account.ID)
+		}
+		if err := tx.Model(&SunnyAccount{}).Where("mailbox_id = ?", mailbox.ID).Or("email IN ?", emails).Updates(map[string]any{"access_token": ""}).Error; err != nil {
+			return err
+		}
+		sessionQuery := tx.Model(&SunnySession{}).Where("email IN ?", emails)
+		if len(accountIDs) > 0 {
+			sessionQuery = sessionQuery.Or("account_id IN ?", accountIDs)
+		}
+		return sessionQuery.Updates(map[string]any{
 			"access_token": "", "access_token_status": "unknown", "access_token_error": "",
 			"access_token_checked_at": nil, "expires_at": nil,
 		}).Error
 	}
-	account := SunnyAccount{Email: mailbox.Email}
-	if err := tx.Where("email = ?", mailbox.Email).Attrs(SunnyAccount{
-		MailboxID: mailbox.ID, GroupName: groupName, Status: mailbox.Status, AccountType: mailbox.AccountType,
-		TrialEligibility: mailbox.TrialEligibility, TrialCheckError: mailbox.TrialCheckError, TrialCheckedAt: mailbox.TrialCheckedAt,
-		OpenAIRT: mailbox.OpenAIRT, MetadataJSON: "{}",
-	}).FirstOrCreate(&account).Error; err != nil {
-		return err
+	var account SunnyAccount
+	accountQuery := tx.Where("mailbox_id = ?", mailbox.ID)
+	if err := accountQuery.First(&account).Error; err != nil {
+		accountQuery = tx.Where("email IN ?", emails)
+		_ = accountQuery.First(&account).Error
+	}
+	if account.ID == 0 {
+		account = SunnyAccount{
+			Email: mailbox.Email, MailboxID: mailbox.ID, GroupName: groupName, Status: mailbox.Status,
+			AccountType: mailbox.AccountType, TrialEligibility: mailbox.TrialEligibility, TrialCheckError: mailbox.TrialCheckError,
+			TrialCheckedAt: mailbox.TrialCheckedAt, OpenAIRT: mailbox.OpenAIRT, MetadataJSON: "{}",
+		}
+		if err := tx.Create(&account).Error; err != nil {
+			return err
+		}
 	}
 	if err := tx.Model(&account).Updates(map[string]any{
 		"mailbox_id": mailbox.ID, "group_name": groupName,
@@ -501,12 +558,16 @@ func sunnySaveMailboxAccessToken(tx *gorm.DB, mailbox SunnyMailbox, groupName, a
 		return err
 	}
 
-	session := SunnySession{Email: mailbox.Email}
-	if err := tx.Where("email = ?", mailbox.Email).Attrs(SunnySession{
-		AccountID: account.ID, RefreshToken: mailbox.OpenAIRT, RawMailboxLine: mailbox.Raw,
-		AccessTokenStatus: "unknown", HealthCheckStatus: "unknown",
-	}).FirstOrCreate(&session).Error; err != nil {
-		return err
+	var session SunnySession
+	if err := tx.Where("account_id = ?", account.ID).First(&session).Error; err != nil {
+		_ = tx.Where("email IN ?", emails).First(&session).Error
+	}
+	if session.ID == 0 {
+		session = SunnySession{Email: mailbox.Email, AccountID: account.ID, RefreshToken: mailbox.OpenAIRT, RawMailboxLine: mailbox.Raw,
+			AccessTokenStatus: "unknown", HealthCheckStatus: "unknown"}
+		if err := tx.Create(&session).Error; err != nil {
+			return err
+		}
 	}
 	return tx.Model(&session).Updates(map[string]any{
 		"account_id": account.ID, "access_token": accessToken, "raw_mailbox_line": mailbox.Raw,
@@ -685,7 +746,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				if trialFilter != "" && (!sunnyTrialApplies(m.Status, plan) || normalizeSunnyTrialEligibility(trialEligibility) != trialFilter) {
 					continue
 				}
-				item := serializeSunnyMailboxList(m, gm, plan, linked.accessTokens[key], linked.accountIDs[key], linked.trialEligibility[key], summary)
+				item := serializeSunnyMailboxList(m, gm, plan, sunnyMailboxAccessTokenFromLinked(m, linked), linked.accountIDs[key], linked.trialEligibility[key], summary)
 				if summary && strings.TrimSpace(linked.accountRTs[key]) != "" {
 					item["has_openai_rt"] = true
 				}
@@ -755,7 +816,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			if m.RebindEmail != "" && !linked.accountExists[key] {
 				key = sunnyEmailKey(m.RebindEmail)
 			}
-			item := serializeSunnyMailboxList(m, gm, sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists), linked.accessTokens[key], linked.accountIDs[key], linked.trialEligibility[key], summary)
+			item := serializeSunnyMailboxList(m, gm, sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists), sunnyMailboxAccessTokenFromLinked(m, linked), linked.accountIDs[key], linked.trialEligibility[key], summary)
 			if summary && strings.TrimSpace(linked.accountRTs[key]) != "" {
 				item["has_openai_rt"] = true
 			}
@@ -775,7 +836,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			writeError(w, 400, err.Error())
 			return
 		}
-		writeJSON(w, 200, serializeSunnyMailbox(m, s.sunnyGroupMap(), sunnyPlanTypeForMailbox(m, s.sunnySessionPlanTypesByEmail([]string{m.Email}), s.sunnyAccountPresenceByEmail([]string{m.Email})), s.sunnyMailboxAccessTokensByEmail([]string{m.Email})[sunnyEmailKey(m.Email)]))
+		writeJSON(w, 200, serializeSunnyMailbox(m, s.sunnyGroupMap(), sunnyPlanTypeForMailbox(m, s.sunnySessionPlanTypesByEmail([]string{m.Email}), s.sunnyAccountPresenceByEmail([]string{m.Email})), s.sunnyMailboxAccessToken(m)))
 		return
 	}
 	if len(parts) == 1 && parts[0] == "import" && r.Method == http.MethodPost {
@@ -799,7 +860,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			if m.RebindEmail != "" && !linked.accountExists[key] {
 				key = sunnyEmailKey(m.RebindEmail)
 			}
-			writeJSON(w, 200, serializeSunnyMailboxList(m, s.sunnyGroupMap(), sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists), linked.accessTokens[key], linked.accountIDs[key], linked.trialEligibility[key], false))
+			writeJSON(w, 200, serializeSunnyMailboxList(m, s.sunnyGroupMap(), sunnyPlanTypeForMailbox(m, linked.sessionPlans, linked.accountExists), sunnyMailboxAccessTokenFromLinked(m, linked), linked.accountIDs[key], linked.trialEligibility[key], false))
 			return
 		}
 		if len(parts) == 1 && r.Method == http.MethodPut {
@@ -1047,7 +1108,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			writeJSON(w, 200, serializeSunnyMailbox(m, s.sunnyGroupMap(), sunnyPlanTypeForMailbox(m, s.sunnySessionPlanTypesByEmail([]string{m.Email}), s.sunnyAccountPresenceByEmail([]string{m.Email})), s.sunnyMailboxAccessTokensByEmail([]string{m.Email})[sunnyEmailKey(m.Email)]))
+			writeJSON(w, 200, serializeSunnyMailbox(m, s.sunnyGroupMap(), sunnyPlanTypeForMailbox(m, s.sunnySessionPlanTypesByEmail([]string{m.Email}), s.sunnyAccountPresenceByEmail([]string{m.Email})), s.sunnyMailboxAccessToken(m)))
 			return
 		}
 		if len(parts) == 1 && r.Method == http.MethodDelete {
@@ -1068,7 +1129,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			value := ""
 			switch field {
 			case "access_token":
-				value = s.sunnyMailboxAccessTokensByEmail([]string{m.Email})[sunnyEmailKey(m.Email)]
+				value = s.sunnyMailboxAccessToken(m)
 			case "secret_key":
 				value = sunnyMailboxCredentialLine(m)
 			case "chatgpt_password":

@@ -58,6 +58,44 @@ func TestSunnyMailboxManualAccessTokenUpdatesExistingLinkedRows(t *testing.T) {
 	}
 }
 
+func TestSunnyMailboxAccessTokenUsesRebindLinkedRows(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var mailbox SunnyMailbox
+	if err := s.db.Where("email = ?", "session@example.com").First(&mailbox).Error; err != nil {
+		t.Fatalf("load mailbox: %v", err)
+	}
+	mailbox.RebindEmail = "rebound@example.com"
+	mailbox.RebindMailboxAPI = "https://mail.example.com/pickup?email=rebound@example.com&token=test"
+	if err := s.db.Save(&mailbox).Error; err != nil {
+		t.Fatalf("save mailbox rebind email: %v", err)
+	}
+	var account SunnyAccount
+	if err := s.db.Where("mailbox_id = ?", mailbox.ID).First(&account).Error; err != nil {
+		t.Fatalf("load linked account: %v", err)
+	}
+	if err := s.db.Model(&SunnyAccount{}).Where("id = ?", account.ID).Update("email", mailbox.RebindEmail).Error; err != nil {
+		t.Fatalf("move account to rebind email: %v", err)
+	}
+	if err := s.db.Model(&SunnySession{}).Where("account_id = ?", account.ID).Update("email", mailbox.RebindEmail).Error; err != nil {
+		t.Fatalf("move session to rebind email: %v", err)
+	}
+
+	putSunnyMailboxAccessToken(t, s, mailbox.ID, "rebind-access-token")
+	fieldReq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/sunny/mailboxes/%d/field?name=access_token", mailbox.ID), nil)
+	fieldRes := httptest.NewRecorder()
+	s.handleSunny(fieldRes, fieldReq, fmt.Sprintf("mailboxes/%d/field", mailbox.ID))
+	if fieldRes.Code != http.StatusOK {
+		t.Fatalf("read rebound mailbox field: status=%d body=%s", fieldRes.Code, fieldRes.Body.String())
+	}
+	var fieldPayload map[string]any
+	if err := json.Unmarshal(fieldRes.Body.Bytes(), &fieldPayload); err != nil {
+		t.Fatalf("decode rebound mailbox field: %v", err)
+	}
+	if fieldPayload["value"] != "rebind-access-token" {
+		t.Fatalf("rebound mailbox field value=%v", fieldPayload["value"])
+	}
+}
+
 func TestSunnyMailboxManualAccessTokenCreatesLinkedRowsWithoutLengthLimit(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	mailbox := SunnyMailbox{
