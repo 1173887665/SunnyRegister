@@ -1720,5 +1720,94 @@ class Sub2APIImportPayloadTests(unittest.TestCase):
             worker._import_sub2api(db, "user@example.com", 7, {"refresh_token": "rt"})
 
 
+class AddLoginSecretTaskTests(unittest.TestCase):
+    def test_account_uses_workbench_sentinel_protocol_runtime(self):
+        db = MagicMock()
+        db.fetch_mailbox_by_email.return_value = {
+            "id": 11,
+            "email": "user@example.com",
+            "status": "已注册",
+            "chat_gpt_password": "",
+            "totp_secret": "",
+        }
+        with patch.object(worker, "_run_one", return_value=(True, {"login_secret_complete": True})) as run_one:
+            success, errors, item = worker._add_login_secret_account(
+                db,
+                {},
+                {"id": 7, "email": "user@example.com"},
+                1,
+                1,
+            )
+
+        self.assertEqual((success, errors, item["status"]), (1, [], "success"))
+        task_payload = run_one.call_args.args[2]
+        self.assertEqual(task_payload["execution_mode"], "protocol")
+        self.assertEqual(task_payload["protocol_challenge_strategy"], "sentinel_protocol")
+        self.assertIs(task_payload["setup_login_secret"], True)
+        self.assertEqual(task_payload["registration_stage"], worker.REGISTER_ONLY)
+
+    def test_complete_login_secret_is_skipped_before_runtime(self):
+        db = MagicMock()
+        db.fetch_mailbox_by_email.return_value = {
+            "id": 11,
+            "email": "user@example.com",
+            "status": "已注册",
+            "chat_gpt_password": "chatgpt-password",
+            "totp_secret": "JBSWY3DPEHPK3PXP",
+        }
+        with patch.object(worker, "_run_one") as run_one:
+            success, errors, item = worker._add_login_secret_account(
+                db,
+                {},
+                {"id": 7, "email": "user@example.com"},
+                1,
+                1,
+            )
+
+        self.assertEqual((success, errors, item["status"]), (0, [], "skipped"))
+        run_one.assert_not_called()
+
+    def test_default_concurrency_is_one_and_a_half_times_cpu_count(self):
+        db = MagicMock()
+        db.task_id = "task-add-ls"
+        db.cancel_requested.return_value = False
+        db.fetch_accounts.return_value = [
+            {"id": index, "email": f"user-{index}@example.com"}
+            for index in range(1, 5)
+        ]
+
+        def isolated(_task_id, _payload, account_id, index, _total):
+            return index, 1, [], {"email": f"user-{account_id}@example.com", "status": "success", "login_secret_complete": True}
+
+        with (
+            patch.object(worker.os, "cpu_count", return_value=2),
+            patch.object(worker, "_add_login_secret_isolated", side_effect=isolated),
+        ):
+            success, errors, items = worker._add_login_secrets(db, {"account_ids": [1, 2, 3, 4], "account_ids_explicit": True})
+
+        self.assertEqual((success, errors, len(items)), (4, [], 4))
+        concurrency_events = [call.kwargs.get("detail", {}) for call in db.event.call_args_list if "添加 LS 并发数" in str(call.args[0])]
+        self.assertEqual(concurrency_events[0]["cpu_count"], 2)
+        self.assertEqual(concurrency_events[0]["default_concurrency"], 3)
+        self.assertEqual(concurrency_events[0]["concurrency"], 3)
+
+    def test_all_prefiltered_accounts_do_not_expand_to_all_database_accounts(self):
+        db = MagicMock()
+        skipped = {"email": "complete@example.com", "status": "skipped", "login_secret_complete": True}
+
+        success, errors, items = worker._add_login_secrets(
+            db,
+            {
+                "account_ids": [],
+                "account_ids_explicit": True,
+                "prefiltered_login_secret_items": [skipped],
+            },
+        )
+
+        self.assertEqual((success, errors, items), (0, [], [skipped]))
+        db.fetch_accounts.assert_not_called()
+        db.update_task.assert_called_once_with(progress_total=1, progress_current=1, success_count=0, error_count=0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5048,6 +5048,72 @@ func (s *Server) sunnyValidateAcquireRTAccounts(accountIDs []uint) error {
 	return nil
 }
 
+func (s *Server) sunnyPrepareAddLSTask(accountIDs []uint) ([]uint, []map[string]any, error) {
+	var accounts []SunnyAccount
+	if err := s.db.Select("id", "mailbox_id", "email").Where("id IN ?", accountIDs).Find(&accounts).Error; err != nil {
+		return nil, nil, err
+	}
+	accountByID := make(map[uint]SunnyAccount, len(accounts))
+	mailboxIDs := make([]uint, 0, len(accounts))
+	emails := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		accountByID[account.ID] = account
+		if account.MailboxID != 0 {
+			mailboxIDs = append(mailboxIDs, account.MailboxID)
+		}
+		if strings.TrimSpace(account.Email) != "" {
+			emails = append(emails, account.Email)
+		}
+	}
+	var mailboxes []SunnyMailbox
+	query := s.db.Select("id", "email", "chat_gpt_password", "totp_secret")
+	switch {
+	case len(mailboxIDs) > 0 && len(emails) > 0:
+		query = query.Where("id IN ? OR email IN ?", mailboxIDs, emails)
+	case len(mailboxIDs) > 0:
+		query = query.Where("id IN ?", mailboxIDs)
+	case len(emails) > 0:
+		query = query.Where("email IN ?", emails)
+	default:
+		return append([]uint(nil), accountIDs...), nil, nil
+	}
+	if err := query.Find(&mailboxes).Error; err != nil {
+		return nil, nil, err
+	}
+	mailboxByID := make(map[uint]SunnyMailbox, len(mailboxes))
+	mailboxByEmail := make(map[string]SunnyMailbox, len(mailboxes))
+	for _, mailbox := range mailboxes {
+		mailboxByID[mailbox.ID] = mailbox
+		mailboxByEmail[sunnyEmailKey(mailbox.Email)] = mailbox
+	}
+	eligible := make([]uint, 0, len(accountIDs))
+	skipped := make([]map[string]any, 0)
+	seen := make(map[uint]bool, len(accountIDs))
+	for _, accountID := range accountIDs {
+		if seen[accountID] {
+			continue
+		}
+		seen[accountID] = true
+		account, ok := accountByID[accountID]
+		if !ok {
+			eligible = append(eligible, accountID)
+			continue
+		}
+		mailbox, found := mailboxByID[account.MailboxID]
+		if !found {
+			mailbox, found = mailboxByEmail[sunnyEmailKey(account.Email)]
+		}
+		if found && strings.TrimSpace(mailbox.ChatGPTPassword) != "" && strings.TrimSpace(mailbox.TOTPSecret) != "" {
+			skipped = append(skipped, map[string]any{
+				"email": account.Email, "status": "skipped", "login_secret_complete": true,
+			})
+			continue
+		}
+		eligible = append(eligible, accountID)
+	}
+	return eligible, skipped, nil
+}
+
 func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []string) {
 	if len(parts) != 1 || r.Method != http.MethodPost {
 		writeError(w, 404, "not found")
@@ -5122,9 +5188,26 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
+		} else if typ == "sunny_add_ls" {
+			eligible, skipped, err := s.sunnyPrepareAddLSTask(accountIDs)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			body["account_ids"] = eligible
+			body["account_ids_explicit"] = true
+			body["prefiltered_login_secret_items"] = skipped
+			body["selected_account_count"] = len(eligible) + len(skipped)
+			body["execution_mode"] = "protocol"
+			body["protocol_challenge_strategy"] = "sentinel_protocol"
+			body["registration_stage"] = "register_only"
+			body["setup_login_secret"] = true
 		}
 	}
 	total := len(uintSlice(body["mailbox_ids"])) + len(uintSlice(body["account_ids"]))
+	if typ == "sunny_add_ls" {
+		total = intValue(body["selected_account_count"], total)
+	}
 	if total == 0 {
 		total = intValue(body["count"], 1)
 	}

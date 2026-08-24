@@ -3814,7 +3814,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     if (!ids.length) { notify("fail", t.addLoginSecretNoSelection); return; }
     const targetIds=Array.from(new Set(ids.map(Number).filter(Boolean)));
     try {
-      const task=await runPersistentSessionTask("add-ls", targetIds, row?.email, () => apiFetch("/sunny/tasks/add-ls", { method:"POST", body:JSON.stringify({ session_ids:targetIds, execution_mode:"background", concurrency:1 }) }));
+      const task=await runPersistentSessionTask("add-ls", targetIds, row?.email, () => apiFetch("/sunny/tasks/add-ls", { method:"POST", body:JSON.stringify({ session_ids:targetIds, execution_mode:"protocol", protocol_challenge_strategy:"sentinel_protocol" }) }));
       const result=task.result||{};
       if (row) {
         const item=(result.items||[]).find((entry:AnyObj)=>String(entry.email).toLowerCase()===String(row.email).toLowerCase());

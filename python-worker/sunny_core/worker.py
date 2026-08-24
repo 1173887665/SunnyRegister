@@ -2661,122 +2661,169 @@ def _acquire_refresh_tokens(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, 
     return ok, errors, items
 
 
+def _add_login_secret_account(
+    db: SunnyDB,
+    payload: dict[str, Any],
+    account_row: dict[str, Any],
+    index: int,
+    total: int,
+) -> tuple[int, list[str], dict[str, Any]]:
+    db.ensure_not_cancelled()
+    email = str(account_row.get("email") or "").strip()
+    mailbox = db.fetch_mailbox_by_email(email)
+    if not mailbox:
+        error = f"[{email}] 找不到对应的邮箱凭证"
+        db.event(error, "error", detail={"email": email, "scope": "selected"})
+        return 0, [error], {"email": email, "status": "failed", "login_secret_complete": False, "error": error}
+    if str(mailbox.get("status") or "").strip().lower() in {"已封禁", "banned", "account_deactivated"}:
+        db.event(
+            f"[{email}] [登录密钥] 账户已封禁，跳过密码与 2FA 设置并终止该账户任务",
+            "warning",
+            detail={"email": email, "scope": "selected", "account_deactivated": True, "skipped": True},
+        )
+        return 0, [], {"email": email, "status": "skipped", "login_secret_complete": False, "reason": "account_deactivated"}
+    chatgpt_password = str(mailbox.get("chat_gpt_password") or "").strip()
+    totp_secret = str(mailbox.get("totp_secret") or "").strip()
+    if chatgpt_password and totp_secret:
+        db.event(f"[{email}] [登录密钥] 已存在完整 LS，跳过重复设置", detail={"email": email, "scope": "selected"})
+        return 0, [], {"email": email, "status": "skipped", "login_secret_complete": True}
+
+    account_payload = dict(payload)
+    account_payload.update(
+        {
+            "account_ids": [int(account_row.get("id") or 0)],
+            "mailbox_ids": [int(mailbox.get("id") or 0)],
+            "execution_mode": "protocol",
+            "protocol_challenge_strategy": "sentinel_protocol",
+            "registration_stage": REGISTER_ONLY,
+            "setup_login_secret": True,
+        }
+    )
+    db.event(
+        f"[{email}] [登录密钥] 使用工作台协议模式 Sentinel 运行时补充密码与 2FA",
+        detail={"email": email, "scope": "selected", "execution_mode": "protocol", "protocol_challenge_strategy": "sentinel_protocol"},
+    )
+    try:
+        succeeded, result = _run_one(db, "sunny_login", account_payload, mailbox, index, total)
+        result_map = result if isinstance(result, dict) else {}
+        complete = bool(succeeded and result_map.get("login_secret_complete"))
+        if complete:
+            db.event(f"[{email}] [登录密钥] LS 添加完成", detail={"email": email, "scope": "selected"})
+            return 1, [], {"email": email, "status": "success", "login_secret_complete": True}
+        detail = "；".join(str(value) for value in result_map.get("login_secret_errors") or [] if str(value).strip())
+        detail = detail or str(result_map.get("stage_error") or result or "登录密钥未完整设置")
+        error = f"[{email}] {detail}"
+        status = "partial" if succeeded and result_map else "failed"
+        db.event(f"[{email}] [登录密钥] 密码与 2FA 未完整设置: {detail}", "warning", detail={"email": email, "scope": "selected"})
+        return 0, [error], {"email": email, "status": status, "login_secret_complete": False, "error": detail}
+    except Exception as exc:
+        if _is_cancel_exception(exc):
+            raise
+        if _is_account_deactivated(exc):
+            db.mark_account_deactivated(email, str(exc))
+        error = f"[{email}] 添加 LS 失败: {exc}"
+        db.event(error, "error", detail={"email": email, "scope": "selected"})
+        return 0, [error], {"email": email, "status": "failed", "login_secret_complete": False, "error": str(exc)}
+
+
+def _add_login_secret_isolated(
+    task_id: str,
+    payload: dict[str, Any],
+    account_id: int,
+    index: int,
+    total: int,
+) -> tuple[int, int, list[str], dict[str, Any]]:
+    worker_db = SunnyDB(task_id, ensure_schema=False)
+    try:
+        accounts = worker_db.fetch_accounts([account_id])
+        if not accounts:
+            error = f"账户 {account_id} 不存在"
+            return index, 0, [error], {"email": "", "status": "failed", "login_secret_complete": False, "error": error}
+        success, errors, item = _add_login_secret_account(worker_db, payload, accounts[0], index, total)
+        return index, success, errors, item
+    finally:
+        worker_db.close()
+
+
 def _add_login_secrets(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
-    accounts = db.fetch_accounts(_ids(payload.get("account_ids")) or None)
+    account_ids = _ids(payload.get("account_ids"))
+    accounts = db.fetch_accounts(account_ids) if account_ids else ([] if payload.get("account_ids_explicit") is True else db.fetch_accounts(None))
+    raw_skipped = payload.get("prefiltered_login_secret_items")
+    items = [dict(item) for item in raw_skipped if isinstance(item, dict)] if isinstance(raw_skipped, list) else []
     success = 0
     errors: list[str] = []
-    items: list[dict[str, Any]] = []
-    for idx, account_row in enumerate(accounts, start=1):
-        db.ensure_not_cancelled()
-        email = str(account_row.get("email") or "").strip()
-        mailbox = db.fetch_mailbox_by_email(email)
-        if not mailbox:
-            error = f"[{email}] 找不到对应的邮箱凭证"
-            errors.append(error)
-            db.event(error, "error", detail={"email": email, "scope": "selected"})
-            db.update_task(progress_current=idx, success_count=success, error_count=len(errors))
-            continue
-        if str(mailbox.get("status") or "").strip().lower() in {"已封禁", "banned", "account_deactivated"}:
-            db.event(
-                f"[{email}] [登录密钥] 账户已封禁，跳过密码与 2FA 设置并终止该账户任务",
-                "warning",
-                detail={"email": email, "scope": "selected", "account_deactivated": True, "skipped": True},
-            )
-            db.update_task(progress_current=idx, success_count=success, error_count=len(errors))
-            continue
-        chatgpt_password = str(mailbox.get("chat_gpt_password") or "").strip()
-        totp_secret = str(mailbox.get("totp_secret") or "").strip()
-        if chatgpt_password and totp_secret:
-            success += 1
-            items.append({"email": email, "status": "skipped", "login_secret_complete": True})
-            db.event(f"[{email}] [登录密钥] 已存在完整 LS，跳过重复设置", detail={"email": email, "scope": "selected"})
-            db.update_task(progress_current=idx, success_count=success, error_count=len(errors))
-            continue
+    prefiltered_count = len(items)
+    completed = prefiltered_count
+    total = completed + len(accounts)
+    db.update_task(progress_total=max(1, total), progress_current=completed, success_count=0, error_count=0)
+    if items:
+        db.event(
+            f"[系统] 已在任务提交阶段过滤 {len(items)} 个具有完整 LS 的账户",
+            detail={"scope": "global", "skipped": len(items), "operation": "login_secret"},
+        )
+    if not accounts:
+        return success, errors, items
+
+    cpu_count = max(1, int(os.cpu_count() or 1))
+    default_concurrency = max(1, (cpu_count * 3 + 1) // 2)
+    try:
+        requested_concurrency = int(payload.get("concurrency") or default_concurrency)
+    except (TypeError, ValueError):
+        requested_concurrency = default_concurrency
+    concurrency = max(1, min(requested_concurrency, len(accounts)))
+    db.event(
+        f"[系统] 添加 LS 并发数：{concurrency}（CPU {cpu_count} 核，默认并发 {default_concurrency}）",
+        detail={"scope": "global", "concurrency": concurrency, "cpu_count": cpu_count, "default_concurrency": default_concurrency, "total": total, "operation": "login_secret"},
+    )
+    if concurrency <= 1:
+        for offset, account in enumerate(accounts, start=1):
+            index = completed + offset
+            account_success, account_errors, item = _add_login_secret_account(db, payload, account, index, total)
+            success += account_success
+            errors.extend(account_errors)
+            items.append(item)
+            db.update_task(progress_current=index, success_count=success, error_count=len(errors))
+        return success, errors, items
+
+    for batch_start in range(0, len(accounts), concurrency):
+        batch = accounts[batch_start : batch_start + concurrency]
+        pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sunny-add-ls")
         try:
-            proxies = _prepare_register_proxy(db, payload, email, idx - 1)
-            auxiliary_proxy = _auxiliary_proxy(payload, proxies)
-            account = account_from_row(mailbox)
-            mailbox_proxy_url = _mailbox_proxy_for_task(payload, proxies, auxiliary_proxy, account.mailbox_type)
-            session = db.fetch_session_by_email(email) or {}
-            meter = ProxyTrafficMeter(
-                proxy_url=str(proxies.get("register") or ""),
-                tracked_proxy=str(proxies.get("mode") or "") == "proxy_pool",
-                email=email,
-                operation="sunny_add_ls",
-            )
-            try:
-                result = setup_login_secret(
-                    account,
-                    session,
-                    str(proxies.get("register") or ""),
-                    lambda message: db.event(message, detail={"email": email, "scope": "selected"}),
-                    should_cancel=db.cancel_requested,
-                    mailbox_proxy_url=mailbox_proxy_url,
-                    traffic_meter=meter,
-                )
-            except RuntimeError as exc:
-                if "登录态" not in str(exc):
-                    raise
-                db.event(f"[{email}] [登录密钥] 现有 Session 不可复用，先重新登录账户", "warning", detail={"email": email, "scope": "selected"})
-                session = login_or_register(
-                    account,
-                    str(proxies.get("register") or ""),
-                    True,
-                    lambda message: db.event(message, detail={"email": email, "scope": "selected"}),
-                    existing_account=True,
-                    require_refresh_token=False,
-                    should_cancel=db.cancel_requested,
-                    execution_mode="background",
-                    mailbox_proxy_url=mailbox_proxy_url,
-                    traffic_meter=meter,
-                    traffic_config=payload.get("browser_traffic_optimization"),
-                )
-                result = setup_login_secret(
-                    account,
-                    session,
-                    str(proxies.get("register") or ""),
-                    lambda message: db.event(message, detail={"email": email, "scope": "selected"}),
-                    should_cancel=db.cancel_requested,
-                    mailbox_proxy_url=mailbox_proxy_url,
-                    traffic_meter=meter,
-                )
-            _raise_if_login_secret_account_deactivated(result)
-            if result.get("password_added"):
-                db.save_chatgpt_password(int(mailbox.get("id") or 0), str(result.get("password") or ""))
-            if result.get("totp_added"):
-                db.save_totp_secret(int(mailbox.get("id") or 0), str(result.get("totp_secret") or ""))
-            refreshed_session = result.get("session") if isinstance(result.get("session"), dict) else session
-            if refreshed_session:
-                db.upsert_session(email, int(account_row.get("id") or 0), refreshed_session, str(mailbox.get("raw") or ""))
-                access_token = str(refreshed_session.get("access_token") or "")
-                if access_token:
-                    db.upsert_account(email, access_token=access_token, last_error="")
-            complete = bool(result.get("complete"))
-            items.append({"email": email, "status": "success" if complete else "partial", "login_secret_complete": complete, "errors": list(result.get("errors") or [])})
-            if complete:
-                success += 1
-                db.event(f"[{email}] [登录密钥] LS 添加完成", detail={"email": email, "scope": "selected"})
-            else:
-                message = "；".join(result.get("errors") or ["登录密钥未完整设置"])
-                errors.append(f"[{email}] {message}")
-                db.event(f"[{email}] [登录密钥] 部分设置未完成: {message}", "warning", detail={"email": email, "scope": "selected"})
-            snapshot = meter.snapshot()
-            db.record_proxy_traffic(email, int(mailbox.get("id") or 0), int(snapshot.get("total_bytes") or 0))
-        except Exception as exc:
-            if _is_cancel_exception(exc):
-                raise
-            if _is_account_deactivated(exc):
-                db.mark_account_deactivated(email, str(exc))
-                db.event(
-                    f"[{email}] [认证] OpenAI 返回 account_deactivated，账户已标记为已封禁并终止登录密钥任务",
-                    "warning",
-                    detail={"email": email, "scope": "selected", "account_deactivated": True},
-                )
-            error = f"[{email}] 添加 LS 失败: {exc}"
-            errors.append(error)
-            items.append({"email": email, "status": "failed", "login_secret_complete": False, "error": str(exc)})
-            db.event(error, "error", detail={"email": email, "scope": "selected"})
-        db.update_task(progress_current=idx, success_count=success, error_count=len(errors))
+            futures = {
+                pool.submit(
+                    _add_login_secret_isolated,
+                    db.task_id,
+                    payload,
+                    int(account.get("id") or 0),
+                    prefiltered_count + batch_start + offset,
+                    total,
+                ): str(account.get("email") or "")
+                for offset, account in enumerate(batch, start=1)
+            }
+            pending = set(futures)
+            while pending:
+                if db.cancel_requested():
+                    for future in pending:
+                        future.cancel()
+                    raise SunnyTaskCancelled("Task cancelled by user")
+                done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                for future in done:
+                    try:
+                        _index, account_success, account_errors, item = future.result()
+                    except Exception as exc:
+                        if _is_cancel_exception(exc):
+                            raise
+                        email = futures[future]
+                        account_success = 0
+                        account_errors = [f"[{email}] 添加 LS 并行 Worker 失败: {exc}"]
+                        item = {"email": email, "status": "failed", "login_secret_complete": False, "error": str(exc)}
+                    completed += 1
+                    success += account_success
+                    errors.extend(account_errors)
+                    items.append(item)
+                    db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
     return success, errors, items
 
 
@@ -2842,10 +2889,10 @@ def run_sunny_task(task_id: str) -> None:
             db.ensure_not_cancelled()
             skipped = len([item for item in items if item.get("status") == "skipped"])
             partial = len([item for item in items if item.get("status") == "partial"])
-            status = "succeeded" if ok else "failed"
+            status = "succeeded" if not errors and (ok > 0 or skipped > 0) else "failed"
             result = {"success": ok, "failed": len(errors), "skipped": skipped, "partial": partial, "errors": errors, "items": items}
-            db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps(result, ensure_ascii=False), error="; ".join(errors[:3]) if not ok else "", finished_at=now_sql())
-            db.event(f"添加 LS 任务总结：成功 {ok}，跳过 {skipped}，部分完成 {partial}，失败 {len(errors)}", "info" if ok else "error", detail={"scope": "global", **result})
+            db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps(result, ensure_ascii=False), error="; ".join(errors[:3]), finished_at=now_sql())
+            db.event(f"添加 LS 任务总结：成功 {ok}，跳过 {skipped}，部分完成 {partial}，失败 {len(errors)}", "info" if status == "succeeded" else "error", detail={"scope": "global", **result})
             return
         if task_type == "sunny_rebind":
             ok, errors, items = _rebind_sessions(db, payload)

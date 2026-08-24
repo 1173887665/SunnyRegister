@@ -800,6 +800,60 @@ func TestSunnyAcquireRTTaskRejectsEmptySelection(t *testing.T) {
 	}
 }
 
+func TestSunnyAddLSTaskFiltersCompleteLoginSecretsAndUsesSentinelProtocol(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var completeSession SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&completeSession).Error; err != nil {
+		t.Fatalf("load complete session: %v", err)
+	}
+	if err := s.db.Model(&SunnyMailbox{}).Where("email = ?", completeSession.Email).Updates(map[string]any{
+		"chat_gpt_password": "chatgpt-password", "totp_secret": "JBSWY3DPEHPK3PXP",
+	}).Error; err != nil {
+		t.Fatalf("complete LS credentials: %v", err)
+	}
+	now := time.Now()
+	incompleteMailbox := SunnyMailbox{Email: "missing-ls@example.com", Password: "mailbox-password", Status: "已注册", Enabled: true, CreatedAt: now, UpdatedAt: now}
+	if err := s.db.Create(&incompleteMailbox).Error; err != nil {
+		t.Fatalf("create incomplete mailbox: %v", err)
+	}
+	incompleteAccount := SunnyAccount{MailboxID: incompleteMailbox.ID, Email: incompleteMailbox.Email, Status: "registered", CreatedAt: now, UpdatedAt: now}
+	if err := s.db.Create(&incompleteAccount).Error; err != nil {
+		t.Fatalf("create incomplete account: %v", err)
+	}
+	incompleteSession := SunnySession{AccountID: incompleteAccount.ID, Email: incompleteAccount.Email, CreatedAt: now, UpdatedAt: now}
+	if err := s.db.Create(&incompleteSession).Error; err != nil {
+		t.Fatalf("create incomplete session: %v", err)
+	}
+
+	body := fmt.Sprintf(`{"session_ids":[%d,%d]}`, completeSession.ID, incompleteSession.ID)
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/add-ls", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.sunnyTasks(rec, req, []string{"add-ls"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add LS status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var task Task
+	if err := s.db.Order("created_at desc").First(&task).Error; err != nil {
+		t.Fatalf("load add LS task: %v", err)
+	}
+	payload := jsonMap(task.PayloadJSON)
+	eligible := uintSlice(payload["account_ids"])
+	if len(eligible) != 1 || eligible[0] != incompleteAccount.ID {
+		t.Fatalf("eligible account IDs = %#v, want [%d]", eligible, incompleteAccount.ID)
+	}
+	skipped, _ := payload["prefiltered_login_secret_items"].([]any)
+	if len(skipped) != 1 {
+		t.Fatalf("prefiltered LS items = %#v", payload["prefiltered_login_secret_items"])
+	}
+	if text(payload["execution_mode"]) != "protocol" || text(payload["protocol_challenge_strategy"]) != "sentinel_protocol" || payload["setup_login_secret"] != true {
+		t.Fatalf("unexpected add LS runtime payload: %#v", payload)
+	}
+	if task.ProgressTotal != 2 {
+		t.Fatalf("task progress total = %d, want 2", task.ProgressTotal)
+	}
+}
+
 func TestSunnyAccountExportsUseStableNamesAndFormats(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	var rows []SunnySession
