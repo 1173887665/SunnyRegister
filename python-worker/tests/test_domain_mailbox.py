@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
 from sunny_core import mailbox as mailbox_module
@@ -35,6 +36,23 @@ def test_domain_reader_uses_latest_message_and_extracts_code(monkeypatch):
     current = reader._latest()
     assert current["code"] == "978744"
     assert current["id"] == 2
+
+
+def test_domain_reader_prefers_body_code_and_parses_cloudmail_utc(monkeypatch):
+    reader = DomainMailReader(
+        account_from_row({"email": "user@example.com", "mailbox_type": "domain", "access_key": _credential()}),
+        None,
+    )
+    monkeypatch.setattr(reader, "_request", lambda: {"items": [{
+        "id": 3,
+        "receivedAt": "2026-08-24 07:34:15",
+        "bodyPreview": "<style>.code{content:202123}</style><p>ChatGPT code 876769</p>",
+        "verificationCode": "202123",
+    }]})
+    current = reader._latest()
+    assert current["code"] == "876769"
+    assert "<" not in current["body"]
+    assert current["timestamp"] == datetime(2026, 8, 24, 7, 34, 15, tzinfo=timezone.utc).timestamp()
 
 
 def test_domain_reader_filters_old_message(monkeypatch):

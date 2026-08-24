@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -187,24 +188,34 @@ func domainMailMapList(raw []any) []map[string]any {
 }
 
 func domainMailMessageCode(message map[string]any) string {
+	for _, key := range []string{"body", "html", "content", "bodyPreview", "text", "subject"} {
+		if match := domainMailOTPPattern.FindStringSubmatch(domainMailPlainText(text(message[key]))); len(match) > 1 {
+			return match[1]
+		}
+	}
 	for _, key := range []string{"verificationCode", "verification_code", "otp", "code"} {
 		value := strings.TrimSpace(text(message[key]))
 		if len(value) == 6 && domainMailOTPPattern.MatchString(value) {
 			return value
 		}
 	}
-	for _, key := range []string{"subject", "text", "content", "html", "body", "bodyPreview"} {
-		if match := domainMailOTPPattern.FindStringSubmatch(text(message[key])); len(match) > 1 {
-			return match[1]
-		}
-	}
 	return ""
+}
+
+var domainMailHTMLTagPattern = regexp.MustCompile(`(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)>|<[^>]+>`)
+
+func domainMailPlainText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || (!strings.Contains(value, "<") && !strings.Contains(value, ">")) {
+		return value
+	}
+	return strings.Join(strings.Fields(html.UnescapeString(domainMailHTMLTagPattern.ReplaceAllString(value, " "))), " ")
 }
 
 func domainMailItems(messages []map[string]any, email string) []map[string]any {
 	items := make([]map[string]any, 0, len(messages))
 	for _, message := range messages {
-		body := firstText(message["text"], message["body"], message["content"], message["html"])
+		body := domainMailPlainText(firstText(message["text"], message["body"], message["content"], message["html"], message["bodyPreview"]))
 		items = append(items, map[string]any{
 			"id":           firstText(message["emailId"], message["id"], message["messageId"]),
 			"email":        firstText(message["toEmail"], message["recipient"], message["to"], email),
@@ -258,7 +269,7 @@ func domainMailPublicItems(messages []map[string]any, email string, now time.Tim
 		if !ok || parsedAt.Before(cutoff) || parsedAt.After(now.Add(5*time.Minute)) {
 			continue
 		}
-		bodyPreview := firstText(message["bodyPreview"], message["body_preview"], message["body"], message["text"], message["content"], message["html"])
+		bodyPreview := domainMailPlainText(firstText(message["bodyPreview"], message["body_preview"], message["body"], message["text"], message["content"], message["html"]))
 		item := map[string]any{
 			"id":          firstDomainMailValue(message["id"], message["emailId"], message["messageId"]),
 			"sender":      firstText(message["sender"], message["sendEmail"], message["from"]),

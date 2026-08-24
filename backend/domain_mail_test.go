@@ -61,16 +61,20 @@ func TestDomainMailboxPublicItemsUseRemailShapeAndRecentLimit(t *testing.T) {
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	messages := make([]map[string]any, 0, 13)
 	for index := 0; index < 12; index++ {
+		bodyPreview := "verification email"
+		if index == 0 {
+			bodyPreview = "<style>.code{content:202123}</style><p>verification email 876769</p>"
+		}
 		message := map[string]any{
 			"id":          100 + index,
 			"sender":      "noreply@tm.openai.com",
 			"recipient":   "user@example.com",
 			"receivedAt":  now.Add(-time.Duration(index) * time.Minute).Format(time.RFC3339),
 			"subject":     "ChatGPT code",
-			"bodyPreview": "verification email",
+			"bodyPreview": bodyPreview,
 		}
 		if index == 0 {
-			message["verificationCode"] = "978744"
+			message["verificationCode"] = "202123"
 		}
 		messages = append(messages, message)
 	}
@@ -92,8 +96,11 @@ func TestDomainMailboxPublicItemsUseRemailShapeAndRecentLimit(t *testing.T) {
 	if items[0]["receivedAt"] != now.Format(time.RFC3339) || items[0]["sender"] != "noreply@tm.openai.com" || items[0]["recipient"] != "user@example.com" {
 		t.Fatalf("unexpected Remail-shaped item: %#v", items[0])
 	}
-	if items[0]["verificationCode"] != "978744" {
+	if items[0]["verificationCode"] != "876769" {
 		t.Fatalf("verification code missing: %#v", items[0])
+	}
+	if preview, ok := items[0]["bodyPreview"].(string); !ok || strings.Contains(preview, "<") || !strings.Contains(preview, "876769") {
+		t.Fatalf("bodyPreview must be plain text: %#v", items[0]["bodyPreview"])
 	}
 	if _, exists := items[1]["verificationCode"]; exists {
 		t.Fatalf("verificationCode should only be present when detected: %#v", items[1])

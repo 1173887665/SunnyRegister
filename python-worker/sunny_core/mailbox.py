@@ -13,7 +13,7 @@ import socket
 import ssl
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
 from html import escape, unescape
@@ -1306,7 +1306,11 @@ class DomainMailReader:
         if not raw:
             return 0.0
         try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            # CloudMail emits timestamps such as "2026-08-24 07:34:15" in UTC without an offset.
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
         except (TypeError, ValueError, OverflowError):
             return 0.0
 
@@ -1346,16 +1350,17 @@ class DomainMailReader:
         for order, item in enumerate(self._nested(self._request())):
             if not isinstance(item, dict):
                 continue
-            body = str(item.get("text") or item.get("body") or item.get("content") or item.get("html") or item.get("bodyPreview") or item.get("subject") or "")
+            body_source = str(item.get("text") or item.get("body") or item.get("content") or item.get("html") or item.get("bodyPreview") or item.get("subject") or "")
+            body = _html_to_text(body_source)
             code = ""
-            for key in ("verificationCode", "verification_code", "otp", "code"):
-                candidate = str(item.get(key) or "").strip()
-                if re.fullmatch(r"\d{6}", candidate):
-                    code = candidate
-                    break
+            match = re.search(r"(?<!\d)(\d{6})(?!\d)", body)
+            code = match.group(1) if match else ""
             if not code:
-                match = re.search(r"(?<!\d)(\d{6})(?!\d)", body)
-                code = match.group(1) if match else ""
+                for key in ("verificationCode", "verification_code", "otp", "code"):
+                    candidate = str(item.get(key) or "").strip()
+                    if re.fullmatch(r"\d{6}", candidate):
+                        code = candidate
+                        break
             if not code:
                 continue
             timestamp = 0.0
