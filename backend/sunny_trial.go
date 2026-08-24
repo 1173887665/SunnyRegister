@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -85,6 +86,7 @@ type sunnyTrialResult struct {
 	SkipReason     string
 	InvalidToken   bool
 	Retried        bool
+	CountryResults map[string]string
 	Error          string
 	TrafficBytes   int64
 }
@@ -664,6 +666,96 @@ func (s *Server) sunnyTrialBatchSize() int {
 	return sunnyDetectionBatchSize("SUNNY_TRIAL_BATCH_SIZE", 12, 100)
 }
 
+// sunnyCommerceProxyGroups returns the enabled account-detection proxies grouped
+// by their validated country code. The country list is intentionally derived
+// from the configured pool instead of being hard-coded in the UI or API.
+func (s *Server) sunnyCommerceProxyGroups() (map[string][]SunnyProxy, error) {
+	var proxies []SunnyProxy
+	purposeQuery := "(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?"
+	if err := s.db.Where("status = ? AND enabled = ?", "enabled", true).
+		Where(purposeQuery, ","+sunnyProxyPurposeCommerce+",").Order("id asc").Find(&proxies).Error; err != nil {
+		return nil, err
+	}
+	groups := map[string][]SunnyProxy{}
+	for _, proxy := range proxies {
+		country, err := normalizeSunnyProxyCountry(proxy.Country)
+		if err == nil && normalizeSunnyProxyAddress(proxy.Address) != "" {
+			groups[country] = append(groups[country], proxy)
+		}
+	}
+	if len(groups) == 0 {
+		return nil, fmt.Errorf("请先为账户检测用途配置至少一个已启用且国家代码有效的代理")
+	}
+	return groups, nil
+}
+
+func sunnyCommerceProxyCountryList(groups map[string][]SunnyProxy) []string {
+	countries := make([]string, 0, len(groups))
+	for country := range groups {
+		countries = append(countries, country)
+	}
+	sort.Slice(countries, func(i, j int) bool {
+		if countries[i] == "JP" {
+			return countries[j] != "JP"
+		}
+		if countries[j] == "JP" {
+			return false
+		}
+		return countries[i] < countries[j]
+	})
+	return countries
+}
+
+func selectSunnyCommerceProxyCountries(groups map[string][]SunnyProxy, requested []string) ([]string, error) {
+	if requested == nil {
+		return sunnyCommerceProxyCountryList(groups), nil
+	}
+	seen := map[string]bool{}
+	selected := make([]string, 0, len(requested))
+	for _, value := range requested {
+		country, err := normalizeSunnyProxyCountry(value)
+		if err != nil {
+			return nil, err
+		}
+		if seen[country] {
+			continue
+		}
+		if len(groups[country]) == 0 {
+			return nil, fmt.Errorf("国家 %s 没有已启用的账户检测代理", country)
+		}
+		seen[country] = true
+		selected = append(selected, country)
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("请至少选择一个账户检测国家")
+	}
+	// Keep the same predictable ordering as the country picker, with JP first.
+	selectedGroups := map[string][]SunnyProxy{}
+	for _, country := range selected {
+		selectedGroups[country] = groups[country]
+	}
+	return sunnyCommerceProxyCountryList(selectedGroups), nil
+}
+
+func (s *Server) sunnyCommerceProxyURLForCountries(accountKey string, countries []string) string {
+	if len(countries) == 0 {
+		return s.sunnyCommerceProxyURL(accountKey)
+	}
+	groups, err := s.sunnyCommerceProxyGroups()
+	if err != nil {
+		return ""
+	}
+	selected, err := selectSunnyCommerceProxyCountries(groups, countries)
+	if err != nil || len(selected) == 0 {
+		return ""
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(strings.ToLower(strings.TrimSpace(accountKey))))
+	country := selected[int(hash.Sum32())%len(selected)]
+	proxies := groups[country]
+	return normalizeSunnyProxyAddress(proxies[int(hash.Sum32()/uint32(len(selected)))%len(proxies)].Address)
+}
+
 func (s *Server) sunnyTrialCandidates(ids []uint) ([]sunnyTrialCandidate, error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("请选择需要检测试用资格的账户")
@@ -783,6 +875,18 @@ func (s *Server) createSunnyTrialTask(body map[string]any) (Task, error) {
 	if len(candidates) == 0 {
 		return Task{}, fmt.Errorf("未找到需要检测试用资格的账户")
 	}
+	var requestedCountries []string
+	if raw, exists := body["countries"]; exists {
+		requestedCountries = stringSlice(raw)
+		groups, groupErr := s.sunnyCommerceProxyGroups()
+		if groupErr != nil {
+			return Task{}, groupErr
+		}
+		requestedCountries, err = selectSunnyCommerceProxyCountries(groups, requestedCountries)
+		if err != nil {
+			return Task{}, err
+		}
+	}
 	active, err := s.activeSunnyTrialSessionIDs()
 	if err != nil {
 		return Task{}, err
@@ -796,6 +900,9 @@ func (s *Server) createSunnyTrialTask(body map[string]any) (Task, error) {
 		}
 	}
 	payload := map[string]any{"session_ids": ids, "skip_session_ids": skipSessionIDs}
+	if requestedCountries != nil {
+		payload["countries"] = requestedCountries
+	}
 	return s.createTask(sunnyTrialTaskType, "sunny", payload, len(candidates)), nil
 }
 
@@ -828,6 +935,7 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 	}
 	batchSize := s.sunnyTrialBatchSize()
 	concurrency := s.sunnyTrialConcurrency()
+	trialCountries := stringSlice(payload["countries"])
 	for start := 0; start < len(candidates); start += batchSize {
 		end := start + batchSize
 		if end > len(candidates) {
@@ -837,15 +945,47 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 			outcome := sunnyTrialResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, SkipReason: candidate.SkipReason, Error: candidate.Error}
 			if outcome.SkipReason == "" && outcome.Error == "" {
 				meter := &sunnyTrafficMeter{}
-				trialCtx := withSunnyTrafficMeter(context.Background(), meter)
-				trialCtx = context.WithValue(trialCtx, sunnyTrialProxyContextKey{}, s.sunnyRegisterProxyURL(candidate.Email))
-				trial, retried := checkSunnyTrialWithRetry(trialCtx, candidate.AccessToken)
-				outcome.Eligibility = trial.Eligibility
-				outcome.TrialState = trial.TrialState
-				outcome.Message = trial.TrialMessage
-				outcome.TrialError = trial.TrialError
-				outcome.InvalidToken = trial.InvalidToken
-				outcome.Retried = retried
+				countries := trialCountries
+				if len(countries) == 0 {
+					countries = []string{""}
+				}
+				outcome.CountryResults = map[string]string{}
+				for _, country := range countries {
+					trialCtx := withSunnyTrafficMeter(context.Background(), meter)
+					proxyCountries := []string(nil)
+					if country != "" {
+						proxyCountries = []string{country}
+					}
+					trialCtx = context.WithValue(trialCtx, sunnyTrialProxyContextKey{}, s.sunnyCommerceProxyURLForCountries(candidate.Email, proxyCountries))
+					trial, retried := checkSunnyTrialWithRetry(trialCtx, candidate.AccessToken)
+					eligibility := normalizeSunnyTrialEligibility(trial.Eligibility)
+					if country != "" && eligibility != sunnyTrialUnknown {
+						outcome.CountryResults[country] = eligibility
+					}
+					if eligibility == sunnyTrialEligible || (outcome.Eligibility != sunnyTrialEligible && eligibility == sunnyTrialIneligible) {
+						outcome.Eligibility = eligibility
+					}
+					if outcome.TrialState == "" {
+						outcome.TrialState = trial.TrialState
+					}
+					if outcome.Message == "" {
+						outcome.Message = trial.TrialMessage
+					}
+					if outcome.TrialError == "" {
+						outcome.TrialError = trial.TrialError
+					}
+					outcome.InvalidToken = outcome.InvalidToken || trial.InvalidToken
+					outcome.Retried = outcome.Retried || retried
+					if trial.InvalidToken {
+						break
+					}
+				}
+				if outcome.Eligibility == "" {
+					outcome.Eligibility = sunnyTrialUnknown
+				}
+				if outcome.Eligibility != sunnyTrialUnknown {
+					outcome.TrialError = ""
+				}
 				outcome.TrafficBytes = meter.totalBytes()
 			}
 			return outcome
@@ -866,14 +1006,17 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 			case outcome.Error != "":
 				result["failed"] = result["failed"].(int) + 1
 				item["status"], item["error"] = "failed", outcome.Error
-				accountUpdates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now}
-				mailboxUpdates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now}
+				accountUpdates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_country_results_json": "{}", "trial_checked_at": now}
+				mailboxUpdates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_country_results_json": "{}", "trial_checked_at": now}
 				if persistErr := s.persistSunnyTrialSidecars(candidateBySession[outcome.SessionID], accountUpdates, mailboxUpdates); persistErr != nil {
 					item["status"], item["error"] = "failed", persistErr.Error()
 				}
 			default:
 				eligibility := normalizeSunnyTrialEligibility(outcome.Eligibility)
 				item["trial_eligibility"] = eligibility
+				if len(outcome.CountryResults) > 0 {
+					item["trial_country_results"] = outcome.CountryResults
+				}
 				item["trial_state"] = outcome.TrialState
 				if outcome.TrialError != "" {
 					item["trial_error"] = outcome.TrialError
@@ -885,10 +1028,14 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 					result["failed"] = result["failed"].(int) + 1
 					item["status"], item["error"] = "failed", fallback(outcome.TrialError, "无法确认试用资格")
 				}
-				accountUpdates := map[string]any{
-					"trial_eligibility": eligibility, "trial_check_error": outcome.TrialError, "trial_checked_at": now,
+				countryResultsJSON := "{}"
+				if len(outcome.CountryResults) > 0 {
+					countryResultsJSON = dumpJSON(outcome.CountryResults)
 				}
-				mailboxUpdates := map[string]any{"trial_eligibility": eligibility, "trial_check_error": outcome.TrialError, "trial_checked_at": now}
+				accountUpdates := map[string]any{
+					"trial_eligibility": eligibility, "trial_check_error": outcome.TrialError, "trial_country_results_json": countryResultsJSON, "trial_checked_at": now,
+				}
+				mailboxUpdates := map[string]any{"trial_eligibility": eligibility, "trial_check_error": outcome.TrialError, "trial_country_results_json": countryResultsJSON, "trial_checked_at": now}
 				updateErr := s.persistSunnyTrialSidecars(candidateBySession[outcome.SessionID], accountUpdates, mailboxUpdates)
 				if updateErr != nil {
 					if item["status"] != "failed" {
@@ -966,7 +1113,7 @@ func (s *Server) sunnyPurposeProxyURL(purpose, accountKey, preferredCountry stri
 	return normalizeSunnyProxyAddress(proxies[int(hash.Sum32())%len(proxies)].Address)
 }
 
-// Trial checks use the same healthy proxy pool as registration and login.
+// Registration/login and account-detection checks use separate proxy purposes.
 func (s *Server) sunnyRegisterProxyURL(accountKey string) string {
 	return s.sunnyPurposeProxyURL(sunnyProxyPurposeRegister, accountKey, "")
 }

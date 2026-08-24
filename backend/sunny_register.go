@@ -4362,11 +4362,12 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 	return map[string]any{
 		"id": sess.ID, "account_id": sess.AccountID, "mailbox_id": mb.ID, "email": sess.Email,
 		"status": status, "plan_type": plan, "group_id": mb.GroupID, "group_name": groupName,
-		"phone_bound":        sunnyPhoneBindingCompleted(acc.PhoneNumber, acc.Status, mb.Status),
-		"rebind_email":       acc.RebindEmail,
-		"rebind_mailbox_api": acc.RebindMailboxAPI,
-		"trial_eligibility":  trialEligibility,
-		"access_token":       accessToken, "refresh_token": refreshToken, "id_token": sess.IDToken,
+		"phone_bound":           sunnyPhoneBindingCompleted(acc.PhoneNumber, acc.Status, mb.Status),
+		"rebind_email":          acc.RebindEmail,
+		"rebind_mailbox_api":    acc.RebindMailboxAPI,
+		"trial_eligibility":     trialEligibility,
+		"trial_country_results": sunnyTrialCountryResults(acc.TrialCountryResultsJSON, mb.TrialCountryResultsJSON),
+		"access_token":          accessToken, "refresh_token": refreshToken, "id_token": sess.IDToken,
 		"session_json": sess.SessionJSON, "storage_state_json": sess.StorageStateJSON,
 		"raw_mailbox_line": raw,
 		"mailbox_password": mb.Password, "mailbox_client_id": mb.ClientID, "mailbox_refresh_token": mb.RefreshToken,
@@ -4409,6 +4410,7 @@ type sunnySessionAccountSummary struct {
 	Status                  string     `gorm:"column:status"`
 	AccountType             string     `gorm:"column:account_type"`
 	TrialEligibility        string     `gorm:"column:trial_eligibility"`
+	TrialCountryResultsJSON string     `gorm:"column:trial_country_results_json"`
 	TrialCheckedAt          *time.Time `gorm:"column:trial_checked_at"`
 	CheckoutKind            string     `gorm:"column:checkout_kind"`
 	CheckoutResultJSON      string     `gorm:"column:checkout_result_json"`
@@ -4428,22 +4430,23 @@ type sunnySessionAccountSummary struct {
 }
 
 type sunnySessionMailboxSummary struct {
-	ID                  uint       `gorm:"column:id"`
-	Email               string     `gorm:"column:email"`
-	RebindEmail         string     `gorm:"column:rebind_email"`
-	Status              string     `gorm:"column:status"`
-	AccountType         string     `gorm:"column:account_type"`
-	TrialEligibility    string     `gorm:"column:trial_eligibility"`
-	TrialCheckedAt      *time.Time `gorm:"column:trial_checked_at"`
-	HasSecretKey        int        `gorm:"column:has_secret_key"`
-	HasChatGPTPassword  int        `gorm:"column:has_chatgpt_password"`
-	HasTOTPSecret       int        `gorm:"column:has_totp_secret"`
-	ChatGPTPassword     string     `gorm:"column:chat_gpt_password"`
-	TOTPSecret          string     `gorm:"column:totp_secret"`
-	Raw                 string     `gorm:"column:raw"`
-	GroupID             uint       `gorm:"column:group_id"`
-	GroupName           string     `gorm:"column:group_name"`
-	LastHealthCheckedAt *time.Time `gorm:"column:last_health_checked_at"`
+	ID                      uint       `gorm:"column:id"`
+	Email                   string     `gorm:"column:email"`
+	RebindEmail             string     `gorm:"column:rebind_email"`
+	Status                  string     `gorm:"column:status"`
+	AccountType             string     `gorm:"column:account_type"`
+	TrialEligibility        string     `gorm:"column:trial_eligibility"`
+	TrialCountryResultsJSON string     `gorm:"column:trial_country_results_json"`
+	TrialCheckedAt          *time.Time `gorm:"column:trial_checked_at"`
+	HasSecretKey            int        `gorm:"column:has_secret_key"`
+	HasChatGPTPassword      int        `gorm:"column:has_chatgpt_password"`
+	HasTOTPSecret           int        `gorm:"column:has_totp_secret"`
+	ChatGPTPassword         string     `gorm:"column:chat_gpt_password"`
+	TOTPSecret              string     `gorm:"column:totp_secret"`
+	Raw                     string     `gorm:"column:raw"`
+	GroupID                 uint       `gorm:"column:group_id"`
+	GroupName               string     `gorm:"column:group_name"`
+	LastHealthCheckedAt     *time.Time `gorm:"column:last_health_checked_at"`
 }
 
 const sunnySessionListColumns = `id, account_id, email, access_token, access_token_status, access_token_error, access_token_checked_at, health_check_status, health_check_error, expires_at, updated_at,
@@ -4503,7 +4506,8 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 	return map[string]any{
 		"id": row.ID, "account_id": accountID, "mailbox_id": mailbox.ID, "email": row.Email,
 		"status": status, "plan_type": plan, "trial_eligibility": trialEligibility, "group_id": mailbox.GroupID, "group_name": mailbox.GroupName,
-		"checkout_kind": checkoutKind, "checkout_result": sunnyCheckoutResultJSON(account.CheckoutResultJSON), "payment_methods": paymentMethods, "payment_probe_results": paymentProbeResults,
+		"trial_country_results": sunnyTrialCountryResults(account.TrialCountryResultsJSON, mailbox.TrialCountryResultsJSON),
+		"checkout_kind":         checkoutKind, "checkout_result": sunnyCheckoutResultJSON(account.CheckoutResultJSON), "payment_methods": paymentMethods, "payment_probe_results": paymentProbeResults,
 		"payment_probe_error": account.PaymentProbeError, "payment_probed_at": nullableTime(account.PaymentProbedAt != nil, pointerTime(account.PaymentProbedAt)), "commerce_check_error": account.CommerceCheckError,
 		"phone_bound":          sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailbox.Status),
 		"rebind_email":         account.RebindEmail,
@@ -4528,6 +4532,25 @@ func sunnyTimePointerValue(value *time.Time) time.Time {
 	}
 	return *value
 }
+
+func sunnyTrialCountryResults(accountJSON, mailboxJSON string) map[string]string {
+	result := map[string]string{}
+	for _, raw := range []string{accountJSON, mailboxJSON} {
+		var values map[string]string
+		if json.Unmarshal([]byte(raw), &values) != nil {
+			continue
+		}
+		for country, eligibility := range values {
+			country = strings.ToUpper(strings.TrimSpace(country))
+			eligibility = normalizeSunnyTrialEligibility(eligibility)
+			if country != "" && eligibility != sunnyTrialUnknown {
+				result[country] = eligibility
+			}
+		}
+	}
+	return result
+}
+
 func (s *Server) sunnySessionSidecars(rows []SunnySession) (map[string]SunnyAccount, map[string]SunnyMailbox) {
 	emails := []string{}
 	accountIDs := []uint{}
@@ -4603,7 +4626,7 @@ func (s *Server) sunnySessionListSidecars(rows []sunnySessionListRow) (map[strin
 			accountIDs = append(accountIDs, row.AccountID)
 		}
 	}
-	accountQuery := s.db.Model(&SunnyAccount{}).Select(`id, mailbox_id, email, status, account_type, trial_eligibility, trial_checked_at, checkout_kind, checkout_result_json, payment_methods_json, payment_probe_methods_json, payment_probe_results_json, payment_probe_error, payment_probed_at, commerce_check_error, commerce_checked_at, access_token, phone_number, last_health_checked_at, rebind_email,
+	accountQuery := s.db.Model(&SunnyAccount{}).Select(`id, mailbox_id, email, status, account_type, trial_eligibility, trial_country_results_json, trial_checked_at, checkout_kind, checkout_result_json, payment_methods_json, payment_probe_methods_json, payment_probe_results_json, payment_probe_error, payment_probed_at, commerce_check_error, commerce_checked_at, access_token, phone_number, last_health_checked_at, rebind_email,
 		CASE WHEN access_token IS NOT NULL AND access_token <> '' THEN 1 ELSE 0 END AS has_access_token,
 		CASE WHEN openai_rt IS NOT NULL AND openai_rt <> '' THEN 1 ELSE 0 END AS has_refresh_token`).Where("email IN ?", emails)
 	if len(accountIDs) > 0 {
@@ -4622,7 +4645,7 @@ func (s *Server) sunnySessionListSidecars(rows []sunnySessionListRow) (map[strin
 		}
 	}
 	var mailboxRows []sunnySessionMailboxSummary
-	mailboxQuery := s.db.Model(&SunnyMailbox{}).Select(`sunny_mailboxes.id, sunny_mailboxes.email, sunny_mailboxes.rebind_email, sunny_mailboxes.status, sunny_mailboxes.account_type, sunny_mailboxes.trial_eligibility, sunny_mailboxes.trial_checked_at,
+	mailboxQuery := s.db.Model(&SunnyMailbox{}).Select(`sunny_mailboxes.id, sunny_mailboxes.email, sunny_mailboxes.rebind_email, sunny_mailboxes.status, sunny_mailboxes.account_type, sunny_mailboxes.trial_eligibility, sunny_mailboxes.trial_country_results_json, sunny_mailboxes.trial_checked_at,
 		sunny_mailboxes.group_id, sunny_mailboxes.last_health_checked_at, sunny_mailbox_groups.name AS group_name, sunny_mailboxes.chat_gpt_password, sunny_mailboxes.totp_secret, sunny_mailboxes.raw,
 		CASE
 			WHEN LOWER(sunny_mailboxes.mailbox_type) IN ('apple', 'icloud') AND LOWER(sunny_mailboxes.mailbox_channel) IN ('url_api', 'url-api') AND sunny_mailboxes.email <> '' THEN 1
@@ -4898,6 +4921,15 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			return
 		}
 		writeJSON(w, http.StatusAccepted, serializeTask(task))
+		return
+	}
+	if len(parts) == 2 && parts[0] == "trial-check" && parts[1] == "countries" && r.Method == http.MethodGet {
+		groups, err := s.sunnyCommerceProxyGroups()
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"countries": sunnyCommerceProxyCountryList(groups)})
 		return
 	}
 	if len(parts) == 1 && parts[0] == "checkout-probe" && r.Method == http.MethodPost {

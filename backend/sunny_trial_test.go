@@ -328,6 +328,32 @@ func TestSunnyTrialRouteCreatesLocalTask(t *testing.T) {
 	}
 }
 
+func TestSunnyTrialCountryRouteUsesEnabledCommerceCountries(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	proxies := []SunnyProxy{
+		{Address: "http://commerce-us.example:8080", Country: "US", PurposeTags: "commerce", Status: "enabled", Enabled: true},
+		{Address: "http://commerce-jp.example:8080", Country: "JP", PurposeTags: "commerce", Status: "enabled", Enabled: true},
+		{Address: "http://register-br.example:8080", Country: "BR", PurposeTags: "register", Status: "enabled", Enabled: true},
+	}
+	if err := s.db.Create(&proxies).Error; err != nil {
+		t.Fatalf("create proxies: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	s.sunnySessions(recorder, httptest.NewRequest(http.MethodGet, "/api/sunny/sessions/trial-check/countries", nil), []string{"trial-check", "countries"})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("country route status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Countries []string `json:"countries"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode countries: %v", err)
+	}
+	if strings.Join(response.Countries, ",") != "JP,US" {
+		t.Fatalf("unexpected trial countries: %#v", response.Countries)
+	}
+}
+
 func TestSunnyTrialTasksSkipSessionsAlreadyBeingChecked(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	first := prepareSunnyTrialAccount(t, s)

@@ -35,6 +35,7 @@ type SunnyMailbox struct {
 	AccountType                    string       `gorm:"index;default:free" json:"account_type"`
 	TrialEligibility               string       `gorm:"index;default:unknown" json:"trial_eligibility"`
 	TrialCheckError                string       `gorm:"type:text" json:"trial_check_error"`
+	TrialCountryResultsJSON        string       `gorm:"type:text;default:'{}'" json:"trial_country_results_json"`
 	TrialCheckedAt                 *time.Time   `gorm:"index" json:"trial_checked_at"`
 	Status                         string       `gorm:"index;default:unused" json:"status"`
 	Enabled                        bool         `gorm:"default:true" json:"enabled"`
@@ -97,6 +98,7 @@ type SunnyAccount struct {
 	AccountType             string     `gorm:"index;default:free" json:"account_type"`
 	TrialEligibility        string     `gorm:"index;default:unknown" json:"trial_eligibility"`
 	TrialCheckError         string     `gorm:"type:text" json:"trial_check_error"`
+	TrialCountryResultsJSON string     `gorm:"type:text;default:'{}'" json:"trial_country_results_json"`
 	TrialCheckedAt          *time.Time `gorm:"index" json:"trial_checked_at"`
 	CheckoutKind            string     `gorm:"index;size:32;default:unknown" json:"checkout_kind"`
 	CheckoutResultJSON      string     `gorm:"type:text;default:'{}'" json:"checkout_result_json"`
