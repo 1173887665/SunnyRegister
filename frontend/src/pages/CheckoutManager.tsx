@@ -188,6 +188,12 @@ function savedNumber(value: unknown, fallback: number, minimum: number, maximum:
 function resultError(item: AnyRow) { return String(item.error || item.checkout_error || item.message || "").trim(); }
 function resultDisplayLink(item: AnyRow) { return String(item.payment_link || item.short_link || item.verification_url || item.provider_redirect_url || item.paypal_link || item.checkout_url || "").trim(); }
 function resultQrImage(item: AnyRow) { return String(item.qr_image || item.qr_image_png || item.qr_image_svg || "").trim(); }
+function resultQrData(item: AnyRow) {
+  const value = String(item.qr_data || "").trim();
+  if (value) return value;
+  // GCash's m.gcash.com page requires login and is not a scanner payload.
+  return normalized(item.link_type) === "gcash" ? "" : resultDisplayLink(item);
+}
 function externalATInfo(token: string) {
   const parts = token.split(".");
   if (parts.length < 2) return { status: "格式无效", expires_at: "", email: "" };
@@ -249,7 +255,7 @@ function QRModal({ value, image, onClose }: { value: string; image: string; onCl
 }
 
 type CheckoutLiveState = { progress: number; message: string; status: string; result?: AnyRow; logs: AnyRow[] };
-type CheckoutSuccessResult = { key: string; email: string; path: string; link: string; qrData: string; qrImage: string };
+type CheckoutSuccessResult = { key: string; email: string; path: string; link: string; qrData: string; qrImage: string; qrExpiresAt: number; qrStatus: string; gcashOrderId: string; callbackToken: string };
 
 function checkoutSuccessResult(result: AnyRow, identity: AnyRow = {}): CheckoutSuccessResult | null {
   const link = resultDisplayLink(result);
@@ -265,8 +271,12 @@ function checkoutSuccessResult(result: AnyRow, identity: AnyRow = {}): CheckoutS
     email: email || "未知邮箱",
     path: String(result.link_type || identity.link_type || ""),
     link,
-    qrData: String(result.qr_data || link),
+    qrData: resultQrData(result),
     qrImage: resultQrImage(result),
+    qrExpiresAt: Number(result.qr_expires_at || 0),
+    qrStatus: String(result.qr_status || ""),
+    gcashOrderId: String(result.gcash_order_id || ""),
+    callbackToken: String(result.callback_token || ""),
   };
 }
 
@@ -369,6 +379,27 @@ export default function CheckoutManager() {
   }, [activeTaskID]);
   useEffect(() => { void apiFetch("/sunny/checkout/providers").then((data) => { if (data.items?.length) setProviders(data.items); if (data.countries) setCountries(data.countries); }).catch(() => {}); }, []);
   useEffect(() => { void apiFetch("/sunny/mailbox-groups").then((data) => setGroups(data.items || [])).catch(() => setGroups([])); }, []);
+  useEffect(() => {
+    if (!checkoutSuccesses.some((item) => item.path === "gcash" && item.qrExpiresAt > 0)) return;
+    let active = true;
+    const refreshExpired = async () => {
+      const expired = checkoutSuccesses.filter((item) => item.path === "gcash" && item.qrExpiresAt > 0 && item.qrExpiresAt * 1000 <= Date.now() && item.gcashOrderId && item.callbackToken);
+      for (const item of expired) {
+        try {
+          const data = await apiFetch(`/sunny/checkout/gcash-orders/${encodeURIComponent(item.gcashOrderId)}/qr`, {
+            method: "POST",
+            headers: { "X-GCash-Callback-Token": item.callbackToken },
+          });
+          const result = data?.result && typeof data.result === "object" ? data.result : {};
+          if (!active || !result.qr_data) continue;
+          setCheckoutSuccesses((old) => old.map((current) => current.key === item.key ? { ...current, qrData: String(result.qr_data), qrExpiresAt: Number(result.qr_expires_at || 0), qrStatus: String(result.qr_status || "ready") } : current));
+        } catch { /* The next interval retries without interrupting the task view. */ }
+      }
+    };
+    const timer = window.setInterval(() => { void refreshExpired(); }, 15000);
+    void refreshExpired();
+    return () => { active = false; window.clearInterval(timer); };
+  }, [checkoutSuccesses]);
   useEffect(() => {
     if (activeTaskID) return;
     let mounted = true;
@@ -691,7 +722,7 @@ export default function CheckoutManager() {
         {task.terminal && <div className={`mt-2 text-xs ${task.status === "succeeded" ? "text-emerald-600" : "text-red-500"}`}>{task.status === "succeeded" ? `任务完成：成功 ${task.success ?? task.success_count ?? 0}，失败 ${task.error_count ?? 0}` : `任务结束：${task.error || "请查看下方账户结果"}`}</div>}
         <div className="mt-3 border-t border-[var(--border)] pt-3">
           <button type="button" className="flex w-full items-center gap-2 text-left text-xs font-semibold disabled:cursor-default" aria-expanded={successListExpanded} disabled={!checkoutSuccesses.length} onClick={() => setSuccessListExpanded((value) => !value)}><span>成功账户</span><span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-600 dark:text-emerald-400" aria-live="polite">{checkoutSuccesses.length}</span>{checkoutSuccesses.length > 0 && <span className="ml-auto inline-flex items-center gap-1 text-[var(--text-muted)]">{successListExpanded ? "收起" : "展开"}{successListExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}</span>}</button>
-          {successListExpanded && checkoutSuccesses.length > 0 && <div className="mt-2 overflow-x-auto"><table className="w-full min-w-[860px] table-fixed text-left text-xs"><colgroup><col className="w-[210px]" /><col className="w-[120px]" /><col /><col className="w-[100px]" /><col className="w-[82px]" /></colgroup><thead className="border-y border-[var(--border)] text-[var(--text-muted)]"><tr><th className="p-2">邮箱</th><th className="p-2">支付路径</th><th className="p-2">支付链接</th><th className="p-2">支付二维码</th><th className="p-2">操作</th></tr></thead><tbody>{checkoutSuccesses.map((item) => <tr key={item.key} className="border-b border-[var(--border)]/60"><td className="p-2"><div className="truncate font-medium" title={item.email}>{item.email}</div></td><td className="p-2"><CompactBadge label={labelFor(item.path, pathLabels)} tone={pathTone(item.path)} /></td><td className="p-2"><button className="block w-full truncate text-left font-medium text-[var(--accent)] underline decoration-[var(--accent)]/40 underline-offset-2" title={`${item.link}\n点击复制支付链接`} onClick={() => void copy(item.link)}>{item.link}</button></td><td className="p-2">{item.qrImage ? <QRImageThumb src={item.qrImage} onClick={() => { setQrValue(item.qrData); setQrImage(item.qrImage); }} /> : <QRThumb value={item.qrData} onClick={() => { setQrValue(item.qrData); setQrImage(""); }} />}</td><td className="p-2"><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="复制支付链接" onClick={() => void copy(item.link)}><Clipboard className="h-3 w-3" />复制</button></td></tr>)}</tbody></table></div>}
+          {successListExpanded && checkoutSuccesses.length > 0 && <div className="mt-2 overflow-x-auto"><table className="w-full min-w-[860px] table-fixed text-left text-xs"><colgroup><col className="w-[210px]" /><col className="w-[120px]" /><col /><col className="w-[120px]" /><col className="w-[82px]" /></colgroup><thead className="border-y border-[var(--border)] text-[var(--text-muted)]"><tr><th className="p-2">邮箱</th><th className="p-2">支付路径</th><th className="p-2">支付链接</th><th className="p-2">支付二维码</th><th className="p-2">操作</th></tr></thead><tbody>{checkoutSuccesses.map((item) => <tr key={item.key} className="border-b border-[var(--border)]/60"><td className="p-2"><div className="truncate font-medium" title={item.email}>{item.email}</div></td><td className="p-2"><CompactBadge label={labelFor(item.path, pathLabels)} tone={pathTone(item.path)} /></td><td className="p-2"><button className="block w-full truncate text-left font-medium text-[var(--accent)] underline decoration-[var(--accent)]/40 underline-offset-2" title={`${item.link}\n点击复制支付链接`} onClick={() => void copy(item.link)}>{item.link}</button></td><td className="p-2">{item.qrImage ? <QRImageThumb src={item.qrImage} onClick={() => { setQrValue(item.qrData); setQrImage(item.qrImage); }} /> : item.qrData ? <div><QRThumb value={item.qrData} onClick={() => { setQrValue(item.qrData); setQrImage(""); }} />{item.qrExpiresAt > 0 && <div className="mt-1 text-[10px] text-[var(--text-muted)]">{item.qrStatus === "expired" || item.qrExpiresAt * 1000 <= Date.now() ? "二维码已过期" : `有效至 ${new Date(item.qrExpiresAt * 1000).toLocaleTimeString()}`}</div>}</div> : <span className="text-[var(--text-muted)]">上游未提供免登录二维码</span>}</td><td className="p-2"><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="复制支付链接" onClick={() => void copy(item.link)}><Clipboard className="h-3 w-3" />复制</button></td></tr>)}</tbody></table></div>}
         </div>
       </div>}
     </section>

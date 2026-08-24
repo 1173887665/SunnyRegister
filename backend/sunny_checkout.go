@@ -404,11 +404,14 @@ func (s *Server) proxySunnyGcashOrder(w http.ResponseWriter, r *http.Request, pa
 	}
 	path := "/api/gcash/orders/" + url.PathEscape(parts[0])
 	if len(parts) == 2 {
-		if parts[1] != "callback" || r.Method != http.MethodPost {
+		if (parts[1] != "callback" && parts[1] != "qr") || r.Method != http.MethodPost {
 			writeError(w, http.StatusNotFound, "not found")
 			return
 		}
 		path += "/callback"
+		if parts[1] == "qr" {
+			path = strings.TrimSuffix(path, "/callback") + "/qr"
+		}
 	} else if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -642,6 +645,11 @@ func (s *Server) runSunnyCheckoutAttempt(task *Task, payload, row map[string]any
 			stored["gcash_order_id"] = text(item["gcash_order_id"])
 			stored["payment_callback_path"] = text(item["payment_callback_path"])
 			stored["payment_expires_at"] = item["payment_expires_at"]
+			stored["gcash_authorization_url"] = text(item["gcash_authorization_url"])
+			stored["gcash_net_auth_id"] = text(item["gcash_net_auth_id"])
+			stored["gcash_client_id"] = text(item["gcash_client_id"])
+			stored["qr_status"] = text(item["qr_status"])
+			stored["qr_expires_at"] = item["qr_expires_at"]
 		}
 		s.db.Model(&SunnyAccount{}).Where("id = ? OR email = ?", accountID, email).Update("checkout_result_json", dumpJSON(stored))
 	}
@@ -810,6 +818,17 @@ func sanitizeCheckoutError(value string) string {
 
 func extractSunnyCheckoutResult(v map[string]any, provider string) map[string]any {
 	out := map[string]any{"link_type": provider, "checkout_session_id": "", "payment_link": "", "qr_data": "", "qr_image": "", "raw_provider": ""}
+	if provider == "gcash" {
+		out["qr_status"] = ""
+		out["qr_expires_at"] = nil
+		out["gcash_authorization_url"] = ""
+		out["gcash_net_auth_id"] = ""
+		out["gcash_client_id"] = ""
+		out["payment_status"] = ""
+		out["gcash_order_id"] = ""
+		out["payment_callback_path"] = ""
+		out["payment_expires_at"] = nil
+	}
 	var walk func(any)
 	walk = func(x any) {
 		switch n := x.(type) {
@@ -821,12 +840,39 @@ func extractSunnyCheckoutResult(v map[string]any, provider string) map[string]an
 						out["checkout_session_id"] = s
 					}
 					if strings.Contains(lk, "qr") && strings.TrimSpace(s) != "" {
-						out["qr_data"] = s
+						if provider != "gcash" || (!strings.Contains(strings.ToLower(s), "m.gcash.com") && !strings.Contains(strings.ToLower(s), "checkoutshopper")) {
+							out["qr_data"] = s
+						}
+					}
+					if provider == "gcash" {
+						switch strings.NewReplacer("_", "", "-", "").Replace(lk) {
+						case "qrstatus":
+							out["qr_status"] = s
+						case "gcashauthorizationurl":
+							out["gcash_authorization_url"] = s
+						case "gcashnetauthid":
+							out["gcash_net_auth_id"] = s
+						case "gcashclientid":
+							out["gcash_client_id"] = s
+						case "paymentstatus":
+							out["payment_status"] = s
+						case "gcashorderid":
+							out["gcash_order_id"] = s
+						case "paymentcallbackpath":
+							out["payment_callback_path"] = s
+						}
 					}
 					if strings.Contains(lk, "url") || strings.Contains(lk, "link") || strings.Contains(lk, "redirect") {
 						if strings.HasPrefix(s, "http") {
 							out["payment_link"] = s
 						}
+					}
+				} else if provider == "gcash" {
+					switch strings.NewReplacer("_", "", "-", "").Replace(lk) {
+					case "qrexpiresat":
+						out["qr_expires_at"] = val
+					case "paymentexpiresat":
+						out["payment_expires_at"] = val
 					}
 				}
 				walk(val)

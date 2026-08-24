@@ -42,6 +42,46 @@ def test_gcash_authorization_url_rejects_redirect_only_payload() -> None:
     ) == ""
 
 
+def test_gcash_authorization_params_extract_net_auth_and_client_id() -> None:
+    url = (
+        "https://m.gcash.com/gcashapp/gcash-merchants-auth/index.html?"
+        "netAuthId=RMLLGBNV65BRTHG3&clientId=305XSM222YRKG505"
+    )
+    assert checkout_app.gcash_authorization_params({"url": url}) == {
+        "net_auth_id": "RMLLGBNV65BRTHG3",
+        "client_id": "305XSM222YRKG505",
+    }
+
+
+def test_gcash_qr_data_never_falls_back_to_login_url() -> None:
+    login_url = "https://m.gcash.com/gcashapp/gcash-merchants-auth/index.html?netAuthId=x"
+    assert checkout_app.gcash_qr_data({"qrCode": login_url}) == ""
+    assert checkout_app.gcash_qr_data({"qrCode": "gcash://payment/abc123456789"}) == "gcash://payment/abc123456789"
+
+
+def test_gcash_qr_expiry_defaults_to_five_minutes() -> None:
+    assert checkout_app.gcash_qr_expires_at({"qrCode": "payload-value-123456"}, now=1000) == 1300
+    assert checkout_app.gcash_qr_expires_at(
+        {"qrCode": "payload-value-123456", "expireSeconds": 120}, now=1000,
+    ) == 1120
+
+
+def test_gcash_public_qr_consult_parses_provider_result() -> None:
+    class Response:
+        status_code = 200
+        text = '{"resultStatus":1000,"result":{"qrCode":"GCSH-public-payload-123456"}}'
+
+        def json(self):
+            return {"resultStatus": 1000, "result": {"qrCode": "GCSH-public-payload-123456"}}
+
+    with patch.object(checkout_app.requests, "post", return_value=Response()) as post:
+        result = checkout_app.fetch_gcash_public_qr(
+            "https://m.gcash.com/gcashapp/gcash-merchants-auth/index.html?netAuthId=x&clientId=y",
+        )
+    assert result["qrCode"] == "GCSH-public-payload-123456"
+    assert post.call_args.kwargs["data"]["operationType"] == "ap.mobilewallet.gka.authorisation.stateless.consult"
+
+
 def test_gcash_payment_url_accepts_valid_adyen_handoff() -> None:
     adyen_url = (
         "https://checkoutshopper-live.adyen.com/checkoutshopper/"

@@ -1398,6 +1398,180 @@ def gcash_authorization_url(*payloads: Any) -> str:
     return found[0] if found else ""
 
 
+def gcash_authorization_params(*payloads: Any) -> dict[str, str]:
+    """Extract the public GCash authorization identifiers from nested data."""
+    authorization = gcash_authorization_url(*payloads)
+    if not authorization:
+        return {"net_auth_id": "", "client_id": ""}
+    try:
+        query = parse_qs(urlsplit(authorization).query, keep_blank_values=True)
+    except ValueError:
+        return {"net_auth_id": "", "client_id": ""}
+    return {
+        "net_auth_id": str((query.get("netAuthId") or [""])[-1]).strip(),
+        "client_id": str((query.get("clientId") or [""])[-1]).strip(),
+    }
+
+
+def resolve_gcash_authorization_url(http: Any, redirect_url: str, log=lambda _message: None) -> str:
+    """Resolve the Adyen handoff to the signed public GCash authorization URL."""
+    candidate = str(redirect_url or "").strip()
+    if not is_valid_gcash_adyen_redirect_url(candidate):
+        return ""
+    try:
+        response = http.get(
+            candidate,
+            headers={"Accept": "text/html,application/xhtml+xml", "User-Agent": sc.CHROME_UA},
+            allow_redirects=False,
+            timeout=30,
+        )
+        for _ in range(3):
+            location = str(response.headers.get("location") or "").strip()
+            if not location:
+                break
+            if is_valid_gcash_authorization_url(location):
+                return location
+            if not is_valid_gcash_adyen_redirect_url(location):
+                break
+            response = http.get(
+                location,
+                headers={"Accept": "text/html,application/xhtml+xml", "User-Agent": sc.CHROME_UA},
+                allow_redirects=False,
+                timeout=30,
+            )
+    except Exception as exc:
+        log(f"GCash 授权链接解析提示：{type(exc).__name__}")
+    return ""
+
+
+def fetch_gcash_public_qr(authorization_url: str, proxy: str = "", log=lambda _message: None) -> dict[str, Any]:
+    """Call GCash's public stateless consult API to obtain its login-free QR."""
+    if not is_valid_gcash_authorization_url(authorization_url):
+        return {}
+    query = urlsplit(authorization_url).query
+    request_body = {
+        "channel": "generic",
+        "urlParameters": query,
+        "originalUrl": authorization_url,
+        "expireSeconds": 300,
+        "bizType": "ACQUIRING",
+        "extParams": {"sessionType": "APLUS", "sessionId": ""},
+    }
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "User-Agent": sc.CHROME_UA,
+        "Origin": "https://m.gcash.com",
+        "Referer": authorization_url,
+    }
+    gateway = "https://mgs-gw.paas.mynt.xyz/mgw.htm"
+    form = {
+        "operationType": "ap.mobilewallet.gka.authorisation.stateless.consult",
+        "requestData": json.dumps([request_body], ensure_ascii=False, separators=(",", ":")),
+        "version": "2.0",
+        "workspaceId": "PROD",
+        "appId": "D54528A131559",
+        "tenantId": "MYNTPH",
+    }
+    try:
+        response = requests.post(
+            gateway,
+            data=form,
+            headers=headers,
+            proxies={"http": proxy, "https": proxy} if proxy else None,
+            timeout=30,
+            impersonate="chrome",
+        )
+        payload = response.json() if response.text else {}
+        if not isinstance(payload, dict) or int(payload.get("resultStatus") or 0) != 1000:
+            log(f"GCash 免登录二维码接口未成功：HTTP {response.status_code}")
+            return {}
+        result = payload.get("result")
+        return dict(result) if isinstance(result, dict) else {}
+    except Exception as exc:
+        log(f"GCash 免登录二维码获取失败：{type(exc).__name__}")
+        return {}
+
+
+def _gcash_qr_candidate(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    # A public QR payload is data consumed by the GCash scanner. Never treat
+    # the login page or an Adyen handoff as that payload.
+    if is_valid_gcash_authorization_url(text) or is_valid_gcash_adyen_redirect_url(text):
+        return ""
+    if text.startswith("data:image/") or text.startswith("gcash://"):
+        return text
+    if len(text) < 16:
+        return ""
+    return text
+
+
+def gcash_qr_data(*payloads: Any) -> str:
+    """Find the real GCash scanner payload returned by the provider."""
+    keys = {
+        "qrcode", "qrdata", "qrpayload", "qrcontent", "qrstring",
+        "paymentqrcode", "paymentqr", "gcashqrcode", "gcashqrdata",
+    }
+    found: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+                if normalized in keys:
+                    candidate = _gcash_qr_candidate(nested)
+                    if candidate and candidate not in found:
+                        found.append(candidate)
+                walk(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                walk(nested)
+
+    for payload in payloads:
+        walk(payload)
+    return found[0] if found else ""
+
+
+def gcash_qr_expires_at(*payloads: Any, now: float | None = None) -> int:
+    """Normalize provider QR expiry to a Unix timestamp (GCash uses 300s)."""
+    current = time.time() if now is None else float(now)
+    absolute_keys = {"qrcodeexpiresat", "qrexpiresat", "expiresat", "expireat", "expiration"}
+    ttl_keys = {"qrcodeexpireseconds", "qrexpireseconds", "expireseconds", "ttl", "validityseconds"}
+    absolute: float | None = None
+    ttl: float | None = None
+
+    def walk(value: Any, key: str = "") -> None:
+        nonlocal absolute, ttl
+        if isinstance(value, dict):
+            for name, nested in value.items():
+                normalized = re.sub(r"[^a-z0-9]", "", str(name).lower())
+                walk(nested, normalized)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            if key in absolute_keys and absolute is None:
+                number = float(value)
+                absolute = number / 1000 if number > 10_000_000_000 else number
+            elif key in ttl_keys and ttl is None:
+                ttl = float(value)
+        elif isinstance(value, str) and value.strip():
+            try:
+                number = float(value.strip())
+            except ValueError:
+                return
+            if key in absolute_keys and absolute is None:
+                absolute = number / 1000 if number > 10_000_000_000 else number
+            elif key in ttl_keys and ttl is None:
+                ttl = number
+
+    for payload in payloads:
+        walk(payload)
+    if absolute and absolute > current:
+        return int(absolute)
+    if ttl and ttl > 0:
+        return int(current + min(ttl, 300))
+    return int(current + 300) if gcash_qr_data(*payloads) else 0
+
+
 def is_valid_gcash_adyen_redirect_url(value: str) -> bool:
     """Return whether a URL is the Adyen redirect emitted by GCash start."""
     try:
@@ -1971,6 +2145,62 @@ class JobStore:
                 "error": str(order.get("error") or ""),
                 "result": result,
             }
+
+    def refresh_gcash_order_qr(self, order_id: str, callback_token: str = "") -> dict[str, Any] | None:
+        """Request a fresh provider QR while keeping the Checkout session."""
+        with self.lock:
+            order = self.gcash_orders.get(str(order_id))
+            if not order or not callback_token or not hmac.compare_digest(
+                str(order.get("callback_token_hash") or ""),
+                hashlib.sha256(str(callback_token).encode()).hexdigest(),
+            ):
+                return None
+            if order.get("status") in {"success", "failed", "expired", "cancelled"}:
+                return self.gcash_order(order_id, callback_token)
+            context = dict(order.get("context") or {})
+            result = dict(order.get("result") or {})
+        try:
+            started = start_custom_checkout_method(
+                context.get("http"), str(context.get("token") or ""),
+                str(context.get("checkout_session_id") or ""),
+                str(context.get("processor_entity") or ""),
+                str(context.get("custom_payment_method_id") or ""),
+                str(context.get("device_id") or ""),
+            )
+            action = started.get("next_action") or {}
+            adyen_url = str(action.get("url") or "").strip() if isinstance(action, dict) else ""
+            authorization_url = gcash_authorization_url(started) or resolve_gcash_authorization_url(
+                context.get("http"), adyen_url,
+            )
+            qr_payload = fetch_gcash_public_qr(authorization_url, str(context.get("proxy") or "")) if authorization_url else {}
+            qr_data = gcash_qr_data(qr_payload, started)
+            if not qr_data:
+                raise RuntimeError("GCASH_QR_REFRESH_UNAVAILABLE: 上游未返回新的免登录二维码")
+            qr_expires_at = gcash_qr_expires_at(qr_payload, started)
+            fields = {
+                "qr_data": qr_data,
+                "qr_status": "ready",
+                "qr_expires_at": qr_expires_at,
+                "payment_status": "waiting_callback",
+            }
+            if authorization_url:
+                fields["gcash_authorization_url"] = authorization_url
+                fields["provider_redirect_url"] = authorization_url
+                fields["short_link"] = authorization_url
+                fields["checkout_url"] = authorization_url
+            with self.lock:
+                order = self.gcash_orders.get(str(order_id))
+                if order:
+                    order["result"] = {**dict(order.get("result") or result), **fields}
+                    order["updated_at"] = time.time()
+            return self.gcash_order(order_id, callback_token)
+        except Exception as exc:
+            with self.lock:
+                order = self.gcash_orders.get(str(order_id))
+                if order:
+                    order["updated_at"] = time.time()
+                    order["error"] = re.sub(r"eyJ[A-Za-z0-9_.-]{40,}", "[TOKEN]", str(exc))[:500]
+            return self.gcash_order(order_id, callback_token)
 
     def complete_gcash_order(self, order_id: str, callback: Any, callback_token: str = "") -> dict[str, Any] | None:
         with self.lock:
@@ -3222,6 +3452,26 @@ class JobStore:
                     adyen_redirect_url = str(action.get("url") or "").strip()
                     authorization_url = gcash_authorization_url(confirmed, started)
                     redirect_url = gcash_payment_url(confirmed, started)
+                    if not authorization_url:
+                        authorization_url = resolve_gcash_authorization_url(
+                            chatgpt_http, adyen_redirect_url,
+                            lambda message: self.log(job_id, message),
+                        )
+                    if authorization_url:
+                        redirect_url = authorization_url
+                    qr_payload = fetch_gcash_public_qr(
+                        authorization_url,
+                        checkout_proxy,
+                        lambda message: self.log(job_id, message),
+                    ) if authorization_url else {}
+                    if qr_payload:
+                        confirmed = {**confirmed, "gcash_qr_consult": qr_payload}
+                    qr_data = gcash_qr_data(confirmed, started)
+                    qr_data = qr_data or gcash_qr_data(qr_payload)
+                    qr_expires_at = gcash_qr_expires_at(qr_payload, confirmed, started) if qr_data else 0
+                    authorization_params = gcash_authorization_params(confirmed, started)
+                    if not qr_data:
+                        self.log(job_id, "GCash 上游未返回免登录二维码，仅保存 m.gcash.com 授权链接；不会将登录页链接编码为二维码")
                     if not redirect_url:
                         raise RuntimeError(
                             "GCASH_PAYMENT_LINK_MISSING: GCash 未返回 m.gcash.com 授权链接或有效 Adyen 跳转链接"
@@ -3236,6 +3486,13 @@ class JobStore:
                         "short_link": redirect_url,
                         "checkout_url": redirect_url,
                         "gcash_authorization_url": authorization_url,
+                        "gcash_net_auth_id": authorization_params["net_auth_id"],
+                        "gcash_client_id": authorization_params["client_id"],
+                        # Do not synthesize a QR from the m.gcash.com login URL.
+                        "qr_data": qr_data,
+                        "qr_status": "ready" if qr_data else "unavailable",
+                        "qr_expires_at": qr_expires_at,
+                        "payment_status": "waiting_callback",
                         "adyen_redirect_url": adyen_redirect_url if is_valid_gcash_adyen_redirect_url(adyen_redirect_url) else "",
                         "verification_url": str(confirmed.get("confirm_return_url") or ""),
                         "checkout_amount": custom_amount,
@@ -3259,6 +3516,7 @@ class JobStore:
                             "job_id": job_id,
                             "checkout_session_id": session_id,
                             "processor_entity": custom_processor,
+                            "custom_payment_method_id": custom_method_id,
                             "device_id": device_id,
                             "did": did,
                             "proxy": checkout_proxy,
@@ -4305,6 +4563,20 @@ def gcash_order_status(order_id: str):
     if not order:
         return jsonify({"error": "GCash 订单不存在或回调令牌无效"}), 404
     return jsonify(order)
+
+
+@app.post("/api/gcash/orders/<order_id>/qr")
+def gcash_order_qr_refresh(order_id: str):
+    token = _gcash_callback_token()
+    if not token:
+        body = request.get_json(silent=True) or {}
+        token = str(body.get("callback_token") or "").strip()
+    if not token:
+        return jsonify({"error": "缺少 GCash 回调令牌"}), 401
+    order = STORE.refresh_gcash_order_qr(order_id, token)
+    if not order:
+        return jsonify({"error": "GCash 订单不存在、已过期或回调令牌无效"}), 404
+    return jsonify(order), 200
 
 
 @app.post("/api/gcash/orders/<order_id>/callback")
