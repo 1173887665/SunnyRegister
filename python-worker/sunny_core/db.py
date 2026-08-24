@@ -295,6 +295,7 @@ class SunnyDB:
                 "mailbox_type": "text DEFAULT 'microsoft'",
                 "mailbox_channel": "text DEFAULT 'outlook'",
                 "access_key": "text DEFAULT ''",
+                "pickup_token_hash": "text DEFAULT ''",
                 "chat_gpt_password": "text DEFAULT ''",
                 "totp_secret": "text DEFAULT ''",
                 "openai_rt": "text DEFAULT ''",
@@ -768,7 +769,7 @@ class SunnyDB:
         row = self.conn.execute("select * from sunny_sessions where email=?", (email,)).fetchone()
         return dict(row) if row else None
 
-    def persist_rebind(self, old_email: str, new_email: str, new_mailbox_api: str, session: dict[str, Any]) -> None:
+    def persist_rebind(self, old_email: str, new_email: str, new_mailbox_api: str, pickup_token_hash: str, session: dict[str, Any]) -> None:
         """Atomically replace the mailbox identity and fresh ChatGPT session after rebind."""
         old_email = str(old_email or '').strip()
         new_email = str(new_email or '').strip()
@@ -818,8 +819,8 @@ class SunnyDB:
             if not mailbox or not account or not current_session:
                 raise ValueError('换绑账户关联的邮箱、账户或会话记录不完整')
             self.conn.execute(
-                """update sunny_mailboxes set group_id=?,email=?,mailbox_type='domain',mailbox_channel='domain_api',access_key=?,raw=?,last_error='',updated_at=? where id=?""",
-                (group['id'], new_email, new_mailbox_api, raw, timestamp, mailbox['id']),
+                """update sunny_mailboxes set group_id=?,email=?,mailbox_type='domain',mailbox_channel='domain_api',access_key=?,pickup_token_hash=?,raw=?,last_error='',updated_at=? where id=?""",
+                (group['id'], new_email, new_mailbox_api, pickup_token_hash, raw, timestamp, mailbox['id']),
             )
             self.conn.execute(
                 """update sunny_accounts set email=?,group_name=?,access_token=?,openai_rt=?,rebind_email=?,rebind_mailbox_api=?,last_error='',updated_at=? where id=?""",

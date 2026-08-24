@@ -22,6 +22,7 @@ type SunnyMailbox struct {
 	MailboxType                    string       `gorm:"index;size:32;default:microsoft" json:"mailbox_type"`
 	MailboxChannel                 string       `gorm:"index;size:64;default:outlook" json:"mailbox_channel"`
 	AccessKey                      string       `gorm:"type:text" json:"access_key"`
+	PickupTokenHash                string       `gorm:"column:pickup_token_hash;size:64;index" json:"-"`
 	Password                       string       `gorm:"type:text" json:"password"`
 	ChatGPTPassword                string       `gorm:"type:text" json:"chatgpt_password"`
 	TOTPSecret                     string       `gorm:"type:text" json:"totp_secret"`

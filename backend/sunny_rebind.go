@@ -16,6 +16,9 @@ func (s *Server) createSunnyRebindTask(body map[string]any) (Task, error) {
 	if strings.TrimSpace(text(cfg["base_url"])) == "" || strings.TrimSpace(text(cfg["auth_token"])) == "" || strings.TrimSpace(text(cfg["domain"])) == "" {
 		return Task{}, fmt.Errorf("自建域名邮箱配置不完整，请先配置 API 地址、Token 和域名")
 	}
+	if _, err := domainMailboxPickupBaseURL(cfg); err != nil {
+		return Task{}, err
+	}
 	sessionIDs := uintSlice(body["session_ids"])
 	accountIDs := uintSlice(body["account_ids"])
 	if len(accountIDs) == 0 && len(sessionIDs) > 0 {

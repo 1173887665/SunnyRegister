@@ -207,12 +207,18 @@ def account_from_row(row: dict[str, Any]) -> MailAccount:
             access_key = access_key or (parts[1] if len(parts) > 1 else "")
         if not email or "@" not in email or not access_key:
             raise ValueError("Invalid domain mailbox row; expected email and CloudMail credential")
-        try:
-            metadata = json.loads(access_key)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("Invalid domain mailbox credential JSON") from exc
-        if not str(metadata.get("base_url") or "").strip() or not str(metadata.get("auth_token") or "").strip():
-            raise ValueError("Domain mailbox credential is missing base_url or auth_token")
+        if access_key.startswith(("http://", "https://")):
+            parsed = urlparse(access_key)
+            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc or not query.get("token") or str(query.get("email") or "").strip().lower() != email.lower():
+                raise ValueError("Invalid domain mailbox pickup URL")
+        else:
+            try:
+                metadata = json.loads(access_key)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Invalid domain mailbox credential JSON") from exc
+            if not str(metadata.get("base_url") or "").strip() or not str(metadata.get("auth_token") or "").strip():
+                raise ValueError("Domain mailbox credential is missing base_url or auth_token")
         return MailAccount(
             email=email, password="", client_id="", refresh_token="", raw=raw or f"{email}----{access_key}",
             account_type=str(row.get("account_type") or "free"), openai_rt=str(row.get("openai_rt") or ""),
@@ -1258,14 +1264,26 @@ class DomainMailReader:
         self.account = account
         self.log = log or (lambda _m: None)
         self.proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
-        try:
-            metadata = json.loads(account.access_key)
-        except (TypeError, ValueError) as exc:
-            raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱凭证格式无效", terminal=True) from exc
-        self.base_url = str(metadata.get("base_url") or "").strip().rstrip("/")
-        self.auth_token = str(metadata.get("auth_token") or "").strip()
-        if not self.base_url or not self.auth_token:
-            raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱凭证缺少 API 地址或 Authorization Token", terminal=True)
+        self.pickup_url = ""
+        self.base_url = ""
+        self.auth_token = ""
+        access_key = str(account.access_key or "").strip()
+        if access_key.startswith(("http://", "https://")):
+            parsed = urlparse(access_key)
+            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            credential_email = str(query.get("email") or "").strip().lower()
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc or not query.get("token") or credential_email != account.email.strip().lower():
+                raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱取件 URL 无效或与邮箱不匹配", terminal=True)
+            self.pickup_url = access_key
+        else:
+            try:
+                metadata = json.loads(access_key)
+            except (TypeError, ValueError) as exc:
+                raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱凭证格式无效", terminal=True) from exc
+            self.base_url = str(metadata.get("base_url") or "").strip().rstrip("/")
+            self.auth_token = str(metadata.get("auth_token") or "").strip()
+            if not self.base_url or not self.auth_token:
+                raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱凭证缺少 API 地址或 Authorization Token", terminal=True)
         self.seen_keys: set[str] = set()
 
     @staticmethod
@@ -1292,18 +1310,26 @@ class DomainMailReader:
 
     def _request(self) -> Any:
         try:
-            response = requests.post(
-                self.base_url + "/api/public/emailList",
-                json={"toEmail": self.account.email, "timeSort": "desc", "type": 0, "isDel": 0, "num": 1, "size": 20},
-                headers={"Authorization": self.auth_token, "X-Auth-Token": self.auth_token, "Accept": "application/json", "User-Agent": "SunnyRegister/1.0"},
-                timeout=30,
-                proxies=self.proxies,
-            )
+            if self.pickup_url:
+                response = requests.get(
+                    self.pickup_url,
+                    headers={"Accept": "application/json", "User-Agent": "SunnyRegister/1.0"},
+                    timeout=30,
+                    proxies=self.proxies,
+                )
+            else:
+                response = requests.post(
+                    self.base_url + "/api/public/emailList",
+                    json={"toEmail": self.account.email, "timeSort": "desc", "type": 0, "isDel": 0, "num": 1, "size": 20},
+                    headers={"Authorization": self.auth_token, "X-Auth-Token": self.auth_token, "Accept": "application/json", "User-Agent": "SunnyRegister/1.0"},
+                    timeout=30,
+                    proxies=self.proxies,
+                )
         except requests.RequestException as exc:
             raise MailboxAccessError("domain_network_error", "自建域名邮箱接口连接失败", str(exc)) from exc
         try:
             if response.status_code in {401, 403}:
-                raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱 Authorization Token 无效", f"HTTP {response.status_code}", terminal=True)
+                raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱取件凭证无效或邮箱已停用", f"HTTP {response.status_code}", terminal=True)
             if not response.ok:
                 raise MailboxAccessError("domain_provider_failed", "自建域名邮箱接口请求失败", f"HTTP {response.status_code}")
             try:

@@ -23,6 +23,7 @@ func TestSunnyRebindTaskCreatesWorkerTask(t *testing.T) {
 		"enabled_for_rebinding": true,
 		"base_url":              "https://mail.example",
 		"auth_token":            "token-1",
+		"pickup_base_url":       "https://sunny.example",
 		"domain":                "example.com",
 	}))
 	req := httptest.NewRequest(http.MethodPost, "/api/sunny/sessions/rebind", strings.NewReader(`{"session_ids":[1]}`))

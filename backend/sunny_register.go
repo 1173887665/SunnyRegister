@@ -863,10 +863,11 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 					writeError(w, http.StatusUnprocessableEntity, sunnyMailboxFormatHint(mailboxType, mailboxChannel))
 					return
 				}
-				if _, _, err := parseDomainMailboxCredential(m.AccessKey); err != nil {
+				if err := validateDomainMailboxAccessKey(m.AccessKey, m.Email); err != nil {
 					writeError(w, http.StatusUnprocessableEntity, sunnyMailboxFormatHint(mailboxType, mailboxChannel))
 					return
 				}
+				m.PickupTokenHash = domainMailboxTokenHashFromCredential(m.AccessKey, m.Email)
 				m.Password, m.ClientID, m.RefreshToken = "", "", ""
 				m.Raw = strings.Join([]string{strings.TrimSpace(m.Email), strings.TrimSpace(m.AccessKey)}, "----")
 			} else if mailboxType == "apple" {
@@ -1042,7 +1043,7 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 		if mailboxChannel != "domain_api" {
 			return SunnyMailbox{}, fmt.Errorf("自建域名邮箱渠道必须为 domain_api")
 		}
-		if _, _, err := parseDomainMailboxCredential(accessKey); err != nil {
+		if err := validateDomainMailboxAccessKey(accessKey, email); err != nil {
 			return SunnyMailbox{}, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, mailboxChannel))
 		}
 	}
@@ -1055,7 +1056,7 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 	if openaiRT != "" && status == "未注册" {
 		status = "已注册"
 	}
-	return SunnyMailbox{GroupID: gid, Email: email, MailboxType: mailboxType, MailboxChannel: mailboxChannel, AccessKey: accessKey, Password: password, ChatGPTPassword: chatgptPassword, TOTPSecret: totpSecret, ClientID: clientID, RefreshToken: refreshToken, OpenAIRT: openaiRT, Raw: raw, AccountType: fallback(normalizeSunnyPlanType(fallback(text(body["plan_type"]), text(body["account_type"]))), "free"), Status: status, Enabled: enabled, LatestMailJSON: "{}"}, nil
+	return SunnyMailbox{GroupID: gid, Email: email, MailboxType: mailboxType, MailboxChannel: mailboxChannel, AccessKey: accessKey, PickupTokenHash: domainMailboxTokenHashFromCredential(accessKey, email), Password: password, ChatGPTPassword: chatgptPassword, TOTPSecret: totpSecret, ClientID: clientID, RefreshToken: refreshToken, OpenAIRT: openaiRT, Raw: raw, AccountType: fallback(normalizeSunnyPlanType(fallback(text(body["plan_type"]), text(body["account_type"]))), "free"), Status: status, Enabled: enabled, LatestMailJSON: "{}"}, nil
 }
 
 func normalizeSunnyMailboxType(value string) string {
@@ -1102,7 +1103,7 @@ func sunnyMailboxFormatHint(mailboxType, channel string) string {
 		return "苹果邮箱凭证格式必须为 icloud_email----key"
 	}
 	if normalizeSunnyMailboxType(mailboxType) == "domain" {
-		return "自建域名邮箱凭证格式必须为 email----域名邮箱 API 凭证 JSON"
+		return "自建域名邮箱凭证格式必须为 email----独立取件URL（旧版 API 凭证 JSON 仍兼容）"
 	}
 	return "微软邮箱凭证格式必须为 email----password----client_id----refresh_token"
 }
@@ -1456,7 +1457,7 @@ func parseSunnyMailboxLineForProvider(raw, mailboxType, channel string) (map[str
 		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || !strings.Contains(parts[0], "@") || strings.TrimSpace(parts[1]) == "" {
 			return nil, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, channel))
 		}
-		if _, _, err := parseDomainMailboxCredential(strings.TrimSpace(parts[1])); err != nil {
+		if err := validateDomainMailboxAccessKey(strings.TrimSpace(parts[1]), strings.TrimSpace(parts[0])); err != nil {
 			return nil, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, channel))
 		}
 		return map[string]string{"email": strings.TrimSpace(parts[0]), "password": "", "chatgpt_password": "", "totp_secret": "", "client_id": "", "refresh_token": "", "access_key": strings.TrimSpace(parts[1]), "openai_rt": ""}, nil
@@ -1528,6 +1529,9 @@ func (s *Server) sunnyImportMailboxes(w http.ResponseWriter, r *http.Request) {
 				"access_key": p["access_key"], "password": p["password"], "chat_gpt_password": p["chatgpt_password"],
 				"totp_secret": p["totp_secret"], "client_id": p["client_id"], "refresh_token": p["refresh_token"], "raw": p["raw"],
 			}
+			if mailboxType == "domain" {
+				updates["pickup_token_hash"] = domainMailboxTokenHashFromCredential(p["access_key"], p["email"])
+			}
 			if p["openai_rt"] != "" {
 				updates["openai_rt"] = p["openai_rt"]
 			}
@@ -1540,7 +1544,7 @@ func (s *Server) sunnyImportMailboxes(w http.ResponseWriter, r *http.Request) {
 			if p["openai_rt"] != "" {
 				status = "已注册"
 			}
-			m := SunnyMailbox{GroupID: gid, Email: p["email"], MailboxType: mailboxType, MailboxChannel: mailboxChannel, AccessKey: p["access_key"], Password: p["password"], ChatGPTPassword: p["chatgpt_password"], TOTPSecret: p["totp_secret"], ClientID: p["client_id"], RefreshToken: p["refresh_token"], OpenAIRT: p["openai_rt"], Raw: p["raw"], AccountType: "free", Status: status, Enabled: true, LatestMailJSON: "{}"}
+			m := SunnyMailbox{GroupID: gid, Email: p["email"], MailboxType: mailboxType, MailboxChannel: mailboxChannel, AccessKey: p["access_key"], PickupTokenHash: domainMailboxTokenHashFromCredential(p["access_key"], p["email"]), Password: p["password"], ChatGPTPassword: p["chatgpt_password"], TOTPSecret: p["totp_secret"], ClientID: p["client_id"], RefreshToken: p["refresh_token"], OpenAIRT: p["openai_rt"], Raw: p["raw"], AccountType: "free", Status: status, Enabled: true, LatestMailJSON: "{}"}
 			if err := s.db.Create(&m).Error; err != nil {
 				bad = append(bad, p["email"]+" => "+err.Error())
 				continue
@@ -1592,7 +1596,7 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 	if normalizeSunnyMailboxType(m.MailboxType) == "remail" {
 		payload, err = remailLatestMail(m.AccessKey, m.Email, limit)
 	} else if normalizeSunnyMailboxType(m.MailboxType) == "domain" {
-		payload, err = domainMailLatestMail(m.AccessKey, m.Email, limit)
+		payload, err = s.domainMailLatestMail(m.AccessKey, m.Email, limit)
 	} else if normalizeSunnyMailboxType(m.MailboxType) == "apple" {
 		switch normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel) {
 		case "url_api":

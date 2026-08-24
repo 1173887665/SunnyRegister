@@ -3,14 +3,20 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 const sunnyCfgDomainMailbox = "domain_mailbox"
@@ -24,6 +30,7 @@ func defaultDomainMailboxConfig() map[string]any {
 		"enabled_for_rebinding":    false,
 		"base_url":                 "",
 		"auth_token":               "",
+		"pickup_base_url":          "",
 		"domain":                   "",
 		"random_local_length":      12,
 		"auto_add_user":            true,
@@ -207,6 +214,77 @@ func domainMailboxCredential(baseURL, token string) string {
 	return dumpJSON(map[string]string{"base_url": strings.TrimRight(strings.TrimSpace(baseURL), "/"), "auth_token": strings.TrimSpace(token)})
 }
 
+func randomDomainPickupToken() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("生成邮箱取件 Token 失败：%w", err)
+	}
+	return "dmail_" + base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func domainMailboxPickupTokenHash(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func domainMailboxPickupBaseURL(cfg map[string]any) (string, error) {
+	base := strings.TrimRight(strings.TrimSpace(firstText(cfg["pickup_base_url"], os.Getenv("SUNNY_PUBLIC_ORIGIN"))), "/")
+	parsed, err := url.Parse(base)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", fmt.Errorf("请填写可公网访问的 SunnyRegister 取件 API 地址")
+	}
+	return base, nil
+}
+
+func domainMailboxPickupCredential(baseURL, email, token string) (string, error) {
+	base, err := url.Parse(strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/api/sunny/domain-mail/pickup")
+	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
+		return "", fmt.Errorf("SunnyRegister 取件 API 地址无效")
+	}
+	query := base.Query()
+	query.Set("email", strings.ToLower(strings.TrimSpace(email)))
+	query.Set("token", strings.TrimSpace(token))
+	base.RawQuery = query.Encode()
+	return base.String(), nil
+}
+
+func parseDomainMailboxPickupCredential(value string) (string, string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", "", fmt.Errorf("自建域名邮箱取件 URL 无效")
+	}
+	email := strings.ToLower(strings.TrimSpace(parsed.Query().Get("email")))
+	token := strings.TrimSpace(parsed.Query().Get("token"))
+	if email == "" || !strings.Contains(email, "@") || token == "" {
+		return "", "", fmt.Errorf("自建域名邮箱取件 URL 缺少邮箱或 Token")
+	}
+	return email, token, nil
+}
+
+func validateDomainMailboxAccessKey(value, email string) error {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		credentialEmail, _, err := parseDomainMailboxPickupCredential(value)
+		if err != nil {
+			return err
+		}
+		if sunnyEmailKey(credentialEmail) != sunnyEmailKey(email) {
+			return fmt.Errorf("自建域名邮箱取件 URL 与邮箱名不匹配")
+		}
+		return nil
+	}
+	_, _, err := parseDomainMailboxCredential(value)
+	return err
+}
+
+func domainMailboxTokenHashFromCredential(value, email string) string {
+	credentialEmail, token, err := parseDomainMailboxPickupCredential(value)
+	if err != nil || sunnyEmailKey(credentialEmail) != sunnyEmailKey(email) {
+		return ""
+	}
+	return domainMailboxPickupTokenHash(token)
+}
+
 func parseDomainMailboxCredential(value string) (string, string, error) {
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(strings.TrimSpace(value)), &payload); err != nil {
@@ -220,16 +298,7 @@ func parseDomainMailboxCredential(value string) (string, string, error) {
 	return base, token, nil
 }
 
-func domainMailLatestMail(accessKey, email string, limit int) (map[string]any, error) {
-	base, token, err := parseDomainMailboxCredential(accessKey)
-	if err != nil {
-		return nil, err
-	}
-	client := &domainMailClient{baseURL: base, token: token, client: &http.Client{Timeout: 30 * time.Second}}
-	messages, err := client.listMessages(context.Background(), email)
-	if err != nil {
-		return nil, err
-	}
+func domainMailPayload(messages []map[string]any, email string, limit int) map[string]any {
 	items := domainMailItems(messages, email)
 	if limit < 1 || limit > 50 {
 		limit = 5
@@ -240,7 +309,176 @@ func domainMailLatestMail(accessKey, email string, limit int) (map[string]any, e
 	return map[string]any{
 		"email": email, "mailbox_type": "domain", "mailbox_channel": "domain_api", "mail_protocol": "domain_api",
 		"items": items, "count": len(items), "limit": limit,
-	}, nil
+	}
+}
+
+func (s *Server) domainMailboxMessagesForToken(ctx context.Context, email, token string) ([]map[string]any, error) {
+	var mailbox SunnyMailbox
+	if err := s.db.Where("LOWER(email) = ?", sunnyEmailKey(email)).First(&mailbox).Error; err != nil {
+		return nil, fmt.Errorf("邮箱或取件 Token 无效")
+	}
+	expectedHash := strings.TrimSpace(mailbox.PickupTokenHash)
+	actualHash := domainMailboxPickupTokenHash(token)
+	if expectedHash == "" || subtle.ConstantTimeCompare([]byte(expectedHash), []byte(actualHash)) != 1 {
+		return nil, fmt.Errorf("邮箱或取件 Token 无效")
+	}
+	if normalizeSunnyMailboxType(mailbox.MailboxType) != "domain" || normalizeSunnyMailboxChannel(mailbox.MailboxType, mailbox.MailboxChannel) != "domain_api" {
+		return nil, fmt.Errorf("邮箱或取件 Token 无效")
+	}
+	if !mailbox.Enabled {
+		return nil, fmt.Errorf("该邮箱已停用")
+	}
+	cfg := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
+	if !boolValue(cfg["enabled"], true) {
+		return nil, fmt.Errorf("自建域名邮箱池已关闭")
+	}
+	client, err := newDomainMailClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return client.listMessages(ctx, mailbox.Email)
+}
+
+func (s *Server) domainMailLatestMail(accessKey, email string, limit int) (map[string]any, error) {
+	var messages []map[string]any
+	var err error
+	trimmed := strings.TrimSpace(accessKey)
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
+		credentialEmail, token, parseErr := parseDomainMailboxPickupCredential(trimmed)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		if sunnyEmailKey(credentialEmail) != sunnyEmailKey(email) {
+			return nil, fmt.Errorf("自建域名邮箱取件 URL 与邮箱名不匹配")
+		}
+		messages, err = s.domainMailboxMessagesForToken(context.Background(), email, token)
+	} else {
+		base, token, parseErr := parseDomainMailboxCredential(trimmed)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		client := &domainMailClient{baseURL: base, token: token, client: &http.Client{Timeout: 30 * time.Second}}
+		messages, err = client.listMessages(context.Background(), email)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return domainMailPayload(messages, email, limit), nil
+}
+
+func (s *Server) domainMailboxPickupHandler(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("email")))
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if email == "" || token == "" {
+		writeError(w, http.StatusBadRequest, "缺少邮箱或取件 Token")
+		return
+	}
+	messages, err := s.domainMailboxMessagesForToken(r.Context(), email, token)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	limit := toInt(r.URL.Query().Get("limit"))
+	writeJSON(w, http.StatusOK, domainMailPayload(messages, email, limit))
+}
+
+func (s *Server) createDomainMailbox(ctx context.Context, cfg map[string]any, client *domainMailClient, groupID uint) (SunnyMailbox, error) {
+	pickupBaseURL, err := domainMailboxPickupBaseURL(cfg)
+	if err != nil {
+		return SunnyMailbox{}, err
+	}
+	length := intValue(cfg["random_local_length"], 12)
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		email := randomDomainEmail(text(cfg["domain"]), length)
+		var existing SunnyMailbox
+		if s.db.Where("LOWER(email) = ?", sunnyEmailKey(email)).First(&existing).Error == nil {
+			continue
+		}
+		pickupToken, tokenErr := randomDomainPickupToken()
+		if tokenErr != nil {
+			return SunnyMailbox{}, tokenErr
+		}
+		credential, credentialErr := domainMailboxPickupCredential(pickupBaseURL, email, pickupToken)
+		if credentialErr != nil {
+			return SunnyMailbox{}, credentialErr
+		}
+		if boolValue(cfg["auto_add_user"], true) {
+			if lastErr = client.addUser(ctx, email); lastErr != nil {
+				continue
+			}
+		}
+		mailbox := SunnyMailbox{
+			GroupID: groupID, Email: email, MailboxType: "domain", MailboxChannel: "domain_api",
+			AccessKey: credential, PickupTokenHash: domainMailboxPickupTokenHash(pickupToken),
+			Raw: sunnyURLAPIRaw(email, credential), AccountType: "free", Status: "未注册", Enabled: true, LatestMailJSON: "{}",
+		}
+		if lastErr = s.db.Create(&mailbox).Error; lastErr == nil {
+			return mailbox, nil
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("生成邮箱失败")
+	}
+	return SunnyMailbox{}, lastErr
+}
+
+func (s *Server) migrateLegacyDomainMailboxCredentials(cfg map[string]any) (int, error) {
+	pickupBaseURL, err := domainMailboxPickupBaseURL(cfg)
+	if err != nil {
+		return 0, err
+	}
+	var mailboxes []SunnyMailbox
+	if err := s.db.Where("mailbox_type = ?", "domain").Find(&mailboxes).Error; err != nil {
+		return 0, err
+	}
+	migrated := 0
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		for _, mailbox := range mailboxes {
+			if normalizeSunnyMailboxChannel(mailbox.MailboxType, mailbox.MailboxChannel) != "domain_api" {
+				continue
+			}
+			accessKey := strings.TrimSpace(mailbox.AccessKey)
+			if credentialEmail, pickupToken, parseErr := parseDomainMailboxPickupCredential(accessKey); parseErr == nil && sunnyEmailKey(credentialEmail) == sunnyEmailKey(mailbox.Email) {
+				hash := domainMailboxPickupTokenHash(pickupToken)
+				expectedCredential, credentialErr := domainMailboxPickupCredential(pickupBaseURL, mailbox.Email, pickupToken)
+				if credentialErr != nil {
+					return credentialErr
+				}
+				if mailbox.PickupTokenHash == hash && accessKey == expectedCredential {
+					continue
+				}
+				if err := tx.Model(&SunnyMailbox{}).Where("id = ?", mailbox.ID).Updates(map[string]any{
+					"access_key": expectedCredential, "pickup_token_hash": hash,
+					"raw": sunnyURLAPIRaw(mailbox.Email, expectedCredential), "updated_at": time.Now(),
+				}).Error; err != nil {
+					return err
+				}
+				migrated++
+				continue
+			}
+			if _, _, parseErr := parseDomainMailboxCredential(accessKey); parseErr != nil {
+				continue
+			}
+			pickupToken, tokenErr := randomDomainPickupToken()
+			if tokenErr != nil {
+				return tokenErr
+			}
+			credential, credentialErr := domainMailboxPickupCredential(pickupBaseURL, mailbox.Email, pickupToken)
+			if credentialErr != nil {
+				return credentialErr
+			}
+			if err := tx.Model(&SunnyMailbox{}).Where("id = ?", mailbox.ID).Updates(map[string]any{
+				"access_key": credential, "pickup_token_hash": domainMailboxPickupTokenHash(pickupToken),
+				"raw": sunnyURLAPIRaw(mailbox.Email, credential), "updated_at": time.Now(),
+			}).Error; err != nil {
+				return err
+			}
+			migrated++
+		}
+		return nil
+	})
+	return migrated, err
 }
 
 func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Request, parts []string) {
@@ -259,8 +497,18 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 		}
 		cfg := mergeConfig(defaultDomainMailboxConfig(), body)
 		s.sunnySaveConfig(sunnyCfgDomainMailbox, cfg)
+		migrated := 0
+		if _, pickupErr := domainMailboxPickupBaseURL(cfg); pickupErr == nil {
+			var migrationErr error
+			migrated, migrationErr = s.migrateLegacyDomainMailboxCredentials(cfg)
+			if migrationErr != nil {
+				writeError(w, http.StatusInternalServerError, "迁移旧域名邮箱取件凭证失败："+migrationErr.Error())
+				return
+			}
+		}
 		cfg["auth_token_configured"] = strings.TrimSpace(text(cfg["auth_token"])) != ""
 		cfg["auth_token"] = ""
+		cfg["migrated_mailboxes"] = migrated
 		writeJSON(w, http.StatusOK, cfg)
 		return
 	}
@@ -298,20 +546,11 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusBadRequest, "自建域名邮箱池已关闭，请先在邮箱配置中启用")
 			return
 		}
-		length := intValue(cfg["random_local_length"], 12)
 		var mailbox SunnyMailbox
-		for attempt := 0; attempt < 3; attempt++ {
-			email := randomDomainEmail(text(cfg["domain"]), length)
-			if boolValue(cfg["auto_add_user"], true) {
-				if err = client.addUser(ctx, email); err != nil {
-					continue
-				}
-			}
-			mailbox = SunnyMailbox{GroupID: s.sunnyEnsureDefaultGroup(), Email: email, MailboxType: "domain", MailboxChannel: "domain_api", AccessKey: domainMailboxCredential(client.baseURL, client.token), Raw: sunnyURLAPIRaw(email, domainMailboxCredential(client.baseURL, client.token)), AccountType: "free", Status: "未注册", Enabled: true, LatestMailJSON: "{}"}
-			if err = s.db.Create(&mailbox).Error; err == nil {
-				writeJSON(w, http.StatusOK, map[string]any{"id": mailbox.ID, "email": mailbox.Email, "mailbox_type": mailbox.MailboxType, "mailbox_channel": mailbox.MailboxChannel})
-				return
-			}
+		mailbox, err = s.createDomainMailbox(ctx, cfg, client, s.sunnyEnsureDefaultGroup())
+		if err == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"id": mailbox.ID, "email": mailbox.Email, "mailbox_type": mailbox.MailboxType, "mailbox_channel": mailbox.MailboxChannel})
+			return
 		}
 	default:
 		writeError(w, http.StatusNotFound, "not found")
@@ -335,6 +574,9 @@ func (s *Server) validateDomainMailboxRegistration(body map[string]any) error {
 	if _, err := newDomainMailClient(cfg); err != nil {
 		return err
 	}
+	if _, err := domainMailboxPickupBaseURL(cfg); err != nil {
+		return err
+	}
 	count := intValue(body["count"], 1)
 	if count < 1 || count > 200 {
 		return fmt.Errorf("自建域名邮箱本次生成数量必须在 1 到 200 之间")
@@ -352,7 +594,6 @@ func (s *Server) prepareDomainMailboxRegistration(body map[string]any) error {
 		return err
 	}
 	count := intValue(body["count"], 1)
-	length := intValue(cfg["random_local_length"], 12)
 	groupName := "domain-api-" + time.Now().Format("01-02")
 	var group SunnyMailboxGroup
 	if err := s.db.Where("name = ?", groupName).First(&group).Error; err != nil {
@@ -361,33 +602,10 @@ func (s *Server) prepareDomainMailboxRegistration(body map[string]any) error {
 			return fmt.Errorf("创建自建域名邮箱分组失败：%w", err)
 		}
 	}
-	credential := domainMailboxCredential(client.baseURL, client.token)
 	ids := make([]uint, 0, count)
 	created := make([]uint, 0, count)
 	for index := 0; index < count; index++ {
-		var mailbox SunnyMailbox
-		var createErr error
-		for attempt := 0; attempt < 5; attempt++ {
-			email := randomDomainEmail(text(cfg["domain"]), length)
-			var existing SunnyMailbox
-			if s.db.Where("lower(email) = ?", sunnyEmailKey(email)).First(&existing).Error == nil {
-				continue
-			}
-			if boolValue(cfg["auto_add_user"], true) {
-				if createErr = client.addUser(context.Background(), email); createErr != nil {
-					break
-				}
-			}
-			mailbox = SunnyMailbox{
-				GroupID: group.ID, Email: email, MailboxType: "domain", MailboxChannel: "domain_api",
-				AccessKey: credential, Raw: strings.Join([]string{email, credential}, "----"), AccountType: "free",
-				Status: "未注册", Enabled: true, LatestMailJSON: "{}",
-			}
-			createErr = s.db.Create(&mailbox).Error
-			if createErr == nil {
-				break
-			}
-		}
+		mailbox, createErr := s.createDomainMailbox(context.Background(), cfg, client, group.ID)
 		if createErr != nil || mailbox.ID == 0 {
 			for _, id := range created {
 				s.db.Delete(&SunnyMailbox{}, id)

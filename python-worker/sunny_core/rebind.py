@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import secrets
 import time
 import uuid
 from typing import Any, Callable
+from urllib.parse import urlencode, urlsplit
 
 import requests
 
@@ -99,15 +102,19 @@ class ChangeEmailClient:
         return self._request("POST", VERIFY_PATH, json={"email": email, "code": code})
 
 
-def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str]:
+def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str, str]:
     cfg = db.get_config("domain_mailbox")
     if cfg.get("enabled_for_rebinding") is not True:
         raise RebindError("自建域名邮箱未启用邮箱换绑")
     base = str(cfg.get("base_url") or "").strip().rstrip("/")
     token = str(cfg.get("auth_token") or "").strip()
     domain = str(cfg.get("domain") or "").strip().lower()
+    pickup_base = str(cfg.get("pickup_base_url") or os.getenv("SUNNY_PUBLIC_ORIGIN") or "").strip().rstrip("/")
+    pickup_parts = urlsplit(pickup_base)
     if not base or not token or "@" in domain or "." not in domain:
         raise RebindError("自建域名邮箱配置不完整")
+    if pickup_parts.scheme not in {"http", "https"} or not pickup_parts.netloc:
+        raise RebindError("请先配置可公网访问的 SunnyRegister 取件 API 地址")
     length = max(6, min(32, int(cfg.get("random_local_length") or 12)))
     proxies = None
     for _ in range(8):
@@ -130,9 +137,11 @@ def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str]:
             if response.ok and provider_code not in {"", "0", "200"}:
                 last = f"provider code {provider_code}: {str(payload.get('message') or payload.get('error') or '')[:180]}"
             elif response.ok:
-                credential = json.dumps({"base_url": base, "auth_token": token}, ensure_ascii=False, separators=(",", ":"))
+                pickup_token = "dmail_" + secrets.token_urlsafe(32)
+                credential = pickup_base + "/api/sunny/domain-mail/pickup?" + urlencode({"email": email, "token": pickup_token})
+                token_hash = hashlib.sha256(pickup_token.encode("utf-8")).hexdigest()
                 log(f"[{email}] 已从自建域名邮箱池生成换绑邮箱")
-                return email, credential
+                return email, credential, token_hash
         except requests.RequestException as exc:
             last = str(exc)
         else:
@@ -172,6 +181,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
     account = account_from_row(merged)
     new_email = ""
     new_api = ""
+    new_api_token_hash = ""
     old_flow = None
     new_flow = None
     try:
@@ -180,7 +190,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""))
         client.set_access_token(str(old_result.get("access_token") or ""))
         client.eligibility()
-        new_email, new_api = _domain_mailbox(db, log)
+        new_email, new_api, new_api_token_hash = _domain_mailbox(db, log)
         issued_after = time.time() - 3
         try:
             client.begin(new_email)
@@ -211,7 +221,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             raise RebindError("换绑后重新登录未返回新的 Access Token")
         if not str(new_result.get("refresh_token") or "").strip() and account.openai_rt:
             new_result["refresh_token"] = account.openai_rt
-        db.persist_rebind(old_email, new_email, new_api, new_result)
+        db.persist_rebind(old_email, new_email, new_api, new_api_token_hash, new_result)
         log(f"[{old_email}] 换绑成功：{new_email}")
         return {"email": old_email, "new_email": new_email, "status": "success"}
     finally:

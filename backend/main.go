@@ -174,6 +174,10 @@ func resolveStaticFS() http.FileSystem {
 func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		w.Header().Set("Cache-Control", "no-store")
+		if r.URL.Path == "/api/sunny/domain-mail/pickup" && r.Method == http.MethodGet {
+			s.domainMailboxPickupHandler(w, r)
+			return
+		}
 		if isMutation(r.Method) && !s.validRequestOrigin(r) {
 			writeError(w, http.StatusForbidden, "Invalid request origin")
 			return
