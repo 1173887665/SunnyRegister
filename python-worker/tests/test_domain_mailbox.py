@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
@@ -202,3 +203,29 @@ def test_rebind_retries_begin_after_first_otp_delivery_timeout():
     assert calls == [(123.0, rebind_module.REBIND_OTP_FIRST_WAIT_SECONDS), (123.0, rebind_module.REBIND_OTP_RETRY_WAIT_SECONDS)]
     assert client.begin_calls == ["new@example.com"]
     assert any("自动重新请求一次" in message for message in logs)
+
+
+def test_rebind_begin_retries_transient_network_error():
+    calls = []
+    logs = []
+
+    class Client:
+        def begin(self, email):
+            calls.append(email)
+            if len(calls) == 1:
+                raise rebind_module.RebindError("换绑接口网络请求失败：curl timeout")
+            return {"success": True}
+
+    assert rebind_module._begin_with_retry(Client(), "new@example.com", logs.append) == {"success": True}
+    assert calls == ["new@example.com", "new@example.com"]
+    assert any("瞬时网络错误" in message for message in logs)
+
+
+def test_rebind_client_observation_header_matches_web_format():
+    class Session:
+        cookies = type("Cookies", (), {"jar": []})()
+
+    flow = type("Flow", (), {"session": Session(), "device_id": "device-id", "_last_access_token": "access-token"})()
+    client = rebind_module.ChangeEmailClient(flow, "account-id")
+    header = client._headers(rebind_module.BEGIN_PATH, json_body=True)["x-oai-is-client-observation"]
+    assert re.fullmatch(r"v1\.r\.p\.[A-Za-z0-9_-]{16}", header)

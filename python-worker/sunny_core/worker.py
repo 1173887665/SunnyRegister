@@ -2850,7 +2850,7 @@ def _rebind_one_isolated(
             f"[{email}] 开始邮箱协议换绑",
             detail={"email": email, "module": "auth", "action": "rebind.start", "current": index - 1, "total": total},
         )
-        proxy = _proxy_snapshot(payload).get("register", "")
+        proxy = _prepare_register_proxy(worker_db, payload, email, index - 1).get("register", "")
         result = rebind_one(worker_db, accounts[0], proxy, lambda message: worker_db.event(message, detail={"email": email, "module": "auth", "action": "rebind.progress"}))
         return index, result
     finally:
@@ -2893,7 +2893,8 @@ def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[st
             email = str(account.get("email") or "").strip()
             db.event(f"[{email}] 开始邮箱协议换绑", detail={"email": email, "module": "auth", "action": "rebind.start", "current": index - 1, "total": len(accounts)})
             try:
-                result = rebind_one(db, account, _proxy_snapshot(payload).get("register", ""), lambda message: db.event(message, detail={"email": email, "module": "auth", "action": "rebind.progress"}))
+                proxy = _prepare_register_proxy(db, payload, email, index - 1).get("register", "")
+                result = rebind_one(db, account, proxy, lambda message: db.event(message, detail={"email": email, "module": "auth", "action": "rebind.progress"}))
                 handle_result(index, result)
             except Exception as exc:
                 if db.cancel_requested():

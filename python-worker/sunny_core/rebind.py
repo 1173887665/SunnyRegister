@@ -35,6 +35,24 @@ class RebindError(RuntimeError):
     pass
 
 
+def _is_retryable_rebind_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return any(marker in message for marker in ("timeout", "timed out", "tls", "connection", "curl", "temporarily", "reset", "wrong_version_number"))
+
+
+def _begin_with_retry(client: "ChangeEmailClient", email: str, log: Callable[[str], None], *, attempts: int = 2) -> dict[str, Any]:
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            return client.begin(email)
+        except RebindError as exc:
+            if attempt >= attempts or not _is_retryable_rebind_error(exc):
+                raise
+            delay = min(3, attempt)
+            log(f"[{email}] 换绑验证码请求遇到瞬时网络错误，将在 {delay} 秒后重试（{attempt + 1}/{attempts}）：{str(exc)[:220]}")
+            time.sleep(delay)
+    raise RebindError("换绑验证码请求重试失败")
+
+
 def _cookie_header(session: Any) -> str:
     try:
         return "; ".join(f"{cookie.name}={cookie.value}" for cookie in session.cookies.jar)
@@ -54,6 +72,7 @@ class ChangeEmailClient:
         if self.session is None or not flow.device_id or not self._access_token:
             raise RebindError("旧账号登录态不完整，缺少设备 ID 或 Access Token")
         self.session_id = str(uuid.uuid4())
+        self.client_observation = "v1.r.p." + secrets.token_urlsafe(12)
 
     @property
     def _access_token(self) -> str:
@@ -74,6 +93,7 @@ class ChangeEmailClient:
             "oai-client-version": CLIENT_VERSION,
             "oai-client-build-number": CLIENT_BUILD,
             "oai-language": "zh-CN",
+            "x-oai-is-client-observation": self.client_observation,
             "x-openai-target-path": path,
             "x-openai-target-route": path,
         }
@@ -90,7 +110,7 @@ class ChangeEmailClient:
         started = time.monotonic()
         try:
             response = self.session.request(method, f"{CHATGPT_ORIGIN}{path}", headers=self._headers(path, kwargs.get("json") is not None), timeout=30, **kwargs)
-        except requests.RequestException as exc:
+        except Exception as exc:
             self.log(f"[换绑接口] {method} {path} 网络请求失败（耗时 {time.monotonic() - started:.1f}s）：{str(exc)[:300]}")
             raise RebindError(f"换绑接口网络请求失败：{method} {path}: {exc}") from exc
         body = str(getattr(response, "text", "") or "")[:1000]
@@ -211,7 +231,7 @@ def _wait_for_rebind_code(reader: DomainMailReader, client: ChangeEmailClient, e
         return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_FIRST_WAIT_SECONDS)
     except TimeoutError:
         log(f"[{email}] 首次换绑验证码请求已接受但 {REBIND_OTP_FIRST_WAIT_SECONDS} 秒内未收到邮件，自动重新请求一次")
-        client.begin(email)
+        _begin_with_retry(client, email, log)
         log(f"[{email}] 已重新请求换绑验证码，继续等待邮箱投递")
         return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_RETRY_WAIT_SECONDS)
 
@@ -250,7 +270,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             issued_after = time.time()
             log(f"[{old_email}] 已建立换绑邮箱取件监听，准备请求 ChatGPT 发送验证码")
             try:
-                client.begin(new_email)
+                _begin_with_retry(client, new_email, log)
                 log(f"[{old_email}] ChatGPT 换绑验证码请求已接受，等待新邮箱验证码")
             except RebindError as exc:
                 if "重新认证" not in str(exc):
@@ -264,7 +284,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
                     pass
                 client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""), log)
                 client.set_access_token(str(old_result.get("access_token") or ""))
-                client.begin(new_email)
+                _begin_with_retry(client, new_email, log)
                 log(f"[{old_email}] 重新认证后已重新提交换绑验证码请求，等待新邮箱验证码")
             code = _wait_for_rebind_code(reader, client, new_email, issued_after, log)
         finally:

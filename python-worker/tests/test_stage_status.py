@@ -1806,6 +1806,29 @@ class AddLoginSecretTaskTests(unittest.TestCase):
 
 
 class RebindTaskTests(unittest.TestCase):
+    def test_serial_rebind_selects_proxy_by_account_slot(self):
+        db = MagicMock()
+        db.task_id = "task-rebind-proxy"
+        db.cancel_requested.return_value = False
+        db.fetch_accounts.return_value = [
+            {"id": 1, "email": "first@example.com"},
+            {"id": 2, "email": "second@example.com"},
+        ]
+        slots = []
+
+        def select_proxy(_db, _payload, _email, slot):
+            slots.append(slot)
+            return {"register": f"http://proxy-{slot}.example:8080"}
+
+        with (
+            patch.object(worker, "_prepare_register_proxy", side_effect=select_proxy),
+            patch.object(worker, "rebind_one", side_effect=lambda _db, account, _proxy, _log: {"email": account["email"], "status": "success"}),
+        ):
+            success, errors, items = worker._rebind_sessions(db, {"concurrency": 1})
+
+        self.assertEqual((success, errors, len(items)), (2, [], 2))
+        self.assertEqual(slots, [0, 1])
+
     def test_default_concurrency_is_one_and_a_half_times_cpu_count(self):
         db = MagicMock()
         db.task_id = "task-rebind"
