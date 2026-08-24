@@ -66,20 +66,39 @@ fi
   echo $! > "$RUNTIME/python-worker.pid"
 )
 
-worker_ready=0
-for _ in $(seq 1 60); do
-  if ! is_running "$RUNTIME/python-worker.pid"; then
-    break
-  fi
-  if curl -fsS "http://127.0.0.1:8765/health" >/dev/null 2>&1; then
-    worker_ready=1
-    break
-  fi
-  sleep 1
-done
-if [[ "$worker_ready" -ne 1 ]]; then
+# The backend may need to load a large task_events table during startup.
+# Keep the timeout configurable so a slow but healthy database is not mistaken
+# for a failed deployment. Override in .env when the database needs longer.
+STARTUP_TIMEOUT_SECONDS="${SUNNY_STARTUP_TIMEOUT_SECONDS:-300}"
+if ! [[ "$STARTUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "SUNNY_STARTUP_TIMEOUT_SECONDS must be a positive integer; got: $STARTUP_TIMEOUT_SECONDS" >&2
+  exit 1
+fi
+
+wait_for_ready() {
+  local pid_file="$1"
+  local url="$2"
+  local service_name="$3"
+  local elapsed=0
+
+  while (( elapsed < STARTUP_TIMEOUT_SECONDS )); do
+    if ! is_running "$pid_file"; then
+      echo "$service_name exited before becoming ready. Check its log file." >&2
+      return 1
+    fi
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    ((elapsed += 1))
+  done
+
+  echo "$service_name did not become ready within ${STARTUP_TIMEOUT_SECONDS}s. Check its log file." >&2
+  return 1
+}
+
+if ! wait_for_ready "$RUNTIME/python-worker.pid" "http://127.0.0.1:8765/health" "Python Worker"; then
   "$ROOT/scripts/stop-linux.sh"
-  echo "Python Worker failed to become ready. Check logs/python-worker.err.log." >&2
   exit 1
 fi
 
@@ -89,15 +108,7 @@ fi
   echo $! > "$RUNTIME/backend.pid"
 )
 
-ready=0
-for _ in $(seq 1 60); do
-  if curl -fsS "http://127.0.0.1:${PORT}/api/ready" >/dev/null 2>&1; then
-    ready=1
-    break
-  fi
-  sleep 1
-done
-if [[ "$ready" -ne 1 ]]; then
+if ! wait_for_ready "$RUNTIME/backend.pid" "http://127.0.0.1:${PORT}/api/ready" "SunnyRegister backend"; then
   "$ROOT/scripts/stop-linux.sh"
   echo "SunnyRegister failed to become ready. Check logs/backend.err.log and logs/python-worker.err.log." >&2
   exit 1
