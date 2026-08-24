@@ -56,3 +56,33 @@ func TestSunnyMailboxSummaryReturnsGlobalStatusCounts(t *testing.T) {
 		t.Fatalf("failed alias filter total = %d, want 1", failedPayload.Total)
 	}
 }
+
+func TestSunnyMailboxSummaryKeepsSecretKeyAvailability(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	credential := "https://mail.example/api/sunny/domain-mail/pickup?email=summary-sk%40example.com&token=dmsk_summary"
+	mailbox := SunnyMailbox{
+		Email: "summary-sk@example.com", MailboxType: "domain", MailboxChannel: "domain_api",
+		AccessKey: credential, Raw: "summary-sk@example.com----" + credential, Status: "已注册", Enabled: true,
+	}
+	if err := s.db.Create(&mailbox).Error; err != nil {
+		t.Fatalf("create mailbox: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/sunny/mailboxes?summary=true&page=1&page_size=10&q=summary-sk", nil)
+	rec := httptest.NewRecorder()
+	s.sunnyMailboxes(rec, req, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0]["has_secret_key"] != true {
+		t.Fatalf("summary SK availability = %#v", payload.Items)
+	}
+	if _, exists := payload.Items[0]["access_key"]; exists {
+		t.Fatal("summary response must not expose access_key")
+	}
+}

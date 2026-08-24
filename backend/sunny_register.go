@@ -717,7 +717,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			var allRows []SunnyMailbox
 			allQuery := query
 			if summary {
-				allQuery = allQuery.Select("id", "group_id", "email", "rebind_email", "rebind_mailbox_api", "mailbox_type", "mailbox_channel", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
+				allQuery = allQuery.Select("id", "group_id", "email", "rebind_email", "rebind_mailbox_api", "mailbox_type", "mailbox_channel", "access_key", "password", "client_id", "refresh_token", "raw", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
 			}
 			allQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "status_changed_at": "status_changed_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Find(&allRows)
 			gm := s.sunnyGroupMap()
@@ -798,7 +798,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		var rows []SunnyMailbox
 		listQuery := query
 		if summary {
-			listQuery = listQuery.Select("id", "group_id", "email", "rebind_email", "rebind_mailbox_api", "mailbox_type", "mailbox_channel", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
+			listQuery = listQuery.Select("id", "group_id", "email", "rebind_email", "rebind_mailbox_api", "mailbox_type", "mailbox_channel", "access_key", "password", "client_id", "refresh_token", "raw", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
 		}
 		listQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "status_changed_at": "status_changed_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Offset((page - 1) * size).Limit(size).Find(&rows)
 		gm := s.sunnyGroupMap()
@@ -4590,10 +4590,10 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 		"trial_country_results": sunnyTrialCountryResults(account.TrialCountryResultsJSON, mailbox.TrialCountryResultsJSON),
 		"checkout_kind":         checkoutKind, "checkout_result": sunnyCheckoutResultJSON(account.CheckoutResultJSON), "payment_methods": paymentMethods, "payment_probe_results": paymentProbeResults,
 		"payment_probe_error": account.PaymentProbeError, "payment_probed_at": nullableTime(account.PaymentProbedAt != nil, pointerTime(account.PaymentProbedAt)), "commerce_check_error": account.CommerceCheckError,
-		"phone_bound":       sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailbox.Status),
-		"rebind_email":      fallback(strings.TrimSpace(mailbox.RebindEmail), strings.TrimSpace(account.RebindEmail)),
-		"has_access_token":  row.HasAccessToken != 0 || account.HasAccessToken != 0,
-		"has_refresh_token": row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
+		"phone_bound":          sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailbox.Status),
+		"rebind_email":         fallback(strings.TrimSpace(mailbox.RebindEmail), strings.TrimSpace(account.RebindEmail)),
+		"has_access_token":     row.HasAccessToken != 0 || account.HasAccessToken != 0,
+		"has_refresh_token":    row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
 		"has_secret_key":       hasSecretKey,
 		"has_chatgpt_password": mailbox.HasChatGPTPassword != 0,
 		"has_totp_secret":      mailbox.HasTOTPSecret != 0,
