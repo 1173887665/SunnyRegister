@@ -173,6 +173,39 @@ func TestSunnySessionListDoesNotReturnSecrets(t *testing.T) {
 	}
 }
 
+func TestSunnySessionListReportsSecretKeyFromRebindMailbox(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatal(err)
+	}
+	pickup := "https://mail-api.example/api/sunny/domain-mail/pickup?email=rebound%40example.com&token=dmsk_test"
+	var account SunnyAccount
+	if err := s.db.First(&account, session.AccountID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Model(&SunnyMailbox{}).Where("id = ?", account.MailboxID).Updates(map[string]any{
+		"mailbox_type": "domain", "mailbox_channel": "domain_api", "email": "session@example.com", "rebind_email": "rebound@example.com", "rebind_mailbox_api": pickup,
+		"raw": "", "password": "", "client_id": "", "refresh_token": "", "access_key": pickup,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.sunnySessions(rec, httptest.NewRequest(http.MethodGet, "/api/sunny/sessions?page=1&page_size=10", nil), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil || len(payload.Items) != 1 {
+		t.Fatalf("decode list: err=%v body=%s", err, rec.Body.String())
+	}
+	if payload.Items[0]["has_secret_key"] != true {
+		t.Fatalf("rebind mailbox SK presence flag is false: %#v", payload.Items[0])
+	}
+}
+
 func TestSunnySessionListReportsCompletedPhoneBinding(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	if err := s.db.Model(&SunnyAccount{}).Where("email = ?", "session@example.com").Update("phone_number", "+12025550101").Error; err != nil {

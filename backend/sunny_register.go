@@ -4729,6 +4729,8 @@ func (s *Server) sunnySessionListSidecars(rows []sunnySessionListRow) (map[strin
 	mailboxQuery := s.db.Model(&SunnyMailbox{}).Select(`sunny_mailboxes.id, sunny_mailboxes.email, sunny_mailboxes.rebind_email, sunny_mailboxes.status, sunny_mailboxes.account_type, sunny_mailboxes.trial_eligibility, sunny_mailboxes.trial_country_results_json, sunny_mailboxes.trial_checked_at,
 		sunny_mailboxes.group_id, sunny_mailboxes.last_health_checked_at, sunny_mailbox_groups.name AS group_name, sunny_mailboxes.chat_gpt_password, sunny_mailboxes.totp_secret, sunny_mailboxes.raw,
 		CASE
+			WHEN COALESCE(sunny_mailboxes.rebind_email, '') <> '' AND COALESCE(sunny_mailboxes.rebind_mailbox_api, '') <> '' THEN 1
+			WHEN COALESCE(sunny_mailboxes.raw, '') <> '' THEN 1
 			WHEN LOWER(sunny_mailboxes.mailbox_type) IN ('apple', 'icloud') AND LOWER(sunny_mailboxes.mailbox_channel) IN ('url_api', 'url-api') AND sunny_mailboxes.email <> '' THEN 1
 			WHEN LOWER(sunny_mailboxes.mailbox_type) IN ('apple', 'icloud') AND sunny_mailboxes.email <> '' AND sunny_mailboxes.access_key <> '' THEN 1
 			WHEN sunny_mailboxes.email <> '' AND sunny_mailboxes.password <> '' AND sunny_mailboxes.client_id <> '' AND sunny_mailboxes.refresh_token <> '' THEN 1
