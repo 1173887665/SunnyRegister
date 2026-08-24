@@ -125,6 +125,23 @@ func TestDomainMailboxPublicItemsUseRemailShapeAndRecentLimit(t *testing.T) {
 	}
 }
 
+func TestDomainMailboxPublicItemsAcceptUnixMillisecondsAndUnknownTime(t *testing.T) {
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	items := domainMailPublicItems([]map[string]any{
+		{"id": "milliseconds", "timestamp": now.UnixMilli(), "bodyPreview": "ChatGPT code 123456"},
+		{"id": "unknown-time", "bodyPreview": "ChatGPT code 654321"},
+	}, "user@example.com", now)
+	if len(items) != 2 {
+		t.Fatalf("expected both timestamp variants to remain visible, got %#v", items)
+	}
+	if items[0]["id"] != "milliseconds" || items[0]["verificationCode"] != "123456" {
+		t.Fatalf("unix millisecond message was not normalized: %#v", items[0])
+	}
+	if items[1]["id"] != "unknown-time" || items[1]["verificationCode"] != "654321" {
+		t.Fatalf("unknown-time message was dropped: %#v", items[1])
+	}
+}
+
 func TestDomainMailItemsPreferPlainTextAndRetainHTML(t *testing.T) {
 	items := domainMailItems([]map[string]any{{
 		"id":          1,

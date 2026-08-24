@@ -4285,7 +4285,7 @@ const ACCOUNT_LOG_LABELS: Record<AccountLogKind, string> = {
 };
 
 function AccountLogFloat({ open, kind, logs, onToggle, onKindChange, onClear }: { open: boolean; kind: AccountLogKind; logs: AccountOperationLog[]; onToggle: () => void; onKindChange: (kind: AccountLogKind) => void; onClear: () => void }) {
-  const [size, setSize] = useState({ width: 530, height: 560 });
+  const [size, setSize] = useState({ width: 760, height: 560 });
   const processLogs = logs.filter((item) => item.phase === "process");
   const resultLogs = logs.filter((item) => item.phase === "result");
   const scrollProcess = useRef<HTMLDivElement | null>(null);

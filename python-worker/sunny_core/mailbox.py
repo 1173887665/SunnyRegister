@@ -1171,9 +1171,18 @@ class RemailReader:
 
     @staticmethod
     def _timestamp(value: Any) -> float:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            numeric = float(value)
+            if numeric > 1e14:
+                numeric /= 1_000_000
+            elif numeric > 1e11:
+                numeric /= 1_000
+            return numeric if numeric > 0 else 0.0
         raw = str(value or "").strip()
         if not raw:
             return 0.0
+        if re.fullmatch(r"\d+(?:\.\d+)?", raw):
+            return RemailReader._timestamp(float(raw))
         try:
             parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
             return parsed.timestamp()
@@ -1306,9 +1315,18 @@ class DomainMailReader:
 
     @staticmethod
     def _timestamp(value: Any) -> float:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            numeric = float(value)
+            if numeric > 1e14:
+                numeric /= 1_000_000
+            elif numeric > 1e11:
+                numeric /= 1_000
+            return numeric if numeric > 0 else 0.0
         raw = str(value or "").strip()
         if not raw:
             return 0.0
+        if re.fullmatch(r"\d+(?:\.\d+)?", raw):
+            return DomainMailReader._timestamp(float(raw))
         try:
             parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
             # CloudMail emits timestamps such as "2026-08-24 07:34:15" in UTC without an offset.
@@ -1380,7 +1398,7 @@ class DomainMailReader:
             if not code:
                 continue
             timestamp = 0.0
-            for key in ("createTime", "receivedAt", "received_at", "date"):
+            for key in ("createTime", "created_at", "receivedAt", "received_at", "timestamp", "time", "date"):
                 timestamp = self._timestamp(item.get(key))
                 if timestamp:
                     break

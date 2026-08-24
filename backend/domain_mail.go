@@ -15,6 +15,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -313,9 +314,17 @@ func domainMailItems(messages []map[string]any, email string) []map[string]any {
 }
 
 func domainMailMessageReceivedAt(message map[string]any) (string, time.Time, bool) {
-	receivedAt := firstText(message["receivedAt"], message["received_at"], message["createTime"], message["date"])
+	values := []any{message["receivedAt"], message["received_at"], message["createTime"], message["created_at"], message["timestamp"], message["time"], message["date"]}
+	receivedAt := firstText(values...)
 	if receivedAt == "" {
 		return "", time.Time{}, false
+	}
+	if numeric, err := strconv.ParseFloat(receivedAt, 64); err == nil && numeric > 0 {
+		// Providers commonly return Unix seconds, milliseconds, or microseconds.
+		for numeric > 1e11 {
+			numeric /= 1000
+		}
+		return receivedAt, time.Unix(int64(numeric), int64((numeric-float64(int64(numeric)))*1e9)), true
 	}
 	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05Z07:00", "2006-01-02 15:04:05"} {
 		parsed, err := time.Parse(layout, receivedAt)
@@ -344,7 +353,25 @@ func domainMailPublicItems(messages []map[string]any, email string, now time.Tim
 	filtered := make([]messageWithTime, 0, len(messages))
 	for _, message := range messages {
 		receivedAt, parsedAt, ok := domainMailMessageReceivedAt(message)
-		if !ok || parsedAt.Before(cutoff) || parsedAt.After(now.Add(5*time.Minute)) {
+		if !ok {
+			// Keep messages with an unsupported provider timestamp. The worker
+			// already establishes a baseline key before begin(), so retaining an
+			// unknown-time message is safer than dropping a newly delivered OTP.
+			item := map[string]any{
+				"id":          firstDomainMailValue(message["id"], message["emailId"], message["messageId"]),
+				"sender":      firstText(message["sender"], message["sendEmail"], message["from"]),
+				"recipient":   firstText(message["recipient"], message["toEmail"], message["to"], email),
+				"receivedAt":  receivedAt,
+				"subject":     text(message["subject"]),
+				"bodyPreview": domainMailPlainText(firstText(message["text"], message["body"], message["content"], message["bodyPreview"], message["body_preview"], message["html"])),
+			}
+			if code := domainMailMessageCode(message); code != "" {
+				item["verificationCode"] = code
+			}
+			filtered = append(filtered, messageWithTime{item: item, at: now})
+			continue
+		}
+		if parsedAt.Before(cutoff) || parsedAt.After(now.Add(5*time.Minute)) {
 			continue
 		}
 		bodyPreview := domainMailPlainText(firstText(message["text"], message["body"], message["content"], message["bodyPreview"], message["body_preview"], message["html"]))

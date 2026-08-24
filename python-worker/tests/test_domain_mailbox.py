@@ -71,6 +71,21 @@ def test_domain_reader_filters_old_message(monkeypatch):
         raise AssertionError("old domain mailbox message must not satisfy a newer baseline")
 
 
+def test_domain_reader_accepts_unix_millisecond_timestamp(monkeypatch):
+    reader = DomainMailReader(
+        account_from_row({"email": "user@example.com", "mailbox_type": "domain", "access_key": _credential()}),
+        None,
+    )
+    monkeypatch.setattr(reader, "_request", lambda: {"items": [{
+        "id": "m1",
+        "timestamp": 4102444800000,
+        "bodyPreview": "ChatGPT code 978744",
+    }]})
+    current = reader._latest()
+    assert current["code"] == "978744"
+    assert current["timestamp"] == 4102444800
+
+
 def test_domain_reader_uses_individual_pickup_url(monkeypatch):
     pickup_url = "https://sunny.example/api/sunny/domain-mail/pickup?email=user%40example.com&token=dmsk_one"
     logs = []

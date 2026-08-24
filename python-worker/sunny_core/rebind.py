@@ -21,8 +21,11 @@ CHATGPT_ORIGIN = "https://chatgpt.com"
 ELIGIBILITY_PATH = "/backend-api/accounts/change_email/eligibility"
 BEGIN_PATH = "/backend-api/accounts/change_email/begin"
 VERIFY_PATH = "/backend-api/accounts/change_email/verify"
-CLIENT_VERSION = "prod-46437587156517d920436051cb9ab60a95f0503a"
-CLIENT_BUILD = "9723596"
+# Keep the account API headers aligned with the current ChatGPT web client. A
+# stale build can still return HTTP 200 while not starting the email delivery
+# workflow, which leaves the mailbox listener waiting until it times out.
+CLIENT_VERSION = "prod-180ca8b8699a733aef330b7026892aee9bf85fbe"
+CLIENT_BUILD = "9758774"
 _DOMAIN_ROTATION = itertools.count()
 
 
@@ -61,6 +64,8 @@ class ChangeEmailClient:
         headers = {
             "Authorization": f"Bearer {self._access_token}",
             "Accept": "*/*",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
             "Referer": f"{CHATGPT_ORIGIN}/",
             "oai-device-id": str(self.flow.device_id),
             "oai-session-id": self.session_id,
@@ -96,8 +101,18 @@ class ChangeEmailClient:
             raise RebindError(f"换绑接口 {path} 失败：HTTP {response.status_code} {body}")
         try:
             value = response.json()
-            return value if isinstance(value, dict) else {"value": value}
+            result = value if isinstance(value, dict) else {"value": value}
+            if path == BEGIN_PATH:
+                # Do not log email, tokens, or response bodies; the field list
+                # and a few non-sensitive status values are enough to diagnose
+                # an accepted request that did not trigger mailbox delivery.
+                keys = ",".join(sorted(str(key) for key in result.keys())) or "无"
+                status = {key: result[key] for key in ("success", "status", "state", "message", "error", "code") if key in result}
+                self.log(f"[换绑接口] begin 响应摘要：字段={keys}，状态={json.dumps(status, ensure_ascii=False, separators=(',', ':')) if status else '无'}")
+            return result
         except Exception:
+            if path == BEGIN_PATH:
+                self.log("[换绑接口] begin 响应摘要：非 JSON 或响应体为空")
             return {"ok": True}
 
     def eligibility(self) -> dict[str, Any]:
