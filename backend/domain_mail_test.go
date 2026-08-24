@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -65,6 +66,60 @@ func TestDomainMailboxLatestMailUsesEmailListAndExtractsCode(t *testing.T) {
 	if !ok || len(items) != 2 || text(items[1]["otp"]) != "978744" {
 		t.Fatalf("unexpected domain mail payload: %#v", payload)
 	}
+}
+
+func TestDomainMailAddUserAcceptsPlainTextSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("邮箱用户创建成功"))
+	}))
+	defer server.Close()
+	client := &domainMailClient{baseURL: server.URL, token: "token-1", client: server.Client()}
+	if err := client.addUser(context.Background(), "user@example.com"); err != nil {
+		t.Fatalf("plain-text addUser success must be accepted: %v", err)
+	}
+}
+
+func TestDomainMailResponsesKeepJSONStrictAndReportHTTPStatus(t *testing.T) {
+	t.Run("add user rejects plain-text failure with HTTP 200", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("请求参数不完整"))
+		}))
+		defer server.Close()
+		client := &domainMailClient{baseURL: server.URL, token: "token-1", client: server.Client()}
+		err := client.addUser(context.Background(), "user@example.com")
+		if err == nil || !strings.Contains(err.Error(), "请求参数不完整") {
+			t.Fatalf("unexpected plain-text failure result: %v", err)
+		}
+	})
+
+	t.Run("email list rejects plain text", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("邮件服务暂时不可用"))
+		}))
+		defer server.Close()
+		client := &domainMailClient{baseURL: server.URL, token: "token-1", client: server.Client()}
+		_, err := client.listMessages(context.Background(), "user@example.com")
+		if err == nil || !strings.Contains(err.Error(), "不是有效 JSON") || strings.Contains(err.Error(), "invalid character") {
+			t.Fatalf("unexpected strict JSON error: %v", err)
+		}
+	})
+
+	t.Run("http error is reported before decoding", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("上游服务异常"))
+		}))
+		defer server.Close()
+		client := &domainMailClient{baseURL: server.URL, token: "token-1", client: server.Client()}
+		err := client.addUser(context.Background(), "user@example.com")
+		if err == nil || !strings.Contains(err.Error(), "HTTP 502") || !strings.Contains(err.Error(), "上游服务异常") {
+			t.Fatalf("unexpected HTTP error: %v", err)
+		}
+	})
 }
 
 func TestDomainMailboxGenerateCreatesMailboxRecord(t *testing.T) {

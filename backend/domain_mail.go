@@ -60,7 +60,36 @@ func newDomainMailClient(cfg map[string]any) (*domainMailClient, error) {
 	return &domainMailClient{baseURL: base, token: token, client: &http.Client{Timeout: 30 * time.Second}}, nil
 }
 
-func (c *domainMailClient) request(ctx context.Context, method, path string, body any) (any, error) {
+func domainMailResponseSummary(raw []byte) string {
+	value := strings.Join(strings.Fields(strings.TrimSpace(string(raw))), " ")
+	if len([]rune(value)) > 300 {
+		value = string([]rune(value)[:300]) + "..."
+	}
+	return value
+}
+
+func domainMailPlainTextSuccess(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" || len([]rune(normalized)) > 300 || strings.Contains(normalized, "<html") || strings.Contains(normalized, "<!doctype") {
+		return false
+	}
+	for _, marker := range []string{"失败", "错误", "无权限", "未授权", "unauthorized", "forbidden", "invalid", "error", "failed"} {
+		if strings.Contains(normalized, marker) {
+			return false
+		}
+	}
+	if normalized == "ok" {
+		return true
+	}
+	for _, marker := range []string{"成功", "success", "created", "创建完成", "添加完成"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *domainMailClient) request(ctx context.Context, method, path string, body any, allowPlainTextSuccess bool) (any, error) {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -89,14 +118,18 @@ func (c *domainMailClient) request(ctx context.Context, method, path string, bod
 	if err != nil {
 		return nil, err
 	}
-	var payload any
-	if strings.TrimSpace(string(raw)) != "" {
-		if err := json.Unmarshal(raw, &payload); err != nil {
-			return nil, fmt.Errorf("自建域名邮箱返回格式错误：%w", err)
-		}
-	}
+	responseSummary := domainMailResponseSummary(raw)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("自建域名邮箱请求失败：HTTP %d：%s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return nil, fmt.Errorf("自建域名邮箱请求失败：HTTP %d：%s", resp.StatusCode, responseSummary)
+	}
+	var payload any
+	if responseSummary != "" {
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			if allowPlainTextSuccess && domainMailPlainTextSuccess(responseSummary) {
+				return responseSummary, nil
+			}
+			return nil, fmt.Errorf("自建域名邮箱返回内容不是有效 JSON：%s", responseSummary)
+		}
 	}
 	if obj, ok := payload.(map[string]any); ok {
 		if code := text(obj["code"]); code != "" && code != "200" && code != "0" {
@@ -110,14 +143,14 @@ func (c *domainMailClient) addUser(ctx context.Context, email string) error {
 	password := randomDomainSecret(18)
 	_, err := c.request(ctx, http.MethodPost, "/api/public/addUser", map[string]any{
 		"list": []map[string]string{{"email": email, "password": password}},
-	})
+	}, true)
 	return err
 }
 
 func (c *domainMailClient) listMessages(ctx context.Context, email string) ([]map[string]any, error) {
 	payload, err := c.request(ctx, http.MethodPost, "/api/public/emailList", map[string]any{
 		"toEmail": email, "timeSort": "desc", "type": 0, "isDel": 0, "num": 1, "size": 20,
-	})
+	}, false)
 	if err != nil {
 		return nil, err
 	}
