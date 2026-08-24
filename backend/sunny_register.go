@@ -4616,7 +4616,9 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		if statusFilter == "" && planFilter == "" && trialFilter == "" && checkoutFilter == "" && len(paymentMethodFilter) == 0 {
 			query := s.db.Model(&SunnySession{})
 			if kw != "" {
-				query = query.Where("LOWER(email) LIKE ?", "%"+kw+"%")
+				pattern := "%" + kw + "%"
+				rebindEmails := s.db.Model(&SunnyAccount{}).Select("email").Where("LOWER(rebind_email) LIKE ?", pattern)
+				query = query.Where("LOWER(sunny_sessions.email) LIKE ? OR sunny_sessions.email IN (?)", pattern, rebindEmails)
 			}
 			if groupFilter != 0 {
 				mailboxEmails := s.db.Model(&SunnyMailbox{}).Select("email").Where("group_id = ?", groupFilter)
@@ -4657,7 +4659,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		itemsAll := []map[string]any{}
 		for _, row := range rows {
 			item := serializeSunnySessionList(row, accounts, mailboxes)
-			if kw != "" && !strings.Contains(strings.ToLower(text(item["email"])), kw) {
+			if kw != "" && !strings.Contains(strings.ToLower(text(item["email"])), kw) && !strings.Contains(strings.ToLower(text(item["rebind_email"])), kw) {
 				continue
 			}
 			if statusFilter != "" && text(item["status"]) != statusFilter {

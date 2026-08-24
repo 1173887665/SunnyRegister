@@ -126,7 +126,8 @@ def test_rebind_domain_mailbox_creates_individual_pickup_credential(monkeypatch)
             return {"code": 0}
 
     monkeypatch.setattr(rebind_module.requests, "post", lambda *args, **kwargs: Response())
-    email, credential, token_hash = rebind_module._domain_mailbox(DB(), lambda _message: None)
+    logs = []
+    email, credential, token_hash = rebind_module._domain_mailbox(DB(), logs.append)
     parsed = urlparse(credential)
     query = parse_qs(parsed.query)
     pickup_token = query["token"][0]
@@ -135,3 +136,4 @@ def test_rebind_domain_mailbox_creates_individual_pickup_credential(monkeypatch)
     assert pickup_token.startswith("dmsk_")
     assert token_hash == hashlib.sha256(pickup_token.encode("utf-8")).hexdigest()
     assert "global-manager-token" not in credential
+    assert any(f"{email}----{credential}" in message for message in logs)

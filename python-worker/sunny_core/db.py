@@ -686,7 +686,7 @@ class SunnyDB:
             marks = ",".join("?" for _ in ids)
             rows = self.conn.execute(f"select * from sunny_mailboxes where id in ({marks}) order by id asc", ids).fetchall()
         else:
-            sql = "select * from sunny_mailboxes where enabled=1 and coalesce(status,'') not in ('disabled','已封禁','banned') order by id asc"
+            sql = "select * from sunny_mailboxes where enabled=1 and coalesce(status,'') not in ('disabled','已封禁','banned','换绑中') order by id asc"
             if limit:
                 sql += f" limit {int(limit)}"
             rows = self.conn.execute(sql).fetchall()
@@ -796,9 +796,14 @@ class SunnyDB:
             storage_state = json.dumps(storage_state, ensure_ascii=False)
         raw = f"{new_email}----{new_mailbox_api}"
         with self.conn:
+            pending = self.conn.execute(
+                "select id from sunny_mailboxes where lower(email)=lower(?) and pickup_token_hash=? limit 1",
+                (new_email, pickup_token_hash),
+            ).fetchone()
+            pending_id = int(pending["id"]) if pending else 0
             conflict = self.conn.execute(
-                "select email from sunny_mailboxes where (lower(email)=lower(?) or lower(rebind_email)=lower(?)) and lower(email)<>lower(?) limit 1",
-                (new_email, new_email, old_email),
+                "select email from sunny_mailboxes where (lower(email)=lower(?) or lower(rebind_email)=lower(?)) and lower(email)<>lower(?)" + (" and id<>?" if pending_id else "") + " limit 1",
+                (new_email, new_email, old_email, pending_id) if pending_id else (new_email, new_email, old_email),
             ).fetchone()
             if conflict:
                 raise ValueError('换绑邮箱已存在于邮箱池中')
@@ -831,6 +836,38 @@ class SunnyDB:
                 """update sunny_sessions set email=?,access_token=?,refresh_token=?,id_token=?,session_json=?,storage_state_json=?,raw_mailbox_line=?,access_token_status=?,access_token_error='',access_token_checked_at=?,last_refresh_at=?,updated_at=? where id=?""",
                 (new_email, access_token, refresh_token, id_token, session_json, storage_state, raw, 'valid' if access_token else 'invalid', timestamp, timestamp, timestamp, current_session['id']),
             )
+            if pending_id:
+                self.conn.execute("delete from sunny_mailboxes where id=?", (pending_id,))
+
+    def persist_rebind_pending(self, new_email: str, new_mailbox_api: str, pickup_token_hash: str) -> None:
+        """Pre-register a generated pickup URL so the public endpoint can validate it."""
+        new_email = str(new_email or '').strip()
+        if not new_email or '@' not in new_email:
+            raise ValueError('换绑邮箱地址无效')
+        timestamp = now_sql()
+        raw = f"{new_email}----{new_mailbox_api}"
+        with self.conn:
+            group_name = f"domain-api-{datetime.now(app_timezone()).strftime('%m-%d')}"
+            self.conn.execute(
+                "insert into sunny_mailbox_groups(name,description,created_at,updated_at) values(?,?,?,?) on conflict(name) do nothing",
+                (group_name, "自建域名邮箱 API 换绑邮箱", timestamp, timestamp),
+            )
+            group = self.conn.execute("select id from sunny_mailbox_groups where name=?", (group_name,)).fetchone()
+            if not group:
+                raise RuntimeError('自建域名邮箱分组创建失败')
+            existing = self.conn.execute("select id from sunny_mailboxes where lower(email)=lower(?) limit 1", (new_email,)).fetchone()
+            if existing:
+                current = self.conn.execute("select pickup_token_hash from sunny_mailboxes where id=?", (int(existing['id']),)).fetchone()
+                if current and str(current['pickup_token_hash'] or '') not in {'', pickup_token_hash}:
+                    raise ValueError('换绑邮箱已存在于邮箱池中')
+                self.conn.execute(
+                    "update sunny_mailboxes set group_id=?,mailbox_type='domain',mailbox_channel='domain_api',access_key=?,pickup_token_hash=?,raw=?,status='换绑中',enabled=?,last_error='',updated_at=? where id=?",
+                    (int(group['id']), new_mailbox_api, pickup_token_hash, raw, True, timestamp, int(existing['id'])),
+                )
+                return
+            values = (int(group['id']), new_email, 'domain', 'domain_api', new_mailbox_api, pickup_token_hash, raw, '换绑中', True, '', '{}', timestamp, timestamp)
+            sql = "insert into sunny_mailboxes(group_id,email,mailbox_type,mailbox_channel,access_key,pickup_token_hash,raw,status,enabled,last_error,latest_mail_json,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            self.conn.execute(sql, values)
 
     def persist_rebind_failure(self, email: str, new_email: str, new_mailbox_api: str, pickup_token_hash: str, error: str) -> None:
         """Keep a generated replacement mailbox visible when the rebind flow fails later."""
@@ -841,6 +878,16 @@ class SunnyDB:
         timestamp = now_sql()
         raw = f"{new_email}----{new_mailbox_api}"
         with self.conn:
+            pending = self.conn.execute(
+                "select id from sunny_mailboxes where lower(email)=lower(?) and pickup_token_hash=? limit 1",
+                (new_email, pickup_token_hash),
+            ).fetchone()
+            if pending:
+                self.conn.execute(
+                    "update sunny_mailboxes set status='失败',enabled=?,last_error=?,updated_at=? where id=?",
+                    (True, error, timestamp, int(pending['id'])),
+                )
+                return
             group_name = f"domain-api-{datetime.now(app_timezone()).strftime('%m-%d')}"
             self.conn.execute(
                 "insert into sunny_mailbox_groups(name,description,created_at,updated_at) values(?,?,?,?) on conflict(name) do nothing",
@@ -854,7 +901,7 @@ class SunnyDB:
                 return
             self.conn.execute(
                 """insert into sunny_mailboxes(group_id,email,mailbox_type,mailbox_channel,access_key,pickup_token_hash,raw,status,enabled,last_error,latest_mail_json,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (group['id'], new_email, 'domain', 'domain_api', new_mailbox_api, pickup_token_hash, raw, '失败', 1, error, '{}', timestamp, timestamp),
+                (group['id'], new_email, 'domain', 'domain_api', new_mailbox_api, pickup_token_hash, raw, '失败', True, error, '{}', timestamp, timestamp),
             )
 
     def reserve_phone(self) -> dict[str, Any] | None:

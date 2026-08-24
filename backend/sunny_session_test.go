@@ -192,6 +192,28 @@ func TestSunnySessionListReportsCompletedPhoneBinding(t *testing.T) {
 	}
 }
 
+func TestSunnySessionListSearchesRebindEmail(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	if err := s.db.Model(&SunnyAccount{}).Where("email = ?", "session@example.com").Update("rebind_email", "replacement@example.com").Error; err != nil {
+		t.Fatalf("set rebind email: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/sunny/sessions?page=1&page_size=10&q=replacement", nil)
+	rec := httptest.NewRecorder()
+	s.sunnySessions(rec, req, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode search: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0]["rebind_email"] != "replacement@example.com" {
+		t.Fatalf("rebind email search did not return the account: %#v", payload.Items)
+	}
+}
+
 func TestSunnySessionUpdateSynchronizesMailboxAndAccountMetadata(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	group := SunnyMailboxGroup{Name: "Target Group"}

@@ -152,7 +152,7 @@ def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str, 
                 pickup_token = "dmsk_" + secrets.token_urlsafe(32)
                 credential = pickup_base + "/api/sunny/domain-mail/pickup?" + urlencode({"email": email, "token": pickup_token})
                 token_hash = hashlib.sha256(pickup_token.encode("utf-8")).hexdigest()
-                log(f"[{email}] 已从自建域名邮箱池生成换绑邮箱")
+                log(f"[{email}] 已从自建域名邮箱池生成换绑邮箱：{email}----{credential}")
                 return email, credential, token_hash
         except requests.RequestException as exc:
             last = str(exc)
@@ -203,6 +203,9 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         client.set_access_token(str(old_result.get("access_token") or ""))
         client.eligibility()
         new_email, new_api, new_api_token_hash = _domain_mailbox(db, log)
+        # Register the one-time pickup credential before ChatGPT sends the verification mail.
+        # The public pickup endpoint validates the token against this database row.
+        db.persist_rebind_pending(new_email, new_api, new_api_token_hash)
         issued_after = time.time() - 3
         try:
             client.begin(new_email)
