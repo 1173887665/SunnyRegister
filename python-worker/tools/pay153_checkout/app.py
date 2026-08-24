@@ -1132,6 +1132,7 @@ def fetch_custom_checkout_session_with_retry(
     attempts: int = 3,
     delay_seconds: float = 0.8,
     require_paypal: bool = False,
+    required_provider: str = "",
 ) -> dict[str, Any]:
     """Read an OAICS session until its custom payment methods are published."""
     last: dict[str, Any] = {}
@@ -1145,7 +1146,11 @@ def fetch_custom_checkout_session_with_retry(
             "paypal" in json.dumps(method, ensure_ascii=False).lower()
             for method in methods
         )
-        if methods and (not require_paypal or paypal_ready):
+        provider_ready = (
+            bool(custom_payment_method_id_for(last, required_provider))
+            if required_provider else True
+        )
+        if methods and (not require_paypal or paypal_ready) and provider_ready:
             if attempt:
                 if log:
                     log(f"OAICS 支付方式延迟就绪（第 {attempt + 1} 次读取）")
@@ -1167,6 +1172,23 @@ def custom_payment_methods_for(payload: dict[str, Any], provider: str) -> list[d
         and str(item.get("id") or "").startswith("cpmt_")
         and provider_name in json.dumps(item, ensure_ascii=False).lower()
     ]
+
+
+def custom_payment_method_id_for(payload: dict[str, Any], provider: str) -> str:
+    """Select a provider-specific cpmt id, allowing an unlabelled sole method."""
+    methods = [
+        item for item in (payload.get("custom_payment_methods") or [])
+        if isinstance(item, dict) and str(item.get("id") or "").startswith("cpmt_")
+    ]
+    matched = custom_payment_methods_for(payload, provider)
+    if matched:
+        return str(matched[0].get("id") or "")
+    if len(methods) == 1:
+        serialized = json.dumps(methods[0], ensure_ascii=False).lower()
+        known_providers = {"paypal", "gcash", "ideal", "momo", "twint", "pix", "upi", "kakao"}
+        if not any(name in serialized for name in known_providers):
+            return str(methods[0].get("id") or "")
+    return ""
 
 
 def submit_custom_checkout_taxes(
@@ -1357,6 +1379,30 @@ def gcash_authorization_url(*payloads: Any) -> str:
     for payload in payloads:
         walk(payload)
     return found[0] if found else ""
+
+
+def is_valid_gcash_adyen_redirect_url(value: str) -> bool:
+    """Return whether a URL is the Adyen redirect emitted by GCash start."""
+    try:
+        parsed = urlsplit(str(value or "").strip())
+    except ValueError:
+        return False
+    host = parsed.netloc.lower().rstrip(".")
+    return (
+        parsed.scheme.lower() == "https"
+        and host in {"checkoutshopper-live.adyen.com", "checkoutshopper-test.adyen.com"}
+        and parsed.path.rstrip("/") == "/checkoutshopper/checkoutPaymentRedirect"
+    )
+
+
+def gcash_payment_url(confirmed: dict[str, Any], started: dict[str, Any]) -> str:
+    """Prefer a final GCash URL and fall back to its validated Adyen handoff."""
+    authorization_url = gcash_authorization_url(confirmed, started)
+    if authorization_url:
+        return authorization_url
+    action = started.get("next_action") or {}
+    candidate = str(action.get("url") or "").strip() if isinstance(action, dict) else ""
+    return candidate if is_valid_gcash_adyen_redirect_url(candidate) else ""
 
 
 
@@ -2466,15 +2512,12 @@ class JobStore:
                 raise RuntimeError("GCASH_ZERO_DUE_REQUIRED: GCash 提链仅允许已开启优惠的 Plus 0 元试用")
             if provider == "gcash":
                 gcash_checkout_proxy = exit_proxy if options.get("named_proxy_pools") else entry_proxy
-                gcash_promotion_proxy = entry_proxy if options.get("named_proxy_pools") else exit_proxy
                 checkout_country_hint = options.get("exit_proxy_country") if options.get("named_proxy_pools") else options.get("entry_proxy_country")
-                promotion_country_hint = options.get("entry_proxy_country") if options.get("named_proxy_pools") else options.get("exit_proxy_country")
                 main_country, main_region = proxy_country(gcash_checkout_proxy, checkout_country_hint)
-                promo_proxy_country, promo_proxy_region = proxy_country(gcash_promotion_proxy, promotion_country_hint)
                 country = options["country"] = options["checkout_country"] = "PH"
                 options["currency"] = options["checkout_currency"] = "PHP"
-                self.update(job_id, percent=9, text="校验 PH Checkout 与 VN 优惠代理")
-                self.log(job_id, f"GCash 路由：Checkout={main_country}/{main_region}（目标 PH），账单=PH/PHP，优惠更新={promo_proxy_country}/{promo_proxy_region}（默认 VN）")
+                self.update(job_id, percent=9, text="校验 GCash PH 单代理链路")
+                self.log(job_id, f"GCash 路由：Checkout、优惠、taxes、confirm、start 统一使用 {main_country}/{main_region}，账单=PH/PHP")
                 if main_country != "PH":
                     self.log(job_id, f"GCash Checkout 代理当前为 {main_country or '?'}；目标为 PH，继续由上游校验")
                 self.ensure_not_cancelled(job_id)
@@ -2551,7 +2594,8 @@ class JobStore:
             preflight = {}
             if promo_requested:
                 transport_stage = "Promotion 优惠预检"
-                self.update(job_id, percent=12, text="通过 Promotion 代理池读取试用资格与活动标记")
+                preflight_route = "GCash PH Checkout 代理" if provider == "gcash" else "Promotion 代理池"
+                self.update(job_id, percent=12, text=f"通过 {preflight_route}读取试用资格与活动标记")
                 preflight = preflight_trial_eligibility(
                     token, meta.get("account_id") or "", entry_proxy, device_id, did,
                     lambda m: self.log(job_id, m),
@@ -2652,7 +2696,7 @@ class JobStore:
                     + ("；本轮优惠随 Checkout 创建" if options.get("promo_on_create") else ""),
                 )
             elif provider == "gcash":
-                self.log(job_id, f"GCash 设置：Checkout代理池创建并确认 PH/PHP Checkout，Promotion代理池使用 {options.get('promo_country') or '优惠国家'} 更新优惠")
+                self.log(job_id, "GCash 设置：单个 PH Checkout 代理与同一 HTTP 会话贯穿创建、优惠、taxes、confirm 和 start")
             elif provider == "paypal" and promo_requested:
                 self.log(job_id, f"PayPal 设置：Promotion代理池用于优惠检查，Checkout代理池创建 {country}/{options['currency']} Checkout")
             elif provider == "upi":
@@ -2690,7 +2734,9 @@ class JobStore:
             provider_chatgpt_http = chatgpt_http
             promo_chatgpt_http = chatgpt_http
             promotion_proxy = promotion_route_proxy(options, provider, entry_proxy, exit_proxy)
-            if provider in {"paypal", "upi", "ideal", "twint", "gcash"} or (options.get("named_proxy_pools") and promo_requested):
+            if provider in {"paypal", "upi", "ideal", "twint"} or (
+                options.get("named_proxy_pools") and promo_requested and provider != "gcash"
+            ):
                 promo_chatgpt_http = sc.build_http(promotion_proxy)
                 try:
                     promo_chatgpt_http.cookies.set("oai-did", did, domain="chatgpt.com")
@@ -2703,9 +2749,7 @@ class JobStore:
                     )
                 except Exception as exc:
                     self.log(job_id, f"{provider.upper()} 优惠线路暖身提示：{type(exc).__name__}")
-                if provider == "gcash":
-                    self.log(job_id, f"GCash 优惠更新使用 Promotion代理池（{options.get('promo_country') or '用户选择地区'}），Checkout 与确认使用 Checkout代理池")
-                elif provider == "paypal":
+                if provider == "paypal":
                     self.log(job_id, f"PayPal 支付处理使用 Checkout代理池（{country}），优惠更新使用 Promotion代理池")
                 elif provider == "upi":
                     self.log(job_id, "UPI 支付处理使用 Checkout代理池（IN），优惠更新使用 Promotion代理池")
@@ -2792,30 +2836,10 @@ class JobStore:
                 )
                 if provider == "gcash":
                     self.update(job_id, percent=58, text="正在读取 GCash 自定义支付方式")
-                    custom_state = fetch_custom_checkout_session(
+                    custom_state = fetch_custom_checkout_session_with_retry(
                         chatgpt_http, token, session_id, custom_processor, device_id,
+                        log=lambda message: self.log(job_id, message), attempts=4,
                     )
-                    initial_custom_methods = custom_state.get("custom_payment_methods") or []
-                    initial_custom_method_id = next(
-                        (str(item.get("id") or "") for item in initial_custom_methods
-                         if str(item.get("id") or "").startswith("cpmt_")), "",
-                    )
-                    # OAICS can publish custom methods a moment after the checkout
-                    # object itself becomes readable. Poll briefly before rebuilding.
-                    for method_poll in range(1, 4):
-                        if initial_custom_method_id:
-                            break
-                        time.sleep(0.8 * method_poll)
-                        custom_state = fetch_custom_checkout_session(
-                            chatgpt_http, token, session_id, custom_processor, device_id,
-                        )
-                        initial_custom_methods = custom_state.get("custom_payment_methods") or []
-                        initial_custom_method_id = next(
-                            (str(item.get("id") or "") for item in initial_custom_methods
-                             if str(item.get("id") or "").startswith("cpmt_")), "",
-                        )
-                        method_state = "已获取" if initial_custom_method_id else "待同步"
-                        self.log(job_id, f"GCash 支付方式同步检查 {method_poll}/3：{method_state}")
                     custom_amount = custom_checkout_amount_minor(custom_state)
                     custom_currency = custom_checkout_currency(custom_state) or "PHP"
                     if promo_requested and custom_amount not in {None, 0}:
@@ -2848,20 +2872,17 @@ class JobStore:
                         chatgpt_http, token, session_id, custom_processor,
                         gcash_billing, custom_currency, device_id,
                     )
-                    if tax_checkout:
-                        custom_state = tax_checkout
-                    else:
-                        custom_state = fetch_custom_checkout_session(
-                            chatgpt_http, token, session_id, custom_processor, device_id,
-                        )
-                    custom_amount = custom_checkout_amount_minor(custom_state)
-                    custom_currency = custom_checkout_currency(custom_state) or custom_currency
-                    custom_methods = custom_state.get("custom_payment_methods") or []
-                    custom_method_id = next(
-                        (str(item.get("id") or "") for item in custom_methods
-                         if str(item.get("id") or "").startswith("cpmt_")),
-                        initial_custom_method_id,
+                    self.log(job_id, "GCash taxes 已提交，正在通过同一 PH 会话读取最新支付方式")
+                    custom_state = fetch_custom_checkout_session_with_retry(
+                        chatgpt_http, token, session_id, custom_processor, device_id,
+                        log=lambda message: self.log(job_id, message), attempts=4,
+                        required_provider="gcash",
                     )
+                    custom_amount = custom_checkout_amount_minor(custom_state)
+                    if custom_amount is None and tax_checkout:
+                        custom_amount = custom_checkout_amount_minor(tax_checkout)
+                    custom_currency = custom_checkout_currency(custom_state) or custom_currency
+                    custom_method_id = custom_payment_method_id_for(custom_state, "gcash")
                     if not custom_method_id:
                         raise RuntimeError("GCASH_METHOD_UNAVAILABLE: 当前 PH Checkout 尚未返回 GCash 支付方式，将更换代理重建")
                     self.update(job_id, percent=76, text="正在确认 GCash 支付方式")
@@ -2888,10 +2909,11 @@ class JobStore:
                     )
                     action = started.get("next_action") or {}
                     adyen_redirect_url = str(action.get("url") or "").strip()
-                    redirect_url = gcash_authorization_url(confirmed, started)
+                    authorization_url = gcash_authorization_url(confirmed, started)
+                    redirect_url = gcash_payment_url(confirmed, started)
                     if not redirect_url:
                         raise RuntimeError(
-                            "GCASH_AUTHORIZATION_LINK_MISSING: GCash 未返回 m.gcash.com 授权链接"
+                            "GCASH_PAYMENT_LINK_MISSING: GCash 未返回 m.gcash.com 授权链接或有效 Adyen 跳转链接"
                         )
                     result.update({
                         "link_type": "gcash",
@@ -2902,8 +2924,8 @@ class JobStore:
                         "provider_redirect_url": redirect_url,
                         "short_link": redirect_url,
                         "checkout_url": redirect_url,
-                        "gcash_authorization_url": redirect_url,
-                        "adyen_redirect_url": adyen_redirect_url,
+                        "gcash_authorization_url": authorization_url,
+                        "adyen_redirect_url": adyen_redirect_url if is_valid_gcash_adyen_redirect_url(adyen_redirect_url) else "",
                         "verification_url": str(confirmed.get("confirm_return_url") or ""),
                         "checkout_amount": custom_amount,
                         "amount_currency": custom_currency,

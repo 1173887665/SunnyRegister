@@ -82,17 +82,21 @@ class CheckoutAdapterTests(unittest.TestCase):
         self.assertEqual(options["entry_proxies"], ["promotion-proxy"])
         self.assertEqual(options["exit_proxies"], ["checkout-proxy"])
 
-    def test_start_checkout_maps_gcash_route_countries_by_proxy_role(self) -> None:
+    def test_start_checkout_routes_gcash_through_single_ph_checkout_pool(self) -> None:
         with patch.object(sunny_adapter.STORE, "create", create=True, return_value="job-6") as create:
             sunny_adapter.start_checkout({
                 "token": "token",
                 "link_type": "gcash",
                 "country": "PH",
                 "promo_country": "VN",
+                "checkout_proxies": ["ph-checkout-proxy"],
+                "promotion_proxies": ["vn-promotion-proxy"],
             })
 
         options = create.call_args.args[0]
-        self.assertEqual(options["entry_proxy_country"], "VN")
+        self.assertEqual(options["entry_proxies"], ["ph-checkout-proxy"])
+        self.assertEqual(options["exit_proxies"], ["ph-checkout-proxy"])
+        self.assertEqual(options["entry_proxy_country"], "PH")
         self.assertEqual(options["exit_proxy_country"], "PH")
 
     def test_start_checkout_preserves_zero_retry_count(self) -> None:

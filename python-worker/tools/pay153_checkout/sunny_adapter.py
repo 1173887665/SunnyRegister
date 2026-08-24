@@ -35,6 +35,10 @@ def start_checkout(payload: dict[str, Any]) -> str:
     paypal_mode = checkout_mode(checkout_kind)
     raw_retry_count = payload.get("retry_count")
     retry_count = 3 if raw_retry_count is None or str(raw_retry_count).strip() == "" else int(raw_retry_count)
+    checkout_proxies = list(payload.get("checkout_proxies") or [])
+    promotion_proxies = list(payload.get("promotion_proxies") or [])
+    if link_type == "gcash":
+        promotion_proxies = list(checkout_proxies)
     options = {
         "token_raw": str(payload.get("token") or ""),
         "plan": str(payload.get("plan") or "plus"),
@@ -52,8 +56,8 @@ def start_checkout(payload: dict[str, Any]) -> str:
         # pay153's entry pool is the Promotion route and its exit pool is the
         # billing/Checkout route. SunnyRegister exposes those pools in the
         # opposite order, so keep the translation at this adapter boundary.
-        "entry_proxies": list(payload.get("promotion_proxies") or []),
-        "exit_proxies": list(payload.get("checkout_proxies") or []),
+        "entry_proxies": promotion_proxies,
+        "exit_proxies": checkout_proxies,
         "named_proxy_pools": True,
         "use_promo": bool(payload.get("use_promo")),
         "promo_campaign": str(payload.get("promo_campaign") or ""),
@@ -77,9 +81,7 @@ def start_checkout(payload: dict[str, Any]) -> str:
     if options["link_type"] == "gcash":
         options["country"] = options["checkout_country"] = "PH"
         options["currency"] = options["checkout_currency"] = "PHP"
-        options["exit_proxy_country"] = str(payload.get("checkout_country") or "PH").upper()
-    if options["link_type"] == "gcash":
-        options["entry_proxy_country"] = str(payload.get("promo_country") or "VN").upper()
+        options["entry_proxy_country"] = options["exit_proxy_country"] = "PH"
     if options["link_type"] == "ph_short" and options["use_promo"]:
         options["entry_proxy_country"] = str(payload.get("promo_country") or "TR").upper()
     return STORE.create(options, internal=True)

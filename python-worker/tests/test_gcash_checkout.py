@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 
 PAY153_DIR = Path(__file__).parents[1] / "tools" / "pay153_checkout"
@@ -37,3 +38,65 @@ def test_gcash_authorization_url_rejects_redirect_only_payload() -> None:
     assert checkout_app.gcash_authorization_url(
         {"next_action": {"url": "https://checkoutshopper-live.adyen.com/checkoutshopper/checkoutPaymentRedirect"}}
     ) == ""
+
+
+def test_gcash_payment_url_accepts_valid_adyen_handoff() -> None:
+    adyen_url = (
+        "https://checkoutshopper-live.adyen.com/checkoutshopper/"
+        "checkoutPaymentRedirect?redirectData=payload"
+    )
+
+    assert checkout_app.gcash_payment_url({}, {"next_action": {"url": adyen_url}}) == adyen_url
+    assert checkout_app.gcash_payment_url(
+        {}, {"next_action": {"url": "https://evil.example/checkoutPaymentRedirect"}},
+    ) == ""
+
+
+def test_gcash_payment_url_prefers_final_gcash_authorization() -> None:
+    gcash_url = "https://m.gcash.com/gcashapp/gcash-merchants-auth/index.html?siteId=1"
+    adyen_url = "https://checkoutshopper-live.adyen.com/checkoutshopper/checkoutPaymentRedirect?redirectData=x"
+
+    assert checkout_app.gcash_payment_url(
+        {"confirm_return_url": gcash_url}, {"next_action": {"url": adyen_url}},
+    ) == gcash_url
+
+
+def test_gcash_payment_method_selection_prefers_provider_specific_cpmt() -> None:
+    payload = {
+        "custom_payment_methods": [
+            {"id": "cpmt_paypal", "name": "PayPal"},
+            {"id": "cpmt_gcash", "name": "GCash wallet"},
+        ],
+    }
+
+    assert checkout_app.custom_payment_method_id_for(payload, "gcash") == "cpmt_gcash"
+
+
+def test_gcash_payment_method_selection_allows_only_unlabelled_cpmt() -> None:
+    assert checkout_app.custom_payment_method_id_for(
+        {"custom_payment_methods": [{"id": "cpmt_only"}]}, "gcash",
+    ) == "cpmt_only"
+    assert checkout_app.custom_payment_method_id_for(
+        {"custom_payment_methods": [{"id": "cpmt_one"}, {"id": "cpmt_two"}]}, "gcash",
+    ) == ""
+    assert checkout_app.custom_payment_method_id_for(
+        {"custom_payment_methods": [{"id": "cpmt_paypal", "name": "PayPal"}]}, "gcash",
+    ) == ""
+
+
+def test_gcash_session_poll_waits_for_gcash_method() -> None:
+    states = iter([
+        {"custom_payment_methods": [{"id": "cpmt_paypal", "name": "PayPal"}]},
+        {"custom_payment_methods": [{"id": "cpmt_gcash", "name": "GCash"}]},
+    ])
+    with (
+        patch.object(checkout_app, "fetch_custom_checkout_session", side_effect=lambda *_args: next(states)) as fetch,
+        patch.object(checkout_app.time, "sleep"),
+    ):
+        result = checkout_app.fetch_custom_checkout_session_with_retry(
+            object(), "token", "oaics_1", "openai_ie", "device",
+            required_provider="gcash", attempts=3,
+        )
+
+    assert checkout_app.custom_payment_method_id_for(result, "gcash") == "cpmt_gcash"
+    assert fetch.call_count == 2

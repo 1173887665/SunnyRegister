@@ -184,6 +184,9 @@ func normalizeCheckoutRequest(in sunnyCheckoutRequest) (sunnyCheckoutRequest, []
 	if in.Country == "" || in.Currency == "" {
 		in.Country, in.Currency = checkoutProviderDefaults(in.LinkType)
 	}
+	if in.LinkType == "gcash" {
+		in.Country, in.Currency, in.PromoCountry = "PH", "PHP", "PH"
+	}
 	if checkoutCountryCurrency[in.Country] == "" {
 		return in, nil, nil, fmt.Errorf("不支持的国家/地区")
 	}
@@ -223,9 +226,12 @@ func normalizeCheckoutRequest(in sunnyCheckoutRequest) (sunnyCheckoutRequest, []
 	if err != nil {
 		return in, nil, nil, fmt.Errorf("Checkout 代理池: %w", err)
 	}
-	promotion, err := splitCheckoutPool(in.PromotionProxies)
-	if err != nil {
-		return in, nil, nil, fmt.Errorf("Promotion 代理池: %w", err)
+	promotion := append([]string(nil), checkout...)
+	if in.LinkType != "gcash" {
+		promotion, err = splitCheckoutPool(in.PromotionProxies)
+		if err != nil {
+			return in, nil, nil, fmt.Errorf("Promotion 代理池: %w", err)
+		}
 	}
 	return in, checkout, promotion, nil
 }

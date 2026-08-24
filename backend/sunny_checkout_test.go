@@ -31,6 +31,42 @@ func TestCheckoutProviderDefaultsIncludeAllCurrentPaths(t *testing.T) {
 	}
 }
 
+func TestNormalizeGCashRequestUsesSinglePHCheckoutPool(t *testing.T) {
+	in := sunnyCheckoutRequest{
+		Plan:             "plus",
+		LinkType:         "gcash",
+		Country:          "US",
+		Currency:         "USD",
+		CheckoutProxies:  "http://ph-proxy.example:8080",
+		PromotionProxies: "http://vn-proxy.example:8080",
+	}
+
+	normalized, checkout, promotion, err := normalizeCheckoutRequest(in)
+	if err != nil {
+		t.Fatalf("normalize GCash request: %v", err)
+	}
+	if normalized.Country != "PH" || normalized.Currency != "PHP" || normalized.PromoCountry != "PH" {
+		t.Fatalf("unexpected GCash region: %#v", normalized)
+	}
+	if len(checkout) != 1 || len(promotion) != 1 || checkout[0] != promotion[0] {
+		t.Fatalf("checkout=%#v promotion=%#v", checkout, promotion)
+	}
+}
+
+func TestNormalizeGCashRequestDoesNotRequirePromotionPool(t *testing.T) {
+	_, checkout, promotion, err := normalizeCheckoutRequest(sunnyCheckoutRequest{
+		Plan:            "plus",
+		LinkType:        "gcash",
+		CheckoutProxies: "http://ph-proxy.example:8080",
+	})
+	if err != nil {
+		t.Fatalf("normalize GCash request without promotion pool: %v", err)
+	}
+	if len(checkout) != 1 || len(promotion) != 1 || checkout[0] != promotion[0] {
+		t.Fatalf("checkout=%#v promotion=%#v", checkout, promotion)
+	}
+}
+
 func TestParseCheckoutExternalAT(t *testing.T) {
 	token, email := parseCheckoutExternalAT("eyJhbGciOiJub25lIn0.payload.signature user@example.com")
 	if token == "" || email != "user@example.com" {
