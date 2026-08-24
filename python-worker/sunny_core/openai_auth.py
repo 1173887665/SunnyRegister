@@ -3074,14 +3074,20 @@ class OpenAIEmailRegisterFlow:
             return bool(page.evaluate(r"""() => {
                 const visible = el => { if (!el) return false; const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
                 const enabled = el => el && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
-                const consentForm = Array.from(document.forms).find(form => /\/sign-in-with-chatgpt\/.*\/consent|\/consent(?:[/?#]|$)/i.test(form.action || '')) || null;
+                const onCodexConsentPage = /\/sign-in-with-chatgpt\/codex\/consent(?:\.data)?\/?$/i.test(location.pathname || '');
+                const consentForm = Array.from(document.forms).find(form => {
+                    const action = form.action || '';
+                    if (/\/sign-in-with-chatgpt\/.*\/consent(?:\.data)?(?:[/?#]|$)|\/consent(?:\.data)?(?:[/?#]|$)/i.test(action)) return true;
+                    return onCodexConsentPage && String(form.method || '').toLowerCase() === 'post' && form.querySelector('button[type="submit"], input[type="submit"]');
+                }) || null;
                 const stableSelectors = [
                     'form[action*="/sign-in-with-chatgpt/"][action*="/consent"] button[data-dd-action-name="Continue"][type="submit"]',
                     'button[data-dd-action-name="Continue"][type="submit"]',
                     'form button[data-dd-action-name="Continue"]',
                     'button[type="submit"][data-dd-action-name="Continue"]',
                     '[data-testid="continue-button"][type="submit"]',
-                    '[data-testid="consent-submit"][type="submit"]'
+                    '[data-testid="consent-submit"][type="submit"]',
+                    ...(onCodexConsentPage ? ['form[method="post" i] button[type="submit"]', 'form[method="post" i] input[type="submit"]'] : [])
                 ];
                 let target = null;
                 for (const selector of stableSelectors) {
@@ -3091,7 +3097,7 @@ class OpenAIEmailRegisterFlow:
                 const scope = consentForm || document;
                 const candidates = Array.from(scope.querySelectorAll('button, [role="button"], input[type="submit"]')).filter(el => visible(el) && enabled(el));
                 if (!target) {
-                    target = candidates.find(el => /Continue|Allow|Authorize|Approve|同意|继续|授权|批准|続行|許可|承認/i.test(`${el.value || ''} ${el.textContent || ''} ${el.getAttribute('aria-label') || ''}`));
+                    target = candidates.find(el => /Continue|Allow|Authorize|Approve|同意|继续|授权|批准|続行|続ける|次へ|許可|承認|サインイン/i.test(`${el.value || ''} ${el.textContent || ''} ${el.getAttribute('aria-label') || ''}`));
                 }
                 if (!target && consentForm) {
                     const submitters = candidates.filter(el => {
@@ -3117,6 +3123,61 @@ class OpenAIEmailRegisterFlow:
                 } else {
                     return false;
                 }
+                return true;
+            }"""))
+        except Exception:
+            return False
+
+    def _select_codex_consent_workspace_if_visible(self, page) -> bool:
+        """Select the workspace introduced by the Codex consent flow.
+
+        The official page submits the selected workspace to
+        /api/accounts/workspace/select and then resumes the OAuth redirect chain.
+        Let the page own that request so its verifier and session state stay intact.
+        """
+        try:
+            path = urlparse(str(page.url or "")).path.rstrip("/").lower()
+            if path != "/sign-in-with-chatgpt/codex/consent":
+                return False
+            return bool(page.evaluate(r"""() => {
+                const visible = el => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+                };
+                const enabled = el => el && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+                const selectors = [
+                    'button[data-workspace-id]',
+                    '[role="button"][data-workspace-id]',
+                    'button[name="workspace_id"]',
+                    'button[data-testid*="workspace" i]',
+                    '[data-testid*="workspace-option" i][role="button"]',
+                    '[data-testid*="workspace-card" i][role="button"]',
+                    'button[data-dd-action-name*="workspace" i]',
+                    'input[type="radio"][name*="workspace" i]',
+                    '[role="radio"][data-value]'
+                ];
+                let target = null;
+                for (const selector of selectors) {
+                    target = Array.from(document.querySelectorAll(selector)).find(el => visible(el) && enabled(el));
+                    if (target) break;
+                }
+                if (!target) {
+                    const scope = document.querySelector('main') || document;
+                    const candidates = Array.from(scope.querySelectorAll('button, [role="button"]')).filter(el => {
+                        if (!visible(el) || !enabled(el)) return false;
+                        const identity = `${el.value || ''} ${el.name || ''} ${el.id || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('data-testid') || ''} ${el.getAttribute('data-dd-action-name') || ''} ${el.textContent || ''}`;
+                        if (/continue|allow|authorize|approve|cancel|deny|reject|back|sign out|同意|继续|授权|取消|拒绝|続行|許可|承認|キャンセル|戻る/i.test(identity)) return false;
+                        return /workspace|personal|team|business|ワークスペース|工作区|工作區|작업\s*공간/i.test(identity);
+                    });
+                    if (candidates.length === 1) target = candidates[0];
+                }
+                if (!target || target.dataset.sunnyRegisterWorkspaceSelected === 'true') return false;
+                target.dataset.sunnyRegisterWorkspaceSelected = 'true';
+                target.scrollIntoView({block:'center', inline:'center'});
+                target.focus?.();
+                target.click();
                 return true;
             }"""))
         except Exception:
@@ -3221,6 +3282,10 @@ class OpenAIEmailRegisterFlow:
                     raise RuntimeError("OAuth phone verification required, but no usable SMS provider is configured")
                 if self._has_totp_challenge(page):
                     self._submit_totp_challenge(page)
+                    self._sleep_checked(1)
+                    continue
+                if self._select_codex_consent_workspace_if_visible(page):
+                    self.log("[Session] 已选择 Codex 授权 workspace，正在继续 OAuth 回调")
                     self._sleep_checked(1)
                     continue
                 if self._has_workspace_selection(page):

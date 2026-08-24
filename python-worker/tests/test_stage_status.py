@@ -613,6 +613,7 @@ class StageStatusTests(unittest.TestCase):
                 "group_ids": [2, "3"],
                 "concurrency": 5,
                 "priority": 1,
+                "notes_include_sk": True,
             }
         })
         auth_json = {
@@ -1393,6 +1394,65 @@ class BrowserOAuthCallbackTests(unittest.TestCase):
         self.assertTrue(page.callback_fulfilled)
         exchange.assert_called_once_with(ANY, "auth-code", ANY)
         self.assertTrue(page.callback_fulfilled)
+
+    def test_codex_consent_workspace_selection_resumes_oauth_callback(self):
+        logs: list[str] = []
+        flow = self.make_flow(logs)
+
+        class Request:
+            def __init__(self, url: str):
+                self.url = url
+
+        class Route:
+            def __init__(self, url: str):
+                self.request = Request(url)
+
+            def fulfill(self, **_kwargs):
+                return None
+
+        class Page:
+            def __init__(self):
+                self.url = "about:blank"
+                self.route_handler = None
+
+            def on(self, _event, _handler):
+                return None
+
+            def route(self, _pattern, handler):
+                self.route_handler = handler
+
+            def goto(self, oauth_url, **_kwargs):
+                self.url = "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
+                self.oauth_state = parse_qs(urlparse(oauth_url).query)["state"][0]
+
+            def evaluate(self, script):
+                if "sunnyRegisterWorkspaceSelected" in script and not getattr(self, "workspace_selected", False):
+                    self.workspace_selected = True
+                    return True
+                if "sunnyRegisterSubmitted" not in script or not getattr(self, "workspace_selected", False):
+                    return False
+                callback_url = f"{DEFAULT_REDIRECT_URI}?code=workspace-auth-code&state={self.oauth_state}"
+                self.route_handler(Route(callback_url))
+                self.url = callback_url
+                return True
+
+            def unroute(self, *_args):
+                return None
+
+            def remove_listener(self, *_args):
+                return None
+
+        with (
+            patch.object(flow, "_has_phone_form", return_value=False),
+            patch.object(flow, "_has_totp_challenge", return_value=False),
+            patch.object(flow, "_sleep_checked", return_value=None),
+            patch.object(flow, "_exchange_browser_code_for_token", return_value={"refresh_token": "rt_test"}) as exchange,
+        ):
+            result = flow._authorize_rt_from_browser(Mock(), Page())
+
+        self.assertEqual(result["refresh_token"], "rt_test")
+        exchange.assert_called_once_with(ANY, "workspace-auth-code", ANY)
+        self.assertTrue(any("已选择 Codex 授权 workspace" in item for item in logs))
 
 
 class BrowserEmailOTPSubmitTests(unittest.TestCase):
