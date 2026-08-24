@@ -19,6 +19,7 @@ var domainMailOTPPattern = regexp.MustCompile(`(?:^|\D)(\d{6})(?:\D|$)`)
 
 func defaultDomainMailboxConfig() map[string]any {
 	return map[string]any{
+		"enabled":                  true,
 		"enabled_for_registration": false,
 		"enabled_for_rebinding":    false,
 		"base_url":                 "",
@@ -244,7 +245,7 @@ func domainMailLatestMail(accessKey, email string, limit int) (map[string]any, e
 
 func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Request, parts []string) {
 	if len(parts) == 1 && parts[0] == "config" && r.Method == http.MethodGet {
-		cfg := s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig())
+		cfg := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
 		cfg["auth_token_configured"] = strings.TrimSpace(text(cfg["auth_token"])) != ""
 		cfg["auth_token"] = ""
 		writeJSON(w, http.StatusOK, cfg)
@@ -253,7 +254,7 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 	if len(parts) == 1 && parts[0] == "config" && r.Method == http.MethodPut {
 		body, _ := parseBody(r)
 		if strings.TrimSpace(text(body["auth_token"])) == "" {
-			current := s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig())
+			current := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
 			body["auth_token"] = text(current["auth_token"])
 		}
 		cfg := mergeConfig(defaultDomainMailboxConfig(), body)
@@ -267,12 +268,16 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	cfg := s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig())
+	cfg := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
 	if body, _ := parseBody(r); body != nil {
+		enabled := cfg["enabled"]
 		if strings.TrimSpace(text(body["auth_token"])) == "" {
 			body["auth_token"] = text(cfg["auth_token"])
 		}
 		cfg = mergeConfig(cfg, body)
+		// Operational requests may test unsaved connection fields, but the
+		// persisted master switch cannot be bypassed through request payloads.
+		cfg["enabled"] = enabled
 	}
 	client, err := newDomainMailClient(cfg)
 	if err != nil {
@@ -289,6 +294,10 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	case "generate":
+		if !boolValue(cfg["enabled"], true) {
+			writeError(w, http.StatusBadRequest, "自建域名邮箱池已关闭，请先在邮箱配置中启用")
+			return
+		}
 		length := intValue(cfg["random_local_length"], 12)
 		var mailbox SunnyMailbox
 		for attempt := 0; attempt < 3; attempt++ {
@@ -316,7 +325,10 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) validateDomainMailboxRegistration(body map[string]any) error {
-	cfg := s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig())
+	cfg := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
+	if !boolValue(cfg["enabled"], true) {
+		return fmt.Errorf("自建域名邮箱池已关闭，请先在邮箱配置中启用")
+	}
 	if !boolValue(cfg["enabled_for_registration"], false) {
 		return fmt.Errorf("自建域名邮箱未启用账户注册，请先在邮箱配置中启用")
 	}

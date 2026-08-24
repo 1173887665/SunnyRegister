@@ -126,3 +126,21 @@ func TestDomainMailboxRegisterTaskPreparesMailboxIds(t *testing.T) {
 		t.Fatalf("unexpected domain task preparation: total=%d ids=%v addUserCalls=%d", task.ProgressTotal, ids, addUserCalls)
 	}
 }
+
+func TestDomainMailboxGenerateRejectsWhenPoolDisabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("disabled pool should not call upstream: %s", r.URL.Path)
+	}))
+	defer server.Close()
+	s := newSunnySessionTestServer(t)
+	s.sunnySaveConfig(sunnyCfgDomainMailbox, map[string]any{
+		"enabled": false, "base_url": server.URL, "auth_token": "token-1", "domain": "example.com",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/domain-mail/generate", strings.NewReader(`{"enabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	s.handleSunny(recorder, req, "domain-mail/generate")
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "已关闭") {
+		t.Fatalf("disabled pool status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}

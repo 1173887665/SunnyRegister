@@ -6,7 +6,10 @@ import (
 )
 
 func (s *Server) createSunnyRebindTask(body map[string]any) (Task, error) {
-	cfg := s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig())
+	cfg := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
+	if !boolValue(cfg["enabled"], true) {
+		return Task{}, fmt.Errorf("自建域名邮箱池已关闭，请先在邮箱配置中启用")
+	}
 	if !boolValue(cfg["enabled_for_rebinding"], false) {
 		return Task{}, fmt.Errorf("自建域名邮箱未启用邮箱换绑，请先在邮箱配置中启用")
 	}

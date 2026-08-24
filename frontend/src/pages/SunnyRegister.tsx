@@ -1666,7 +1666,7 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
   const [reverseCfg, setReverseCfg] = useState<AnyObj>({});
   const [mailboxCfg, setMailboxCfg] = useState<AnyObj>({ pool_enabled: true });
   const [remailCfg, setRemailCfg] = useState<AnyObj>({ enabled: false });
-  const [domainCfg, setDomainCfg] = useState<AnyObj>({ enabled_for_registration: false });
+  const [domainCfg, setDomainCfg] = useState<AnyObj>({ enabled: true, enabled_for_registration: false });
   useEffect(() => {
     let alive = true;
     Promise.all([
@@ -1681,7 +1681,7 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
       setReverseCfg(reverse || {});
       setMailboxCfg(mailbox || { pool_enabled: true });
       setRemailCfg(remail || { enabled: false });
-      setDomainCfg(domain || { enabled_for_registration: false });
+      setDomainCfg(domain || { enabled: true, enabled_for_registration: false });
     });
     return () => { alive = false; };
   }, []);
@@ -1702,7 +1702,7 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
   const sub2apiReady = reverseCfg.enabled !== false && !!String(reverseCfg.base_url || "").trim() && !!String(reverseCfg.admin_token || "").trim() && Array.isArray(reverseCfg.group_ids) && reverseCfg.group_ids.length > 0;
   const mailboxPoolReady = mailboxCfg.pool_enabled !== false && selectedEmails.length > 0;
   const remailReady = remailCfg.enabled === true && (remailCfg.api_key_configured === true || !!String(remailCfg.api_key || "").trim()) && Number(remailCfg.project_id || 0) > 0;
-  const domainReady = domainCfg.enabled_for_registration === true && !!String(domainCfg.base_url || "").trim() && (domainCfg.auth_token_configured === true || !!String(domainCfg.auth_token || "").trim()) && !!String(domainCfg.domain || "").trim();
+  const domainReady = domainCfg.enabled !== false && domainCfg.enabled_for_registration === true && !!String(domainCfg.base_url || "").trim() && (domainCfg.auth_token_configured === true || !!String(domainCfg.auth_token || "").trim()) && !!String(domainCfg.domain || "").trim();
   const googleMailboxReady = false;
   const microsoftMailboxReady = false;
   const identityValid = (identity === "system" && mailboxPoolReady) || (identity === "domain" && domainReady) || (identity === "remail" && remailReady) || (identity === "google" && googleMailboxReady) || (identity === "microsoft" && microsoftMailboxReady);
@@ -1817,7 +1817,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   const [mailboxForMail,setMailboxForMail]=useState<AnyObj|null>(null);
   const [mailboxCfg,setMailboxCfg]=useCachedState<AnyObj>("mailbox.config",{pool_enabled:true});
   const [remailCfg,setRemailCfg]=useCachedState<AnyObj>("mailbox.remail.config",{enabled:false,base_url:"https://remail.aishop6.com",project_id:0,service_mode:"purchase",supply:"private_first"});
-  const [domainCfg,setDomainCfg]=useCachedState<AnyObj>("mailbox.domain.config",{enabled_for_registration:false,enabled_for_rebinding:false,random_local_length:12,auto_add_user:true});
+  const [domainCfg,setDomainCfg]=useCachedState<AnyObj>("mailbox.domain.config",{enabled:true,enabled_for_registration:false,enabled_for_rebinding:false,random_local_length:12,auto_add_user:true});
   const [fieldLoading,setFieldLoading]=useState<Record<string,boolean>>({});
   const [credentialVisible,setCredentialVisible]=useState<Record<string,boolean>>({});
   const [credentialValues,setCredentialValues]=useState<Record<string,string>>({});
@@ -1857,7 +1857,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   useEffect(()=>{void loadGroups().catch(()=>{})},[]);
   useEffect(()=>{apiFetch("/sunny/mailboxes/config").then((cfg)=>setMailboxCfg(cfg || {pool_enabled:true})).catch(()=>{})},[]);
   useEffect(()=>{apiFetch("/sunny/remail/config").then((cfg)=>setRemailCfg(cfg || {})).catch(()=>{})},[]);
-  useEffect(()=>{apiFetch("/sunny/domain-mail/config").then((cfg)=>setDomainCfg(cfg || {})).catch(()=>{})},[]);
+  useEffect(()=>{apiFetch("/sunny/domain-mail/config").then((cfg)=>setDomainCfg(cfg || {enabled:true})).catch(()=>{})},[]);
   useEffect(()=>{setPage(1)},[query, groupFilter, statusFilter, planFilter, timeSort, pageSize]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
   async function run(label:string, fn:()=>Promise<any>){try{await fn();notify("ok",label);void load();void loadGroups().catch(()=>{})}catch(e:any){notify("fail",e.message||String(e))}}
@@ -2096,6 +2096,9 @@ function DomainMailboxProviderConfig({ t, config, setConfig, notify }: { t: type
   async function toggle(key: "enabled_for_registration" | "enabled_for_rebinding") {
     await save({...config, [key]: !boolConfig(config[key])});
   }
+  async function toggleEnabled() {
+    await save({...config, enabled: !boolConfig(config.enabled)});
+  }
   async function check() {
     setBusy(true);
     try {
@@ -2113,7 +2116,7 @@ function DomainMailboxProviderConfig({ t, config, setConfig, notify }: { t: type
     finally { setBusy(false); }
   }
   return <Card className="sr-sms-provider-card rounded-[24px] p-5">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold">{t.domainMailboxTitle}</h2><p className="mt-1 text-sm text-slate-500">{t.domainMailboxDesc}</p></div><button type="button" aria-label={expanded ? "折叠自建域名邮箱配置" : "展开自建域名邮箱配置"} title={expanded ? "折叠自建域名邮箱配置" : "展开自建域名邮箱配置"} className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white/80 text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700" onClick={()=>setExpanded((value)=>!value)}><ChevronDown className={cn("h-4 w-4 transition-transform", expanded && "rotate-180")} /></button></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold">{t.domainMailboxTitle}</h2><p className="mt-1 text-sm text-slate-500">{t.domainMailboxDesc}</p></div><div className="flex items-center gap-3"><button type="button" aria-label={expanded ? "折叠自建域名邮箱配置" : "展开自建域名邮箱配置"} title={expanded ? "折叠自建域名邮箱配置" : "展开自建域名邮箱配置"} className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white/80 text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700" onClick={()=>setExpanded((value)=>!value)}><ChevronDown className={cn("h-4 w-4 transition-transform", expanded && "rotate-180")} /></button><button type="button" aria-label="启用自建域名邮箱池" title={boolConfig(config.enabled) ? "关闭自建域名邮箱池" : "启用自建域名邮箱池"} disabled={busy} className={cn("sr-switch-only", boolConfig(config.enabled) && "on")} onClick={()=>void toggleEnabled()}><span/></button></div></div>
     {expanded && <div className="sr-mailbox-expanded mt-5 space-y-4">
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <div><Label>{t.domainMailboxApiURL}</Label><Input value={config.base_url || ""} onChange={(e)=>update("base_url",e.target.value)} placeholder="https://mail.example.com"/></div>
@@ -2121,7 +2124,7 @@ function DomainMailboxProviderConfig({ t, config, setConfig, notify }: { t: type
         <div><Label>{t.domainMailboxDomain}</Label><Input value={config.domain || ""} onChange={(e)=>update("domain",e.target.value)} placeholder="example.com"/></div>
         <div><Label>{t.domainMailboxLength}</Label><Input type="number" min={6} max={32} value={config.random_local_length || 12} onChange={(e)=>update("random_local_length",Math.max(6,Math.min(32,Number(e.target.value || 12))))}/></div>
         <div className="flex items-end"><label className="flex min-h-11 items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={config.auto_add_user !== false} onChange={(e)=>update("auto_add_user",e.target.checked)} />{t.domainMailboxAutoAdd}</label></div>
-        <div className="flex flex-wrap items-end gap-5"><label className="flex items-center gap-2 text-sm text-slate-600"><span>{t.domainMailboxRegistration}</span><button type="button" aria-label={t.domainMailboxRegistration} className={cn("sr-switch-only", boolConfig(config.enabled_for_registration) && "on")} onClick={()=>void toggle("enabled_for_registration")}><span/></button></label><label className="flex items-center gap-2 text-sm text-slate-600"><span>{t.domainMailboxRebinding}</span><button type="button" aria-label={t.domainMailboxRebinding} className={cn("sr-switch-only", boolConfig(config.enabled_for_rebinding) && "on")} onClick={()=>void toggle("enabled_for_rebinding")}><span/></button></label></div>
+        <div className="flex flex-wrap items-end gap-5"><label className="flex items-center gap-2 text-sm text-slate-600"><span>{t.domainMailboxRegistration}</span><button type="button" aria-label={t.domainMailboxRegistration} disabled={!boolConfig(config.enabled) || busy} className={cn("sr-switch-only", boolConfig(config.enabled_for_registration) && "on")} onClick={()=>void toggle("enabled_for_registration")}><span/></button></label><label className="flex items-center gap-2 text-sm text-slate-600"><span>{t.domainMailboxRebinding}</span><button type="button" aria-label={t.domainMailboxRebinding} disabled={!boolConfig(config.enabled) || busy} className={cn("sr-switch-only", boolConfig(config.enabled_for_rebinding) && "on")} onClick={()=>void toggle("enabled_for_rebinding")}><span/></button></label></div>
       </div>
       <div className="flex flex-wrap items-center justify-end gap-2"><Button disabled={busy} variant="outline" className="rounded-xl" onClick={check}><RefreshCw className="mr-2 h-4 w-4"/>{t.domainMailboxCheck}</Button><Button disabled={busy} variant="outline" className="rounded-xl" onClick={generate}><Plus className="mr-2 h-4 w-4"/>{t.domainMailboxGenerate}</Button><Button disabled={busy} className="rounded-xl bg-emerald-600 px-5 text-white hover:bg-emerald-700" onClick={()=>void save()}><Save className="mr-2 h-4 w-4"/>{t.domainMailboxSave}</Button></div>
     </div>}
