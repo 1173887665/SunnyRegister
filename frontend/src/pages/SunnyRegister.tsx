@@ -3707,6 +3707,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const accountLogs = useAccountLogs();
   const [accountLogOpen,setAccountLogOpen]=useState(false);
   const [accountLogKind,setAccountLogKind]=useState<AccountLogKind>("mail-query");
+  const renewalTaskStateRef = useRef<Record<string, SessionTaskState>>({});
   const activeSessionTasks = persistentTasks.filter((task)=>task.state === "running");
   const activeTaskForKind = (kind: PersistentSessionTaskKind) => activeSessionTasks.filter((task)=>task.kind === kind);
   const sessionIdsForKind = (kind: PersistentSessionTaskKind) => Array.from(new Set(activeTaskForKind(kind).flatMap((task)=>task.sessionIds.map(Number))));
@@ -3771,6 +3772,15 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     setItems(res.items||[]);
     setTotal(Number(res.total || 0));
   });
+  useEffect(()=>{
+    let completed=false;
+    persistentTasks.filter((task)=>task.kind==="refresh-at").forEach((task)=>{
+      const previous=renewalTaskStateRef.current[task.clientId];
+      if (previous === "running" && task.state !== "running") completed=true;
+      renewalTaskStateRef.current[task.clientId]=task.state;
+    });
+    if (completed) void load();
+  },[persistentTasks]);
   const selectAllFiltered=async()=>{
     setSelectingAll(true);
     try {
@@ -3879,8 +3889,10 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
         }));
       }
       if (renewalTaskId && invalidSessionIds.length) {
-        void runPersistentSessionTask("refresh-at", invalidSessionIds, row?.email, async()=>({id:renewalTaskId}))
-          .catch((e:any)=>notify("fail",e.message||String(e)));
+        try {
+          await runPersistentSessionTask("refresh-at", invalidSessionIds, row?.email, async()=>({id:renewalTaskId}));
+          await load();
+        } catch(e:any) { notify("fail",e.message||String(e)); }
       }
     } catch(e:any) { notify("fail", e.message || String(e)); }
   }
@@ -4065,8 +4077,10 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
         notify(failed > 0 && valid === 0 && invalid === 0 && skipped === 0 ? "fail" : "ok", template(summaryKey,{valid,invalid,skipped,failed}));
       }
       if (renewalTaskId && invalidSessionIds.length) {
-        void runPersistentSessionTask("refresh-at", invalidSessionIds, row?.email, async()=>({id:renewalTaskId}))
-          .then(()=>load()).catch((e:any)=>notify("fail",e.message||String(e)));
+        try {
+          await runPersistentSessionTask("refresh-at", invalidSessionIds, row?.email, async()=>({id:renewalTaskId}));
+          await load();
+        } catch(e:any) { notify("fail",e.message||String(e)); }
       }
       await load();
     } catch(e:any) { notify("fail", e.message || String(e)); }
