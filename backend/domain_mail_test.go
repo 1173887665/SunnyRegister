@@ -107,6 +107,26 @@ func TestDomainMailboxPublicItemsUseRemailShapeAndRecentLimit(t *testing.T) {
 	}
 }
 
+func TestDomainMailItemsPreferPlainTextAndRetainHTML(t *testing.T) {
+	items := domainMailItems([]map[string]any{{
+		"id":          1,
+		"text":        "Plain verification code 876769",
+		"content":     "Plain verification code 876769",
+		"body":        "Plain verification code 876769",
+		"html":        "<p>HTML verification code <b>876769</b></p>",
+		"bodyPreview": "<p>HTML verification code <b>876769</b></p>",
+	}}, "user@example.com")
+	if len(items) != 1 {
+		t.Fatalf("expected one normalized message, got %d", len(items))
+	}
+	if items[0]["body"] != "Plain verification code 876769" || items[0]["body_preview"] != "Plain verification code 876769" {
+		t.Fatalf("plain text fields were not preferred: %#v", items[0])
+	}
+	if items[0]["raw_html"] != "<p>HTML verification code <b>876769</b></p>" {
+		t.Fatalf("HTML field was not retained separately: %#v", items[0]["raw_html"])
+	}
+}
+
 func TestDomainMailboxLatestMailUsesEmailListAndExtractsCode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/public/emailList" {

@@ -212,10 +212,21 @@ func domainMailPlainText(value string) string {
 	return strings.Join(strings.Fields(html.UnescapeString(domainMailHTMLTagPattern.ReplaceAllString(value, " "))), " ")
 }
 
+func domainMailMessageHTML(message map[string]any) string {
+	for _, key := range []string{"html", "bodyPreview", "body_preview", "content", "body"} {
+		value := strings.TrimSpace(text(message[key]))
+		if strings.Contains(value, "<") && strings.Contains(value, ">") {
+			return value
+		}
+	}
+	return ""
+}
+
 func domainMailItems(messages []map[string]any, email string) []map[string]any {
 	items := make([]map[string]any, 0, len(messages))
 	for _, message := range messages {
 		body := domainMailPlainText(firstText(message["text"], message["body"], message["content"], message["html"], message["bodyPreview"]))
+		bodyPreview := domainMailPlainText(firstText(message["text"], message["body"], message["content"], message["bodyPreview"], message["html"]))
 		items = append(items, map[string]any{
 			"id":           firstText(message["emailId"], message["id"], message["messageId"]),
 			"email":        firstText(message["toEmail"], message["recipient"], message["to"], email),
@@ -225,8 +236,8 @@ func domainMailItems(messages []map[string]any, email string) []map[string]any {
 			"to":           firstText(message["toEmail"], message["recipient"], message["to"], email),
 			"date":         firstText(message["createTime"], message["receivedAt"], message["received_at"], message["date"]),
 			"body":         body,
-			"body_preview": firstText(message["bodyPreview"], body),
-			"raw_html":     firstText(message["content"], message["html"], body),
+			"body_preview": bodyPreview,
+			"raw_html":     domainMailMessageHTML(message),
 			"otp":          domainMailMessageCode(message),
 			"source":       "domain_api",
 		})
@@ -269,7 +280,7 @@ func domainMailPublicItems(messages []map[string]any, email string, now time.Tim
 		if !ok || parsedAt.Before(cutoff) || parsedAt.After(now.Add(5*time.Minute)) {
 			continue
 		}
-		bodyPreview := domainMailPlainText(firstText(message["bodyPreview"], message["body_preview"], message["body"], message["text"], message["content"], message["html"]))
+		bodyPreview := domainMailPlainText(firstText(message["text"], message["body"], message["content"], message["bodyPreview"], message["body_preview"], message["html"]))
 		item := map[string]any{
 			"id":          firstDomainMailValue(message["id"], message["emailId"], message["messageId"]),
 			"sender":      firstText(message["sender"], message["sendEmail"], message["from"]),
