@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -222,6 +223,66 @@ func domainMailItems(messages []map[string]any, email string) []map[string]any {
 	return items
 }
 
+func domainMailMessageReceivedAt(message map[string]any) (string, time.Time, bool) {
+	receivedAt := firstText(message["receivedAt"], message["received_at"], message["createTime"], message["date"])
+	if receivedAt == "" {
+		return "", time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05Z07:00", "2006-01-02 15:04:05"} {
+		parsed, err := time.Parse(layout, receivedAt)
+		if err == nil {
+			return receivedAt, parsed, true
+		}
+	}
+	return receivedAt, time.Time{}, false
+}
+
+func firstDomainMailValue(values ...any) any {
+	for _, value := range values {
+		if value != nil && text(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func domainMailPublicItems(messages []map[string]any, email string, now time.Time) []map[string]any {
+	type messageWithTime struct {
+		item map[string]any
+		at   time.Time
+	}
+	cutoff := now.Add(-72 * time.Hour)
+	filtered := make([]messageWithTime, 0, len(messages))
+	for _, message := range messages {
+		receivedAt, parsedAt, ok := domainMailMessageReceivedAt(message)
+		if !ok || parsedAt.Before(cutoff) || parsedAt.After(now.Add(5*time.Minute)) {
+			continue
+		}
+		bodyPreview := firstText(message["bodyPreview"], message["body_preview"], message["body"], message["text"], message["content"], message["html"])
+		item := map[string]any{
+			"id":          firstDomainMailValue(message["id"], message["emailId"], message["messageId"]),
+			"sender":      firstText(message["sender"], message["sendEmail"], message["from"]),
+			"recipient":   firstText(message["recipient"], message["toEmail"], message["to"], email),
+			"receivedAt":  receivedAt,
+			"subject":     text(message["subject"]),
+			"bodyPreview": bodyPreview,
+		}
+		if code := domainMailMessageCode(message); code != "" {
+			item["verificationCode"] = code
+		}
+		filtered = append(filtered, messageWithTime{item: item, at: parsedAt})
+	}
+	sort.SliceStable(filtered, func(i, j int) bool { return filtered[i].at.After(filtered[j].at) })
+	if len(filtered) > 10 {
+		filtered = filtered[:10]
+	}
+	items := make([]map[string]any, 0, len(filtered))
+	for _, message := range filtered {
+		items = append(items, message.item)
+	}
+	return items
+}
+
 func randomDomainSecret(length int) string {
 	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	if length < 12 {
@@ -349,6 +410,10 @@ func domainMailPayload(messages []map[string]any, email string, limit int) map[s
 	}
 }
 
+func domainMailPublicPayload(messages []map[string]any, email string) map[string]any {
+	return map[string]any{"items": domainMailPublicItems(messages, email, time.Now())}
+}
+
 func (s *Server) domainMailboxMessagesForToken(ctx context.Context, email, token string) ([]map[string]any, error) {
 	var mailbox SunnyMailbox
 	if err := s.db.Where("LOWER(email) = ?", sunnyEmailKey(email)).First(&mailbox).Error; err != nil {
@@ -416,8 +481,7 @@ func (s *Server) domainMailboxPickupHandler(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
-	limit := toInt(r.URL.Query().Get("limit"))
-	writeJSON(w, http.StatusOK, domainMailPayload(messages, email, limit))
+	writeJSON(w, http.StatusOK, domainMailPublicPayload(messages, email))
 }
 
 func (s *Server) createDomainMailbox(ctx context.Context, cfg map[string]any, client *domainMailClient, groupID uint) (SunnyMailbox, error) {

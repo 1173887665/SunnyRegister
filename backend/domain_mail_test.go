@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDomainMailboxCredentialAndTypeHelpers(t *testing.T) {
@@ -53,6 +54,49 @@ func TestRandomDomainPickupTokenUsesDMSKPrefix(t *testing.T) {
 	}
 	if first == second {
 		t.Fatal("pickup tokens must be unique")
+	}
+}
+
+func TestDomainMailboxPublicItemsUseRemailShapeAndRecentLimit(t *testing.T) {
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	messages := make([]map[string]any, 0, 13)
+	for index := 0; index < 12; index++ {
+		message := map[string]any{
+			"id":          100 + index,
+			"sender":      "noreply@tm.openai.com",
+			"recipient":   "user@example.com",
+			"receivedAt":  now.Add(-time.Duration(index) * time.Minute).Format(time.RFC3339),
+			"subject":     "ChatGPT code",
+			"bodyPreview": "verification email",
+		}
+		if index == 0 {
+			message["verificationCode"] = "978744"
+		}
+		messages = append(messages, message)
+	}
+	messages = append(messages, map[string]any{
+		"id":         999,
+		"sender":     "noreply@tm.openai.com",
+		"recipient":  "user@example.com",
+		"receivedAt": now.Add(-73 * time.Hour).Format(time.RFC3339),
+		"subject":    "old message",
+	})
+
+	items := domainMailPublicItems(messages, "user@example.com", now)
+	if len(items) != 10 {
+		t.Fatalf("expected ten recent items, got %d", len(items))
+	}
+	if items[0]["id"] != 100 || items[9]["id"] != 109 {
+		t.Fatalf("items are not sorted newest-first: first=%v last=%v", items[0]["id"], items[9]["id"])
+	}
+	if items[0]["receivedAt"] != now.Format(time.RFC3339) || items[0]["sender"] != "noreply@tm.openai.com" || items[0]["recipient"] != "user@example.com" {
+		t.Fatalf("unexpected Remail-shaped item: %#v", items[0])
+	}
+	if items[0]["verificationCode"] != "978744" {
+		t.Fatalf("verification code missing: %#v", items[0])
+	}
+	if _, exists := items[1]["verificationCode"]; exists {
+		t.Fatalf("verificationCode should only be present when detected: %#v", items[1])
 	}
 }
 
@@ -242,11 +286,12 @@ func TestDomainMailboxGenerateRejectsWhenPoolDisabled(t *testing.T) {
 }
 
 func TestDomainMailboxPublicPickupBindsTokenToMailbox(t *testing.T) {
+	receivedAt := time.Now().UTC().Format(time.RFC3339)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		writeJSON(w, http.StatusOK, map[string]any{"items": []any{map[string]any{
-			"id": 7, "toEmail": text(body["toEmail"]), "receivedAt": "2099-01-01T00:00:00Z", "verificationCode": "978744",
+			"id": 7, "toEmail": text(body["toEmail"]), "receivedAt": receivedAt, "verificationCode": "978744",
 		}}})
 	}))
 	defer upstream.Close()
@@ -272,6 +317,22 @@ func TestDomainMailboxPublicPickupBindsTokenToMailbox(t *testing.T) {
 	}
 	if recorder := request(mailboxA.Email, tokenA); recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "978744") {
 		t.Fatalf("valid pickup failed: %d %s", recorder.Code, recorder.Body.String())
+	} else {
+		var payload map[string]any
+		if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode public pickup payload: %v", err)
+		}
+		if _, exists := payload["mailbox_type"]; exists {
+			t.Fatalf("public pickup must use the simple items response: %#v", payload)
+		}
+		items, ok := payload["items"].([]any)
+		if !ok || len(items) != 1 {
+			t.Fatalf("unexpected public pickup items: %#v", payload["items"])
+		}
+		item, ok := items[0].(map[string]any)
+		if !ok || item["verificationCode"] != "978744" || item["recipient"] != mailboxA.Email || item["receivedAt"] != receivedAt {
+			t.Fatalf("unexpected public pickup item: %#v", item)
+		}
 	}
 	if recorder := request(mailboxB.Email, tokenA); recorder.Code != http.StatusForbidden {
 		t.Fatalf("cross-mailbox token must be rejected: %d %s", recorder.Code, recorder.Body.String())
