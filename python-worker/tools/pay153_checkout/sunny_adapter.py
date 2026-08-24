@@ -141,6 +141,11 @@ def checkout_status(job_id: str) -> dict[str, Any] | None:
         "promo_applied": raw.get("promo_applied"),
         "promo_campaign_used": str(raw.get("promo_campaign_used") or raw.get("promo_campaign") or ""),
         "expires_at": raw.get("expires_at"),
+        "gcash_order_id": str(raw.get("gcash_order_id") or ""),
+        "payment_status": str(raw.get("payment_status") or ""),
+        "payment_callback_path": str(raw.get("payment_callback_path") or ""),
+        "payment_expires_at": raw.get("payment_expires_at"),
+        "callback_token": str(raw.get("callback_token") or ""),
     }
     return {
         "status": str(job.get("status") or "queued"),

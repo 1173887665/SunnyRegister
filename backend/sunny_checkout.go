@@ -246,6 +246,10 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 		writeJSON(w, 200, map[string]any{"items": checkoutProviders, "countries": checkoutCountryCurrency})
 		return
 	}
+	if len(parts) >= 2 && parts[0] == "gcash-orders" && (r.Method == http.MethodGet || r.Method == http.MethodPost) {
+		s.proxySunnyGcashOrder(w, r, parts[1:])
+		return
+	}
 	if len(parts) == 1 && parts[0] == "precheck" && r.Method == http.MethodPost {
 		var body sunnyCheckoutPrecheckRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
@@ -387,6 +391,61 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 		return
 	}
 	writeError(w, 404, "not found")
+}
+
+func (s *Server) proxySunnyGcashOrder(w http.ResponseWriter, r *http.Request, parts []string) {
+	if len(parts) == 0 || len(parts) > 2 {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	workerURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PYTHON_WORKER_URL")), "/")
+	if workerURL == "" {
+		workerURL = "http://127.0.0.1:8765"
+	}
+	path := "/api/gcash/orders/" + url.PathEscape(parts[0])
+	if len(parts) == 2 {
+		if parts[1] != "callback" || r.Method != http.MethodPost {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		path += "/callback"
+	} else if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	target, err := url.Parse(workerURL + path)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "提链引擎地址无效")
+		return
+	}
+	target.RawQuery = r.URL.RawQuery
+	var body io.Reader
+	if r.Method == http.MethodPost {
+		body = io.LimitReader(r.Body, 1<<20)
+	}
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), body)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "无法创建提链回调请求")
+		return
+	}
+	if r.Method == http.MethodPost {
+		req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+	}
+	if token := secretValue("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if callbackToken := r.Header.Get("X-GCash-Callback-Token"); callbackToken != "" {
+		req.Header.Set("X-GCash-Callback-Token", callbackToken)
+	}
+	resp, err := (&http.Client{Timeout: 75 * time.Second}).Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "无法连接 GCash 回调服务")
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, io.LimitReader(resp.Body, 2<<20))
 }
 
 var checkoutATEmail = regexp.MustCompile(`(?i)[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}`)
@@ -577,6 +636,12 @@ func (s *Server) runSunnyCheckoutAttempt(task *Task, payload, row map[string]any
 			"checkout_session_id": text(item["checkout_session_id"]),
 			"country":             text(item["country"]), "currency": text(item["currency"]),
 			"checkout_amount": item["checkout_amount"],
+		}
+		if text(item["link_type"]) == "gcash" {
+			stored["payment_status"] = text(item["payment_status"])
+			stored["gcash_order_id"] = text(item["gcash_order_id"])
+			stored["payment_callback_path"] = text(item["payment_callback_path"])
+			stored["payment_expires_at"] = item["payment_expires_at"]
 		}
 		s.db.Model(&SunnyAccount{}).Where("id = ? OR email = ?", accountID, email).Update("checkout_result_json", dumpJSON(stored))
 	}

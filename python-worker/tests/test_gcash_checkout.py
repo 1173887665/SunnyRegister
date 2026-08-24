@@ -100,3 +100,55 @@ def test_gcash_session_poll_waits_for_gcash_method() -> None:
 
     assert checkout_app.custom_payment_method_id_for(result, "gcash") == "cpmt_gcash"
     assert fetch.call_count == 2
+
+
+def test_gcash_callback_parser_accepts_query_fragment_and_validates_session() -> None:
+    callback = (
+        "https://chatgpt.com/checkout/verify?checkout_session_id=oaics_12345678&"
+        "redirectResult=abc%2F123#redirectData=ignored"
+    )
+    parsed = checkout_app.parse_gcash_callback(callback, "oaics_12345678")
+    assert parsed["checkout_session_id"] == "oaics_12345678"
+    assert parsed["redirectResult"] == "abc/123"
+
+
+def test_gcash_callback_parser_rejects_wrong_checkout_session() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="SESSION_MISMATCH"):
+        checkout_app.parse_gcash_callback(
+            {"checkout_session_id": "oaics_other", "redirectResult": "result"},
+            "oaics_expected",
+        )
+
+
+class _FakeResponse:
+    status_code = 200
+    text = '{"status":"success"}'
+
+    def json(self):
+        return {"status": "success"}
+
+
+class _FakeHTTP:
+    def __init__(self):
+        self.calls = []
+        self.cookies = type("Cookies", (), {"set": lambda *_args, **_kwargs: None})()
+
+    def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return _FakeResponse()
+
+
+def test_gcash_continuation_uses_same_checkout_session_and_redirect_result() -> None:
+    http = _FakeHTTP()
+    result = checkout_app.continue_custom_checkout_method(
+        http, "at", "oaics_12345678", "openai_ie", "abc/123", "device", "did",
+    )
+    assert result["status"] == "success"
+    url, request = http.calls[0]
+    assert url.endswith("custom_payment_method/continue")
+    assert request["json"] == {
+        "checkout_session_id": "oaics_12345678",
+        "action_result": {"redirectResult": "abc/123"},
+    }

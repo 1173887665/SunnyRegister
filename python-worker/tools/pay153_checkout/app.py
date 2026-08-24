@@ -17,7 +17,7 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
 from curl_cffi import requests
@@ -1405,6 +1405,191 @@ def gcash_payment_url(confirmed: dict[str, Any], started: dict[str, Any]) -> str
     return candidate if is_valid_gcash_adyen_redirect_url(candidate) else ""
 
 
+def _callback_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def parse_gcash_callback(value: Any, expected_session_id: str = "") -> dict[str, str]:
+    """Extract the checkout id and Adyen redirectResult from a browser return.
+
+    Adyen has used query strings, URL fragments, form posts and JSON wrappers
+    for the return payload.  Keep parsing deliberately permissive, while
+    requiring the caller to compare the returned checkout id with the order
+    that initiated the payment.
+    """
+    values: dict[str, str] = {}
+    session_id = ""
+    redirect_result = ""
+    candidates: list[Any] = [value]
+    def visit(item: Any, depth: int = 0) -> None:
+        nonlocal session_id, redirect_result
+        if depth > 8:
+            return
+        if isinstance(item, dict):
+            for key, nested in item.items():
+                normalized = _callback_key(key)
+                text = str(nested or "").strip() if not isinstance(nested, (dict, list)) else ""
+                if normalized in {"checkoutsessionid", "sessionid", "checkoutid"} and text:
+                    session_id = session_id or unquote(text)
+                if normalized in {"redirectresult", "redirectdata", "redirectresultvalue"} and text:
+                    redirect_result = redirect_result or unquote(text)
+                visit(nested, depth + 1)
+            return
+        if isinstance(item, (list, tuple, set)):
+            for nested in item:
+                visit(nested, depth + 1)
+            return
+        if not isinstance(item, str):
+            return
+        text = item.strip()
+        if not text:
+            return
+        if text.startswith("{") or text.startswith("["):
+            try:
+                visit(json.loads(text), depth + 1)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        try:
+            parsed = urlsplit(text)
+            for component in (parsed.query, parsed.fragment):
+                if component:
+                    for key, item_values in parse_qs(component, keep_blank_values=True).items():
+                        visit({key: item_values[-1] if item_values else ""}, depth + 1)
+            path_match = re.search(r"(?:checkout/verify|checkoutPaymentReturn)[^/]*[/]([A-Za-z0-9_-]{8,})", text, re.I)
+            if path_match and not session_id:
+                session_id = unquote(path_match.group(1))
+        except ValueError:
+            pass
+        decoded = unquote(text)
+        if decoded != text:
+            visit(decoded, depth + 1)
+
+    for candidate in candidates:
+        visit(candidate)
+    if expected_session_id and session_id and session_id != str(expected_session_id):
+        raise ValueError("GCASH_CALLBACK_SESSION_MISMATCH: 回跳 Checkout 会话与当前订单不一致")
+    if not session_id and expected_session_id:
+        session_id = str(expected_session_id)
+    values.update({
+        "checkout_session_id": session_id,
+        "redirectResult": redirect_result,
+        "has_redirect_result": "1" if bool(redirect_result) else "0",
+    })
+    return values
+
+
+def _gcash_callback_status(payload: Any) -> str:
+    """Normalize provider/Checkout status without trusting a single field."""
+    success = {"success", "succeeded", "paid", "complete", "completed", "authorized"}
+    failed = {"failed", "failure", "declined", "refused", "cancelled", "canceled", "expired"}
+    pending = {"pending", "processing", "requiresaction", "requires_action", "waiting", "open"}
+    found: list[str] = []
+
+    def walk(item: Any, key: str = "") -> None:
+        if isinstance(item, dict):
+            for name, nested in item.items():
+                walk(nested, str(name).lower())
+        elif isinstance(item, list):
+            for nested in item:
+                walk(nested, key)
+        elif isinstance(item, str):
+            normalized = re.sub(r"[^a-z]", "", item.lower())
+            if normalized in success | failed | pending and any(marker in key for marker in ("status", "state", "result", "payment")):
+                found.append(normalized)
+
+    walk(payload)
+    if any(value in success for value in found):
+        return "success"
+    if any(value in failed for value in found):
+        return "failed"
+    if found:
+        return "paying"
+    return "unknown"
+
+
+def continue_custom_checkout_method(
+    http,
+    token: str,
+    session_id: str,
+    processor_entity: str,
+    redirect_result: str,
+    device_id: str,
+    did: str = "",
+    *,
+    retries: int = 3,
+    log=lambda _message: None,
+) -> dict[str, Any]:
+    """Submit Adyen's redirectResult on the original ChatGPT Checkout session."""
+    session_id = str(session_id or "").strip()
+    redirect_result = str(redirect_result or "").strip()
+    if not session_id or not redirect_result:
+        raise ValueError("GCASH_CALLBACK_INCOMPLETE: 缺少 checkout_session_id 或 redirectResult")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,160}", session_id):
+        raise ValueError("GCASH_CALLBACK_SESSION_INVALID: Checkout 会话格式无效")
+    if did:
+        try:
+            http.cookies.set("oai-did", did, domain="chatgpt.com")
+        except Exception:
+            pass
+    attempts = max(1, min(4, int(retries) + 1))
+    last_error = ""
+    for attempt in range(attempts):
+        resp = http.post(
+            "https://chatgpt.com/backend-api/payments/checkout/custom_payment_method/continue",
+            json={"checkout_session_id": session_id, "action_result": {"redirectResult": redirect_result}},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Origin": "https://chatgpt.com",
+                "Referer": f"https://chatgpt.com/checkout/{processor_entity}/{session_id}",
+                "User-Agent": sc.CHROME_UA,
+                "OAI-Device-Id": device_id,
+                "x-openai-target-path": "/backend-api/payments/checkout/custom_payment_method/continue",
+                "x-openai-target-route": "/backend-api/payments/checkout/custom_payment_method/continue",
+            },
+            timeout=50,
+        )
+        body_text = resp.text or ""
+        retryable = resp.status_code in {408, 425, 429} or resp.status_code >= 500
+        if resp.status_code == 200:
+            try:
+                return resp.json() or {}
+            except Exception as exc:
+                raise RuntimeError(f"GCASH_CALLBACK_RESPONSE_INVALID: continuation 返回非 JSON：{body_text[:300]}") from exc
+        last_error = f"HTTP {resp.status_code} {body_text[:300]}"
+        if not retryable or attempt + 1 >= attempts:
+            break
+        log(f"GCash continuation 第 {attempt + 1} 次失败，正在重试")
+        time.sleep(min(2.5, 0.5 * (attempt + 1)))
+    raise RuntimeError(f"GCASH_CALLBACK_CONTINUE_FAILED: {last_error}")
+
+
+def complete_gcash_callback(context: dict[str, Any], callback: Any) -> dict[str, Any]:
+    parsed = parse_gcash_callback(callback, str(context.get("checkout_session_id") or ""))
+    continuation = continue_custom_checkout_method(
+        context["http"], context["token"], parsed["checkout_session_id"],
+        str(context.get("processor_entity") or "openai_ie"), parsed["redirectResult"],
+        str(context.get("device_id") or ""), str(context.get("did") or ""),
+        log=context.get("log") or (lambda _message: None),
+    )
+    checkout = fetch_custom_checkout_session(
+        context["http"], context["token"], parsed["checkout_session_id"],
+        str(context.get("processor_entity") or "openai_ie"), str(context.get("device_id") or ""),
+    )
+    checkout_status = _gcash_callback_status(checkout)
+    continuation_status = _gcash_callback_status(continuation)
+    status = checkout_status if checkout_status in {"success", "failed"} else continuation_status
+    if status == "unknown":
+        status = "paying"
+    return {
+        "status": status,
+        "checkout_session_id": parsed["checkout_session_id"],
+        "continuation": {key: value for key, value in continuation.items() if key not in {"redirectResult", "action_result"}},
+        "checkout": checkout,
+    }
+
+
 
 def approve_checkout(
     token: str,
@@ -1509,6 +1694,7 @@ class JobStore:
         # silently reduce that configured value to a fixed default.
         self.internal_worker_limit = max(1, int(os.getenv("PAY153_INTERNAL_WORKERS", "100")))
         self.internal_pool = ThreadPoolExecutor(max_workers=self.internal_worker_limit)
+        self.gcash_orders: dict[str, dict[str, Any]] = {}
         self.pending: deque[tuple[str, dict]] = deque()
         self.start_times: deque[float] = deque()
         self.active_workers = 0
@@ -1712,6 +1898,106 @@ class JobStore:
         if snapshot and public:
             snapshot["logs"] = [item for item in snapshot.get("logs") or [] if item.get("major")]
         return snapshot
+
+    def register_gcash_order(self, result: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        """Keep the original Checkout HTTP session for callback continuation."""
+        order_id = uuid.uuid4().hex[:24]
+        callback_token = secrets.token_urlsafe(24)
+        now = time.time()
+        expires_at = int(result.get("expires_at") or now + 1800)
+        order_fields = {
+            "gcash_order_id": order_id,
+            "payment_status": "waiting_callback",
+            "payment_callback_path": f"/api/gcash/orders/{order_id}/callback",
+            "payment_expires_at": expires_at,
+            "callback_token": callback_token,
+        }
+        with self.lock:
+            self.gcash_orders[order_id] = {
+                "id": order_id,
+                "callback_token_hash": hashlib.sha256(callback_token.encode()).hexdigest(),
+                "status": "waiting_callback",
+                "created_at": now,
+                "updated_at": now,
+                "expires_at": expires_at,
+                "result": {**dict(result), **order_fields},
+                "context": dict(context),
+                "processing": False,
+            }
+            if len(self.gcash_orders) > 500:
+                stale = sorted(self.gcash_orders, key=lambda key: self.gcash_orders[key].get("updated_at", 0))
+                for key in stale[: max(0, len(stale) - 500)]:
+                    self.gcash_orders.pop(key, None)
+        return order_fields
+
+    def gcash_order(self, order_id: str, callback_token: str = "") -> dict[str, Any] | None:
+        with self.lock:
+            order = self.gcash_orders.get(str(order_id))
+            if not order:
+                return None
+            if callback_token and not hmac.compare_digest(
+                str(order.get("callback_token_hash") or ""),
+                hashlib.sha256(str(callback_token).encode()).hexdigest(),
+            ):
+                return None
+            if order.get("status") == "waiting_callback" and time.time() >= float(order.get("expires_at") or 0):
+                order["status"] = "expired"
+                order["updated_at"] = time.time()
+            result = dict(order.get("result") or {})
+            result.pop("callback_token", None)
+            return {
+                "order_id": order["id"],
+                "status": order.get("status") or "unknown",
+                "created_at": order.get("created_at"),
+                "updated_at": order.get("updated_at"),
+                "expires_at": order.get("expires_at"),
+                "error": str(order.get("error") or ""),
+                "result": result,
+            }
+
+    def complete_gcash_order(self, order_id: str, callback: Any, callback_token: str = "") -> dict[str, Any] | None:
+        with self.lock:
+            order = self.gcash_orders.get(str(order_id))
+            if not order or not callback_token or not hmac.compare_digest(
+                str(order.get("callback_token_hash") or ""),
+                hashlib.sha256(str(callback_token).encode()).hexdigest(),
+            ):
+                return None
+            if order.get("status") in {"success", "failed", "expired", "cancelled"}:
+                return self.gcash_order(order_id, callback_token)
+            if order.get("processing"):
+                return self.gcash_order(order_id, callback_token)
+            if time.time() >= float(order.get("expires_at") or 0):
+                order["status"] = "expired"
+                order["updated_at"] = time.time()
+                return self.gcash_order(order_id, callback_token)
+            order["processing"] = True
+            context = dict(order.get("context") or {})
+        try:
+            outcome = complete_gcash_callback(context, callback)
+            status = str(outcome.get("status") or "paying")
+            with self.lock:
+                order = self.gcash_orders.get(str(order_id))
+                if order:
+                    order["status"] = status
+                    order["updated_at"] = time.time()
+                    order["result"] = {**dict(order.get("result") or {}), "payment_status": status}
+                    order["processing"] = False
+                    job_id = str((order.get("context") or {}).get("job_id") or "")
+                    job = self.jobs.get(job_id)
+                    if job and isinstance(job.get("result"), dict):
+                        job["result"] = {**job["result"], "payment_status": status}
+                        job["updated_at"] = time.time()
+            return self.gcash_order(order_id, callback_token)
+        except Exception as exc:
+            with self.lock:
+                order = self.gcash_orders.get(str(order_id))
+                if order:
+                    order["status"] = "failed"
+                    order["updated_at"] = time.time()
+                    order["error"] = re.sub(r"eyJ[A-Za-z0-9_.-]{40,}", "[TOKEN]", str(exc))[:500]
+                    order["processing"] = False
+            return self.gcash_order(order_id, callback_token)
 
     def cancel(self, job_id: str) -> bool:
         with self.condition:
@@ -2940,6 +3226,21 @@ class JobStore:
                         raise RuntimeError(
                             f"GCASH_ZERO_DUE_REQUIRED: GCash 优惠未生效或金额未知：amount={custom_amount} {custom_currency}"
                         )
+                    order_fields = self.register_gcash_order(
+                        result,
+                        {
+                            "http": chatgpt_http,
+                            "token": token,
+                            "job_id": job_id,
+                            "checkout_session_id": session_id,
+                            "processor_entity": custom_processor,
+                            "device_id": device_id,
+                            "did": did,
+                            "proxy": checkout_proxy,
+                            "log": lambda message: self.log(job_id, message),
+                        },
+                    )
+                    result.update(order_fields)
                     self.update(job_id, percent=100, text="GCash 跳转链接生成完成", status="done", result=result)
                     return
                 if provider == "paypal":
@@ -3747,6 +4048,13 @@ def _private_page_key_valid(value: str) -> bool:
     return bool(expected and supplied and hmac.compare_digest(supplied, expected))
 
 
+def _gcash_callback_token() -> str:
+    header = str(request.headers.get("X-GCash-Callback-Token") or "").strip()
+    if header:
+        return header
+    return str(request.args.get("callback_token") or "").strip()
+
+
 @app.get("/private-checkout")
 def private_checkout_page():
     bootstrap_key = str(request.args.get("key") or "").strip()
@@ -3963,6 +4271,33 @@ def checkout_progress():
                 pass
         return jsonify({"error": "任务不存在"}), 404
     return jsonify(job)
+
+
+@app.get("/api/gcash/orders/<order_id>")
+def gcash_order_status(order_id: str):
+    token = _gcash_callback_token()
+    order = STORE.gcash_order(order_id, token)
+    if not order:
+        return jsonify({"error": "GCash 订单不存在或回调令牌无效"}), 404
+    return jsonify(order)
+
+
+@app.post("/api/gcash/orders/<order_id>/callback")
+def gcash_order_callback(order_id: str):
+    token = _gcash_callback_token()
+    if not token:
+        body = request.get_json(silent=True) or {}
+        token = str(body.get("callback_token") or "").strip()
+    if not token:
+        return jsonify({"error": "缺少 GCash 回调令牌"}), 401
+    body = request.get_json(silent=True)
+    if body is None:
+        body = request.form.to_dict(flat=True)
+    callback = body.get("callback_url") or body.get("url") or body.get("redirect_url") or body
+    order = STORE.complete_gcash_order(order_id, callback, token)
+    if not order:
+        return jsonify({"error": "GCash 订单不存在、已过期或回调令牌无效"}), 404
+    return jsonify(order), 200
 
 
 @app.post("/api/checkout-cancel")
