@@ -210,6 +210,8 @@ const persistedWorkbenchKeys = new Set([
   "workbench.accountCardView",
   "workbench.currentLogEmail",
   "workbench.taskEventCursor",
+  "mailbox.remail.expanded",
+  "mailbox.domain.expanded",
 ]);
 
 function persistedStateKey(key: string) {
@@ -218,6 +220,7 @@ function persistedStateKey(key: string) {
 
 export function clearSunnyRegisterTaskHistory() {
   for (const key of persistedWorkbenchKeys) {
+    if (key.startsWith("mailbox.")) continue;
     sunnyStateCache.delete(key);
     try { window.localStorage.removeItem(persistedStateKey(key)); } catch { /* storage may be unavailable */ }
   }
@@ -2003,7 +2006,7 @@ function RemailProviderConfig({ t, config, setConfig, notify }: { t: typeof zh; 
   const [busy, setBusy] = useState(false);
   const [projects, setProjects] = useState<AnyObj[]>([]);
   const [wallet, setWallet] = useState<AnyObj|null>(null);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useCachedState("mailbox.remail.expanded", true);
   const update = (key:string, value:any) => setConfig({...config, [key]: value});
   function projectList(value:any):AnyObj[] {
     if (Array.isArray(value)) return value.filter((item)=>item && typeof item === "object");
@@ -2079,7 +2082,7 @@ function RemailProviderConfig({ t, config, setConfig, notify }: { t: typeof zh; 
 
 function DomainMailboxProviderConfig({ t, config, setConfig, notify }: { t: typeof zh; config: AnyObj; setConfig: (v: AnyObj)=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
   const [busy, setBusy] = useState(false);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useCachedState("mailbox.domain.expanded", true);
   const update = (key:string, value:any) => setConfig({...config, [key]: value});
   async function save(next = config) {
     setBusy(true);
