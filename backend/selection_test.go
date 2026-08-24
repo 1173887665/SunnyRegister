@@ -89,6 +89,28 @@ func TestSunnyFilteredSelectionsIgnorePagination(t *testing.T) {
 	requireSelectionCount(t, decodeFilteredSelection(t, sessionPlan), 1)
 }
 
+func TestSunnyMailboxSearchMatchesRebindEmailCaseInsensitively(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	mailbox := SunnyMailbox{Email: "original-search@example.com", RebindEmail: "Rebound-Search@Example.com", Status: "已注册", Enabled: true}
+	if err := s.db.Create(&mailbox).Error; err != nil {
+		t.Fatalf("create rebound mailbox: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	s.sunnyMailboxes(recorder, httptest.NewRequest(http.MethodGet, "/api/sunny/mailboxes?q=reBound-search@example.com&page=1&page_size=10", nil), nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("rebind search status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode rebound search response: %v", err)
+	}
+	if payload.Total != 1 {
+		t.Fatalf("rebind search total=%d, want 1", payload.Total)
+	}
+}
+
 func TestAuditFilteredSelectionIgnoresPagination(t *testing.T) {
 	s := newAuditTestServer(t)
 	for index := 0; index < 12; index++ {

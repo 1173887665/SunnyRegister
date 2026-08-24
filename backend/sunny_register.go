@@ -709,7 +709,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		}
 		if kw := strings.TrimSpace(q.Get("q")); kw != "" {
 			like := "%" + kw + "%"
-			query = query.Where("email LIKE ? OR rebind_email LIKE ?", like, like)
+			query = query.Where("LOWER(email) LIKE LOWER(?) OR LOWER(rebind_email) LIKE LOWER(?)", like, like)
 		}
 		planFilter := normalizeSunnyPlanType(q.Get("plan_type"))
 		trialFilter := normalizeSunnyTrialFilter(q.Get("trial_eligibility"))
