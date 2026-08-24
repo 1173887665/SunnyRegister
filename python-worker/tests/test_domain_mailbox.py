@@ -5,11 +5,34 @@ from urllib.parse import parse_qs, urlparse
 
 from sunny_core import mailbox as mailbox_module
 from sunny_core import rebind as rebind_module
+from sunny_core.db import SunnyDB
 from sunny_core.mailbox import DomainMailReader, account_from_row
 
 
 def _credential():
     return json.dumps({"base_url": "https://mail.example", "auth_token": "token-1"})
+
+
+def test_rebound_mailbox_credentials_are_used_for_bulk_mailbox_selection():
+    row = {
+        "email": "original@icloud.com",
+        "access_key": "https://legacy.example/messages/original",
+        "mailbox_type": "apple",
+        "mailbox_channel": "url_api",
+        "rebind_email": "replacement@example.com",
+        "rebind_mailbox_api": "https://sunny.example/api/sunny/domain-mail/pickup?email=replacement%40example.com&token=dmsk_one",
+    }
+
+    effective = SunnyDB._apply_rebind_mailbox_credentials(row)
+
+    assert effective["email"] == "replacement@example.com"
+    assert effective["access_key"] == effective["rebind_mailbox_api"]
+    assert effective["raw"] == f"replacement@example.com----{effective['access_key']}"
+    assert effective["mailbox_type"] == "domain"
+    assert effective["mailbox_channel"] == "domain_api"
+    account = account_from_row(effective)
+    assert account.email == "replacement@example.com"
+    assert account.mailbox_type == "domain"
 
 
 def test_account_from_row_supports_domain_credentials():

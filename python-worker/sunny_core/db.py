@@ -690,7 +690,7 @@ class SunnyDB:
             if limit:
                 sql += f" limit {int(limit)}"
             rows = self.conn.execute(sql).fetchall()
-        items = [dict(r) for r in rows]
+        items = [self._apply_rebind_mailbox_credentials(dict(r)) for r in rows]
         for item in items:
             self._hydrate_mailbox_auth(item)
         return items
@@ -738,18 +738,40 @@ class SunnyDB:
 
     def _hydrate_mailbox_auth(self, mailbox: dict[str, Any]) -> None:
         """Fill mailbox OpenAI RT from account/session tables when the mailbox row is stale."""
+        original_email = str(mailbox.pop("_original_email_for_auth", "") or "").strip()
         if mailbox.get("openai_rt"):
             return
         email = str(mailbox.get("email") or "")
         if not email:
             return
-        row = self.conn.execute("select openai_rt from sunny_accounts where email=? and coalesce(openai_rt,'')<>''", (email,)).fetchone()
+        row = self.conn.execute(
+            "select openai_rt from sunny_accounts where (lower(email)=lower(?) or lower(email)=lower(?) or lower(rebind_email)=lower(?)) and coalesce(openai_rt,'')<>'' limit 1",
+            (email, original_email or email, email),
+        ).fetchone()
         if row and row["openai_rt"]:
             mailbox["openai_rt"] = row["openai_rt"]
             return
-        row = self.conn.execute("select refresh_token from sunny_sessions where email=? and coalesce(refresh_token,'')<>''", (email,)).fetchone()
+        row = self.conn.execute(
+            "select refresh_token from sunny_sessions where (lower(email)=lower(?) or lower(email)=lower(?)) and coalesce(refresh_token,'')<>'' limit 1",
+            (email, original_email or email),
+        ).fetchone()
         if row and row["refresh_token"]:
             mailbox["openai_rt"] = row["refresh_token"]
+
+    @staticmethod
+    def _apply_rebind_mailbox_credentials(mailbox: dict[str, Any]) -> dict[str, Any]:
+        """Switch later operations to the replacement domain mailbox after rebind."""
+        rebind_email = str(mailbox.get("rebind_email") or "").strip()
+        rebind_api = str(mailbox.get("rebind_mailbox_api") or "").strip()
+        if not rebind_email or not rebind_api:
+            return mailbox
+        mailbox["_original_email_for_auth"] = str(mailbox.get("email") or "").strip()
+        mailbox["email"] = rebind_email
+        mailbox["access_key"] = rebind_api
+        mailbox["raw"] = f"{rebind_email}----{rebind_api}"
+        mailbox["mailbox_type"] = "domain"
+        mailbox["mailbox_channel"] = "domain_api"
+        return mailbox
 
     def fetch_accounts(self, ids: list[int] | None = None) -> list[dict[str, Any]]:
         if ids:
@@ -765,13 +787,7 @@ class SunnyDB:
         if not row:
             return None
         item = dict(row)
-        rebind_email = str(item.get("rebind_email") or "").strip()
-        if rebind_email:
-            item["email"] = rebind_email
-            item["access_key"] = str(item.get("rebind_mailbox_api") or "")
-            item["raw"] = f"{rebind_email}----{item['access_key']}"
-            item["mailbox_type"] = "domain"
-            item["mailbox_channel"] = "domain_api"
+        self._apply_rebind_mailbox_credentials(item)
         self._hydrate_mailbox_auth(item)
         return item
 
