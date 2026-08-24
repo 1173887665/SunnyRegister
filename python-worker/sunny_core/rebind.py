@@ -26,6 +26,8 @@ VERIFY_PATH = "/backend-api/accounts/change_email/verify"
 # workflow, which leaves the mailbox listener waiting until it times out.
 CLIENT_VERSION = "prod-180ca8b8699a733aef330b7026892aee9bf85fbe"
 CLIENT_BUILD = "9758774"
+REBIND_OTP_FIRST_WAIT_SECONDS = 45
+REBIND_OTP_RETRY_WAIT_SECONDS = 75
 _DOMAIN_ROTATION = itertools.count()
 
 
@@ -203,6 +205,17 @@ def _login_flow(account: MailAccount, proxy: str, log: Callable[[str], None], *,
     return flow, result
 
 
+def _wait_for_rebind_code(reader: DomainMailReader, client: ChangeEmailClient, email: str, min_timestamp: float, log: Callable[[str], None]) -> str:
+    """Mirror the web UI's resend path when the first accepted request is not delivered."""
+    try:
+        return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_FIRST_WAIT_SECONDS)
+    except TimeoutError:
+        log(f"[{email}] 首次换绑验证码请求已接受但 {REBIND_OTP_FIRST_WAIT_SECONDS} 秒内未收到邮件，自动重新请求一次")
+        client.begin(email)
+        log(f"[{email}] 已重新请求换绑验证码，继续等待邮箱投递")
+        return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_RETRY_WAIT_SECONDS)
+
+
 def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callable[[str], None]) -> dict[str, Any]:
     old_email = str(account_row.get("email") or "").strip()
     if not old_email:
@@ -253,7 +266,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
                 client.set_access_token(str(old_result.get("access_token") or ""))
                 client.begin(new_email)
                 log(f"[{old_email}] 重新认证后已重新提交换绑验证码请求，等待新邮箱验证码")
-            code = reader.wait_for_code(issued_after, timeout=120)
+            code = _wait_for_rebind_code(reader, client, new_email, issued_after, log)
         finally:
             reader.close()
         client.verify(new_email, code)
