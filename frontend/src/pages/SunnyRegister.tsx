@@ -2240,7 +2240,7 @@ function MailboxEditModal({ t, mailbox, groups, onClose, onSaved, notify }: { t:
     try {
       await apiFetch(`/sunny/mailboxes/${mailbox.id}`, { method:"PUT", body: JSON.stringify({
         email, mailbox_type: isRemail ? "remail" : isDomain ? "domain" : isApple ? "apple" : "microsoft", mailbox_channel: isRemail ? "remail_api" : isDomain ? "domain_api" : isApple ? String(form.mailbox_channel || "xbovo") : "outlook",
-        access_key: isRemail || isDomain || isApple ? (isDomain && form.rebind_mailbox_api ? form.rebind_mailbox_api : form.access_key) : "", rebind_email: isDomain ? String(form.rebind_email || "").trim() : undefined, rebind_mailbox_api: isDomain ? String(form.rebind_mailbox_api || "").trim() : undefined, chatgpt_password: !clearChatGPTPassword && form.chatgpt_password ? form.chatgpt_password : undefined, clear_chatgpt_password: clearChatGPTPassword, totp_secret: !clearTOTPSecret && form.totp_secret ? form.totp_secret : undefined, clear_totp_secret: clearTOTPSecret, password: form.password, client_id: form.client_id, refresh_token: form.refresh_token,
+        access_key: isRemail || isDomain || isApple ? (form.rebind_mailbox_api ? form.rebind_mailbox_api : form.access_key) : "", rebind_email: String(form.rebind_email || "").trim(), rebind_mailbox_api: String(form.rebind_mailbox_api || "").trim(), chatgpt_password: !clearChatGPTPassword && form.chatgpt_password ? form.chatgpt_password : undefined, clear_chatgpt_password: clearChatGPTPassword, totp_secret: !clearTOTPSecret && form.totp_secret ? form.totp_secret : undefined, clear_totp_secret: clearTOTPSecret, password: form.password, client_id: form.client_id, refresh_token: form.refresh_token,
         access_token: form.access_token, group_id: Number(form.group_id), status: form.status, plan_type: form.plan_type || form.account_type, trial_eligibility: form.trial_eligibility || "unknown", enabled: !!form.enabled,
       })});
       onSaved();
@@ -2251,7 +2251,8 @@ function MailboxEditModal({ t, mailbox, groups, onClose, onSaved, notify }: { t:
     <div className="sr-modal-body space-y-4">
       <div className="grid gap-4 md:grid-cols-2">
       <div><Label>{t.mailboxName}</Label><Input type="email" value={form.email||""} onChange={(e)=>setForm({...form,email:e.target.value})}/></div>
-        {isDomain && <><div><Label>换绑邮箱名</Label><Input type="email" placeholder="未换绑" value={form.rebind_email||""} onChange={(e)=>setForm({...form,rebind_email:e.target.value})}/></div><div className="md:col-span-2"><Label>换绑邮箱 API</Label><Input type="url" autoComplete="new-password" placeholder="https://sunny.example.com/api/sunny/domain-mail/pickup?..." value={form.rebind_mailbox_api||""} onChange={(e)=>setForm({...form,rebind_mailbox_api:e.target.value})}/></div></>}
+        <div><Label>换绑邮箱名</Label><Input type="email" placeholder="未换绑" value={form.rebind_email||""} onChange={(e)=>setForm({...form,rebind_email:e.target.value})}/></div>
+        <div className="md:col-span-2"><Label>换绑邮箱 API</Label><Input type="url" autoComplete="new-password" placeholder="https://sunny.example.com/api/sunny/domain-mail/pickup?email=...&token=dmsk_..." value={form.rebind_mailbox_api||""} onChange={(e)=>setForm({...form,rebind_mailbox_api:e.target.value})}/></div>
         <div><Label>{t.mailboxType}</Label><Input disabled value={isRemail ? "Remail邮箱" : isDomain ? t.domainMailboxIdentity : isApple ? t.appleMailbox : t.microsoftMailbox}/></div>
         {isRemail ? <><div><Label>{t.channelType}</Label><Input disabled value="remail_api"/></div><div><Label>查询 Key</Label><Input type="url" autoComplete="new-password" placeholder="https://remail.aishop6.com/v1/pickup?email=...&token=..." value={form.access_key||""} onChange={(e)=>setForm({...form,access_key:e.target.value})}/></div></> : isDomain ? <>
           <div><Label>{t.channelType}</Label><Input disabled value="domain_api"/></div><div><Label>{t.domainMailboxPickupURL}</Label><Input type="text" autoComplete="new-password" placeholder="https://sunny.example.com/api/sunny/domain-mail/pickup?email=...&token=..." value={form.access_key||""} onChange={(e)=>setForm({...form,access_key:e.target.value})}/></div>
@@ -2439,10 +2440,10 @@ function MailboxMailModal({ t, mailbox, onClose, notify }: { t: typeof zh; mailb
   }
   useEffect(()=>{void load()},[]);
   const mail = items[selected] || {};
-  const useURLAPIBrowser=String(mailbox.mailbox_type||"").toLowerCase()==="apple" && String(mailbox.mailbox_channel||"").toLowerCase()==="url_api";
+  const useURLAPIBrowser=!mailbox.rebind_email && String(mailbox.mailbox_type||"").toLowerCase()==="apple" && String(mailbox.mailbox_channel||"").toLowerCase()==="url_api";
   return createPortal(<div className="sr-modal-mask"><div className="sr-modal sr-mail-modal">
     <div className="sr-mail-head">
-      <div className="sr-current-mail">{t.currentMailbox}: <b>{mailbox.email}</b></div>
+      <div className="sr-current-mail">{t.currentMailbox}: <b>{mailbox.rebind_email || mailbox.email}</b></div>
       <div className="sr-mail-actions">
         <span className="sr-mail-count-label">{t.mailFetchCount}</span>
         <SelectBox className="sr-mail-count-select" value={limit} onChange={(v)=>setLimit(Number(v))} options={[5,10,20,50].map((n)=>({value:n,label:`${n}${t.mailFetchCountSuffix}`}))} />
@@ -2463,7 +2464,7 @@ function MailboxMailModal({ t, mailbox, onClose, notify }: { t: typeof zh; mailb
       <section className="sr-mail-detail">
         {items.length ? <>
           <h2>{mail.subject || "(no subject)"}</h2>
-          <div className="sr-mail-meta"><span>{t.sender}</span><b>{mail.from || "-"}</b><span>{t.receiver}</span><b>{mail.to || mailbox.email}</b><span>{t.time}</span><b>{mail.date || "-"}</b></div>
+          <div className="sr-mail-meta"><span>{t.sender}</span><b>{mail.from || "-"}</b><span>{t.receiver}</span><b>{mail.to || mailbox.rebind_email || mailbox.email}</b><span>{t.time}</span><b>{mail.date || "-"}</b></div>
           <div className="sr-mail-content">
             {useURLAPIBrowser ? <URLAPIMailBrowser key={String(mail.id||selected)} t={t} mailboxId={Number(mailbox.id)} initialHTML={String(mail.preview_html||mail.raw_html||"")}/> : mail.raw_html && /<html|<body|<div|<p|<table/i.test(String(mail.raw_html)) ? <iframe title="mail-content" sandbox="" srcDoc={String(mail.raw_html)} /> : <pre>{mail.body || mail.body_preview || ""}</pre>}
           </div>
@@ -4281,7 +4282,7 @@ function SessionEditModal({ t, item, groups, onClose, onSaved, notify }: { t: ty
       </div>
       <div><Label>{t.accessToken}</Label><Textarea className="min-h-24 rounded-[14px]" value={form.access_token||""} onChange={(e)=>setForm({...form,access_token:e.target.value})}/></div>
       <div><Label>{t.sessionRefreshToken}</Label><Textarea className="min-h-20 rounded-[14px]" value={form.refresh_token||""} onChange={(e)=>setForm({...form,refresh_token:e.target.value})}/></div>
-      <div><Label>换绑邮箱 API</Label><Textarea className="min-h-20 rounded-[14px]" value={form.rebind_mailbox_api||""} onChange={(e)=>setForm({...form,rebind_mailbox_api:e.target.value})} placeholder="自建域名邮箱凭证 JSON"/></div>
+      <div><Label>换绑邮箱 API</Label><Textarea className="min-h-20 rounded-[14px]" value={form.rebind_mailbox_api||""} onChange={(e)=>setForm({...form,rebind_mailbox_api:e.target.value})} placeholder="https://mail-api.example/api/sunny/domain-mail/pickup?email=...&token=dmsk_..."/></div>
     </div>
     <div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={loading} onClick={save}><Save className="mr-2 h-4 w-4"/>{t.save}</Button></div>
   </div></div>, document.body);

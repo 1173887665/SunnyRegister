@@ -175,6 +175,36 @@ func TestDomainMailboxLatestMailUsesEmailListAndExtractsCode(t *testing.T) {
 	}
 }
 
+func TestSunnyLatestMailUsesReboundEmailAndAPI(t *testing.T) {
+	requestedEmail := ""
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		requestedEmail = text(body["toEmail"])
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{map[string]any{"id": 1, "receivedAt": time.Now().Format(time.RFC3339), "verificationCode": "978744"}}})
+	}))
+	defer upstream.Close()
+	s := newSunnySessionTestServer(t)
+	s.sunnySaveConfig(sunnyCfgDomainMailbox, map[string]any{
+		"enabled": true, "base_url": upstream.URL, "auth_token": "token-1", "site_password": "site-password", "pickup_base_url": "https://mail-api.example", "domain": "example.com",
+	})
+	token := "dmsk_rebound"
+	pickup, _ := domainMailboxPickupCredential("https://mail-api.example", "rebound@example.com", token)
+	mailbox := SunnyMailbox{Email: "original@icloud.com", RebindEmail: "rebound@example.com", RebindMailboxAPI: pickup, MailboxType: "apple", MailboxChannel: "url_api", AccessKey: "https://legacy-mail.example/original", PickupTokenHash: domainMailboxPickupTokenHash(token), Status: "已注册", Enabled: true}
+	if err := s.db.Create(&mailbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/mailboxes/1/latest-mail", strings.NewReader(`{"limit":5}`))
+	rec := httptest.NewRecorder()
+	s.sunnyLatestMail(rec, req, &mailbox)
+	if rec.Code != http.StatusOK || requestedEmail != mailbox.RebindEmail || !strings.Contains(rec.Body.String(), "978744") {
+		t.Fatalf("rebound mail query status=%d requested=%q body=%s", rec.Code, requestedEmail, rec.Body.String())
+	}
+	if _, err := s.domainMailboxMessagesForToken(context.Background(), mailbox.Email, token); err == nil {
+		t.Fatal("original mailbox address must not accept the rebound pickup token")
+	}
+}
+
 func TestDomainMailAddUserAcceptsPlainTextSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

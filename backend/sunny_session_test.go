@@ -447,6 +447,85 @@ func TestSunnySessionFieldIsLoadedOnDemand(t *testing.T) {
 	}
 }
 
+func TestSunnySessionRebindEditSynchronizesMailboxCredentials(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatal(err)
+	}
+	var original SunnyMailbox
+	if err := s.db.Where("email = ?", session.Email).First(&original).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Model(&original).Updates(map[string]any{"chat_gpt_password": "chat-password", "totp_secret": "JBSWY3DPEHPK3PXP"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	pickup := "https://mail-api.example/api/sunny/domain-mail/pickup?email=rebound%40example.com&token=dmsk_test"
+	body, _ := json.Marshal(map[string]any{"email": session.Email, "rebind_email": "rebound@example.com", "rebind_mailbox_api": pickup})
+	req := httptest.NewRequest(http.MethodPut, "/api/sunny/sessions/"+strconv.Itoa(int(session.ID)), bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.sunnySessions(rec, req, []string{strconv.Itoa(int(session.ID))})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var mailbox SunnyMailbox
+	if err := s.db.First(&mailbox, original.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if mailbox.Email != original.Email || mailbox.RebindEmail != "rebound@example.com" || mailbox.RebindMailboxAPI != pickup || mailbox.MailboxType != "domain" || mailbox.MailboxChannel != "domain_api" {
+		t.Fatalf("mailbox rebind metadata not synchronized: %#v", mailbox)
+	}
+	var account SunnyAccount
+	if err := s.db.First(&account, session.AccountID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if account.RebindEmail != mailbox.RebindEmail || account.RebindMailboxAPI != pickup || account.MailboxID != mailbox.ID {
+		t.Fatalf("account rebind metadata not synchronized: %#v", account)
+	}
+	for field, want := range map[string]string{
+		"secret_key":   pickupWithEmail("rebound@example.com", pickup),
+		"login_secret": "rebound@example.com----chat-password----JBSWY3DPEHPK3PXP",
+	} {
+		value, err := s.sunnySessionFieldValue(session.ID, field)
+		if err != nil || value != want {
+			t.Fatalf("%s=%q want=%q err=%v", field, value, want, err)
+		}
+	}
+}
+
+func pickupWithEmail(email, pickup string) string { return email + "----" + pickup }
+
+func TestReconcileSunnyRebindCredentialsBackfillsMailboxAndSession(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatal(err)
+	}
+	var account SunnyAccount
+	if err := s.db.First(&account, session.AccountID).Error; err != nil {
+		t.Fatal(err)
+	}
+	pickup := "https://mail-api.example/api/sunny/domain-mail/pickup?email=existing-rebind%40example.com&token=dmsk_existing"
+	if err := s.db.Model(&account).Updates(map[string]any{"rebind_email": "existing-rebind@example.com", "rebind_mailbox_api": pickup}).Error; err != nil {
+		t.Fatal(err)
+	}
+	reconcileSunnyRebindCredentials(s.db)
+	var mailbox SunnyMailbox
+	if err := s.db.First(&mailbox, account.MailboxID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if mailbox.Email != "session@example.com" || mailbox.RebindEmail != "existing-rebind@example.com" || mailbox.RebindMailboxAPI != pickup || mailbox.AccessKey != pickup {
+		t.Fatalf("mailbox was not reconciled: %#v", mailbox)
+	}
+	if err := s.db.First(&session, session.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if session.RawMailboxLine != pickupWithEmail(mailbox.RebindEmail, pickup) {
+		t.Fatalf("session credential was not reconciled: %q", session.RawMailboxLine)
+	}
+}
+
 func TestSunnyHealthBanMarkers(t *testing.T) {
 	for _, title := range []string{
 		"Access Deactivated",

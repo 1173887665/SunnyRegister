@@ -509,12 +509,20 @@ func (s *Server) domainMailboxMessagesForToken(ctx context.Context, email, token
 	if err := s.db.Where("LOWER(email) = ? OR LOWER(rebind_email) = ?", sunnyEmailKey(requestedEmail), sunnyEmailKey(requestedEmail)).First(&mailbox).Error; err != nil {
 		return nil, fmt.Errorf("邮箱或取件 Token 无效")
 	}
+	effectiveEmail := strings.TrimSpace(mailbox.Email)
+	if strings.TrimSpace(mailbox.RebindEmail) != "" {
+		effectiveEmail = strings.TrimSpace(mailbox.RebindEmail)
+	}
+	if sunnyEmailKey(requestedEmail) != sunnyEmailKey(effectiveEmail) {
+		return nil, fmt.Errorf("邮箱或取件 Token 无效")
+	}
 	expectedHash := strings.TrimSpace(mailbox.PickupTokenHash)
 	actualHash := domainMailboxPickupTokenHash(token)
 	if expectedHash == "" || subtle.ConstantTimeCompare([]byte(expectedHash), []byte(actualHash)) != 1 {
 		return nil, fmt.Errorf("邮箱或取件 Token 无效")
 	}
-	if normalizeSunnyMailboxType(mailbox.MailboxType) != "domain" || normalizeSunnyMailboxChannel(mailbox.MailboxType, mailbox.MailboxChannel) != "domain_api" {
+	hasRebindCredential := strings.TrimSpace(mailbox.RebindEmail) != "" && strings.TrimSpace(mailbox.RebindMailboxAPI) != ""
+	if !hasRebindCredential && (normalizeSunnyMailboxType(mailbox.MailboxType) != "domain" || normalizeSunnyMailboxChannel(mailbox.MailboxType, mailbox.MailboxChannel) != "domain_api") {
 		return nil, fmt.Errorf("邮箱或取件 Token 无效")
 	}
 	if !mailbox.Enabled {
@@ -528,7 +536,7 @@ func (s *Server) domainMailboxMessagesForToken(ctx context.Context, email, token
 	if err != nil {
 		return nil, err
 	}
-	return client.listMessages(ctx, requestedEmail)
+	return client.listMessages(ctx, effectiveEmail)
 }
 
 func (s *Server) domainMailLatestMail(accessKey, email string, limit int) (map[string]any, error) {

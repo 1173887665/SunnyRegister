@@ -325,7 +325,48 @@ func ensureSunnySchema(db *gorm.DB) {
 	}
 	db.Exec("UPDATE sunny_mailboxes SET status = '已接码' WHERE status = 'PLUS试用中'")
 	db.Exec("UPDATE sunny_accounts SET status = 'phone_bound' WHERE status = 'PLUS试用中'")
+	reconcileSunnyRebindCredentials(db)
 	sanitizeSunnyMailboxCredentials(db)
+}
+
+func reconcileSunnyRebindCredentials(db *gorm.DB) {
+	var accounts []SunnyAccount
+	if err := db.Where("coalesce(rebind_email,'') <> '' AND coalesce(rebind_mailbox_api,'') <> ''").Find(&accounts).Error; err != nil {
+		return
+	}
+	for _, account := range accounts {
+		rebindEmail := strings.TrimSpace(account.RebindEmail)
+		rebindAPI := strings.TrimSpace(account.RebindMailboxAPI)
+		if validateDomainMailboxAccessKey(rebindAPI, rebindEmail) != nil {
+			continue
+		}
+		var mailbox SunnyMailbox
+		if account.MailboxID != 0 {
+			db.First(&mailbox, account.MailboxID)
+		}
+		if mailbox.ID == 0 {
+			db.Where("LOWER(email) = ? OR LOWER(rebind_email) = ?", sunnyEmailKey(account.Email), sunnyEmailKey(account.Email)).First(&mailbox)
+		}
+		if mailbox.ID == 0 {
+			continue
+		}
+		raw := sunnyURLAPIRaw(rebindEmail, rebindAPI)
+		_ = db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Model(&SunnyMailbox{}).Where("id = ?", mailbox.ID).Updates(map[string]any{
+				"rebind_email": rebindEmail, "rebind_mailbox_api": rebindAPI,
+				"mailbox_type": "domain", "mailbox_channel": "domain_api", "access_key": rebindAPI,
+				"pickup_token_hash": domainMailboxTokenHashFromCredential(rebindAPI, rebindEmail), "raw": raw,
+			}).Error; err != nil {
+				return err
+			}
+			if account.MailboxID != mailbox.ID {
+				if err := tx.Model(&SunnyAccount{}).Where("id = ?", account.ID).Update("mailbox_id", mailbox.ID).Error; err != nil {
+					return err
+				}
+			}
+			return tx.Model(&SunnySession{}).Where("account_id = ?", account.ID).Update("raw_mailbox_line", raw).Error
+		})
+	}
 }
 
 func sanitizeSunnyMailboxCredentials(db *gorm.DB) {
@@ -340,6 +381,9 @@ func sanitizeSunnyMailboxCredentials(db *gorm.DB) {
 			continue
 		}
 		credentials[sunnyEmailKey(mailbox.Email)] = credential
+		if strings.TrimSpace(mailbox.RebindEmail) != "" {
+			credentials[sunnyEmailKey(mailbox.RebindEmail)] = credential
+		}
 		if credential != strings.TrimSpace(mailbox.Raw) {
 			db.Model(&SunnyMailbox{}).Where("id = ?", mailbox.ID).UpdateColumn("raw", credential)
 		}

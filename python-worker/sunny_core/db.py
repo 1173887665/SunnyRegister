@@ -765,10 +765,11 @@ class SunnyDB:
         if not row:
             return None
         item = dict(row)
-        if str(item.get("email") or "").strip().lower() != requested.lower() and str(item.get("rebind_email") or "").strip().lower() == requested.lower():
-            item["email"] = requested
-            item["access_key"] = str(item.get("rebind_mailbox_api") or item.get("access_key") or "")
-            item["raw"] = f"{requested}----{item['access_key']}"
+        rebind_email = str(item.get("rebind_email") or "").strip()
+        if rebind_email:
+            item["email"] = rebind_email
+            item["access_key"] = str(item.get("rebind_mailbox_api") or "")
+            item["raw"] = f"{rebind_email}----{item['access_key']}"
             item["mailbox_type"] = "domain"
             item["mailbox_channel"] = "domain_api"
         self._hydrate_mailbox_auth(item)
