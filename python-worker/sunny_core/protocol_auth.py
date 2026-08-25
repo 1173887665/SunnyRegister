@@ -279,6 +279,18 @@ class ProtocolRegistrationFlow:
 
             raise TaskCancelledError("Task cancelled by user")
 
+    def _needs_mailbox_reader(self) -> bool:
+        """Return whether this auth attempt may need an email OTP reader."""
+        return (
+            not self.skip_mailbox
+            and (not self.existing_account or not self.account.has_login_secret)
+            and not (
+                self.account.mailbox_type == "apple"
+                and self.account.mailbox_channel == "url_api"
+                and not self.account.access_key
+            )
+        )
+
     def _emit(self, checkpoint: str, data: dict[str, Any] | None = None) -> None:
         if self.on_progress:
             self.on_progress(checkpoint, dict(data or {}))
@@ -1083,7 +1095,10 @@ class ProtocolRegistrationFlow:
                 self.log("[认证] 未检测到完整 LS，协议登录使用邮箱凭证")
         try:
             self._check_cancelled()
-            if not self.skip_mailbox and not (self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key):
+            # A complete LS login (password + TOTP) never needs the mailbox.
+            # Do not connect or poll the mailbox speculatively; only create the
+            # reader after the auth state explicitly enters email OTP.
+            if self._needs_mailbox_reader():
                 self.reader = create_mailbox_reader(self.account, self.log, self.mailbox_proxy_url)
                 self.reader.connect()
             self.session = self.session or self._new_session()

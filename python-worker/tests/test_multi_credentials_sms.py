@@ -404,6 +404,25 @@ def test_browser_login_secret_failure_retries_same_mode_with_mailbox_otp(headles
     assert flow_class.call_args_list[1].kwargs["prefer_login_secret"] is False
 
 
+def test_browser_totp_transition_retries_ls_before_mailbox_fallback() -> None:
+    account = MailAccount(
+        "user@example.com", "mailbox-password", "client", "mail-rt", "raw",
+        chatgpt_password="Short1!", totp_secret="JBSWY3DPEHPK3PXP",
+    )
+    first = Mock()
+    first.run.side_effect = LoginSecretAuthenticationError("ChatGPT 2FA 提交后认证页面未继续")
+    second = Mock()
+    second.run.return_value = {"access_token": "access-token"}
+
+    with patch("sunny_core.openai_auth.OpenAIEmailRegisterFlow", side_effect=[first, second]) as flow_class:
+        result = login_or_register(account, existing_account=True, require_refresh_token=False)
+
+    assert result["access_token"] == "access-token"
+    assert flow_class.call_count == 2
+    assert flow_class.call_args_list[0].kwargs["prefer_login_secret"] is True
+    assert flow_class.call_args_list[1].kwargs["prefer_login_secret"] is True
+
+
 def test_browser_email_otp_timeout_restarts_authentication_once() -> None:
     account = MailAccount("user@example.com", "mailbox-password", "client", "mail-rt", "raw")
     first = Mock()

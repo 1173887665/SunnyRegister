@@ -131,6 +131,24 @@ def test_protocol_request_retries_transient_connection_reset() -> None:
     assert len(flow.session.requests) == 2
 
 
+def test_complete_ls_protocol_login_does_not_connect_mailbox_reader() -> None:
+    account = MailAccount(
+        "user@outlook.com", "mail-password", "client", "refresh", "raw",
+        chatgpt_password="ChatGPT-password", totp_secret="JBSWY3DPEHPK3PXP",
+    )
+    flow = ProtocolRegistrationFlow(account, existing_account=True)
+    assert flow._needs_mailbox_reader() is False
+
+
+def test_mailbox_protocol_login_still_connects_reader_when_ls_is_incomplete() -> None:
+    account = MailAccount(
+        "user@outlook.com", "mail-password", "client", "refresh", "raw",
+        chatgpt_password="ChatGPT-password",
+    )
+    flow = ProtocolRegistrationFlow(account, existing_account=True)
+    assert flow._needs_mailbox_reader() is True
+
+
 def test_remail_registration_disallowed_uses_long_bounded_backoff() -> None:
     account = MailAccount("user@icloud.com", "", "", "", "raw", mailbox_type="remail", mailbox_channel="remail_api")
     flow = ProtocolRegistrationFlow(account, session=FakeSession([]))

@@ -48,7 +48,7 @@ EMAIL_OTP_RESEND_WAIT_SECONDS = 60
 # instead of leaving an AT renewal task in "authentication_running" for many
 # minutes.
 LOGIN_SECRET_FLOW_TIMEOUT_SECONDS = 120
-LOGIN_SECRET_STEP_TIMEOUT_SECONDS = 8
+LOGIN_SECRET_STEP_TIMEOUT_SECONDS = 20
 LOGIN_SECRET_NO_PROGRESS_TIMEOUT_SECONDS = 25
 # EmailOtpValidate is a small JSON request. Keep its browser-side timeout
 # short so a stalled proxy does not delay the mailbox login flow for a minute.
@@ -3442,6 +3442,26 @@ def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool 
             raise
         if any(marker in str(exc).lower() for marker in _ACCOUNT_DEACTIVATED_MARKERS):
             raise
+        # A successful TOTP submit can leave the auth SPA on the same route
+        # while the session cookie is being committed. Rebuild the LS session
+        # once before attempting mailbox fallback; the password page may not
+        # expose an email-code switch at all.
+        transient_totp_markers = (
+            "2fa 提交后认证页面未继续",
+            "2fa 登录页面超过",
+            "密码与 2fa 登录超过",
+        )
+        if any(marker in str(exc).lower() for marker in transient_totp_markers):
+            _emit(log, "[认证] LS 登录在 2FA 提交后暂未推进，正在重新建立密码+2FA 会话重试一次")
+            retry_kwargs = {**flow_kwargs, "existing_session": None}
+            try:
+                return OpenAIEmailRegisterFlow(
+                    account, proxy_url, headless, log, prefer_login_secret=True, **retry_kwargs,
+                ).run()
+            except LoginSecretAuthenticationError as retry_exc:
+                exc = retry_exc
+                if any(marker in str(exc).lower() for marker in _ACCOUNT_DEACTIVATED_MARKERS):
+                    raise
         _emit(log, f"[认证] LS 凭证登录失败，将使用邮箱凭证建立新的隔离登录会话重试：{str(exc)[:240]}")
         fallback_kwargs = {**flow_kwargs, "existing_session": None}
         try:
