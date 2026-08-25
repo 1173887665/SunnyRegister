@@ -538,6 +538,10 @@ class OpenAIEmailRegisterFlow:
         self.post_registration_callback = post_registration_callback
         self.traffic_meter = traffic_meter or ProxyTrafficMeter(proxy_url=proxy_url, tracked_proxy=bool(proxy_url), email=account.email, operation=self.execution_mode)
         self.traffic_optimizer = BrowserTrafficOptimizer(self.traffic_meter, traffic_config)
+        # Consent pages occasionally acknowledge the workspace POST without navigating.
+        # Keep a bounded retry window so a stale DOM marker cannot block the callback.
+        self._codex_consent_submit_count = 0
+        self._codex_consent_last_submit_at = 0.0
 
     def _check_cancelled(self) -> None:
         if self.should_cancel():
@@ -3070,8 +3074,22 @@ class OpenAIEmailRegisterFlow:
         return {"code": code, "callback_url": callback_url}
 
     def _click_codex_consent_if_visible(self, page) -> bool:
+        if self._codex_consent_submit_count >= 2:
+            return False
+        now = time.time()
+        if self._codex_consent_submit_count and now - self._codex_consent_last_submit_at < 8:
+            return False
         try:
-            return bool(page.evaluate(r"""() => {
+            if self._codex_consent_submit_count:
+                # React Router can leave the same form mounted after a failed/no-op
+                # action. Clear only our marker before the single controlled retry.
+                page.evaluate("""() => {
+                    document.querySelectorAll('[data-sunny-register-submitted]').forEach(el => {
+                        delete el.dataset.sunnyRegisterSubmitted;
+                        delete el.dataset.sunnyRegisterSubmittedAt;
+                    });
+                }""")
+            submitted = bool(page.evaluate(r"""() => {
                 const visible = el => { if (!el) return false; const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
                 const enabled = el => el && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
                 const onCodexConsentPage = /\/sign-in-with-chatgpt\/codex\/consent(?:\.data)?\/?$/i.test(location.pathname || '');
@@ -3111,6 +3129,7 @@ class OpenAIEmailRegisterFlow:
                 const form = target.form || target.closest('form') || consentForm;
                 if (target.dataset.sunnyRegisterSubmitted === 'true' || form?.dataset.sunnyRegisterSubmitted === 'true') return false;
                 target.dataset.sunnyRegisterSubmitted = 'true';
+                target.dataset.sunnyRegisterSubmittedAt = String(Date.now());
                 if (form) form.dataset.sunnyRegisterSubmitted = 'true';
                 target.scrollIntoView({block:'center', inline:'center'});
                 target.focus?.();
@@ -3127,6 +3146,11 @@ class OpenAIEmailRegisterFlow:
             }"""))
         except Exception:
             return False
+        if not submitted:
+            return False
+        self._codex_consent_submit_count += 1
+        self._codex_consent_last_submit_at = now
+        return True
 
     def _select_codex_consent_workspace_if_visible(self, page) -> bool:
         """Select the workspace introduced by the Codex consent flow.
@@ -3148,6 +3172,7 @@ class OpenAIEmailRegisterFlow:
                 };
                 const enabled = el => el && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
                 const selectors = [
+                    'input[name="workspace_id"]',
                     'button[data-workspace-id]',
                     '[role="button"][data-workspace-id]',
                     'button[name="workspace_id"]',
@@ -3173,11 +3198,25 @@ class OpenAIEmailRegisterFlow:
                     });
                     if (candidates.length === 1) target = candidates[0];
                 }
+                // The current consent route uses a native form field named
+                // workspace_id; prefer the checked option, otherwise the first
+                // enabled option just as the official client does.
+                const workspaceInputs = Array.from(document.querySelectorAll('input[name="workspace_id"]')).filter(enabled);
+                const radioInputs = workspaceInputs.filter(el => String(el.type || '').toLowerCase() === 'radio');
+                // Native radios are often visually hidden behind a styled label;
+                // their checked/value state is still authoritative for the form.
+                const radioTarget = radioInputs.find(el => el.checked) || radioInputs[0];
+                if (radioTarget) target = radioTarget;
+                if (!target) {
+                    const hidden = document.querySelector('input[type="hidden"][name="workspace_id"][value]');
+                    if (hidden) target = hidden;
+                }
                 if (!target || target.dataset.sunnyRegisterWorkspaceSelected === 'true') return false;
                 target.dataset.sunnyRegisterWorkspaceSelected = 'true';
                 target.scrollIntoView({block:'center', inline:'center'});
                 target.focus?.();
-                target.click();
+                if (target.type === 'radio' && !target.checked) target.click();
+                else if (target.type !== 'hidden') target.click();
                 return true;
             }"""))
         except Exception:
@@ -3222,6 +3261,8 @@ class OpenAIEmailRegisterFlow:
 
     def _authorize_rt_from_browser(self, context, page) -> dict[str, Any]:
         oauth_url, code_verifier, expected_state = self._prepare_browser_oauth_url()
+        self._codex_consent_submit_count = 0
+        self._codex_consent_last_submit_at = 0.0
         callback_pattern = re.compile(r"^" + re.escape(DEFAULT_REDIRECT_URI) + r"(?:[?#]|$)")
         captured_callback = {"url": ""}
 
@@ -3282,6 +3323,22 @@ class OpenAIEmailRegisterFlow:
                     raise RuntimeError("OAuth phone verification required, but no usable SMS provider is configured")
                 if self._has_totp_challenge(page):
                     self._submit_totp_challenge(page)
+                    self._sleep_checked(1)
+                    continue
+                consent_path = urlparse(current_url).path.rstrip("/").lower()
+                if consent_path == "/sign-in-with-chatgpt/codex/consent":
+                    selected = self._select_codex_consent_workspace_if_visible(page)
+                    if selected:
+                        self.log("[Session] 已选择 Codex 授权 workspace（默认）")
+                    submitted = self._click_codex_consent_if_visible(page)
+                    if submitted:
+                        if self._codex_consent_submit_count > 1:
+                            self.log("[Session] Consent 页面未跳转，已受控重试提交授权")
+                        else:
+                            self.log("[Session] 已提交 Codex consent，等待 OAuth 回调")
+                    if selected or submitted:
+                        self._sleep_checked(1)
+                        continue
                     self._sleep_checked(1)
                     continue
                 if self._select_codex_consent_workspace_if_visible(page):

@@ -1454,6 +1454,19 @@ class BrowserOAuthCallbackTests(unittest.TestCase):
         exchange.assert_called_once_with(ANY, "workspace-auth-code", ANY)
         self.assertTrue(any("已选择 Codex 授权 workspace" in item for item in logs))
 
+    def test_codex_consent_submit_allows_one_delayed_retry(self):
+        flow = self.make_flow()
+        page = Mock()
+        # First evaluate submits the form. The delayed retry first clears the
+        # stale marker, then submits the still-mounted React Router form again.
+        page.evaluate.side_effect = [True, None, True]
+        with patch("sunny_core.openai_auth.time.time", side_effect=[100.0, 109.0]):
+            self.assertTrue(flow._click_codex_consent_if_visible(page))
+            self.assertTrue(flow._click_codex_consent_if_visible(page))
+            self.assertFalse(flow._click_codex_consent_if_visible(page))
+        self.assertEqual(flow._codex_consent_submit_count, 2)
+        self.assertEqual(page.evaluate.call_count, 3)
+
 
 class BrowserEmailOTPSubmitTests(unittest.TestCase):
     def test_camoufox_email_otp_prefers_native_form_submit(self):
