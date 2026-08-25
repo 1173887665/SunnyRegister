@@ -459,17 +459,18 @@ func (s *Server) sunnyMailboxAccessTokensByEmail(emails []string) map[string]str
 	s.db.Select("email", "access_token").Where("email IN ?", emails).Find(&accounts)
 	for _, a := range accounts {
 		if strings.TrimSpace(a.AccessToken) != "" {
-			out[sunnyEmailKey(a.Email)] = a.AccessToken
+			key := sunnyEmailKey(a.Email)
+			out[key] = sunnyPreferredAccessToken(out[key], a.AccessToken)
 		}
 	}
 	var sessions []SunnySession
 	s.db.Select("email", "access_token", "session_json").Where("email IN ?", emails).Find(&sessions)
 	for _, sess := range sessions {
 		key := sunnyEmailKey(sess.Email)
-		if token := fallback(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON)); token != "" {
+		if token := sunnyPreferredAccessToken(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON)); token != "" {
 			// Sessions contain the latest login result; keep mailbox and account
 			// tables aligned when the legacy account copy is stale.
-			out[key] = token
+			out[key] = sunnyPreferredAccessToken(token, out[key])
 		}
 	}
 	return out
@@ -621,7 +622,7 @@ func (s *Server) sunnyMailboxLinkedDataByEmail(emails []string) sunnyMailboxLink
 			linked.trialEligibility[key] = trialEligibility
 		}
 		if strings.TrimSpace(account.AccessToken) != "" {
-			linked.accessTokens[key] = account.AccessToken
+			linked.accessTokens[key] = sunnyPreferredAccessToken(linked.accessTokens[key], account.AccessToken)
 		}
 	}
 	var sessions []SunnySession
@@ -634,8 +635,10 @@ func (s *Server) sunnyMailboxLinkedDataByEmail(emails []string) sunnyMailboxLink
 		} else if linked.sessionPlans[key] == "" {
 			linked.sessionPlans[key] = "free"
 		}
-		if token := fallback(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON)); token != "" {
-			linked.accessTokens[key] = token
+		if token := sunnyPreferredAccessToken(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON)); token != "" {
+			// Session rows are the authoritative latest source when legacy
+			// non-JWT tokens have no comparable expiry.
+			linked.accessTokens[key] = sunnyPreferredAccessToken(token, linked.accessTokens[key])
 		}
 	}
 	return linked
@@ -4161,7 +4164,7 @@ func (s *Server) sunnySub2APIImport(w http.ResponseWriter, r *http.Request) {
 	for _, sess := range sessions {
 		key := sunnyEmailKey(sess.Email)
 		account := accountRows[key]
-		sess.AccessToken = firstText(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON), account.AccessToken)
+		sess.AccessToken = sunnyPreferredAccessToken(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON), account.AccessToken)
 		sess.RefreshToken = firstText(sess.RefreshToken, account.OpenAIRT)
 		sess.RawMailboxLine = sunnySessionSecretKey(sess, mailboxRows[key])
 		if strings.TrimSpace(sess.AccessToken) == "" || strings.TrimSpace(sess.RefreshToken) == "" {
@@ -4418,7 +4421,7 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 	if refreshToken == "" {
 		refreshToken = acc.OpenAIRT
 	}
-	accessToken := fallback(sess.AccessToken, fallback(sunnyAccessTokenFromSessionJSON(sess.SessionJSON), acc.AccessToken))
+	accessToken := sunnyPreferredAccessToken(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON), acc.AccessToken)
 	expiresAt := sunnyAccessTokenExpiry(accessToken, sess.ExpiresAt)
 	trialEligibility := sunnyTrialEligibilityFor(acc.TrialEligibility, mb.TrialEligibility)
 	trialCheckedAt := acc.TrialCheckedAt
@@ -4433,8 +4436,8 @@ func (s *Server) serializeSunnySession(sess SunnySession, accounts map[string]Su
 		"id": sess.ID, "account_id": sess.AccountID, "mailbox_id": mb.ID, "email": displayEmail,
 		"status": status, "plan_type": plan, "group_id": mb.GroupID, "group_name": groupName,
 		"phone_bound":           sunnyPhoneBindingCompleted(acc.PhoneNumber, acc.Status, mb.Status),
-		"rebind_email":          acc.RebindEmail,
-		"rebind_mailbox_api":    acc.RebindMailboxAPI,
+		"rebind_email":          fallback(strings.TrimSpace(mb.RebindEmail), strings.TrimSpace(acc.RebindEmail)),
+		"rebind_mailbox_api":    fallback(strings.TrimSpace(mb.RebindMailboxAPI), strings.TrimSpace(acc.RebindMailboxAPI)),
 		"trial_eligibility":     trialEligibility,
 		"trial_country_results": sunnyTrialCountryResults(acc.TrialCountryResultsJSON, mb.TrialCountryResultsJSON),
 		"access_token":          accessToken, "refresh_token": refreshToken, "id_token": sess.IDToken,
@@ -4456,11 +4459,29 @@ func sunnyAccessTokenExpiry(accessToken string, stored sql.NullTime) sql.NullTim
 	return stored
 }
 
+func sunnyPreferredAccessToken(values ...string) string {
+	best := ""
+	bestExpiry := 0
+	for _, value := range values {
+		token := strings.TrimSpace(value)
+		if token == "" {
+			continue
+		}
+		expiry := toInt(decodeJWTPayload(token)["exp"])
+		if best == "" || expiry > bestExpiry {
+			best = token
+			bestExpiry = expiry
+		}
+	}
+	return best
+}
+
 type sunnySessionListRow struct {
 	ID                   uint         `gorm:"column:id"`
 	AccountID            uint         `gorm:"column:account_id"`
 	Email                string       `gorm:"column:email"`
 	AccessToken          string       `gorm:"column:access_token"`
+	SessionJSON          string       `gorm:"column:session_json"`
 	AccessTokenStatus    string       `gorm:"column:access_token_status"`
 	AccessTokenError     string       `gorm:"column:access_token_error"`
 	AccessTokenCheckedAt *time.Time   `gorm:"column:access_token_checked_at"`
@@ -4520,6 +4541,7 @@ type sunnySessionMailboxSummary struct {
 }
 
 const sunnySessionListColumns = `id, account_id, email, access_token, access_token_status, access_token_error, access_token_checked_at, health_check_status, health_check_error, expires_at, updated_at,
+	session_json,
 	CASE WHEN access_token IS NOT NULL AND access_token <> '' THEN 1 ELSE 0 END AS has_access_token,
 	CASE WHEN refresh_token IS NOT NULL AND refresh_token <> '' THEN 1 ELSE 0 END AS has_refresh_token,
 	CASE WHEN raw_mailbox_line IS NOT NULL AND raw_mailbox_line <> '' THEN 1 ELSE 0 END AS has_secret_key`
@@ -4557,7 +4579,7 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 	if lastHealthCheckedAt != nil {
 		lastHealthText = formatTime(*lastHealthCheckedAt)
 	}
-	expiresAt := sunnyAccessTokenExpiry(fallback(row.AccessToken, account.AccessToken), row.ExpiresAt)
+	expiresAt := sunnyAccessTokenExpiry(sunnyPreferredAccessToken(row.AccessToken, sunnyAccessTokenFromSessionJSON(row.SessionJSON), account.AccessToken), row.ExpiresAt)
 	trialEligibility := sunnyTrialEligibilityFor(account.TrialEligibility, mailbox.TrialEligibility)
 	checkoutKind := normalizeSunnyCheckoutKind(account.CheckoutKind)
 	paymentMethods := []string{}
@@ -4794,15 +4816,13 @@ func (s *Server) sunnySessionFieldValue(id uint, field string) (string, error) {
 	query := s.db.Model(&SunnySession{}).Where("id = ?", id)
 	switch field {
 	case "access_token":
-		if err := query.Select("id", "email", "access_token", "session_json").First(&sess).Error; err != nil {
+		if err := query.Select("id", "account_id", "email", "access_token", "session_json").First(&sess).Error; err != nil {
 			return "", fmt.Errorf("session not found")
 		}
-		value := fallback(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON))
-		if value == "" {
-			var account SunnyAccount
-			s.db.Select("access_token").Where("email = ?", sess.Email).First(&account)
-			value = account.AccessToken
+		if mailbox, err := s.sunnyMailboxForSession(sess); err == nil {
+			return s.sunnyMailboxAccessToken(mailbox), nil
 		}
+		value := sunnyPreferredAccessToken(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON))
 		return value, nil
 	case "refresh_token":
 		if err := query.Select("id", "email", "refresh_token").First(&sess).Error; err != nil {
@@ -5372,7 +5392,7 @@ func (s *Server) sunnyExportSessions(w http.ResponseWriter, rows []SunnySession,
 		accounts, _ := s.sunnySessionSidecars(rows)
 		for _, row := range rows {
 			account := accounts[sunnyEmailKey(row.Email)]
-			if token := strings.TrimSpace(firstText(row.AccessToken, sunnyAccessTokenFromSessionJSON(row.SessionJSON), account.AccessToken)); token != "" {
+			if token := strings.TrimSpace(sunnyPreferredAccessToken(row.AccessToken, sunnyAccessTokenFromSessionJSON(row.SessionJSON), account.AccessToken)); token != "" {
 				lines = append(lines, token)
 			}
 		}
@@ -5394,7 +5414,7 @@ func (s *Server) sunnyExportSessions(w http.ResponseWriter, rows []SunnySession,
 		for _, row := range rows {
 			key := sunnyEmailKey(row.Email)
 			account := accounts[key]
-			row.AccessToken = firstText(row.AccessToken, sunnyAccessTokenFromSessionJSON(row.SessionJSON), account.AccessToken)
+			row.AccessToken = sunnyPreferredAccessToken(row.AccessToken, sunnyAccessTokenFromSessionJSON(row.SessionJSON), account.AccessToken)
 			row.RefreshToken = firstText(row.RefreshToken, account.OpenAIRT)
 			row.RawMailboxLine = sunnySessionSecretKey(row, mailboxes[key])
 			if strings.TrimSpace(row.AccessToken) == "" {
@@ -5414,8 +5434,9 @@ func (s *Server) sunnyExportSessions(w http.ResponseWriter, rows []SunnySession,
 		writeTextFile(w, timestampName("auth_sessions", "json"), "application/json", []byte(dumpJSONPretty(map[string]any{"items": arr})+"\n"))
 	case "access_token":
 		lines := []string{}
+		accounts, _ := s.sunnySessionSidecars(rows)
 		for _, r := range rows {
-			lines = append(lines, fallback(r.AccessToken, sunnyAccessTokenFromSessionJSON(r.SessionJSON)))
+			lines = append(lines, sunnyPreferredAccessToken(r.AccessToken, sunnyAccessTokenFromSessionJSON(r.SessionJSON), accounts[sunnyEmailKey(r.Email)].AccessToken))
 		}
 		writeTextFile(w, timestampName("access_tokens", "txt"), "text/plain; charset=utf-8", []byte(strings.Join(lines, "\n")+"\n"))
 	case "secret_key", "mailbox_account", "raw":

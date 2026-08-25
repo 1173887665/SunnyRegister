@@ -774,7 +774,7 @@ func (s *Server) sunnyTrialCandidates(ids []uint) ([]sunnyTrialCandidate, error)
 			AccountID:   firstUint(session.AccountID, account.ID),
 			MailboxID:   account.MailboxID,
 			Email:       session.Email,
-			AccessToken: firstText(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken),
+			AccessToken: sunnyPreferredAccessToken(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken),
 		}
 		if candidate.MailboxID == 0 {
 			candidate.MailboxID = mailboxes[sunnyEmailKey(session.Email)].ID

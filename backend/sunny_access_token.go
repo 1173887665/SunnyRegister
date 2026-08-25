@@ -394,7 +394,7 @@ func (s *Server) sunnyAccessTokenCandidates(ids []uint, scheduled bool) ([]sunny
 		if accountID == 0 {
 			accountID = account.ID
 		}
-		accessToken := fallback(session.AccessToken, fallback(sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken))
+		accessToken := sunnyPreferredAccessToken(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken)
 		candidates = append(candidates, sunnyAccessTokenCandidate{SessionID: session.ID, AccountID: accountID, Email: session.Email, AccessToken: accessToken})
 	}
 	return candidates, skipped, nil

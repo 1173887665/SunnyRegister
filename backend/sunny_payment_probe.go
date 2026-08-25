@@ -227,7 +227,7 @@ func (s *Server) sunnyPaymentProbeCandidates(ids []uint) ([]sunnyPaymentProbeCan
 		account := accounts[sunnyEmailKey(session.Email)]
 		candidate := sunnyPaymentProbeCandidate{
 			SessionID: session.ID, AccountID: firstUint(session.AccountID, account.ID), Email: session.Email,
-			AccessToken: firstText(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken),
+			AccessToken: sunnyPreferredAccessToken(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken),
 		}
 		if strings.TrimSpace(candidate.AccessToken) == "" {
 			candidate.Error = "账户缺少 Access Token"

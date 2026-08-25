@@ -792,7 +792,10 @@ class SunnyDB:
         return item
 
     def fetch_session_by_email(self, email: str) -> dict[str, Any] | None:
-        row = self.conn.execute("select * from sunny_sessions where email=?", (email,)).fetchone()
+        row = self.conn.execute(
+            "select * from sunny_sessions where lower(trim(email))=lower(trim(?)) order by updated_at desc,id desc limit 1",
+            (email,),
+        ).fetchone()
         return dict(row) if row else None
 
     def persist_rebind(self, old_email: str, new_email: str, new_mailbox_api: str, pickup_token_hash: str, session: dict[str, Any]) -> None:
@@ -1166,8 +1169,14 @@ class SunnyDB:
         self.conn.commit()
 
     def upsert_account(self, email: str, **fields: Any) -> int:
-        row = self.conn.execute("select id,status from sunny_accounts where email=?", (email,)).fetchone()
-        base = {"email": email, "updated_at": now_sql(), **fields}
+        email = str(email or "").strip()
+        if not email:
+            raise ValueError("account email is required")
+        row = self.conn.execute(
+            "select id,status,email from sunny_accounts where lower(trim(email))=lower(trim(?)) order by updated_at desc,id desc limit 1",
+            (email,),
+        ).fetchone()
+        base = {"updated_at": now_sql(), **fields}
         if row:
             if "status" in base and str(base["status"] or "") != str(row["status"] or ""):
                 base["status_changed_at"] = base["updated_at"]
@@ -1175,11 +1184,17 @@ class SunnyDB:
             self.conn.execute(f"update sunny_accounts set {sets} where id=?", [*base.values(), row["id"]])
             account_id = int(row["id"])
         else:
+            base["email"] = email
             base.setdefault("created_at", now_sql())
             cols = ",".join(base)
             marks = ",".join("?" for _ in base)
             if getattr(self, "postgres", False):
-                cur = self.conn.execute(f"insert into sunny_accounts({cols}) values({marks}) returning id", list(base.values()))
+                updates = ",".join(f"{key}=excluded.{key}" for key in base if key not in {"email", "created_at"})
+                cur = self.conn.execute(
+                    f"insert into sunny_accounts({cols}) values({marks}) "
+                    f"on conflict (lower(btrim(email))) where btrim(email)<>'' do update set {updates} returning id",
+                    list(base.values()),
+                )
                 account_id = int(cur.fetchone()["id"])
             else:
                 cur = self.conn.execute(f"insert into sunny_accounts({cols}) values({marks})", list(base.values()))
@@ -1188,6 +1203,13 @@ class SunnyDB:
         return account_id
 
     def upsert_session(self, email: str, account_id: int, session: dict[str, Any], raw_line: str = "") -> None:
+        email = str(email or "").strip()
+        if not email:
+            raise ValueError("session email is required")
+        row = self.conn.execute(
+            "select * from sunny_sessions where lower(trim(email))=lower(trim(?)) order by updated_at desc,id desc limit 1",
+            (email,),
+        ).fetchone()
         expires_at = session.get("expires_at")
         if not expires_at:
             token = str(session.get("access_token") or "")
@@ -1203,29 +1225,57 @@ class SunnyDB:
             expires_at = sql_datetime(expires_at)
         values = {
             "account_id": account_id,
-            "email": email,
-            "access_token": session.get("access_token", ""),
-            "refresh_token": session.get("refresh_token", "") or session.get("openai_rt", ""),
-            "id_token": session.get("id_token", ""),
+            "access_token": session.get("access_token", "") or (row["access_token"] if row else ""),
+            "refresh_token": session.get("refresh_token", "") or session.get("openai_rt", "") or (row["refresh_token"] if row else ""),
+            "id_token": session.get("id_token", "") or (row["id_token"] if row else ""),
             "session_json": json.dumps(session.get("session_json", session), ensure_ascii=False) if not isinstance(session.get("session_json"), str) else session.get("session_json"),
             "storage_state_json": json.dumps(session.get("storage_state_json", {}), ensure_ascii=False) if not isinstance(session.get("storage_state_json"), str) else session.get("storage_state_json"),
-            "raw_mailbox_line": raw_line,
-            "access_token_status": "valid" if session.get("access_token") else "invalid",
+            "raw_mailbox_line": raw_line or (row["raw_mailbox_line"] if row else ""),
+            "access_token_status": "valid" if session.get("access_token") or (row and row["access_token"]) else "invalid",
             "access_token_error": "",
             "access_token_checked_at": now_sql(),
             "expires_at": expires_at or None,
             "last_refresh_at": now_sql(),
             "updated_at": now_sql(),
         }
-        row = self.conn.execute("select id from sunny_sessions where email=?", (email,)).fetchone()
         if row:
             sets = ",".join(f"{k}=?" for k in values)
             self.conn.execute(f"update sunny_sessions set {sets} where id=?", [*values.values(), row["id"]])
         else:
+            values["email"] = email
             values["created_at"] = now_sql()
             cols = ",".join(values)
-            self.conn.execute(f"insert into sunny_sessions({cols}) values({','.join('?' for _ in values)})", list(values.values()))
+            marks = ",".join("?" for _ in values)
+            if getattr(self, "postgres", False):
+                updates = ",".join(f"{key}=excluded.{key}" for key in values if key not in {"email", "created_at"})
+                self.conn.execute(
+                    f"insert into sunny_sessions({cols}) values({marks}) "
+                    f"on conflict (lower(btrim(email))) where btrim(email)<>'' do update set {updates}",
+                    list(values.values()),
+                )
+            else:
+                self.conn.execute(f"insert into sunny_sessions({cols}) values({marks})", list(values.values()))
         self.conn.commit()
+
+    def persist_authenticated_session(self, email: str, mailbox_id: int, session: dict[str, Any], raw_line: str = "") -> int:
+        """Immediately synchronize a successful login's AT to account and session rows."""
+        access_token = str(session.get("access_token") or "").strip()
+        session_json = session.get("session_json")
+        if not access_token and isinstance(session_json, dict):
+            access_token = str(session_json.get("accessToken") or session_json.get("access_token") or "").strip()
+        if not access_token:
+            raise ValueError("successful login did not return an access token")
+        refresh_token = str(session.get("refresh_token") or session.get("openai_rt") or "").strip()
+        account_fields: dict[str, Any] = {"access_token": access_token, "last_error": ""}
+        if mailbox_id > 0:
+            account_fields["mailbox_id"] = mailbox_id
+        if refresh_token:
+            account_fields["openai_rt"] = refresh_token
+        account_id = self.upsert_account(email, **account_fields)
+        normalized = dict(session)
+        normalized["access_token"] = access_token
+        self.upsert_session(email, account_id, normalized, raw_line)
+        return account_id
 
     def mark_access_token_renewal_failed(self, email: str, error: str = "") -> None:
         self.conn.execute(

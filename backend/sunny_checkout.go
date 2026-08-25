@@ -287,7 +287,7 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 				accountTokens[sunnyEmailKey(account.Email)] = account.AccessToken
 			}
 			for _, row := range sessions {
-				candidates = append(candidates, candidate{Email: row.Email, SessionID: row.ID, Token: firstText(row.AccessToken, sunnyAccessTokenFromSessionJSON(row.SessionJSON), accountTokens[sunnyEmailKey(row.Email)])})
+				candidates = append(candidates, candidate{Email: row.Email, SessionID: row.ID, Token: sunnyPreferredAccessToken(row.AccessToken, sunnyAccessTokenFromSessionJSON(row.SessionJSON), accountTokens[sunnyEmailKey(row.Email)])})
 			}
 		} else {
 			for _, raw := range body.ExternalATs {
@@ -348,7 +348,7 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 			}
 			for _, sess := range sessions {
 				account := accounts[sunnyEmailKey(sess.Email)]
-				token := firstText(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON), account.AccessToken)
+				token := sunnyPreferredAccessToken(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON), account.AccessToken)
 				if token != "" {
 					creds = append(creds, sunnyCheckoutCredential{Token: token, Email: sess.Email, CheckoutKind: normalizeSunnyCheckoutKind(account.CheckoutKind), SessionID: sess.ID})
 				}

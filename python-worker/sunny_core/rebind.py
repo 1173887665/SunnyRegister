@@ -226,6 +226,19 @@ def _login_flow(account: MailAccount, proxy: str, log: Callable[[str], None], *,
     return flow, result
 
 
+def _persist_login_result(db: SunnyDB, identity_email: str, mailbox: dict[str, Any], result: dict[str, Any], log: Callable[[str], None]) -> None:
+    persist = getattr(db, "persist_authenticated_session", None)
+    if not callable(persist):
+        return
+    persist(
+        identity_email,
+        int(mailbox.get("id") or 0),
+        result,
+        str(mailbox.get("raw") or ""),
+    )
+    log(f"[{identity_email}] 登录成功后已立即同步最新 Access Token")
+
+
 def _wait_for_rebind_code(reader: DomainMailReader, client: ChangeEmailClient, email: str, min_timestamp: float, log: Callable[[str], None]) -> str:
     """Mirror the web UI's resend path when the first accepted request is not delivered."""
     try:
@@ -257,6 +270,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
     try:
         log(f"[{old_email}] 开始协议换绑")
         old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
+        _persist_login_result(db, old_email, mailbox, old_result, log)
         client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""), log)
         client.set_access_token(str(old_result.get("access_token") or ""))
         client.eligibility()
@@ -278,6 +292,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
                     raise
                 previous_flow = old_flow
                 old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
+                _persist_login_result(db, old_email, mailbox, old_result, log)
                 try:
                     if previous_flow and previous_flow.session:
                         previous_flow.session.close()
@@ -298,6 +313,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             raise RebindError("换绑后重新登录未返回新的 Access Token")
         if not str(new_result.get("refresh_token") or "").strip() and account.openai_rt:
             new_result["refresh_token"] = account.openai_rt
+        _persist_login_result(db, old_email, mailbox, new_result, log)
         db.persist_rebind(old_email, new_email, new_api, new_api_token_hash, new_result)
         log(f"[{old_email}] 换绑成功：{new_email}")
         return {"email": old_email, "new_email": new_email, "status": "success"}

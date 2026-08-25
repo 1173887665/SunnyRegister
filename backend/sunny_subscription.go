@@ -263,7 +263,7 @@ func (s *Server) sunnySubscriptionCandidates(ids []uint) ([]sunnySubscriptionCan
 		}
 		candidate := sunnySubscriptionCandidate{
 			SessionID: session.ID, AccountID: accountID, Email: session.Email, MailEmail: session.Email,
-			AccessToken: fallback(session.AccessToken, fallback(sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken)),
+			AccessToken: sunnyPreferredAccessToken(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken),
 		}
 		if !ok {
 			candidate.Error = "邮箱凭证不存在"
@@ -557,11 +557,12 @@ func (s *Server) executeSunnySubscriptionTask(task *Task, payload map[string]any
 			loadErr := s.db.Where("id = ?", outcome.SessionID).First(&session).Error
 			token := ""
 			if loadErr == nil {
-				token = fallback(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON))
+				token = sunnyPreferredAccessToken(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON))
 			}
 			var account SunnyAccount
 			var mailbox SunnyMailbox
 			s.db.Where("email = ?", outcome.Email).First(&account)
+			token = sunnyPreferredAccessToken(token, account.AccessToken)
 			s.db.Where("email = ?", outcome.Email).First(&mailbox)
 			if sunnyHealthBannedStatus(account.Status) || sunnyHealthBannedStatus(mailbox.Status) {
 				result["failed"] = result["failed"].(int) + 1

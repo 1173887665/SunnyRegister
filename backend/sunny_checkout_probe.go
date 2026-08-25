@@ -87,7 +87,7 @@ func (s *Server) sunnyCheckoutProbeCandidates(ids []uint) ([]sunnyCheckoutProbeC
 		item := s.serializeSunnySession(session, accounts, mailboxes)
 		candidate := sunnyCheckoutProbeCandidate{
 			SessionID: session.ID, AccountID: firstUint(session.AccountID, account.ID), Email: session.Email,
-			AccessToken: firstText(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken),
+			AccessToken: sunnyPreferredAccessToken(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken),
 		}
 		if !sunnyTrialApplies(text(item["status"]), text(item["plan_type"])) {
 			candidate.SkipReason = "仅已注册且套餐为 free 的账户支持 Checkout 探测"

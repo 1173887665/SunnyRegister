@@ -247,6 +247,80 @@ func TestSunnySessionListSearchesRebindEmail(t *testing.T) {
 	}
 }
 
+func TestSunnyMailboxAndSessionListsShareMailboxIdentityFields(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var mailbox SunnyMailbox
+	if err := s.db.Where("email = ?", "session@example.com").First(&mailbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Model(&mailbox).Updates(map[string]any{
+		"rebind_email": "replacement@example.com", "rebind_mailbox_api": "https://mail.example/pickup?email=replacement%40example.com&token=dmsk_test",
+		"status": "已接码", "account_type": "team",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	mailboxRec := httptest.NewRecorder()
+	s.sunnyMailboxes(mailboxRec, httptest.NewRequest(http.MethodGet, "/api/sunny/mailboxes?page=1&page_size=10&q=session@example.com", nil), nil)
+	var mailboxPayload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(mailboxRec.Body.Bytes(), &mailboxPayload); err != nil || len(mailboxPayload.Items) != 1 {
+		t.Fatalf("decode mailbox list: err=%v body=%s", err, mailboxRec.Body.String())
+	}
+	sessionRec := httptest.NewRecorder()
+	s.sunnySessions(sessionRec, httptest.NewRequest(http.MethodGet, "/api/sunny/sessions?page=1&page_size=10&q=session@example.com", nil), nil)
+	var sessionPayload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(sessionRec.Body.Bytes(), &sessionPayload); err != nil || len(sessionPayload.Items) != 1 {
+		t.Fatalf("decode session list: err=%v body=%s", err, sessionRec.Body.String())
+	}
+	mailboxItem, sessionItem := mailboxPayload.Items[0], sessionPayload.Items[0]
+	for _, field := range []string{"email", "rebind_email", "group_id", "status", "plan_type"} {
+		if text(mailboxItem[field]) != text(sessionItem[field]) {
+			t.Fatalf("shared field %s differs: mailbox=%#v session=%#v", field, mailboxItem[field], sessionItem[field])
+		}
+	}
+}
+
+func TestSunnyMailboxAndSessionATFieldsUseSameMailboxSource(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var mailbox SunnyMailbox
+	if err := s.db.Where("email = ?", "session@example.com").First(&mailbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatal(err)
+	}
+	encode := func(exp int64) string {
+		return "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, exp))) + ".signature"
+	}
+	latest := encode(1900000000)
+	if err := s.db.Model(&SunnySession{}).Where("id = ?", session.ID).Updates(map[string]any{
+		"access_token": encode(1700000000), "session_json": fmt.Sprintf(`{"accessToken":%q}`, latest),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	mailboxRec := httptest.NewRecorder()
+	mailboxPath := fmt.Sprintf("/api/sunny/mailboxes/%d/field?name=access_token", mailbox.ID)
+	s.handleSunny(mailboxRec, httptest.NewRequest(http.MethodGet, mailboxPath, nil), fmt.Sprintf("mailboxes/%d/field", mailbox.ID))
+	var mailboxPayload map[string]any
+	if err := json.Unmarshal(mailboxRec.Body.Bytes(), &mailboxPayload); err != nil {
+		t.Fatalf("decode mailbox AT: %v", err)
+	}
+	sessionRec := httptest.NewRecorder()
+	sessionPath := fmt.Sprintf("/api/sunny/sessions/%d/field?name=access_token", session.ID)
+	s.handleSunny(sessionRec, httptest.NewRequest(http.MethodGet, sessionPath, nil), fmt.Sprintf("sessions/%d/field", session.ID))
+	var sessionPayload map[string]any
+	if err := json.Unmarshal(sessionRec.Body.Bytes(), &sessionPayload); err != nil {
+		t.Fatalf("decode session AT: %v", err)
+	}
+	if mailboxPayload["value"] != latest || sessionPayload["value"] != latest {
+		t.Fatalf("AT values differ: mailbox=%v session=%v latest=%v", mailboxPayload["value"], sessionPayload["value"], latest)
+	}
+}
+
 func TestSunnySessionUpdateSynchronizesMailboxAndAccountMetadata(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	group := SunnyMailboxGroup{Name: "Target Group"}

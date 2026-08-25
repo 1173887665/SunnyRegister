@@ -140,6 +140,7 @@ func openDB() *gorm.DB {
 		log.Fatalf("migrate PostgreSQL failed: %v", err)
 	}
 	ensureSunnySchema(db)
+	reconcileSunnyDuplicateIdentities(db)
 	ensureSunnyStatusTriggers(db)
 	ensureSunnyIndexes(db)
 	sanitizeHistoricalTaskData(db)
@@ -183,6 +184,8 @@ func ensureSunnyIndexes(db *gorm.DB) {
 		"CREATE INDEX IF NOT EXISTS idx_sunny_sessions_updated ON sunny_sessions(updated_at DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_sessions_email ON sunny_sessions(email)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_accounts_email ON sunny_accounts(email)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS ux_sunny_sessions_email_ci ON sunny_sessions(LOWER(BTRIM(email))) WHERE BTRIM(email) <> ''",
+		"CREATE UNIQUE INDEX IF NOT EXISTS ux_sunny_accounts_email_ci ON sunny_accounts(LOWER(BTRIM(email))) WHERE BTRIM(email) <> ''",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_accounts_health_checked ON sunny_accounts(last_health_checked_at DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_accounts_checkout_kind ON sunny_accounts(checkout_kind)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_accounts_commerce_checked ON sunny_accounts(commerce_checked_at DESC)",
@@ -209,6 +212,118 @@ func ensureSunnyIndexes(db *gorm.DB) {
 		if err := db.Exec(statement).Error; err != nil {
 			log.Printf("create performance index failed: %v", err)
 		}
+	}
+}
+
+func reconcileSunnyDuplicateIdentities(db *gorm.DB) {
+	var accounts []SunnyAccount
+	var sessions []SunnySession
+	if db.Order("updated_at desc, id desc").Find(&accounts).Error != nil || db.Order("updated_at desc, id desc").Find(&sessions).Error != nil {
+		return
+	}
+	sessionsByAccount := map[uint][]SunnySession{}
+	for _, session := range sessions {
+		sessionsByAccount[session.AccountID] = append(sessionsByAccount[session.AccountID], session)
+	}
+	accountGroups := map[string][]SunnyAccount{}
+	for _, account := range accounts {
+		if key := sunnyEmailKey(account.Email); key != "" {
+			accountGroups[key] = append(accountGroups[key], account)
+		}
+	}
+	removedAccounts := 0
+	for _, group := range accountGroups {
+		if len(group) < 2 {
+			continue
+		}
+		winner := group[0]
+		for _, candidate := range group[1:] {
+			if winner.MailboxID == 0 && candidate.MailboxID != 0 {
+				winner = candidate
+			}
+		}
+		accessTokens := []string{winner.AccessToken}
+		refreshToken := strings.TrimSpace(winner.OpenAIRT)
+		mailboxID := winner.MailboxID
+		duplicateIDs := make([]uint, 0, len(group)-1)
+		for _, account := range group {
+			accessTokens = append(accessTokens, account.AccessToken)
+			if refreshToken == "" && strings.TrimSpace(account.OpenAIRT) != "" {
+				refreshToken = account.OpenAIRT
+			}
+			if mailboxID == 0 && account.MailboxID != 0 {
+				mailboxID = account.MailboxID
+			}
+			for _, session := range sessionsByAccount[account.ID] {
+				accessTokens = append(accessTokens, session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON))
+				if refreshToken == "" && strings.TrimSpace(session.RefreshToken) != "" {
+					refreshToken = session.RefreshToken
+				}
+			}
+			if account.ID != winner.ID {
+				duplicateIDs = append(duplicateIDs, account.ID)
+			}
+		}
+		_ = db.Model(&SunnyAccount{}).Where("id = ?", winner.ID).Updates(map[string]any{
+			"mailbox_id": mailboxID, "access_token": sunnyPreferredAccessToken(accessTokens...), "openai_rt": refreshToken,
+		}).Error
+		if len(duplicateIDs) > 0 {
+			db.Model(&SunnySession{}).Where("account_id IN ?", duplicateIDs).Update("account_id", winner.ID)
+			db.Where("id IN ?", duplicateIDs).Delete(&SunnyAccount{})
+			removedAccounts += len(duplicateIDs)
+		}
+	}
+
+	if db.Order("updated_at desc, id desc").Find(&sessions).Error != nil {
+		return
+	}
+	sessionGroups := map[string][]SunnySession{}
+	for _, session := range sessions {
+		if key := sunnyEmailKey(session.Email); key != "" {
+			sessionGroups[key] = append(sessionGroups[key], session)
+		}
+	}
+	removedSessions := 0
+	for key, group := range sessionGroups {
+		if len(group) < 2 {
+			continue
+		}
+		winner := group[0]
+		accessTokens := []string{}
+		refreshToken := ""
+		duplicateIDs := make([]uint, 0, len(group)-1)
+		for _, session := range group {
+			accessTokens = append(accessTokens, session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON))
+			if refreshToken == "" && strings.TrimSpace(session.RefreshToken) != "" {
+				refreshToken = session.RefreshToken
+			}
+			if session.ID != winner.ID {
+				duplicateIDs = append(duplicateIDs, session.ID)
+			}
+		}
+		var account SunnyAccount
+		db.Where("id = ? OR LOWER(TRIM(email)) = ?", winner.AccountID, key).Order("updated_at desc, id desc").First(&account)
+		accessTokens = append(accessTokens, account.AccessToken)
+		accessToken := sunnyPreferredAccessToken(accessTokens...)
+		expiresAt := sunnyAccessTokenExpiry(accessToken, winner.ExpiresAt)
+		updates := map[string]any{
+			"account_id": winner.AccountID, "access_token": accessToken, "refresh_token": refreshToken,
+			"access_token_status": "unknown", "access_token_error": "", "expires_at": nil,
+		}
+		if expiresAt.Valid {
+			updates["expires_at"] = expiresAt.Time
+		}
+		db.Model(&SunnySession{}).Where("id = ?", winner.ID).Updates(updates)
+		if account.ID != 0 && accessToken != "" {
+			db.Model(&SunnyAccount{}).Where("id = ?", account.ID).Update("access_token", accessToken)
+		}
+		if len(duplicateIDs) > 0 {
+			db.Where("id IN ?", duplicateIDs).Delete(&SunnySession{})
+			removedSessions += len(duplicateIDs)
+		}
+	}
+	if removedAccounts > 0 || removedSessions > 0 {
+		log.Printf("reconciled duplicate Sunny identities: accounts=%d sessions=%d", removedAccounts, removedSessions)
 	}
 }
 

@@ -1561,6 +1561,31 @@ def _persist_registration_checkpoint(
     )
 
 
+def _persist_authenticated_login(
+    db: SunnyDB,
+    email: str,
+    mailbox_id: int,
+    session: dict[str, Any],
+    raw_line: str = "",
+) -> int:
+    """Persist a successful login before any optional post-login stage runs."""
+    persist = getattr(db, "persist_authenticated_session", None)
+    if callable(persist):
+        return int(persist(email, mailbox_id, session, raw_line))
+    access_token = str(session.get("access_token") or "").strip()
+    if not access_token:
+        raise ValueError("successful login did not return an access token")
+    fields: dict[str, Any] = {"access_token": access_token, "last_error": ""}
+    if mailbox_id > 0:
+        fields["mailbox_id"] = mailbox_id
+    refresh_token = str(session.get("refresh_token") or session.get("openai_rt") or "").strip()
+    if refresh_token:
+        fields["openai_rt"] = refresh_token
+    account_id = int(db.upsert_account(email, **fields))
+    db.upsert_session(email, account_id, session, raw_line)
+    return account_id
+
+
 def _run_one(
     db: SunnyDB,
     task_type: str,
@@ -2016,6 +2041,16 @@ def _run_one(
                 post_registration_callback=setup_login_secret_in_browser if setup_login_secret_enabled else None,
             )
         db.ensure_not_cancelled()
+        _persist_authenticated_login(db, str(email), mailbox_id, session, account.raw)
+        persisted_access_token = str(session.get("access_token") or "").strip()
+        persisted_refresh_token = str(session.get("refresh_token") or session.get("openai_rt") or "").strip()
+        persisted_id_token = str(session.get("id_token") or "").strip()
+        persisted_session_json = session.get("session_json")
+        persisted_storage_state = session.get("storage_state_json")
+        db.event(
+            f"[{email}] [Session] 登录成功后已立即同步最新 Access Token",
+            detail={"email": email, "scope": "selected", "access_token_synced": True},
+        )
         generated_password = str(session.pop("generated_chatgpt_password", "") or "")
         if generated_password:
             db.save_chatgpt_password(mailbox_id, generated_password)
@@ -2177,7 +2212,17 @@ def _run_one(
             last_error="",
             metadata_json=json.dumps({"task_id": db.task_id, "source": "sunny_register", "stage": stage, "checkpoint": "flow_completed", "completed_status": mailbox_status, "phone_skipped_reason": phone_skipped_reason}, ensure_ascii=False),
         )
-        db.upsert_session(email, account_id, session, account.raw)
+        current_access_token = str(session.get("access_token") or "").strip()
+        current_refresh_token = str(session.get("refresh_token") or session.get("openai_rt") or "").strip()
+        current_id_token = str(session.get("id_token") or "").strip()
+        if (
+            current_access_token != persisted_access_token
+            or current_refresh_token != persisted_refresh_token
+            or current_id_token != persisted_id_token
+            or session.get("session_json") != persisted_session_json
+            or session.get("storage_state_json") != persisted_storage_state
+        ):
+            db.upsert_session(email, account_id, session, account.raw)
         action = str(session.get("auth_action") or "login")
         action_label = "注册" if action == "register" else "登录"
         db.mark_mailbox(mailbox_id, mailbox_status, openai_rt=rt_value)
