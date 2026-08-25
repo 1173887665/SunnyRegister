@@ -659,12 +659,15 @@ def checkout_payload(options: dict, meta: dict) -> dict[str, Any]:
     options["currency"] = currency
     options["checkout_currency"] = currency
     billing = {"country": country, "currency": currency}
+    checkout_ui_mode = str(options.get("checkout_ui_mode") or "").strip().lower()
+    if checkout_ui_mode not in {"custom", "redirect"}:
+        checkout_ui_mode = "redirect" if options["link_type"] == "hosted" else "custom"
     common: dict[str, Any] = {
         "entry_point": "all_plans_pricing_modal",
         "plan_name": PLANS[plan],
         "billing_details": billing,
         "cancel_url": "https://chatgpt.com/",
-        "checkout_ui_mode": "custom" if options["link_type"] != "hosted" else "redirect",
+        "checkout_ui_mode": checkout_ui_mode,
         "check_card_proxy": True,
     }
     promo = options.get("promo_campaign", "").strip()
@@ -2531,8 +2534,10 @@ class JobStore:
                     and bool(current.get("use_promo"))
                 )
             if current.get("link_type") == "gopay":
-                # A zero-due OAICS checkout may omit country-specific methods.
-                # Publish cpmt_gopay first, then update the same session to 0.
+                # Midtrans GoPay is exposed by the CS Live/Stripe Checkout.
+                # OAICS custom sessions require cpmt_gopay, which may be absent
+                # even when the account's standard ID payment probe sees GoPay.
+                current["checkout_ui_mode"] = "redirect"
                 current["promo_on_create"] = False
             if current.get("link_type") == "pix" and current.get("pix_tax_id_auto"):
                 auto_kind = current.get("pix_auto_kind") or "cpf"
@@ -3406,8 +3411,16 @@ class JobStore:
             if not session_id and provider != "hosted":
                 raise RuntimeError("Checkout 未返回 Stripe Session ID")
             actual_checkout_kind = ""
-            if provider == "paypal":
+            if provider in {"paypal", "gopay"}:
                 actual_checkout_kind = session_checkout_kind(session_id)
+            if provider == "gopay":
+                actual_label = {
+                    "oaics": "OAICS",
+                    "cs_live": "CS Live",
+                    "cs_test": "CS Test",
+                }.get(actual_checkout_kind, "未知")
+                self.log(job_id, f"GoPay 实际 Checkout 类型：{actual_label}")
+            if provider == "paypal":
                 actual_mode, mode_mismatch = reconcile_checkout_mode(paypal_mode, actual_checkout_kind)
                 if actual_checkout_kind == "unknown":
                     raise RuntimeError("PAYPAL_CHECKOUT_TYPE_UNKNOWN: Checkout 会话未返回可识别的 OAICS/CS 类型")
@@ -3457,7 +3470,7 @@ class JobStore:
                 "promo_country": str(options.get("promo_country") or "").upper(),
                 "payment_proxy_country": str(options.get("payment_proxy_country") or locals().get("payment_country") or "").upper(),
             }
-            if provider == "paypal":
+            if provider in {"paypal", "gopay"}:
                 result["checkout_kind"] = actual_checkout_kind
             if promo_requested:
                 checkout_trial = checkout_data.get("one_click_trial_eligible")

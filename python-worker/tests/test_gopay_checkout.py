@@ -130,15 +130,17 @@ def test_gopay_checkout_payload_delays_promo_until_method_is_published() -> None
         "use_promo": True,
         "promo_campaign": "plus-1-month-free",
         "promo_on_create": False,
+        "checkout_ui_mode": "redirect",
     }
     payload = checkout_app.checkout_payload(options, {})
     assert "promo_campaign" not in payload
+    assert payload["checkout_ui_mode"] == "redirect"
 
 
 def test_gopay_attempt_always_creates_checkout_before_applying_promo() -> None:
     store = object.__new__(checkout_app.JobStore)
     state = {"status": "running", "error": "", "result": None}
-    strategies: list[bool] = []
+    strategies: list[tuple[bool, str]] = []
     store.cancelled = lambda _job_id: False
     store.get = lambda _job_id: dict(state)
     store.update = lambda _job_id, **fields: state.update(fields)
@@ -146,7 +148,10 @@ def test_gopay_attempt_always_creates_checkout_before_applying_promo() -> None:
     store._record_success = lambda _job_id, _result: None
 
     def run_single(_job_id: str, attempt_options: dict) -> None:
-        strategies.append(bool(attempt_options["promo_on_create"]))
+        strategies.append((
+            bool(attempt_options["promo_on_create"]),
+            str(attempt_options["checkout_ui_mode"]),
+        ))
         state.update(status="done", result={})
 
     store._run_single = run_single
@@ -161,7 +166,7 @@ def test_gopay_attempt_always_creates_checkout_before_applying_promo() -> None:
         "paired_proxy_rotation": True,
     })
 
-    assert strategies == [False]
+    assert strategies == [(False, "redirect")]
 
 
 def test_gopay_defaults_use_indonesia_billing() -> None:

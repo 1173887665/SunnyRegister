@@ -89,6 +89,21 @@ def _session(proxy_url: str) -> Any:
     return session
 
 
+def _checkout_probe_options(country: str, currency: str) -> dict[str, Any]:
+    indonesia_gopay_probe = country.upper() == "ID" and currency.upper() == "IDR"
+    return {
+        "plan": "plus",
+        "country": country,
+        "currency": currency,
+        "checkout_country": country,
+        "checkout_currency": currency,
+        "link_type": "gopay" if indonesia_gopay_probe else "paypal",
+        "checkout_ui_mode": "redirect" if indonesia_gopay_probe else "custom",
+        "use_promo": False,
+        "promo_campaign": "",
+    }
+
+
 def _task_style_checkout_probe(
     access_token: str,
     country: str,
@@ -101,16 +116,7 @@ def _task_style_checkout_probe(
         sys.path.insert(0, str(engine_dir))
     from app import checkout_payload, create_checkout
 
-    options: dict[str, Any] = {
-        "plan": "plus",
-        "country": country,
-        "currency": currency,
-        "checkout_country": country,
-        "checkout_currency": currency,
-        "link_type": "paypal",
-        "use_promo": False,
-        "promo_campaign": "",
-    }
+    options = _checkout_probe_options(country, currency)
     payload = checkout_payload(options, {})
     created = create_checkout(
         access_token,

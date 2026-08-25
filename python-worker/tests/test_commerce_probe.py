@@ -1,7 +1,13 @@
 from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
-from sunny_core.commerce_probe import _payment_methods, probe_commerce, probe_payment_methods, probe_trial
+from sunny_core.commerce_probe import (
+    _checkout_probe_options,
+    _payment_methods,
+    probe_commerce,
+    probe_payment_methods,
+    probe_trial,
+)
 
 
 def response(status: int, payload=None, content_type: str = "application/json"):
@@ -166,3 +172,10 @@ def test_payment_methods_merge_standard_custom_and_future_fields() -> None:
         "payment_method_specs": [{"type": "future_wallet_v2"}],
     }
     assert _payment_methods(payload) == ["card", "cpmt_gopay", "bank_transfer_x", "future_wallet_v2"]
+
+
+def test_indonesia_payment_probe_matches_gopay_cs_live_mode() -> None:
+    options = _checkout_probe_options("ID", "IDR")
+    assert options["link_type"] == "gopay"
+    assert options["checkout_ui_mode"] == "redirect"
+    assert options["use_promo"] is False
