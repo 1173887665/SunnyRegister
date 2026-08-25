@@ -10,16 +10,22 @@ if str(PAY153_DIR) not in sys.path:
     sys.path.insert(0, str(PAY153_DIR))
 
 import app as checkout_app  # noqa: E402
-from provider_checkout import PROVIDER_DEFAULTS, default_billing  # noqa: E402
+from provider_checkout import (  # noqa: E402
+    PROVIDER_DEFAULTS,
+    default_billing,
+    extract_provider_result,
+)
 
 
 MIDTRANS_V3 = "https://app.midtrans.com/snap/v3/redirection/123e4567-e89b-12d3-a456-426614174000"
 MIDTRANS_V4 = "https://app.midtrans.com/snap/v4/redirection/123e4567-e89b-12d3-a456-426614174001"
+MIDTRANS_V4_LINKING = MIDTRANS_V4 + "#/gopay-tokenization/linking"
 
 
 def test_gopay_midtrans_url_accepts_reference_snap_versions() -> None:
     assert checkout_app.is_valid_gopay_midtrans_url(MIDTRANS_V3)
     assert checkout_app.is_valid_gopay_midtrans_url(MIDTRANS_V4 + "?source=chatgpt")
+    assert checkout_app.is_valid_gopay_midtrans_url(MIDTRANS_V4_LINKING)
 
 
 def test_gopay_midtrans_url_rejects_non_provider_and_lookalike_urls() -> None:
@@ -40,6 +46,37 @@ def test_gopay_midtrans_url_finds_nested_and_encoded_handoff() -> None:
         "provider_data": {"redirect_url": quote(MIDTRANS_V4, safe="")},
     }
     assert checkout_app.gopay_midtrans_url(payload) == MIDTRANS_V4
+
+
+def test_generic_gopay_result_preserves_midtrans_linking_fragment() -> None:
+    result = checkout_app.require_gopay_midtrans_result({
+        "provider_redirect_url": MIDTRANS_V4_LINKING,
+        "next_action_type": "redirect_to_url",
+    })
+    assert result["provider_redirect_url"] == MIDTRANS_V4_LINKING
+    assert result["gopay_midtrans_url"] == MIDTRANS_V4_LINKING
+    assert result["checkout_url"] == MIDTRANS_V4_LINKING
+
+
+def test_generic_gopay_result_rejects_non_midtrans_redirect() -> None:
+    try:
+        checkout_app.require_gopay_midtrans_result({
+            "provider_redirect_url": "https://chatgpt.com/checkout/verify",
+        })
+    except RuntimeError as exc:
+        assert str(exc).startswith("GOPAY_MIDTRANS_LINK_MISSING")
+    else:
+        raise AssertionError("普通 Checkout 链接不应被判定为 GoPay 成功结果")
+
+
+def test_generic_provider_result_reads_redirect_to_url() -> None:
+    result = extract_provider_result({
+        "next_action": {
+            "type": "redirect_to_url",
+            "redirect_to_url": {"url": MIDTRANS_V4_LINKING},
+        },
+    }, "gopay")
+    assert result["provider_redirect_url"] == MIDTRANS_V4_LINKING
 
 
 def test_gopay_method_selection_prefers_gopay_cpmt() -> None:

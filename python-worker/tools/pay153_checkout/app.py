@@ -1407,6 +1407,23 @@ def gopay_midtrans_url(*payloads: Any) -> str:
     return found[0] if found else ""
 
 
+def require_gopay_midtrans_result(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a generic GoPay result to the final Midtrans handoff URL."""
+    redirect_url = gopay_midtrans_url(payload)
+    if not redirect_url:
+        raise RuntimeError(
+            "GOPAY_MIDTRANS_LINK_MISSING: GoPay 未返回有效的 Midtrans Snap v3/v4 跳转链接"
+        )
+    normalized = dict(payload)
+    normalized.update({
+        "provider_redirect_url": redirect_url,
+        "gopay_midtrans_url": redirect_url,
+        "short_link": redirect_url,
+        "checkout_url": redirect_url,
+    })
+    return normalized
+
+
 def is_valid_gcash_authorization_url(value: str) -> bool:
     """Return whether a URL is the final public GCash authorization page."""
     try:
@@ -3537,11 +3554,11 @@ class JobStore:
                         custom_method_id, device_id, method_name="GoPay",
                     )
                     action = started.get("next_action") or {}
-                    redirect_url = gopay_midtrans_url(started, confirmed)
-                    if not redirect_url:
-                        raise RuntimeError(
-                            "GOPAY_MIDTRANS_LINK_MISSING: GoPay 未返回有效的 Midtrans Snap v3/v4 跳转链接"
-                        )
+                    normalized_gopay = require_gopay_midtrans_result({
+                        **confirmed,
+                        "started": started,
+                    })
+                    redirect_url = normalized_gopay["gopay_midtrans_url"]
                     result.update({
                         "link_type": "gopay",
                         "checkout_provider": "open_ai_oaics",
@@ -4356,6 +4373,8 @@ class JobStore:
                     self.log(job_id, "iDEAL 已确认可用，正在通过 Promotion代理池提交优惠；最终以 Stripe 今日应付金额为准")
                 elif provider == "twint":
                     self.log(job_id, "TWINT 已确认可用，正在应用首月优惠并校验 CHF 今日应付金额")
+                elif provider == "gopay":
+                    self.log(job_id, "GoPay 已确认可用，正在应用优惠并校验 IDR 今日应付金额")
                 advance_progress(70, "正在应用优惠")
                 campaign = options.get("promo_campaign") or "plus-1-month-free"
                 if provider == "paypal":
@@ -4398,7 +4417,7 @@ class JobStore:
                 # 卡住时，额外 Sentinel 上下文会让批准结果与 Stripe
                 # submission 不同步。
                 approve_callback=None if provider == "paypal" else approve_cb,
-                apply_promo_callback=apply_promo_cb if provider in {"pix", "momo", "gcash", "paypal", "upi", "ideal", "twint"} and promo_requested else None,
+                apply_promo_callback=apply_promo_cb if provider in {"pix", "momo", "gcash", "gopay", "paypal", "upi", "ideal", "twint"} and promo_requested else None,
                 ideal_bank=options.get("ideal_bank", ""),
                 require_zero_due=promo_requested,
                 local_method_strategy=options.get("local_method_strategy") or "standalone",
@@ -4419,6 +4438,8 @@ class JobStore:
                     raise RuntimeError(
                         "IDEAL_PAYMENT_LINK_INVALID: iDEAL 结果不是带签名的 pay.ideal.nl 交易链接"
                     )
+            elif provider == "gopay":
+                provider_result = require_gopay_midtrans_result(provider_result)
             self.update(job_id, percent=98, text="结果已生成，正在整理页面")
             result.update(provider_result)
             # Display the currency Stripe actually returned instead of only
