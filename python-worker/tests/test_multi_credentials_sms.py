@@ -604,6 +604,49 @@ def test_browser_can_switch_password_page_to_email_otp() -> None:
     target.click.assert_called_once()
 
 
+def test_partial_ls_email_login_requires_existing_totp_before_session_completion() -> None:
+    account = MailAccount(
+        "totp-only@example.com", "mailbox-password", "client", "mail-rt", "raw",
+        chatgpt_password="", totp_secret="JBSWY3DPEHPK3PXP",
+    )
+    events: list[str] = []
+
+    class Flow(OpenAIEmailRegisterFlow):
+        def __init__(self):
+            super().__init__(account, "", True, events.append, existing_account=True)
+            self.phase = "email"
+
+        def _login_secret_rejection(self, _page):
+            return ""
+
+        def _has_totp_challenge(self, _page):
+            return self.phase == "totp"
+
+        def _has_otp_input(self, _page):
+            return self.phase == "totp"
+
+        def _has_chatgpt_session(self, _page):
+            return self.phase == "complete"
+
+        def _submit_email_code(self, _page, _timestamp):
+            events.append("email")
+            self.phase = "totp"
+
+        def _submit_totp_challenge(self, _page):
+            events.append("totp")
+            self.phase = "complete"
+
+        def _progress_signature(self, _page):
+            return ""
+
+        def _sleep_checked(self, _seconds):
+            return None
+
+    flow = Flow()
+    flow._drive_register_or_login(Mock(url="https://auth.openai.com/email-verification"), 0)
+    assert events == ["email", "totp"]
+
+
 def test_protocol_totp_and_workspace_challenges_use_first_available_workspace() -> None:
     account = MailAccount("user@example.com", "", "", "", "raw", totp_secret="JBSWY3DPEHPK3PXP")
     flow = ProtocolRegistrationFlow(account)

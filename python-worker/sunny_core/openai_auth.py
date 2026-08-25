@@ -959,18 +959,63 @@ class OpenAIEmailRegisterFlow:
         password_step_submitted = False
         password_step_submitted_at = 0.0
         password_step_attempts = 0
+        # A partial LS (existing TOTP without a ChatGPT password) is still an
+        # email-login flow, but the email OTP only satisfies the first factor.
+        # Do not accept the provisional ChatGPT session until the stored TOTP
+        # has also been submitted.
+        require_totp_after_email = bool(
+            self.existing_account
+            and self.account.totp_secret
+            and not str(self.account.chatgpt_password or "").strip()
+        )
+        totp_submitted = False
+        totp_submitted_at = 0.0
         last_progress_signature = ""
         last_progress_at = time.time()
         passive_reload_count = 0
         while time.time() < deadline:
             self._check_cancelled()
-            if self._has_chatgpt_session(page):
-                self._emit_progress("auth_completed")
-                return
             login_secret_error = self._login_secret_rejection(page)
             if login_secret_error:
                 credential_label = "密码" if self.login_secret_stage == "password" else "2FA"
                 raise LoginSecretAuthenticationError(f"ChatGPT {credential_label}验证失败: {login_secret_error}")
+            # Check the challenge before probing /api/auth/session. OpenAI can
+            # expose a provisional session cookie while the MFA page is still
+            # active, which used to make an email-only login look complete.
+            totp_visible = self._has_totp_challenge(page)
+            if (
+                not totp_visible
+                and require_totp_after_email
+                and email_code_submitted
+                and self._has_otp_input(page)
+            ):
+                # Some localized MFA pages do not contain an explicit "2FA"
+                # marker. Once the email factor was accepted, any remaining
+                # one-time-code form is the account's TOTP challenge.
+                totp_visible = True
+            if totp_visible:
+                if totp_submitted:
+                    if time.time() - totp_submitted_at >= LOGIN_SECRET_STEP_TIMEOUT_SECONDS:
+                        raise LoginSecretAuthenticationError("ChatGPT 2FA 提交后认证页面未继续")
+                    self._sleep_checked(1)
+                    continue
+                try:
+                    self._submit_totp_challenge(page)
+                except (TaskCancelledError, BrowserDriverDisconnectedError):
+                    raise
+                except Exception as exc:
+                    if self._uses_login_secret() or require_totp_after_email:
+                        raise LoginSecretAuthenticationError(f"ChatGPT 2FA 登录未完成: {exc}") from exc
+                    raise
+                totp_submitted = True
+                totp_submitted_at = time.time()
+                continue
+            if self._has_chatgpt_session(page):
+                if require_totp_after_email and not totp_submitted:
+                    self._sleep_checked(1)
+                    continue
+                self._emit_progress("auth_completed")
+                return
             signature = self._progress_signature(page)
             no_progress_timeout = (
                 LOGIN_SECRET_NO_PROGRESS_TIMEOUT_SECONDS
@@ -1042,21 +1087,6 @@ class OpenAIEmailRegisterFlow:
                     about_you_submitted = False
                     continue
                 raise RuntimeError("Phone verification required, but no usable phone pool is configured")
-            if self._has_totp_challenge(page):
-                if self.login_secret_stage == "totp":
-                    if time.time() - self.login_secret_submitted_at < LOGIN_SECRET_STEP_TIMEOUT_SECONDS:
-                        self._sleep_checked(1)
-                        continue
-                    raise LoginSecretAuthenticationError("ChatGPT 2FA 提交后认证页面未继续")
-                try:
-                    self._submit_totp_challenge(page)
-                except (TaskCancelledError, BrowserDriverDisconnectedError):
-                    raise
-                except Exception as exc:
-                    if self._uses_login_secret():
-                        raise LoginSecretAuthenticationError(f"ChatGPT 2FA 登录未完成: {exc}") from exc
-                    raise
-                continue
             if self._has_workspace_selection(page):
                 self._select_first_workspace(page)
                 continue

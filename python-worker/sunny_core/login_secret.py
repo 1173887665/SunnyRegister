@@ -139,6 +139,7 @@ def _invalid_auth_step(result: dict[str, Any] | None, text: str = "") -> bool:
 RECENT_EMAIL_CODE_MAX_AGE_SECONDS = 120
 EMAIL_OTP_INITIAL_WAIT_SECONDS = 120
 EMAIL_OTP_RESEND_WAIT_SECONDS = 60
+LOGIN_SECRET_STEP_TIMEOUT_SECONDS = 30
 
 
 def generate_chatgpt_password(length: int = 16) -> str:
@@ -650,6 +651,7 @@ class LoginSecretSetupFlow:
         totp_used = False
         totp_submitted_at = 0.0
         password_used = False
+        email_code_submitted_at = 0.0
         email_code_min_timestamp = min_timestamp
         while time.time() < deadline:
             self._check_cancelled()
@@ -657,11 +659,15 @@ class LoginSecretSetupFlow:
             if "chatgpt.com" in url:
                 try:
                     self._session_json(page)
-                    if submitted_recent_code:
-                        self.log("[登录密钥] 已成功复用注册/登录阶段邮箱验证码完成重认证")
-                    elif email_code_used:
-                        self.log("[登录密钥] 已使用邮箱渠道最新验证码完成重认证")
-                    return
+                    # A session cookie can be issued before MFA is completed.
+                    # Existing TOTP accounts must remain in the state machine
+                    # until the second factor has been accepted.
+                    if not (self.account.totp_secret and not totp_used):
+                        if submitted_recent_code:
+                            self.log("[登录密钥] 已成功复用注册/登录阶段邮箱验证码完成重认证")
+                        elif email_code_used:
+                            self.log("[登录密钥] 已使用邮箱渠道最新验证码完成重认证")
+                        return
                 except Exception:
                     pass
             state = self._page_state(page)
@@ -699,7 +705,9 @@ class LoginSecretSetupFlow:
                     "email", "e-mail", "メール", "邮箱", "郵箱", "이메일",
                 ))
                 is_totp = explicit_totp or bool(
-                    password_used and self.account.totp_secret and not explicit_email
+                    self.account.totp_secret
+                    and (password_used or (email_code_used and time.time() - email_code_submitted_at >= 3))
+                    and not explicit_email
                 )
                 if is_totp:
                     if not totp_used:
@@ -771,11 +779,75 @@ class LoginSecretSetupFlow:
                     email_code_used = True
                     submitted_email_code = str(code).strip()
                     submitted_recent_code = use_recent_code
-                    recent_code_submitted_at = time.time() if use_recent_code else 0.0
+                    email_code_submitted_at = time.time()
+                    recent_code_submitted_at = email_code_submitted_at if use_recent_code else 0.0
                     self._sleep(2)
                     continue
             self._sleep(0.75)
         raise TimeoutError(f"ChatGPT 重认证超时: {self._page_state(page)}")
+
+    def _complete_existing_totp_after_email_reauth(self, page) -> None:
+        """Finish an existing-account TOTP challenge after email reauth.
+
+        Password enrollment and 2FA enrollment both start from an email
+        reauthentication transaction. For an account that already has a TOTP
+        factor, the email factor may leave a second MFA page mounted briefly;
+        wait for that page and submit the stored secret before returning to the
+        caller so it can safely perform the protected account operation.
+        """
+        if not self.account.totp_secret:
+            return
+        deadline = time.time() + EMAIL_OTP_RESEND_WAIT_SECONDS
+        submitted = False
+        submitted_at = 0.0
+        no_challenge_started = 0.0
+        while time.time() < deadline:
+            self._check_cancelled()
+            state = self._page_state(page)
+            url = str(state.get("url") or "").lower()
+            text = str(state.get("text") or "").lower()
+            if _is_auth_rate_limit_text(f"{url} {text}"):
+                raise LoginSecretRateLimitError(
+                    "ChatGPT 重认证触发 rate_limit_exceeded：OpenAI 返回请求过多，请稍后重试"
+                )
+            if _is_account_deactivated_text(f"{url} {text}"):
+                raise RuntimeError("account_deactivated: OpenAI 登录页报告账户已停用或封禁；已停止 2FA 验证")
+            # The email transaction has already returned a continue_url. Any
+            # remaining one-time-code form belongs to the existing TOTP factor,
+            # including localized pages that expose no MFA label.
+            if state.get("codeInputs"):
+                no_challenge_started = 0.0
+                if not submitted:
+                    if not self._fill_code(page, generate_totp(self.account.totp_secret)):
+                        raise RuntimeError("邮箱重认证后未找到可用的 TOTP 输入控件")
+                    submitted = True
+                    submitted_at = time.time()
+                    self.log("[登录密钥] 邮箱重认证成功，已提交账户已有 2FA 动态验证码")
+                    self._sleep(2)
+                    continue
+                if self._email_code_rejected(state):
+                    raise RuntimeError("邮箱重认证后的 2FA 动态验证码未通过验证")
+                if time.time() - submitted_at >= LOGIN_SECRET_STEP_TIMEOUT_SECONDS:
+                    raise TimeoutError("邮箱重认证提交 2FA 后 30 秒内未完成跳转")
+                self._sleep(0.75)
+                continue
+            if submitted:
+                if "chatgpt.com" in url:
+                    try:
+                        self._session_json(page)
+                        return
+                    except Exception:
+                        pass
+            elif "chatgpt.com" in url and not state.get("codeInputs"):
+                # The transaction did not request MFA for this session. Do not
+                # hold a valid reauthentication indefinitely, but allow the
+                # challenge a short time to mount after the continue redirect.
+                if not no_challenge_started:
+                    no_challenge_started = time.time()
+                if time.time() - no_challenge_started >= 8:
+                    return
+            self._sleep(0.75)
+        raise TimeoutError("邮箱重认证后的 2FA 验证超时")
 
     def _add_password(self, page) -> str:
         password = generate_chatgpt_password()
@@ -785,7 +857,12 @@ class LoginSecretSetupFlow:
             # just-used registration code once, then require a distinct mailbox
             # code if OpenAI rejects it.
             self._dismiss_continue_gate(page)
-            self._reauth_for_password(page, password)
+            self._reauth_for_password(
+                page,
+                password,
+                recent_email_code=self.recent_email_code,
+                recent_email_code_at=self.recent_email_code_at,
+            )
             protocol_result = self._add_password_via_protocol(page, password)
             status = int(protocol_result.get("status") or 0)
             if not protocol_result.get("ok") and not _password_already_set(protocol_result):
@@ -796,7 +873,12 @@ class LoginSecretSetupFlow:
                 elif status in {401, 403}:
                     self.log("[登录密钥] 密码协议接口要求重新认证，将最多重认证一次后重试")
                     self._sleep(1.5)
-                    self._reauth_for_password(page, password)
+                    self._reauth_for_password(
+                        page,
+                        password,
+                        recent_email_code=self.recent_email_code,
+                        recent_email_code_at=self.recent_email_code_at,
+                    )
                     protocol_result = self._add_password_via_protocol(page, password)
         except Exception as exc:
             protocol_result = {"ok": False, "status": 0, "reason": f"{type(exc).__name__}: {exc}"}
@@ -970,9 +1052,17 @@ class LoginSecretSetupFlow:
         self._ensure_chatgpt_page(page)
         if self._dismiss_continue_gate(page):
             self._sleep(1)
+        self._complete_existing_totp_after_email_reauth(page)
         return self._session_json(page)
 
-    def _reauth_for_password(self, page, password: str) -> dict[str, Any]:
+    def _reauth_for_password(
+        self,
+        page,
+        password: str,
+        *,
+        recent_email_code: str = "",
+        recent_email_code_at: float = 0.0,
+    ) -> dict[str, Any]:
         """Start the dedicated post-registration password reauthentication flow."""
         self._ensure_chatgpt_page(page)
         if self._dismiss_continue_gate(page):
@@ -1011,7 +1101,9 @@ class LoginSecretSetupFlow:
             page,
             auth_url,
             min_timestamp,
-            prefer_recent_email_code=False,
+            recent_email_code=recent_email_code,
+            recent_email_code_at=recent_email_code_at,
+            prefer_recent_email_code=bool(recent_email_code),
         )
 
     def _reauth_for_2fa(
@@ -1488,6 +1580,48 @@ class ProtocolLoginSecretSetupFlow:
             updated["id_token"] = access_token
         return updated
 
+    def _complete_existing_totp_protocol(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Complete an MFA page returned by the password reauth transaction."""
+        if not self.account.totp_secret or not isinstance(payload, dict):
+            return payload
+        page = payload.get("page") if isinstance(payload.get("page"), dict) else {}
+        continue_url = str(payload.get("continue_url") or payload.get("continueUrl") or "")
+        page_type = str(page.get("type") or "")
+        if page_type != "mfa_challenge" and "/mfa-challenge/" not in continue_url:
+            return payload
+        auth_session = payload.get("oai-client-auth-session")
+        auth_session = auth_session if isinstance(auth_session, dict) else {}
+        factors: list[dict[str, Any]] = []
+        for key in ("mfa_challenge_factors", "mfa_factors"):
+            values = auth_session.get(key)
+            if isinstance(values, list):
+                factors.extend(item for item in values if isinstance(item, dict))
+        factor = next((item for item in factors if item.get("factor_type") == "totp" and item.get("id")), None)
+        if not factor:
+            raise RuntimeError("邮箱重认证后要求 2FA，但协议响应没有可用的 TOTP 因子")
+        common_headers = {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "origin": AUTH_BASE_URL,
+            "referer": continue_url or AUTH_BASE_URL,
+        }
+        status, _issued, text = self._request(
+            "POST",
+            f"{AUTH_BASE_URL}/api/accounts/mfa/issue_challenge",
+            headers=common_headers,
+            json={"type": "totp", "id": factor["id"], "force_fresh_challenge": False},
+        )
+        self._require_ok(status, _issued, text, "Issue TOTP challenge")
+        status, verified, text = self._request(
+            "POST",
+            f"{AUTH_BASE_URL}/api/accounts/mfa/verify",
+            headers=common_headers,
+            json={"type": "totp", "id": factor["id"], "code": generate_totp(self.account.totp_secret)},
+        )
+        verified = self._require_ok(status, verified, text, "Verify TOTP challenge")
+        self.log("[登录密钥] 邮箱重认证成功，已通过协议提交账户已有 2FA 动态验证码")
+        return verified if isinstance(verified, dict) else payload
+
     def _reauthenticate(
         self,
         callback_url: str,
@@ -1632,6 +1766,7 @@ class ProtocolLoginSecretSetupFlow:
         else:
             self._require_ok(status, payload, text, "邮箱重认证验证码校验")
         payload = self._require_ok(status, payload, text, "邮箱重认证验证码校验")
+        payload = self._complete_existing_totp_protocol(payload)
         continue_url = str((payload or {}).get("continue_url") or "") if isinstance(payload, dict) else ""
         if not continue_url:
             raise RuntimeError("邮箱重认证验证码校验成功，但响应缺少 continue_url")

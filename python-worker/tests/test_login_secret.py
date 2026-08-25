@@ -108,6 +108,50 @@ class LoginSecretTests(unittest.TestCase):
         self.assertEqual(result["accessToken"], "access-token")
         self.assertEqual(events[:2], [("mailbox", "connect"), ("goto", "https://auth.openai.com/authorize")])
 
+    def test_password_reauthentication_completes_existing_totp_after_email(self):
+        class Flow(LoginSecretSetupFlow):
+            def __init__(self):
+                super().__init__(self_account, {}, "")
+                self.phase = "totp"
+                self.used_totp = ""
+
+            def _page_state(self, _page):
+                if self.phase == "totp":
+                    return {
+                        "url": "https://auth.openai.com/authorize",
+                        "passwordInputs": 0,
+                        "codeInputs": 1,
+                        "text": "Enter verification code",
+                    }
+                return {
+                    "url": "https://chatgpt.com/?action=add_password",
+                    "passwordInputs": 0,
+                    "codeInputs": 0,
+                    "text": "",
+                }
+
+            def _fill_code(self, page, code):
+                self.used_totp = code
+                self.phase = "complete"
+                page.url = "https://chatgpt.com/?action=add_password"
+                return True
+
+            def _session_json(self, _page):
+                if not self.used_totp:
+                    raise RuntimeError("not authenticated")
+                return {"accessToken": "access-token"}
+
+            def _sleep(self, _seconds):
+                return None
+
+        self_account = self._account()
+        self_account.totp_secret = "JBSWY3DPEHPK3PXP"
+        page = type("Page", (), {"url": "https://chatgpt.com/?action=add_password"})()
+        flow = Flow()
+        with patch("sunny_core.login_secret.generate_totp", return_value="654321"):
+            flow._complete_existing_totp_after_email_reauth(page)
+        self.assertEqual(flow.used_totp, "654321")
+
     def test_password_reauthentication_tries_recent_registration_code_before_mailbox(self):
         class Reader:
             def wait_for_code(self, *_args):
