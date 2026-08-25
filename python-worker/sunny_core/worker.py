@@ -2730,6 +2730,164 @@ def _acquire_refresh_tokens(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, 
     return ok, errors, items
 
 
+def _sub2_import_rt_eligible(account: dict[str, Any], mailbox: dict[str, Any] | None) -> bool:
+    """Only retry login for accounts that have already completed phone binding."""
+    statuses = {
+        str(account.get("status") or "").strip().lower(),
+        str((mailbox or {}).get("status") or "").strip().lower(),
+    }
+    return bool(statuses & {"已接码", "phone_bound", "已反代", "reverse_proxied", "登录刷新"})
+
+
+def _sub2_import_one(
+    db: SunnyDB,
+    payload: dict[str, Any],
+    account: dict[str, Any],
+    index: int,
+    total: int,
+) -> tuple[int, list[str], dict[str, Any]]:
+    """Import one account, recovering a missing RT through the existing login flow."""
+    email = str(account.get("email") or "").strip()
+    account_id = int(account.get("id") or 0)
+    stage = IMPORT_REVERSE_PROXY
+    _emit_registration_progress(db, email, stage, "initializing")
+    mailbox = db.fetch_mailbox_by_email(email)
+    if not mailbox:
+        raise RuntimeError("找不到该账户对应的邮箱凭证")
+    session = db.fetch_session_by_email(email) or {}
+    access_token = str(account.get("access_token") or session.get("access_token") or "").strip()
+    refresh_token = str(account.get("openai_rt") or session.get("refresh_token") or "").strip()
+    if not refresh_token:
+        if not _sub2_import_rt_eligible(account, mailbox):
+            reason = "账户尚未完成接码，缺少 Refresh Token，已跳过反代导入"
+            db.event(f"[{email}] [反代] {reason}", "warning", detail={"email": email, "scope": "selected", "skipped": True})
+            _emit_registration_progress(db, email, stage, "stage_incomplete", state="completed", error=reason)
+            return 0, [], {"email": email, "status": "skipped", "reason": reason}
+        db.event(
+            f"[{email}] [反代] 检测到缺少 Refresh Token，账户状态允许登录恢复，开始获取 RT",
+            detail={"email": email, "scope": "selected", "account_id": account_id, "refresh_token_recovery": True},
+        )
+        acquire_payload = dict(payload)
+        acquire_payload.update(
+            {
+                "account_ids": [account_id],
+                "mailbox_ids": [int(mailbox.get("id") or 0)],
+                "execution_mode": "protocol",
+                "protocol_challenge_strategy": "sentinel_protocol",
+                "registration_stage": CODEX_PHONE_BIND,
+            }
+        )
+        succeeded, result = _run_one(db, "sunny_acquire_rt", acquire_payload, mailbox, index, total)
+        result_map = result if isinstance(result, dict) else {}
+        if not succeeded or not result_map.get("has_refresh_token"):
+            detail = str(result_map.get("stage_error") or result_map.get("phone_skipped_reason") or result)
+            raise RuntimeError(detail if detail and detail != "{}" else "登录成功但未获取到 Refresh Token")
+        account = (db.fetch_accounts([account_id]) or [account])[0]
+        session = db.fetch_session_by_email(email) or session
+        access_token = str(account.get("access_token") or session.get("access_token") or result_map.get("access_token") or "").strip()
+        refresh_token = str(account.get("openai_rt") or session.get("refresh_token") or result_map.get("refresh_token") or "").strip()
+    if not access_token and refresh_token:
+        _emit_registration_progress(db, email, stage, "auth_completed")
+        token = refresh_openai_access_token(refresh_token, _proxy_snapshot(payload, max(0, index - 1))["register"])
+        access_token = str(token.get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("Refresh Token 已获取，但未返回有效 Access Token")
+        session = {
+            "access_token": access_token,
+            "refresh_token": str(token.get("refresh_token") or refresh_token),
+            "id_token": token.get("id_token", ""),
+            "expires_at": token.get("expires_at"),
+            "session_json": token,
+        }
+        refresh_token = str(session["refresh_token"] or refresh_token)
+        account_id = db.upsert_account(email, access_token=access_token, openai_rt=refresh_token, last_error="")
+        db.upsert_session(email, account_id, session)
+    if not access_token or not refresh_token:
+        raise RuntimeError("当前账号缺少 Access Token 或 Refresh Token，无法导入 sub2api")
+    session = dict(session)
+    session.update({"access_token": access_token, "refresh_token": refresh_token})
+    _emit_registration_progress(db, email, stage, "reverse_importing")
+    # Sub2API itself can use its configured upstream proxy; importing an
+    # already-authenticated account must not require a registration proxy.
+    _import_sub2api(db, email, account_id, session, proxy_url="")
+    db.upsert_account(email, status="reverse_proxied", access_token=access_token, openai_rt=refresh_token, last_error="")
+    db.mark_mailbox_by_email(email, "已反代", openai_rt=refresh_token)
+    _emit_registration_progress(db, email, stage, "reverse_imported", state="completed")
+    return 1, [], {"email": email, "status": "success", "has_access_token": True, "has_refresh_token": True}
+
+
+def _sub2_import_one_isolated(
+    task_id: str,
+    payload: dict[str, Any],
+    account_id: int,
+    index: int,
+    total: int,
+) -> tuple[int, int, list[str], dict[str, Any]]:
+    worker_db = SunnyDB(task_id, ensure_schema=False)
+    try:
+        accounts = worker_db.fetch_accounts([account_id])
+        if not accounts:
+            return index, 0, [f"账户 {account_id} 不存在"], {"email": str(account_id), "status": "failed"}
+        try:
+            ok, errors, item = _sub2_import_one(worker_db, payload, accounts[0], index, total)
+            return index, ok, errors, item
+        except Exception as exc:
+            if _is_cancel_exception(exc):
+                raise
+            email = str(accounts[0].get("email") or account_id)
+            message = f"[{email}] {exc}"
+            worker_db.event(f"[{email}] [反代] 任务失败：{exc}", "error", detail={"email": email, "scope": "selected"})
+            _emit_registration_progress(worker_db, email, IMPORT_REVERSE_PROXY, "failed", state="abnormal", error=str(exc))
+            return index, 0, [message], {"email": email, "status": "failed", "error": str(exc)}
+    finally:
+        worker_db.close()
+
+
+def _sub2_import(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
+    accounts = db.fetch_accounts(_ids(payload.get("account_ids")) or None)
+    if not accounts:
+        raise RuntimeError("未找到需要导入的账户")
+    requested = int(payload.get("concurrency") or 0)
+    default_concurrency = max(1, (int(os.cpu_count() or 1) * 3 + 1) // 2)
+    concurrency = max(1, min(requested or default_concurrency, 6, len(accounts)))
+    db.event(
+        f"[系统] 反代导入并发数：{concurrency}（CPU {int(os.cpu_count() or 1)} 核，默认并发 {default_concurrency}）",
+        detail={"scope": "global", "concurrency": concurrency, "total": len(accounts), "operation": "sub2_import"},
+    )
+    success = 0
+    completed = 0
+    errors: list[str] = []
+    items: list[dict[str, Any]] = []
+    db.update_task(progress_total=len(accounts), progress_current=0, success_count=0, error_count=0)
+    for batch_start in range(0, len(accounts), concurrency):
+        batch = accounts[batch_start:batch_start + concurrency]
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sunny-sub2-import") as pool:
+            futures = {
+                pool.submit(_sub2_import_one_isolated, db.task_id, payload, int(account.get("id") or 0), batch_start + offset, len(accounts)): str(account.get("email") or "")
+                for offset, account in enumerate(batch, start=1)
+            }
+            pending = set(futures)
+            while pending:
+                if db.cancel_requested():
+                    for future in pending:
+                        future.cancel()
+                    raise SunnyTaskCancelled("Task cancelled by user")
+                done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                for future in done:
+                    try:
+                        _index, account_success, account_errors, item = future.result()
+                    except Exception as exc:
+                        if _is_cancel_exception(exc):
+                            raise
+                        account_success, account_errors, item = 0, [f"[{futures[future]}] 反代并行 Worker 失败：{exc}"], {"email": futures[future], "status": "failed", "error": str(exc)}
+                    completed += 1
+                    success += account_success
+                    errors.extend(account_errors)
+                    items.append(item)
+                    db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
+    return success, errors, items
+
+
 def _add_login_secret_account(
     db: SunnyDB,
     payload: dict[str, Any],
@@ -3035,6 +3193,16 @@ def run_sunny_task(task_id: str) -> None:
             db.ensure_not_cancelled()
             status = "succeeded" if ok else "failed"
             db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps({"success": ok, "errors": errors, "items": items}, ensure_ascii=False), error="; ".join(errors[:3]) if not ok else "", finished_at=now_sql())
+            return
+        if task_type == "sunny_sub2_import":
+            ok, errors, items = _sub2_import(db, payload)
+            db.ensure_not_cancelled()
+            skipped = len([item for item in items if item.get("status") == "skipped"])
+            failed = len(errors)
+            status = "succeeded" if not errors else "failed"
+            result = {"selected": len(items), "uploaded": ok, "confirmed": ok, "success": ok, "failed": failed, "skipped": skipped, "errors": errors, "items": items}
+            db.update_task(status=status, success_count=ok, error_count=failed, result_json=json.dumps(result, ensure_ascii=False), error="; ".join(errors[:3]) if errors else "", finished_at=now_sql())
+            db.event(f"反代导入任务总结：选中 {len(items)}，成功 {ok}，失败 {failed}，跳过 {skipped}", "info" if status == "succeeded" else "error", detail={"scope": "global", **result})
             return
         if task_type == "sunny_add_ls":
             ok, errors, items = _add_login_secrets(db, payload)

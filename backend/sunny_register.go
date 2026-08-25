@@ -5604,7 +5604,7 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 		return
 	}
 	body, _ := parseBody(r)
-	typemap := map[string]string{"register": "sunny_register", "login": "sunny_login", "refresh-session": "sunny_refresh_session", "acquire-rt": "sunny_acquire_rt", "add-ls": "sunny_add_ls"}
+	typemap := map[string]string{"register": "sunny_register", "login": "sunny_login", "refresh-session": "sunny_refresh_session", "acquire-rt": "sunny_acquire_rt", "add-ls": "sunny_add_ls", "sub2-import": "sunny_sub2_import"}
 	typ := typemap[parts[0]]
 	if typ == "" {
 		writeError(w, 404, "not found")
@@ -5632,7 +5632,7 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 			return
 		}
 	}
-	if typ == "sunny_refresh_session" || typ == "sunny_acquire_rt" || typ == "sunny_add_ls" {
+	if typ == "sunny_refresh_session" || typ == "sunny_acquire_rt" || typ == "sunny_add_ls" || typ == "sunny_sub2_import" {
 		accountIDs := uintSlice(body["account_ids"])
 		if len(accountIDs) == 0 {
 			sessionIDs := uintSlice(body["session_ids"])
@@ -5672,6 +5672,8 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
+		} else if typ == "sunny_sub2_import" {
+			body["account_ids"] = accountIDs
 		} else if typ == "sunny_add_ls" {
 			eligible, skipped, err := s.sunnyPrepareAddLSTask(accountIDs)
 			if err != nil {
@@ -5689,6 +5691,9 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 		}
 	}
 	total := len(uintSlice(body["mailbox_ids"])) + len(uintSlice(body["account_ids"]))
+	if typ == "sunny_refresh_session" || typ == "sunny_acquire_rt" || typ == "sunny_add_ls" || typ == "sunny_sub2_import" {
+		total = len(uintSlice(body["account_ids"]))
+	}
 	if typ == "sunny_add_ls" {
 		total = intValue(body["selected_account_count"], total)
 	}

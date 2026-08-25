@@ -1057,6 +1057,29 @@ func TestSunnyAcquireRTTaskRejectsEmptySelection(t *testing.T) {
 	}
 }
 
+func TestSunnySub2ImportTaskResolvesSessionSelection(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/sub2-import", strings.NewReader(`{"session_ids":[`+strconv.Itoa(int(session.ID))+`]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.sunnyTasks(rec, req, []string{"sub2-import"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sub2 import status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var task Task
+	if err := s.db.Order("created_at desc").First(&task).Error; err != nil {
+		t.Fatalf("load sub2 import task: %v", err)
+	}
+	payload := jsonMap(task.PayloadJSON)
+	if task.Type != "sunny_sub2_import" || len(uintSlice(payload["account_ids"])) != 1 {
+		t.Fatalf("unexpected sub2 import task: type=%s payload=%#v", task.Type, payload)
+	}
+}
+
 func TestSunnyAddLSTaskFiltersCompleteLoginSecretsAndUsesSentinelProtocol(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	var completeSession SunnySession
