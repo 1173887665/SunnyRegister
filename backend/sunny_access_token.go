@@ -347,6 +347,7 @@ func (s *Server) sunnyAccessTokenCheckBatchSize() int {
 func (s *Server) sunnyAccessTokenCandidates(ids []uint, scheduled bool) ([]sunnyAccessTokenCandidate, int, error) {
 	var sessions []SunnySession
 	query := s.db.Model(&SunnySession{}).Select("id", "account_id", "email", "access_token", "session_json", "health_check_status")
+	query = sunnyUniqueSessionIdentityScope(query)
 	if len(ids) > 0 {
 		query = query.Where("id IN ?", ids)
 	} else if !scheduled {

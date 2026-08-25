@@ -321,6 +321,43 @@ func TestSunnyMailboxAndSessionATFieldsUseSameMailboxSource(t *testing.T) {
 	}
 }
 
+func TestSunnySessionListDeduplicatesCaseInsensitiveLegacyRows(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var account SunnyAccount
+	if err := s.db.Where("email = ?", "session@example.com").First(&account).Error; err != nil {
+		t.Fatalf("load account: %v", err)
+	}
+	now := time.Now()
+	legacy := SunnySession{
+		AccountID:   account.ID,
+		Email:       "SESSION@EXAMPLE.COM",
+		AccessToken: "newer-token",
+		CreatedAt:   now,
+		UpdatedAt:   now.Add(time.Minute),
+	}
+	if err := s.db.Create(&legacy).Error; err != nil {
+		t.Fatalf("create legacy duplicate session: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	s.sunnySessions(rec, httptest.NewRequest(http.MethodGet, "/api/sunny/sessions?page=1&page_size=10", nil), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Items []map[string]any `json:"items"`
+		Total int              `json:"total"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if payload.Total != 1 || len(payload.Items) != 1 {
+		t.Fatalf("deduplicated list = total %d items %d, want one row: %s", payload.Total, len(payload.Items), rec.Body.String())
+	}
+	if uint(intValue(payload.Items[0]["id"], 0)) != legacy.ID {
+		t.Fatalf("deduplicated row did not keep newest session: %#v", payload.Items[0])
+	}
+}
+
 func TestSunnySessionUpdateSynchronizesMailboxAndAccountMetadata(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	group := SunnyMailboxGroup{Name: "Target Group"}

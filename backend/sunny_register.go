@@ -337,6 +337,25 @@ func sunnyEmailKey(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
+// Keep one session row per normalized mailbox identity in account-management
+// reads. Older deployments could contain duplicate rows created before the
+// case-insensitive unique index was installed; the newest row is authoritative.
+func sunnyUniqueSessionIdentityScope(query *gorm.DB) *gorm.DB {
+	return query.Where(`(
+		TRIM(sunny_sessions.email) = '' OR sunny_sessions.id IN (
+			SELECT id FROM (
+				SELECT id, ROW_NUMBER() OVER (
+					PARTITION BY LOWER(TRIM(email))
+					ORDER BY updated_at DESC, id DESC
+				) AS sunny_identity_rank
+				FROM sunny_sessions
+				WHERE TRIM(email) <> ''
+			) AS sunny_ranked
+			WHERE sunny_identity_rank = 1
+		)
+	)`)
+}
+
 func normalizeSunnyEditableEmail(value string) (string, error) {
 	email := strings.TrimSpace(value)
 	if email == "" {
@@ -4907,6 +4926,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		sortBy := strings.TrimSpace(q.Get("sort_by"))
 		if statusFilter == "" && planFilter == "" && trialFilter == "" && checkoutFilter == "" && len(paymentMethodFilter) == 0 {
 			query := s.db.Model(&SunnySession{})
+			query = sunnyUniqueSessionIdentityScope(query)
 			if kw != "" {
 				pattern := "%" + kw + "%"
 				rebindEmails := s.db.Model(&SunnyAccount{}).Select("email").Where("LOWER(rebind_email) LIKE ?", pattern)
@@ -4946,7 +4966,8 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			return
 		}
 		var rows []sunnySessionListRow
-		s.db.Model(&SunnySession{}).Select(sunnySessionListColumns).Scan(&rows)
+		listQuery := sunnyUniqueSessionIdentityScope(s.db.Model(&SunnySession{}))
+		listQuery.Select(sunnySessionListColumns).Scan(&rows)
 		accounts, mailboxes := s.sunnySessionListSidecars(rows)
 		itemsAll := []map[string]any{}
 		for _, row := range rows {

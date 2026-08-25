@@ -2222,6 +2222,13 @@ def _run_one(
             or session.get("session_json") != persisted_session_json
             or session.get("storage_state_json") != persisted_storage_state
         ):
+            account_fields: dict[str, Any] = {
+                "access_token": current_access_token,
+                "last_error": "",
+            }
+            if current_refresh_token:
+                account_fields["openai_rt"] = current_refresh_token
+            account_id = db.upsert_account(email, **account_fields)
             db.upsert_session(email, account_id, session, account.raw)
         action = str(session.get("auth_action") or "login")
         action_label = "注册" if action == "register" else "登录"
