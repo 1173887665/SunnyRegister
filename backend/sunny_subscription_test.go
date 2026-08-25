@@ -13,9 +13,13 @@ import (
 
 func TestSunnySubscriptionPlanTypeFromAccessToken(t *testing.T) {
 	encode := func(value string) string { return base64.RawURLEncoding.EncodeToString([]byte(value)) }
-	token := encode(`{"alg":"none"}`) + "." + encode(`{"https://api.openai.com/auth":{"chatgpt_plan_type":"plus"}}`) + ".signature"
-	if got := sunnySubscriptionPlanTypeFromAccessToken(token); got != "plus" {
-		t.Fatalf("plan type=%q, want plus", got)
+	for _, plan := range []string{"free", "plus"} {
+		t.Run(plan, func(t *testing.T) {
+			token := encode(`{"alg":"none"}`) + "." + encode(fmt.Sprintf(`{"https://api.openai.com/auth":{"chatgpt_plan_type":%q}}`, plan)) + ".signature"
+			if got := sunnySubscriptionPlanTypeFromAccessToken(token); got != plan {
+				t.Fatalf("plan type=%q, want %s", got, plan)
+			}
+		})
 	}
 }
 
@@ -229,6 +233,60 @@ func TestSunnySubscriptionTaskUsesAccessTokenFallbackWhenMailDoesNotMatch(t *tes
 	result := jsonMap(saved.ResultJSON)
 	if intValue(result["subscribed"], 0) != 1 || intValue(result["not_subscribed"], 0) != 0 || intValue(result["failed"], 0) != 0 {
 		t.Fatalf("unexpected AT fallback result: %#v", result)
+	}
+}
+
+func TestSunnySubscriptionBatchUsesSameMailThenAccessTokenFallback(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var first SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&first).Error; err != nil {
+		t.Fatalf("load first session: %v", err)
+	}
+	if err := s.db.Model(&SunnyMailbox{}).Where("email = ?", first.Email).Update("account_type", "free").Error; err != nil {
+		t.Fatalf("prepare first mailbox: %v", err)
+	}
+	if err := s.db.Model(&SunnyAccount{}).Where("email = ?", first.Email).Update("account_type", "free").Error; err != nil {
+		t.Fatalf("prepare first account: %v", err)
+	}
+	mailbox := SunnyMailbox{Email: "second@example.com", ClientID: "second-client", RefreshToken: "second-refresh", Status: "已注册", AccountType: "plus", Enabled: true}
+	if err := s.db.Create(&mailbox).Error; err != nil {
+		t.Fatalf("create second mailbox: %v", err)
+	}
+	account := SunnyAccount{MailboxID: mailbox.ID, Email: mailbox.Email, Status: "registered", AccountType: "plus", AccessToken: "second-access-token"}
+	if err := s.db.Create(&account).Error; err != nil {
+		t.Fatalf("create second account: %v", err)
+	}
+	second := SunnySession{AccountID: account.ID, Email: mailbox.Email, AccessToken: account.AccessToken}
+	if err := s.db.Create(&second).Error; err != nil {
+		t.Fatalf("create second session: %v", err)
+	}
+
+	previousDetect := sunnyDetectSubscriptionMail
+	sunnyDetectSubscriptionMail = func(sunnySubscriptionCandidate, string) (bool, string, error) { return false, "", nil }
+	t.Cleanup(func() { sunnyDetectSubscriptionMail = previousDetect })
+	previousProbe := sunnyProbeSubscriptionAT
+	sunnyProbeSubscriptionAT = func(_ *Server, candidate sunnySubscriptionCandidate, _ string) sunnySubscriptionATResult {
+		plan := "free"
+		if candidate.SessionID == first.ID {
+			plan = "plus"
+		}
+		return sunnySubscriptionATResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, Status: "valid", PlanType: plan}
+	}
+	t.Cleanup(func() { sunnyProbeSubscriptionAT = previousProbe })
+
+	task := s.createTask(sunnySubscriptionTaskType, "sunny", map[string]any{"session_ids": []uint{first.ID, second.ID}}, 2)
+	s.executeSunnySubscriptionTask(&task, map[string]any{"session_ids": []uint{first.ID, second.ID}})
+	var firstAccount, secondAccount SunnyAccount
+	s.db.Where("email = ?", first.Email).First(&firstAccount)
+	s.db.Where("email = ?", second.Email).First(&secondAccount)
+	if firstAccount.AccountType != "plus" || secondAccount.AccountType != "free" {
+		t.Fatalf("batch AT plans were not synchronized: first=%q second=%q", firstAccount.AccountType, secondAccount.AccountType)
+	}
+	var saved Task
+	s.db.First(&saved, "id = ?", task.ID)
+	result := jsonMap(saved.ResultJSON)
+	if intValue(result["requested"], 0) != 2 || intValue(result["subscribed"], 0) != 1 || intValue(result["not_subscribed"], 0) != 1 || intValue(result["failed"], 0) != 0 {
+		t.Fatalf("unexpected batch subscription result: %#v", result)
 	}
 }
 
