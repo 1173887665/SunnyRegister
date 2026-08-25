@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import quote
 
 
@@ -87,6 +88,80 @@ def test_gopay_method_selection_prefers_gopay_cpmt() -> None:
         ],
     }
     assert checkout_app.custom_payment_method_id_for(payload, "gopay") == "cpmt_gopay"
+
+
+def test_gopay_checkout_preserves_method_from_creation_response() -> None:
+    creation = {
+        "custom_payment_methods": [
+            {"id": "cpmt_card", "name": "Card"},
+            {"id": "cpmt_gopay", "name": "GoPay"},
+        ],
+    }
+    refreshed = {
+        "amount_total": 0,
+        "currency": "IDR",
+        "custom_payment_methods": [{"id": "cpmt_card", "name": "Card"}],
+    }
+    with patch.object(
+        checkout_app,
+        "fetch_custom_checkout_session",
+        return_value=refreshed,
+    ) as fetch:
+        result = checkout_app.fetch_custom_checkout_session_with_retry(
+            object(), "token", "oaics_test", "openai_ie", "device",
+            attempts=3,
+            required_provider="gopay",
+            preserve_payment_methods_from=creation,
+        )
+
+    fetch.assert_called_once()
+    assert checkout_app.custom_payment_method_id_for(result, "gopay") == "cpmt_gopay"
+    assert result["amount_total"] == 0
+
+
+def test_gopay_checkout_payload_delays_promo_until_method_is_published() -> None:
+    options = {
+        "plan": "plus",
+        "link_type": "gopay",
+        "country": "ID",
+        "currency": "IDR",
+        "checkout_country": "ID",
+        "checkout_currency": "IDR",
+        "use_promo": True,
+        "promo_campaign": "plus-1-month-free",
+        "promo_on_create": False,
+    }
+    payload = checkout_app.checkout_payload(options, {})
+    assert "promo_campaign" not in payload
+
+
+def test_gopay_attempt_always_creates_checkout_before_applying_promo() -> None:
+    store = object.__new__(checkout_app.JobStore)
+    state = {"status": "running", "error": "", "result": None}
+    strategies: list[bool] = []
+    store.cancelled = lambda _job_id: False
+    store.get = lambda _job_id: dict(state)
+    store.update = lambda _job_id, **fields: state.update(fields)
+    store.log = lambda _job_id, _message: None
+    store._record_success = lambda _job_id, _result: None
+
+    def run_single(_job_id: str, attempt_options: dict) -> None:
+        strategies.append(bool(attempt_options["promo_on_create"]))
+        state.update(status="done", result={})
+
+    store._run_single = run_single
+    store._run_locked("job-gopay", {
+        "retry_count": 0,
+        "link_type": "gopay",
+        "use_promo": True,
+        "country": "ID",
+        "checkout_country": "ID",
+        "entry_proxies": ["http://promotion:8001"],
+        "exit_proxies": ["http://checkout:9001"],
+        "paired_proxy_rotation": True,
+    })
+
+    assert strategies == [False]
 
 
 def test_gopay_defaults_use_indonesia_billing() -> None:

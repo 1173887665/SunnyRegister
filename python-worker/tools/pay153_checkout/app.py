@@ -1133,15 +1133,34 @@ def fetch_custom_checkout_session_with_retry(
     delay_seconds: float = 0.8,
     require_paypal: bool = False,
     required_provider: str = "",
+    preserve_payment_methods_from: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read an OAICS session until its custom payment methods are published."""
     last: dict[str, Any] = {}
+    preserved_methods = (
+        list(preserve_payment_methods_from.get("custom_payment_methods") or [])
+        if isinstance(preserve_payment_methods_from, dict) else []
+    )
     total_attempts = max(1, int(attempts))
     for attempt in range(total_attempts):
         last = fetch_custom_checkout_session(
             http, token, session_id, processor_entity, device_id,
         )
-        methods = last.get("custom_payment_methods") or []
+        methods = list(last.get("custom_payment_methods") or [])
+        if preserved_methods:
+            known_ids = {
+                str(method.get("id") or "")
+                for method in methods if isinstance(method, dict)
+            }
+            methods.extend(
+                method for method in preserved_methods
+                if not isinstance(method, dict)
+                or not str(method.get("id") or "")
+                or str(method.get("id") or "") not in known_ids
+            )
+            if methods != (last.get("custom_payment_methods") or []):
+                last = dict(last)
+                last["custom_payment_methods"] = methods
         paypal_ready = any(
             "paypal" in json.dumps(method, ensure_ascii=False).lower()
             for method in methods
@@ -2512,10 +2531,9 @@ class JobStore:
                     and bool(current.get("use_promo"))
                 )
             if current.get("link_type") == "gopay":
-                # The reference GoPay flow starts from a native Midtrans link.
-                # Preserve the campaign on the initial OAICS checkout so the
-                # GoPay custom method and zero-due offer share one session.
-                current["promo_on_create"] = bool(current.get("use_promo"))
+                # A zero-due OAICS checkout may omit country-specific methods.
+                # Publish cpmt_gopay first, then update the same session to 0.
+                current["promo_on_create"] = False
             if current.get("link_type") == "pix" and current.get("pix_tax_id_auto"):
                 auto_kind = current.get("pix_auto_kind") or "cpf"
                 kind = ("cpf" if attempt % 2 else "cnpj") if auto_kind == "mixed" else auto_kind
@@ -3461,11 +3479,20 @@ class JobStore:
                 )
                 if provider == "gopay":
                     self.update(job_id, percent=58, text="正在读取 GoPay 自定义支付方式")
+                    stage1_gopay_method_id = custom_payment_method_id_for(checkout_data, "gopay")
+                    if stage1_gopay_method_id:
+                        self.log(job_id, "GoPay 已在 Checkout 创建响应中发布；将锁定该支付方式并贯穿优惠、taxes、confirm 和 start")
                     custom_state = fetch_custom_checkout_session_with_retry(
                         chatgpt_http, token, session_id, custom_processor, device_id,
                         log=lambda message: self.log(job_id, message), attempts=6,
                         required_provider="gopay",
+                        preserve_payment_methods_from=checkout_data,
                     )
+                    custom_method_id = custom_payment_method_id_for(custom_state, "gopay")
+                    if not custom_method_id:
+                        raise RuntimeError(
+                            "GOPAY_METHOD_UNAVAILABLE: ID Checkout 首次响应和详情均未返回 GoPay 支付方式，将更换代理重建"
+                        )
                     custom_amount = custom_checkout_amount_minor(custom_state)
                     custom_currency = custom_checkout_currency(custom_state) or "IDR"
                     if promo_requested and custom_amount not in {None, 0}:
@@ -3479,6 +3506,7 @@ class JobStore:
                             chatgpt_http, token, session_id, custom_processor, device_id,
                             log=lambda message: self.log(job_id, message), attempts=6,
                             required_provider="gopay",
+                            preserve_payment_methods_from=custom_state,
                         )
                         custom_amount = custom_checkout_amount_minor(custom_state)
                         custom_currency = custom_checkout_currency(custom_state) or custom_currency
@@ -3506,6 +3534,7 @@ class JobStore:
                         chatgpt_http, token, session_id, custom_processor, device_id,
                         log=lambda message: self.log(job_id, message), attempts=6,
                         required_provider="gopay",
+                        preserve_payment_methods_from=custom_state,
                     )
                     refreshed_amount = custom_checkout_amount_minor(custom_state)
                     if refreshed_amount is None and tax_checkout:
@@ -3522,7 +3551,7 @@ class JobStore:
                             f"GOPAY_ZERO_DUE_REQUIRED: GoPay 优惠未生效或金额未知：amount={custom_amount} {custom_currency}"
                         )
 
-                    custom_method_id = custom_payment_method_id_for(custom_state, "gopay")
+                    custom_method_id = custom_payment_method_id_for(custom_state, "gopay") or custom_method_id
                     if not custom_method_id:
                         raise RuntimeError(
                             "GOPAY_METHOD_UNAVAILABLE: 当前 ID Checkout 尚未返回 GoPay 支付方式，将更换代理重建"
