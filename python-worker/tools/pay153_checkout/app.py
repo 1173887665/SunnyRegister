@@ -3215,7 +3215,10 @@ class JobStore:
                  + ("（原生携带优惠）" if options.get("promo_on_create") else "（稍后更新优惠）"))
                 if provider == "paypal" and promo_requested else (
                     "第 2/7 步：使用 IN 代理创建 UPI Checkout" if provider == "upi" else (
-                        "第 2/7 步：使用 VN 代理创建 MoMo Checkout" if provider == "momo" else "创建 OpenAI Checkout"
+                        "第 2/7 步：使用 VN 代理创建 MoMo Checkout" if provider == "momo" else (
+                            "第 2/7 步：使用 PH 代理创建原生带优惠的 GCash Checkout"
+                            if provider == "gcash" and promo_requested else "创建 OpenAI Checkout"
+                        )
                     )
                 )
             )

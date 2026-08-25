@@ -98,6 +98,29 @@ def test_momo_trial_payload_carries_verified_campaign_on_first_checkout() -> Non
     }
 
 
+def test_gcash_trial_payload_carries_verified_campaign_on_first_checkout() -> None:
+    options = {
+        "plan": "plus",
+        "link_type": "gcash",
+        "country": "PH",
+        "currency": "PHP",
+        "checkout_country": "PH",
+        "checkout_currency": "PHP",
+        "use_promo": True,
+        "promo_campaign": "plus-1-month-free",
+        "promo_on_create": True,
+    }
+
+    payload = checkout_app.checkout_payload(options, {})
+
+    assert payload["checkout_ui_mode"] == "custom"
+    assert payload["billing_details"] == {"country": "PH", "currency": "PHP"}
+    assert payload["promo_campaign"] == {
+        "promo_campaign_id": "plus-1-month-free",
+        "is_coupon_from_query_param": False,
+    }
+
+
 def test_ideal_success_requires_signed_pay_ideal_transaction_url() -> None:
     valid = (
         "https://pay.ideal.nl/transactions/https%3A%2F%2Ftx.ideal.nl%2F2%2FTEST"
