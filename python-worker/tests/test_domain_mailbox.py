@@ -9,6 +9,7 @@ from sunny_core import domain_mail_cleanup as cleanup_module
 from sunny_core import rebind as rebind_module
 from sunny_core.db import SunnyDB
 from sunny_core.mailbox import DomainMailReader, account_from_row
+from sunny_core.protocol_auth import ProtocolChallengeRequired
 
 
 def _credential():
@@ -279,3 +280,49 @@ def test_rebind_client_observation_header_matches_web_format():
     client = rebind_module.ChangeEmailClient(flow, "account-id")
     header = client._headers(rebind_module.BEGIN_PATH, json_body=True)["x-oai-is-client-observation"]
     assert re.fullmatch(r"v1\.r\.p\.[A-Za-z0-9_-]{16}", header)
+
+
+def test_rebind_login_falls_back_to_headless_browser_after_sentinel_challenge(monkeypatch):
+    account = account_from_row({
+        "email": "original@example.com",
+        "raw": "original@example.com----mail-password----client-id----refresh-token",
+        "chatgpt_password": "chatgpt-password",
+        "totp_secret": "JBSWY3DPEHPK3PXP",
+    })
+    challenge = ProtocolChallengeRequired("Sentinel 协议运行时初始化失败: TypedArray Xray")
+    challenge.traffic = {"requests": 4, "total_bytes": 1024}
+    browser_result = {
+        "access_token": "browser-access-token",
+        "session_json": {"accessToken": "browser-access-token", "account": {"id": "browser-account-id"}},
+        "storage_state_json": {
+            "cookies": [
+                {"name": "oai-did", "value": "browser-device-id", "domain": ".chatgpt.com", "path": "/", "secure": True},
+                {"name": "__Secure-next-auth.session-token", "value": "browser-session", "domain": "chatgpt.com", "path": "/", "secure": True},
+            ],
+            "origins": [],
+        },
+    }
+    logs = []
+    monkeypatch.setattr(rebind_module.ProtocolRegistrationFlow, "run", lambda _flow: (_ for _ in ()).throw(challenge))
+    calls = []
+
+    def browser_login(*args, **kwargs):
+        calls.append((args, kwargs))
+        return browser_result
+
+    monkeypatch.setattr(rebind_module, "login_or_register", browser_login)
+
+    flow, result = rebind_module._login_flow(account, "http://proxy.example:8080", logs.append, keep_session=True)
+
+    assert result["access_token"] == "browser-access-token"
+    assert result["execution_mode"] == "protocol_headless_fallback"
+    assert result["protocol_traffic"] == challenge.traffic
+    assert flow.device_id == "browser-device-id"
+    assert flow._last_access_token == "browser-access-token"
+    assert result["account_id"] == "browser-account-id"
+    assert "__Secure-next-auth.session-token=browser-session" in rebind_module._cookie_header(flow.session)
+    assert calls[0][1]["existing_account"] is True
+    assert calls[0][1]["require_refresh_token"] is False
+    assert calls[0][1]["execution_mode"] == "protocol_headless_fallback"
+    assert any("自动切换 Camoufox" in message for message in logs)
+    assert any("继续执行换绑接口" in message for message in logs)

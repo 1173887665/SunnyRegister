@@ -1878,6 +1878,67 @@ class AddLoginSecretTaskTests(unittest.TestCase):
         self.assertEqual(concurrency_events[0]["concurrency"], 3)
 
 
+class RebindProxyRotationTests(unittest.TestCase):
+    def test_rebind_rotates_proxy_after_login_transport_timeout(self):
+        db = MagicMock()
+        first_error = ProtocolRegistrationError(
+            "OpenAI authorization initialization request failed: curl: (28) Operation timed out"
+        )
+        first_error.rebind_phase = "login"
+        payload = {
+            "proxy_pool": [
+                "http://proxy-one.example:8080",
+                "http://proxy-two.example:8080",
+            ],
+            "proxy_ids": [1, 2],
+        }
+        selected = []
+
+        def prepare(_db, current_payload, _email, slot):
+            excluded = set(current_payload.get("_excluded_register_proxies") or [])
+            address = "http://proxy-one.example:8080" if not excluded else "http://proxy-two.example:8080"
+            return {"register": address, "mode": "proxy_pool", "slot": slot}
+
+        def execute(_db, account, proxy, _log):
+            selected.append(proxy)
+            if len(selected) == 1:
+                raise first_error
+            return {"email": account["email"], "status": "success"}
+
+        with (
+            patch.object(worker, "_prepare_register_proxy", side_effect=prepare),
+            patch.object(worker, "rebind_one", side_effect=execute),
+        ):
+            result = worker._rebind_with_proxy_rotation(
+                db,
+                payload,
+                {"id": 1, "email": "rotate@example.com"},
+                0,
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(selected, ["http://proxy-one.example:8080", "http://proxy-two.example:8080"])
+        self.assertTrue(any("切换下一条" in str(call.args[0]) for call in db.event.call_args_list))
+
+    def test_rebind_does_not_rotate_proxy_after_business_failure(self):
+        db = MagicMock()
+        payload = {
+            "proxy_pool": [
+                "http://proxy-one.example:8080",
+                "http://proxy-two.example:8080",
+            ],
+            "proxy_ids": [1, 2],
+        }
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "http://proxy-one.example:8080"}),
+            patch.object(worker, "rebind_one", side_effect=RuntimeError("当前账户不允许邮箱换绑")) as execute,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "不允许邮箱换绑"):
+                worker._rebind_with_proxy_rotation(db, payload, {"id": 1, "email": "business@example.com"}, 0)
+
+        execute.assert_called_once()
+
+
 class RebindTaskTests(unittest.TestCase):
     def test_serial_rebind_selects_proxy_by_account_slot(self):
         db = MagicMock()

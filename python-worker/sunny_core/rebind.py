@@ -16,7 +16,8 @@ import requests
 from .db import SunnyDB
 from .domain_mail_cleanup import cleanup_failed_mailbox
 from .mailbox import DomainMailReader, MailAccount, account_from_row
-from .protocol_auth import ProtocolRegistrationFlow
+from .openai_auth import login_or_register
+from .protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationFlow
 
 CHATGPT_ORIGIN = "https://chatgpt.com"
 ELIGIBILITY_PATH = "/backend-api/accounts/change_email/eligibility"
@@ -221,9 +222,79 @@ def _login_flow(account: MailAccount, proxy: str, log: Callable[[str], None], *,
         keep_session=keep_session,
         skip_mailbox=True,
     )
-    result = flow.run()
+    try:
+        result = flow.run()
+    except ProtocolChallengeRequired as exc:
+        if should_cancel and should_cancel():
+            raise
+        log(
+            "[认证] Sentinel 协议运行时遇到浏览器挑战，自动切换 Camoufox 后台无头登录；"
+            "仍优先使用完整 LS，LS 失败时再使用邮箱凭证"
+        )
+        result = login_or_register(
+            account,
+            proxy,
+            True,
+            log,
+            existing_account=True,
+            require_refresh_token=False,
+            should_cancel=should_cancel,
+            execution_mode="protocol_headless_fallback",
+        )
+        _hydrate_protocol_flow_from_browser(flow, result)
+        result["requested_execution_mode"] = "protocol"
+        result["execution_mode"] = "protocol_headless_fallback"
+        result["protocol_fallback"] = "headless"
+        protocol_traffic = getattr(exc, "traffic", None)
+        if isinstance(protocol_traffic, dict):
+            result["protocol_traffic"] = protocol_traffic
+        log("[认证] 邮箱换绑的后台无头浏览器登录已完成，继续执行换绑接口")
     flow._last_access_token = str(result.get("access_token") or "")
     return flow, result
+
+
+def _hydrate_protocol_flow_from_browser(flow: ProtocolRegistrationFlow, result: dict[str, Any]) -> None:
+    """Move a completed browser login into the HTTP session used by rebind APIs."""
+    access_token = str(result.get("access_token") or "").strip()
+    state = result.get("storage_state_json")
+    cookies = state.get("cookies") if isinstance(state, dict) else None
+    if not access_token or not isinstance(cookies, list) or not cookies:
+        raise RebindError("无头浏览器登录结果不完整，缺少 Access Token 或认证 Cookie")
+    if flow.session is None:
+        flow.session = flow._new_session()
+    try:
+        flow.session.cookies.clear()
+    except Exception:
+        pass
+    device_id = ""
+    account_id = ""
+    for item in cookies:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        value = str(item.get("value") or "")
+        if not name:
+            continue
+        cookie_options: dict[str, Any] = {}
+        domain = str(item.get("domain") or "").strip()
+        path = str(item.get("path") or "/").strip() or "/"
+        if domain:
+            cookie_options["domain"] = domain
+        cookie_options["path"] = path
+        cookie_options["secure"] = bool(item.get("secure"))
+        flow.session.cookies.set(name, value, **cookie_options)
+        if name == "oai-did" and value:
+            device_id = value
+        elif name == "_account" and value:
+            account_id = value
+    session_json = result.get("session_json")
+    session_account = session_json.get("account") if isinstance(session_json, dict) else None
+    if isinstance(session_account, dict):
+        account_id = str(session_account.get("id") or account_id).strip()
+    if account_id and not str(result.get("account_id") or "").strip():
+        result["account_id"] = account_id
+    flow.device_id = device_id or str(uuid.uuid4())
+    flow._last_access_token = access_token
 
 
 def _persist_login_result(db: SunnyDB, identity_email: str, mailbox: dict[str, Any], result: dict[str, Any], log: Callable[[str], None]) -> None:
@@ -318,6 +389,11 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         log(f"[{old_email}] 换绑成功：{new_email}")
         return {"email": old_email, "new_email": new_email, "status": "success"}
     except Exception as exc:
+        if not new_email:
+            try:
+                exc.rebind_phase = "login"
+            except Exception:
+                pass
         if new_email and new_api:
             cfg = db.get_config("domain_mailbox")
             try:

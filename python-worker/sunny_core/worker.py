@@ -529,6 +529,13 @@ def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, sl
         return proxies
 
     candidates = _proxy_pool_candidates(payload)
+    excluded = {
+        str(value or "").strip()
+        for value in (payload.get("_excluded_register_proxies") or [])
+        if str(value or "").strip()
+    }
+    if excluded:
+        candidates = [candidate for candidate in candidates if str(candidate.get("register") or "").strip() not in excluded]
     if candidates:
         start = max(0, int(slot)) % len(candidates)
         candidates = candidates[start:] + candidates[:start]
@@ -3435,11 +3442,60 @@ def _rebind_one_isolated(
             f"[{email}] 开始邮箱协议换绑",
             detail={"email": email, "module": "auth", "action": "rebind.start", "current": index - 1, "total": total},
         )
-        proxy = _prepare_register_proxy(worker_db, payload, email, index - 1).get("register", "")
-        result = rebind_one(worker_db, accounts[0], proxy, lambda message: worker_db.event(message, detail={"email": email, "module": "auth", "action": "rebind.progress"}))
+        result = _rebind_with_proxy_rotation(worker_db, payload, accounts[0], index - 1)
         return index, result
     finally:
         worker_db.close()
+
+
+def _rebind_with_proxy_rotation(
+    db: SunnyDB,
+    payload: dict[str, Any],
+    account: dict[str, Any],
+    slot: int,
+) -> dict[str, Any]:
+    email = str(account.get("email") or "").strip()
+    candidates = _proxy_pool_candidates(payload) if payload.get("proxy_enabled") is not False else []
+    max_attempts = min(3, len(candidates)) if candidates else 1
+    excluded: set[str] = set()
+    log = lambda message: db.event(
+        message,
+        detail={"email": email, "module": "auth", "action": "rebind.progress"},
+    )
+    for attempt in range(max_attempts):
+        current_payload = dict(payload)
+        if excluded:
+            current_payload["_excluded_register_proxies"] = sorted(excluded)
+        proxy = _prepare_register_proxy(db, current_payload, email, slot + attempt).get("register", "")
+        try:
+            return rebind_one(db, account, proxy, log)
+        except Exception as exc:
+            failure = classify_auth_failure(exc)
+            can_rotate = (
+                attempt + 1 < max_attempts
+                and str(getattr(exc, "rebind_phase", "")) == "login"
+                and failure.rotate_proxy
+                and bool(proxy)
+            )
+            if not can_rotate:
+                raise
+            excluded.add(proxy)
+            db.event(
+                f"[{email}] [代理] 当前代理在换绑登录阶段发生{failure.category}，"
+                f"将排除该代理并切换下一条（{attempt + 2}/{max_attempts}）：{redact_proxy_url(proxy)}；"
+                f"原因：{str(exc)[:260]}",
+                "warning",
+                detail={
+                    "email": email,
+                    "module": "auth",
+                    "action": "rebind.proxy_rotated",
+                    "proxy": proxy,
+                    "proxy_error_category": failure.category,
+                    "proxy_attempt": attempt + 1,
+                    "proxy_max_attempts": max_attempts,
+                },
+            )
+    raise RuntimeError("邮箱换绑代理轮换未返回执行结果")
 
 
 def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
@@ -3478,8 +3534,7 @@ def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[st
             email = str(account.get("email") or "").strip()
             db.event(f"[{email}] 开始邮箱协议换绑", detail={"email": email, "module": "auth", "action": "rebind.start", "current": index - 1, "total": len(accounts)})
             try:
-                proxy = _prepare_register_proxy(db, payload, email, index - 1).get("register", "")
-                result = rebind_one(db, account, proxy, lambda message: db.event(message, detail={"email": email, "module": "auth", "action": "rebind.progress"}))
+                result = _rebind_with_proxy_rotation(db, payload, account, index - 1)
                 handle_result(index, result)
             except Exception as exc:
                 if db.cancel_requested():
