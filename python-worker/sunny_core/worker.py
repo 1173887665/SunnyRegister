@@ -2078,7 +2078,6 @@ def _run_one_impl(
             login_secret_result is not None
             and login_secret_result.get("browser_challenge_required") is True
             and execution_mode == "protocol"
-            and protocol_challenge_strategy == "native_headless"
         ):
             protocol_login_secret_result = login_secret_result
             if isinstance(protocol_login_secret_result.get("session"), dict):

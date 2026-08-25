@@ -952,7 +952,7 @@ class StageStatusTests(unittest.TestCase):
         payload = {
             "registration_stage": worker.REGISTER_ONLY,
             "execution_mode": "protocol",
-            "protocol_challenge_strategy": "native_headless",
+            "protocol_challenge_strategy": "sentinel_protocol",
             "setup_login_secret": True,
         }
         with (
