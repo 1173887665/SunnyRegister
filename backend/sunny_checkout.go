@@ -30,6 +30,7 @@ var checkoutProviders = []map[string]string{
 	{"value": "pix", "label": "PIX", "hint": "巴西即时支付", "country": "BR", "currency": "BRL"},
 	{"value": "momo", "label": "MoMo", "hint": "越南电子钱包", "country": "VN", "currency": "VND"},
 	{"value": "gcash", "label": "GCash", "hint": "菲律宾电子钱包", "country": "PH", "currency": "PHP"},
+	{"value": "gopay", "label": "GoPay", "hint": "印尼 Midtrans 跳转", "country": "ID", "currency": "IDR"},
 	{"value": "kakao", "label": "Kakao Pay", "hint": "韩国 Nicepay 跳转", "country": "KR", "currency": "KRW"},
 }
 
@@ -186,6 +187,9 @@ func normalizeCheckoutRequest(in sunnyCheckoutRequest) (sunnyCheckoutRequest, []
 	}
 	if in.LinkType == "gcash" {
 		in.Country, in.Currency, in.PromoCountry = "PH", "PHP", "PH"
+	}
+	if in.LinkType == "gopay" {
+		in.Country, in.Currency = "ID", "IDR"
 	}
 	if checkoutCountryCurrency[in.Country] == "" {
 		return in, nil, nil, fmt.Errorf("不支持的国家/地区")
@@ -802,6 +806,14 @@ func cancelSunnyCheckoutWorkerJob(ctx context.Context, workerURL, jobID string) 
 }
 
 var checkoutSecretPattern = regexp.MustCompile(`(?i)(https?://)[^\s/@:]+:[^\s/@]+@|eyJ[A-Za-z0-9_.-]{40,}`)
+var sunnyGopayMidtransPath = regexp.MustCompile(`(?i)^/snap/v[34]/redirection/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/?$`)
+
+func isSunnyGopayMidtransURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	return err == nil && strings.EqualFold(parsed.Scheme, "https") &&
+		strings.EqualFold(strings.TrimSuffix(parsed.Host, "."), "app.midtrans.com") &&
+		sunnyGopayMidtransPath.MatchString(parsed.EscapedPath())
+}
 
 func sanitizeCheckoutError(value string) string {
 	clean := checkoutSecretPattern.ReplaceAllStringFunc(value, func(match string) string {
@@ -818,6 +830,7 @@ func sanitizeCheckoutError(value string) string {
 
 func extractSunnyCheckoutResult(v map[string]any, provider string) map[string]any {
 	out := map[string]any{"link_type": provider, "checkout_session_id": "", "payment_link": "", "qr_data": "", "qr_image": "", "raw_provider": ""}
+	gopayMidtransURL := ""
 	if provider == "gcash" {
 		out["qr_status"] = ""
 		out["qr_expires_at"] = nil
@@ -836,6 +849,9 @@ func extractSunnyCheckoutResult(v map[string]any, provider string) map[string]an
 			for k, val := range n {
 				lk := strings.ToLower(k)
 				if s, ok := val.(string); ok {
+					if provider == "gopay" && isSunnyGopayMidtransURL(s) {
+						gopayMidtransURL = strings.TrimSpace(s)
+					}
 					if strings.Contains(lk, "checkout_session") || lk == "session_id" {
 						out["checkout_session_id"] = s
 					}
@@ -884,6 +900,9 @@ func extractSunnyCheckoutResult(v map[string]any, provider string) map[string]an
 		}
 	}
 	walk(v)
+	if gopayMidtransURL != "" {
+		out["payment_link"] = gopayMidtransURL
+	}
 	if text(out["payment_link"]) == "" {
 		sid := text(out["checkout_session_id"])
 		if sid != "" {

@@ -20,14 +20,41 @@ func TestSplitCheckoutPoolNormalizesAndLimits(t *testing.T) {
 }
 
 func TestCheckoutProviderDefaultsIncludeAllCurrentPaths(t *testing.T) {
-	if len(checkoutProviders) != 10 {
+	if len(checkoutProviders) != 11 {
 		t.Fatalf("providers=%d", len(checkoutProviders))
 	}
-	for _, value := range []string{"hosted", "ph_short", "paypal", "ideal", "twint", "upi", "pix", "momo", "gcash", "kakao"} {
+	for _, value := range []string{"hosted", "ph_short", "paypal", "ideal", "twint", "upi", "pix", "momo", "gcash", "gopay", "kakao"} {
 		country, currency := checkoutProviderDefaults(value)
 		if country == "" || currency == "" {
 			t.Fatalf("missing defaults for %s", value)
 		}
+	}
+}
+
+func TestGoPayProviderDefaultsToIndonesia(t *testing.T) {
+	country, currency := checkoutProviderDefaults("gopay")
+	if country != "ID" || currency != "IDR" {
+		t.Fatalf("GoPay defaults=%s/%s", country, currency)
+	}
+}
+
+func TestNormalizeGoPayRequestUsesIndonesiaCheckout(t *testing.T) {
+	normalized, checkout, promotion, err := normalizeCheckoutRequest(sunnyCheckoutRequest{
+		Plan:             "plus",
+		LinkType:         "gopay",
+		Country:          "US",
+		Currency:         "USD",
+		CheckoutProxies:  "http://id-proxy.example:8080",
+		PromotionProxies: "http://promo-proxy.example:8080",
+	})
+	if err != nil {
+		t.Fatalf("normalize GoPay request: %v", err)
+	}
+	if normalized.Country != "ID" || normalized.Currency != "IDR" {
+		t.Fatalf("unexpected GoPay region: %#v", normalized)
+	}
+	if len(checkout) != 1 || len(promotion) != 1 || checkout[0] == promotion[0] {
+		t.Fatalf("checkout=%#v promotion=%#v", checkout, promotion)
 	}
 }
 
@@ -89,6 +116,20 @@ func TestExtractSunnyCheckoutResult(t *testing.T) {
 	result := extractSunnyCheckoutResult(map[string]any{"checkout_session_id": "cs_live_123", "redirect_url": "https://pay.example/approve", "qr_data": "upi://pay/x"}, "upi")
 	if result["checkout_session_id"] != "cs_live_123" || result["payment_link"] != "https://pay.example/approve" || result["qr_data"] != "upi://pay/x" {
 		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestExtractSunnyCheckoutResultPrefersGoPayMidtransURL(t *testing.T) {
+	midtrans := "https://app.midtrans.com/snap/v4/redirection/123e4567-e89b-12d3-a456-426614174000"
+	result := extractSunnyCheckoutResult(map[string]any{
+		"provider_redirect_url": midtrans,
+		"verification_url":      "https://chatgpt.com/checkout/verify",
+	}, "gopay")
+	if result["payment_link"] != midtrans {
+		t.Fatalf("result=%#v", result)
+	}
+	if isSunnyGopayMidtransURL("https://app.midtrans.com.evil.example/snap/v4/redirection/123e4567-e89b-12d3-a456-426614174000") {
+		t.Fatal("lookalike Midtrans host must be rejected")
 	}
 }
 

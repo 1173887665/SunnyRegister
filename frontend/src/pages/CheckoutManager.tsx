@@ -10,12 +10,12 @@ type Provider = { value: string; label: string; hint: string; country: string; c
 const fallbackProviders: Provider[] = [
   ["hosted", "Hosted", "官方支付长链", "US", "USD"], ["ph_short", "菲律宾短链", "US Checkout / TR 优惠", "PH", "PHP"], ["paypal", "PayPal", "Approve 跳转", "US", "USD"],
   ["ideal", "iDEAL", "荷兰银行支付", "NL", "EUR"], ["upi", "UPI", "印度二维码", "IN", "INR"], ["pix", "PIX", "巴西即时支付", "BR", "BRL"],
-  ["twint", "TWINT", "瑞士移动支付", "CH", "CHF"], ["momo", "MoMo", "越南电子钱包", "VN", "VND"], ["gcash", "GCash", "菲律宾电子钱包", "PH", "PHP"], ["kakao", "Kakao Pay", "韩国 Nicepay 跳转", "KR", "KRW"],
+  ["twint", "TWINT", "瑞士移动支付", "CH", "CHF"], ["momo", "MoMo", "越南电子钱包", "VN", "VND"], ["gcash", "GCash", "菲律宾电子钱包", "PH", "PHP"], ["gopay", "GoPay", "印尼 Midtrans 跳转", "ID", "IDR"], ["kakao", "Kakao Pay", "韩国 Nicepay 跳转", "KR", "KRW"],
 ].map(([value, label, hint, country, currency]) => ({ value, label, hint, country, currency }));
 
 const planOptions = [{ value: "plus", label: "Plus", hint: "个人订阅" }, { value: "pro", label: "Pro", hint: "专业计划" }, { value: "team", label: "Team", hint: "工作空间" }, { value: "codex_low", label: "Codex", hint: "低价空间" }];
-const countryNames: Record<string, string> = { US: "美国", DE: "德国", FR: "法国", NL: "荷兰", IN: "印度", BR: "巴西", VN: "越南", GB: "英国", JP: "日本", KR: "韩国", PH: "菲律宾", AU: "澳大利亚", CA: "加拿大", CH: "瑞士" };
-const currencyByCountry: Record<string, string> = { US: "USD", DE: "EUR", FR: "EUR", NL: "EUR", IN: "INR", BR: "BRL", VN: "VND", GB: "GBP", JP: "JPY", KR: "KRW", PH: "PHP", AU: "AUD", CA: "CAD", CH: "CHF" };
+const countryNames: Record<string, string> = { US: "美国", DE: "德国", FR: "法国", NL: "荷兰", IN: "印度", ID: "印度尼西亚", BR: "巴西", VN: "越南", GB: "英国", JP: "日本", KR: "韩国", PH: "菲律宾", AU: "澳大利亚", CA: "加拿大", CH: "瑞士" };
+const currencyByCountry: Record<string, string> = { US: "USD", DE: "EUR", FR: "EUR", NL: "EUR", IN: "INR", ID: "IDR", BR: "BRL", VN: "VND", GB: "GBP", JP: "JPY", KR: "KRW", PH: "PHP", AU: "AUD", CA: "CAD", CH: "CHF" };
 const sessionStatuses = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "登录刷新", "失败"];
 const sessionPlans = ["free", "plus", "k12", "team", "pro"];
 const checkoutPreferencesStorageKey = "sunnyregister.checkout.preferences.v1";
@@ -65,10 +65,10 @@ const trialLabels: Record<string, string> = { eligible: "有0元试用", ineligi
 const checkoutLabels: Record<string, string> = { oaics: "OAICS", cs_live: "CS Live", cs_test: "CS Test", unknown: "未检测" };
 const pathLabels: Record<string, string> = {
   hosted: "官方长链", ph_short: "菲律宾短链", paypal: "PayPal", ideal: "iDEAL", upi: "UPI",
-  pix: "PIX", twint: "TWINT", momo: "MoMo", gcash: "GCash", kakao: "Kakao Pay",
+  pix: "PIX", twint: "TWINT", momo: "MoMo", gcash: "GCash", gopay: "GoPay", kakao: "Kakao Pay",
 };
-const paymentMethodOptions = ["paypal", "card", "link", "gcash", "kakao_pay", "nicepay", "ideal", "momo", "twint", "pix", "upi"];
-const paymentMethodLabels: Record<string, string> = { paypal: "PayPal", card: "Card", link: "Link", gcash: "GCash", kakao_pay: "Kakao Pay", nicepay: "Nicepay", ideal: "iDEAL", momo: "MoMo", twint: "TWINT", pix: "PIX", upi: "UPI" };
+const paymentMethodOptions = ["paypal", "card", "link", "gcash", "gopay", "kakao_pay", "nicepay", "ideal", "momo", "twint", "pix", "upi"];
+const paymentMethodLabels: Record<string, string> = { paypal: "PayPal", card: "Card", link: "Link", gcash: "GCash", gopay: "GoPay", kakao_pay: "Kakao Pay", nicepay: "Nicepay", ideal: "iDEAL", momo: "MoMo", twint: "TWINT", pix: "PIX", upi: "UPI" };
 
 type BadgeTone = "slate" | "blue" | "green" | "cyan" | "red" | "amber" | "violet" | "rose";
 const badgeTones: Record<BadgeTone, string> = {
@@ -128,7 +128,7 @@ function AccountPlanBadge({ value }: { value: unknown }) { const key = normalize
 function accountCommerceCheckable(row: AnyRow) { return Boolean(row.token) || (["已注册", "registered"].includes(String(row.status || "")) && normalized(row.plan_type) === "free"); }
 function AccountTrialValue({ row }: { row: AnyRow }) { const key = normalized(row.trial_eligibility); if (!accountCommerceCheckable(row)) return <span className="text-slate-400">-</span>; if (key === "eligible") return <span className="font-semibold text-emerald-600 dark:text-emerald-400">{trialLabels.eligible}</span>; if (key === "ineligible") return <span className="font-semibold text-red-500">{trialLabels.ineligible}</span>; return <span className="text-slate-400">-</span>; }
 function AccountCheckoutValue({ row }: { row: AnyRow }) { const key = normalized(row.checkout_kind); return accountCommerceCheckable(row) && key && key !== "unknown" ? <span className="font-semibold text-sky-600 dark:text-sky-400">{labelFor(row.checkout_kind, checkoutLabels)}</span> : <span className="text-slate-400">-</span>; }
-function pathTone(value: unknown): BadgeTone { return ({ hosted: "blue", ph_short: "cyan", paypal: "violet", ideal: "green", upi: "amber", pix: "green", twint: "red", momo: "rose", gcash: "blue", kakao: "amber" } as Record<string, BadgeTone>)[normalized(value)] || "slate"; }
+function pathTone(value: unknown): BadgeTone { return ({ hosted: "blue", ph_short: "cyan", paypal: "violet", ideal: "green", upi: "amber", pix: "green", twint: "red", momo: "rose", gcash: "blue", gopay: "green", kakao: "amber" } as Record<string, BadgeTone>)[normalized(value)] || "slate"; }
 
 function taskStatusLabel(value: unknown) { return ({ pending: "等待中", claimed: "已领取", running: "运行中", succeeded: "已完成", failed: "失败", cancelled: "已停止", cancel_requested: "停止中" } as Record<string, string>)[normalized(value)] || String(value || "未开始"); }
 

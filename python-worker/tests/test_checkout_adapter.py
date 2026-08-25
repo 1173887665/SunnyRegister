@@ -106,6 +106,22 @@ class CheckoutAdapterTests(unittest.TestCase):
         options = create.call_args.args[0]
         self.assertEqual(options["retry_count"], 0)
 
+    def test_start_checkout_defaults_gopay_to_indonesia(self) -> None:
+        with patch.object(sunny_adapter.STORE, "create", create=True, return_value="job-gopay") as create:
+            sunny_adapter.start_checkout({
+                "token": "token",
+                "link_type": "gopay",
+                "checkout_proxies": ["id-checkout-proxy"],
+                "promotion_proxies": ["promotion-proxy"],
+            })
+
+        options = create.call_args.args[0]
+        self.assertEqual(options["country"], "ID")
+        self.assertEqual(options["currency"], "IDR")
+        self.assertEqual(options["entry_proxies"], ["promotion-proxy"])
+        self.assertEqual(options["exit_proxies"], ["id-checkout-proxy"])
+        self.assertEqual(options["exit_proxy_country"], "ID")
+
     def test_checkout_status_returns_ordered_sanitized_logs(self) -> None:
         token = "eyJ" + "a" * 80
         job = {
@@ -179,6 +195,26 @@ class CheckoutAdapterTests(unittest.TestCase):
         self.assertEqual(payload["paypal_link"], "https://pay.example/approve")
         self.assertEqual(payload["payment_methods"], ["card", "paypal"])
         self.assertTrue(payload["promo_applied"])
+
+    def test_checkout_status_preserves_gopay_midtrans_url(self) -> None:
+        midtrans_url = "https://app.midtrans.com/snap/v4/redirection/123e4567-e89b-12d3-a456-426614174000"
+        job = {
+            "status": "done",
+            "percent": 100,
+            "text": "GoPay 提取完成",
+            "error": "",
+            "logs": [],
+            "result": {
+                "link_type": "gopay",
+                "provider_redirect_url": midtrans_url,
+                "gopay_midtrans_url": midtrans_url,
+            },
+        }
+        with patch.object(sunny_adapter.STORE, "get", return_value=job):
+            result = sunny_adapter.checkout_status("job-gopay")
+
+        self.assertEqual(result["result"]["payment_link"], midtrans_url)
+        self.assertEqual(result["result"]["gopay_midtrans_url"], midtrans_url)
 
 
 if __name__ == "__main__":

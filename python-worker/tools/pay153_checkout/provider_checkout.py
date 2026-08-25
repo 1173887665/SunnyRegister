@@ -22,6 +22,7 @@ PROVIDER_DEFAULTS = {
     "pix": {"country": "BR", "currency": "BRL"},
     "momo": {"country": "VN", "currency": "VND"},
     "gcash": {"country": "PH", "currency": "PHP"},
+    "gopay": {"country": "ID", "currency": "IDR"},
     "twint": {"country": "CH", "currency": "CHF"},
 }
 
@@ -297,6 +298,7 @@ def default_billing(country: str, email: str = "", tax_id: str = "", geo: dict[s
         "DE": ("Alex Meyer", "Friedrichstrasse 100", "Berlin", "10117", "BE"),
         "NL": ("Lars de Vries", "Damrak 1", "Amsterdam", "1012LG", "NH"),
         "IN": ("Arjun Sharma", "1 MG Road", "Bengaluru", "560001", "KA"),
+        "ID": ("Budi Santoso", "Jalan MH Thamrin 1", "Jakarta", "10310", "DKI Jakarta"),
         "BR": ("Lucas Silva", "Avenida Paulista 1000", "Sao Paulo", "01310-100", "SP"),
         "VN": ("Nguyen Minh Anh", "1 Nguyen Hue", "Ho Chi Minh City", "700000", "Ho Chi Minh"),
         "US": ("Alex Morgan", "1 Market Street", "San Francisco", "94105", "CA"),
@@ -317,6 +319,7 @@ def default_billing(country: str, email: str = "", tax_id: str = "", geo: dict[s
         "GB": ["Oliver Smith", "George Taylor", "Amelia Wilson", "Sophie Brown"],
         "BR": ["Lucas Silva", "Gabriel Santos", "Mariana Costa", "Ana Oliveira"],
         "IN": ["Arjun Sharma", "Rahul Verma", "Priya Patel", "Ananya Singh"],
+        "ID": ["Budi Santoso", "Agus Wijaya", "Siti Rahma", "Dewi Lestari"],
         "KR": ["Minjun Kim", "Jihoon Lee", "Seo-yeon Kim", "Ji-woo Park"],
         "PH": ["Sofia Torres", "Maria Santos", "Angela Reyes", "Paolo Garcia", "Miguel Cruz"],
         "VN": ["Nguyen Minh Anh", "Tran Quoc Bao", "Le Thu Ha", "Pham Gia Huy"],

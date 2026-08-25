@@ -39,6 +39,10 @@ def start_checkout(payload: dict[str, Any]) -> str:
     promotion_proxies = list(payload.get("promotion_proxies") or [])
     if link_type == "gcash":
         promotion_proxies = list(checkout_proxies)
+    default_country, default_currency = {
+        "gcash": ("PH", "PHP"),
+        "gopay": ("ID", "IDR"),
+    }.get(link_type, ("US", "USD"))
     options = {
         "token_raw": str(payload.get("token") or ""),
         "plan": str(payload.get("plan") or "plus"),
@@ -49,10 +53,10 @@ def start_checkout(payload: dict[str, Any]) -> str:
         # created session can select OAICS or Stripe automatically. Known
         # CS Live accounts retain the reference project's PayPal workflow.
         "oaics_paypal": link_type == "paypal" and paypal_mode != "cs_live",
-        "country": str(payload.get("country") or ("PH" if link_type == "gcash" else "US")).upper(),
-        "currency": str(payload.get("currency") or ("PHP" if link_type == "gcash" else "USD")).upper(),
-        "checkout_country": str(payload.get("country") or ("PH" if link_type == "gcash" else "US")).upper(),
-        "checkout_currency": str(payload.get("currency") or ("PHP" if link_type == "gcash" else "USD")).upper(),
+        "country": str(payload.get("country") or default_country).upper(),
+        "currency": str(payload.get("currency") or default_currency).upper(),
+        "checkout_country": str(payload.get("country") or default_country).upper(),
+        "checkout_currency": str(payload.get("currency") or default_currency).upper(),
         # pay153's entry pool is the Promotion route and its exit pool is the
         # billing/Checkout route. SunnyRegister exposes those pools in the
         # opposite order, so keep the translation at this adapter boundary.
@@ -76,7 +80,7 @@ def start_checkout(payload: dict[str, Any]) -> str:
         "use_sen": True,
         "use_so": True,
         "entry_proxy_country": str(payload.get("promo_country") or payload.get("country") or "US").upper(),
-        "exit_proxy_country": str(payload.get("country") or ("PH" if link_type == "gcash" else "US")).upper(),
+        "exit_proxy_country": str(payload.get("country") or default_country).upper(),
     }
     if options["link_type"] == "gcash":
         options["country"] = options["checkout_country"] = "PH"
@@ -147,6 +151,7 @@ def checkout_status(job_id: str) -> dict[str, Any] | None:
         "gcash_authorization_url": str(raw.get("gcash_authorization_url") or ""),
         "gcash_net_auth_id": str(raw.get("gcash_net_auth_id") or ""),
         "gcash_client_id": str(raw.get("gcash_client_id") or ""),
+        "gopay_midtrans_url": str(raw.get("gopay_midtrans_url") or ""),
         "payment_status": str(raw.get("payment_status") or ""),
         "payment_callback_path": str(raw.get("payment_callback_path") or ""),
         "payment_expires_at": raw.get("payment_expires_at"),

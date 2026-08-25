@@ -690,7 +690,7 @@ def checkout_payload(options: dict, meta: dict) -> dict[str, Any]:
             "auto_top_up_enabled": True,
         }
     elif plan == "plus" and options.get("use_promo") and (
-        options.get("link_type") not in {"pix", "momo", "gcash", "paypal", "upi", "ideal", "twint"}
+        options.get("link_type") not in {"pix", "momo", "gcash", "gopay", "paypal", "upi", "ideal", "twint"}
         or options.get("promo_on_create")
     ):
         common["promo_campaign"] = {
@@ -1185,7 +1185,7 @@ def custom_payment_method_id_for(payload: dict[str, Any], provider: str) -> str:
         return str(matched[0].get("id") or "")
     if len(methods) == 1:
         serialized = json.dumps(methods[0], ensure_ascii=False).lower()
-        known_providers = {"paypal", "gcash", "ideal", "momo", "twint", "pix", "upi", "kakao"}
+        known_providers = {"paypal", "gcash", "gopay", "ideal", "momo", "twint", "pix", "upi", "kakao"}
         if not any(name in serialized for name in known_providers):
             return str(methods[0].get("id") or "")
     return ""
@@ -1358,6 +1358,53 @@ def start_custom_checkout_method(
     if str(payload.get("status") or "").lower() != "requires_action" or not action.get("url"):
         raise RuntimeError(f"{method_name} 未返回跳转链接：{text[:300]}")
     return payload
+
+
+_GOPAY_MIDTRANS_PATH_RE = re.compile(
+    r"^/snap/v[34]/redirection/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/?$",
+    re.IGNORECASE,
+)
+
+
+def is_valid_gopay_midtrans_url(value: str) -> bool:
+    """Return whether GoPay can consume this Midtrans Snap redirect URL."""
+    try:
+        parsed = urlsplit(str(value or "").strip())
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.lower() == "https"
+        and parsed.netloc.lower().rstrip(".") == "app.midtrans.com"
+        and bool(_GOPAY_MIDTRANS_PATH_RE.fullmatch(parsed.path))
+    )
+
+
+def gopay_midtrans_url(*payloads: Any) -> str:
+    """Find the strict Midtrans Snap handoff returned by GoPay confirm/start."""
+    found: list[str] = []
+
+    def walk(value: Any, depth: int = 0) -> None:
+        if depth > 8:
+            return
+        if isinstance(value, dict):
+            for nested in value.values():
+                walk(nested, depth + 1)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                walk(nested, depth + 1)
+        elif isinstance(value, str):
+            candidate = value.strip()
+            if is_valid_gopay_midtrans_url(candidate) and candidate not in found:
+                found.append(candidate)
+                return
+            decoded = unquote(candidate)
+            if decoded != candidate:
+                walk(decoded, depth + 1)
+
+    for payload in payloads:
+        walk(payload)
+    return found[0] if found else ""
 
 
 def is_valid_gcash_authorization_url(value: str) -> bool:
@@ -2447,6 +2494,11 @@ class JobStore:
                     current.get("link_type") == "gcash"
                     and bool(current.get("use_promo"))
                 )
+            if current.get("link_type") == "gopay":
+                # The reference GoPay flow starts from a native Midtrans link.
+                # Preserve the campaign on the initial OAICS checkout so the
+                # GoPay custom method and zero-due offer share one session.
+                current["promo_on_create"] = bool(current.get("use_promo"))
             if current.get("link_type") == "pix" and current.get("pix_tax_id_auto"):
                 auto_kind = current.get("pix_auto_kind") or "cpf"
                 kind = ("cpf" if attempt % 2 else "cnpj") if auto_kind == "mixed" else auto_kind
@@ -3054,6 +3106,20 @@ class JobStore:
                 if main_country != "PH":
                     self.log(job_id, f"GCash Checkout 代理当前为 {main_country or '?'}；目标为 PH，继续由上游校验")
                 self.ensure_not_cancelled(job_id)
+            if provider == "gopay":
+                self.update(job_id, percent=9, text="校验 GoPay 印尼支付代理")
+                main_country, main_region = proxy_country(entry_proxy, options.get("entry_proxy_country"))
+                payment_country, payment_region = proxy_country(exit_proxy, options.get("exit_proxy_country"))
+                country = options["country"] = options["checkout_country"] = "ID"
+                options["currency"] = options["checkout_currency"] = "IDR"
+                self.log(
+                    job_id,
+                    f"GoPay 路由：Promotion={main_country}/{main_region}，"
+                    f"Checkout={payment_country}/{payment_region}，账单=ID/IDR",
+                )
+                if payment_country != "ID":
+                    self.log(job_id, f"GoPay Checkout 代理当前为 {payment_country or '?'}；目标为 ID，继续由上游校验")
+                self.ensure_not_cancelled(job_id)
             if provider == "paypal":
                 self.update(job_id, percent=9, text="第 1/7 步：校验 PayPal 优惠识别代理与支付代理")
                 main_country, main_region = proxy_country(entry_proxy)
@@ -3217,7 +3283,9 @@ class JobStore:
                     "第 2/7 步：使用 IN 代理创建 UPI Checkout" if provider == "upi" else (
                         "第 2/7 步：使用 VN 代理创建 MoMo Checkout" if provider == "momo" else (
                             "第 2/7 步：使用 PH 代理创建原生带优惠的 GCash Checkout"
-                            if provider == "gcash" and promo_requested else "创建 OpenAI Checkout"
+                            if provider == "gcash" and promo_requested else (
+                                "使用 ID 代理创建 GoPay Checkout" if provider == "gopay" else "创建 OpenAI Checkout"
+                            )
                         )
                     )
                 )
@@ -3233,6 +3301,8 @@ class JobStore:
                 )
             elif provider == "gcash":
                 self.log(job_id, "GCash 设置：单个 PH Checkout 代理与同一 HTTP 会话贯穿创建、优惠、taxes、confirm 和 start")
+            elif provider == "gopay":
+                self.log(job_id, "GoPay 设置：Checkout代理池创建 ID/IDR Checkout 并贯穿 taxes、confirm 和 start；Promotion代理池负责试用检查与优惠更新")
             elif provider == "paypal" and promo_requested:
                 self.log(job_id, f"PayPal 设置：Promotion代理池用于优惠检查，Checkout代理池创建 {country}/{options['currency']} Checkout")
             elif provider == "upi":
@@ -3270,7 +3340,7 @@ class JobStore:
             provider_chatgpt_http = chatgpt_http
             promo_chatgpt_http = chatgpt_http
             promotion_proxy = promotion_route_proxy(options, provider, entry_proxy, exit_proxy)
-            if provider in {"paypal", "upi", "ideal", "twint"} or (
+            if provider in {"paypal", "upi", "ideal", "twint", "gopay"} or (
                 options.get("named_proxy_pools") and promo_requested and provider != "gcash"
             ):
                 promo_chatgpt_http = sc.build_http(promotion_proxy)
@@ -3293,6 +3363,8 @@ class JobStore:
                     self.log(job_id, "iDEAL 优惠更新使用 Promotion代理池，NL/EUR Checkout 与 Stripe 使用 Checkout代理池")
                 elif provider == "twint":
                     self.log(job_id, "TWINT 支付处理使用 Checkout代理池（CH/CHF），优惠更新使用 Promotion代理池")
+                elif provider == "gopay":
+                    self.log(job_id, "GoPay Checkout、taxes、confirm 与 start 使用 Checkout代理池（ID/IDR），优惠更新使用 Promotion代理池")
                 elif provider in {"pix", "momo", "hosted"}:
                     self.log(job_id, f"{provider.upper()} 优惠更新使用 Promotion代理池，Checkout 与支付处理使用 Checkout代理池")
             session_id = checkout_data.get("checkout_session_id") or ""
@@ -3370,6 +3442,129 @@ class JobStore:
                     str(checkout_data.get("processor_entity") or "").strip()
                     or ("openai_llc" if country == "US" else "openai_ie")
                 )
+                if provider == "gopay":
+                    self.update(job_id, percent=58, text="正在读取 GoPay 自定义支付方式")
+                    custom_state = fetch_custom_checkout_session_with_retry(
+                        chatgpt_http, token, session_id, custom_processor, device_id,
+                        log=lambda message: self.log(job_id, message), attempts=6,
+                        required_provider="gopay",
+                    )
+                    custom_amount = custom_checkout_amount_minor(custom_state)
+                    custom_currency = custom_checkout_currency(custom_state) or "IDR"
+                    if promo_requested and custom_amount not in {None, 0}:
+                        self.update(job_id, percent=66, text="正在应用优惠并刷新 GoPay Checkout")
+                        update_checkout_promo(
+                            promo_chatgpt_http, token, session_id, custom_processor,
+                            options.get("promo_campaign") or "plus-1-month-free",
+                            lambda message: self.log(job_id, message), device_id=device_id,
+                        )
+                        custom_state = fetch_custom_checkout_session_with_retry(
+                            chatgpt_http, token, session_id, custom_processor, device_id,
+                            log=lambda message: self.log(job_id, message), attempts=6,
+                            required_provider="gopay",
+                        )
+                        custom_amount = custom_checkout_amount_minor(custom_state)
+                        custom_currency = custom_checkout_currency(custom_state) or custom_currency
+
+                    gopay_billing = default_billing("ID", meta.get("email") or "")
+                    gopay_address = gopay_billing.get("address") or {}
+                    self.update(job_id, percent=72, text="正在提交 ID 账单地址")
+                    self.log(
+                        job_id,
+                        "GoPay ID 账单：name={}，city={}，state={}，postal={}，source={}，place={}".format(
+                            gopay_billing.get("name") or "-",
+                            gopay_address.get("city") or "-",
+                            gopay_address.get("state") or "-",
+                            gopay_address.get("postal_code") or "-",
+                            gopay_billing.get("_address_source") or "fallback",
+                            gopay_billing.get("_place_name") or "-",
+                        ),
+                    )
+                    tax_checkout = submit_custom_checkout_taxes(
+                        chatgpt_http, token, session_id, custom_processor,
+                        gopay_billing, custom_currency, device_id,
+                    )
+                    self.log(job_id, "GoPay taxes 已提交，正在通过同一 Checkout 会话刷新支付方式")
+                    custom_state = fetch_custom_checkout_session_with_retry(
+                        chatgpt_http, token, session_id, custom_processor, device_id,
+                        log=lambda message: self.log(job_id, message), attempts=6,
+                        required_provider="gopay",
+                    )
+                    refreshed_amount = custom_checkout_amount_minor(custom_state)
+                    if refreshed_amount is None and tax_checkout:
+                        refreshed_amount = custom_checkout_amount_minor(tax_checkout)
+                    if refreshed_amount is not None:
+                        custom_amount = refreshed_amount
+                    custom_currency = custom_checkout_currency(custom_state) or custom_currency
+                    self.log(
+                        job_id,
+                        f"GoPay taxes 后 Checkout 应付金额：{custom_amount if custom_amount is not None else '?'} {custom_currency}",
+                    )
+                    if promo_requested and custom_amount != 0:
+                        raise RuntimeError(
+                            f"GOPAY_ZERO_DUE_REQUIRED: GoPay 优惠未生效或金额未知：amount={custom_amount} {custom_currency}"
+                        )
+
+                    custom_method_id = custom_payment_method_id_for(custom_state, "gopay")
+                    if not custom_method_id:
+                        raise RuntimeError(
+                            "GOPAY_METHOD_UNAVAILABLE: 当前 ID Checkout 尚未返回 GoPay 支付方式，将更换代理重建"
+                        )
+                    self.update(job_id, percent=78, text="正在确认 GoPay 支付方式")
+                    try:
+                        confirmed = confirm_custom_checkout_method(
+                            chatgpt_http, token, session_id, custom_processor,
+                            custom_method_id, checkout_proxy, device_id, did,
+                            use_sen=bool(options.get("use_sen", True)),
+                            use_so=bool(options.get("use_so", True)),
+                            method_name="GoPay",
+                            log=lambda message: self.log(job_id, message),
+                        )
+                    except RuntimeError as confirm_error:
+                        if "CUSTOM_CONFIRM_BLOCKED" not in str(confirm_error):
+                            raise
+                        self.log(job_id, "GoPay confirm 首次被拦截，正在更新 SEN/SO 后重试")
+                        time.sleep(1.2)
+                        confirmed = confirm_custom_checkout_method(
+                            chatgpt_http, token, session_id, custom_processor,
+                            custom_method_id, checkout_proxy, device_id, did,
+                            use_sen=True, use_so=True, method_name="GoPay",
+                            log=lambda message: self.log(job_id, message),
+                        )
+                    self.update(job_id, percent=90, text="正在生成 GoPay Midtrans 跳转链接")
+                    started = start_custom_checkout_method(
+                        chatgpt_http, token, session_id, custom_processor,
+                        custom_method_id, device_id, method_name="GoPay",
+                    )
+                    action = started.get("next_action") or {}
+                    redirect_url = gopay_midtrans_url(started, confirmed)
+                    if not redirect_url:
+                        raise RuntimeError(
+                            "GOPAY_MIDTRANS_LINK_MISSING: GoPay 未返回有效的 Midtrans Snap v3/v4 跳转链接"
+                        )
+                    result.update({
+                        "link_type": "gopay",
+                        "checkout_provider": "open_ai_oaics",
+                        "checkout_ui_mode": "custom",
+                        "processor_entity": custom_processor,
+                        "custom_payment_method_id": custom_method_id,
+                        "payment_method_type": str(action.get("paymentMethodType") or "gopay"),
+                        "provider_redirect_url": redirect_url,
+                        "gopay_midtrans_url": redirect_url,
+                        "short_link": redirect_url,
+                        "checkout_url": redirect_url,
+                        "verification_url": str(confirmed.get("confirm_return_url") or ""),
+                        "checkout_amount": custom_amount,
+                        "amount_currency": custom_currency,
+                        "amount_verification": (
+                            "verified_zero" if custom_amount == 0
+                            else ("pending" if custom_amount is None else "nonzero")
+                        ),
+                        "promo_applied": (custom_amount == 0) if promo_requested else None,
+                        "expires_at": int(time.time()) + 1800,
+                    })
+                    self.update(job_id, percent=100, text="GoPay Midtrans 跳转链接生成完成", status="done", result=result)
+                    return
                 if provider == "gcash":
                     self.update(job_id, percent=58, text="正在读取 GCash 自定义支付方式")
                     custom_state = fetch_custom_checkout_session_with_retry(
@@ -4369,14 +4564,14 @@ def health():
 def config():
     return jsonify({
         "plans": list(PLANS),
-        "link_types": ["hosted", "ph_short", "paypal", "ideal", "twint", "pix", "momo", "gcash", "kakao"]
+        "link_types": ["hosted", "ph_short", "paypal", "ideal", "twint", "pix", "momo", "gcash", "gopay", "kakao"]
             + (["upi"] if UPI_ENABLED else []),
         "disabled_link_types": [] if UPI_ENABLED else ["upi"],
         "country_currency": COUNTRY_CURRENCY,
         "provider_defaults": PROVIDER_DEFAULTS,
         "proxy_policy": {
             "entry_required": True,
-            "exit_required_for": ["ph_short", "paypal", "ideal", "twint", "upi", "gcash", "kakao"],
+            "exit_required_for": ["ph_short", "paypal", "ideal", "twint", "upi", "gcash", "gopay", "kakao"],
             "single_chain_for": ["pix", "momo"],
             "max_per_pool": 500,
             "selection": "random_per_job",
@@ -4403,7 +4598,7 @@ def start_checkout():
     link_type = str(data.get("link_type") or "hosted").lower()
     if plan not in PLANS:
         return jsonify({"error": "计划类型不正确"}), 400
-    if link_type not in {"hosted", "ph_short", "paypal", "ideal", "twint", "upi", "pix", "momo", "gcash", "kakao"}:
+    if link_type not in {"hosted", "ph_short", "paypal", "ideal", "twint", "upi", "pix", "momo", "gcash", "gopay", "kakao"}:
         return jsonify({"error": "提取方式不正确"}), 400
     if link_type == "upi" and not UPI_ENABLED:
         return jsonify({"error": "UPI 提链已暂停维护"}), 503

@@ -4,7 +4,7 @@ from typing import Any
 
 
 _LEGACY_SHARED_PROVIDERS = {"pix", "momo"}
-_LEGACY_CHECKOUT_EXIT_PROVIDERS = {"paypal", "upi", "ideal", "twint"}
+_LEGACY_CHECKOUT_EXIT_PROVIDERS = {"paypal", "upi", "ideal", "twint", "gopay"}
 
 
 def shares_checkout_proxy(options: dict[str, Any], provider: str) -> bool:

@@ -9,7 +9,7 @@ from tools.pay153_checkout.proxy_routing import (
 
 
 PROVIDERS = (
-    "hosted", "paypal", "pix", "upi", "momo", "gcash",
+    "hosted", "paypal", "pix", "upi", "momo", "gcash", "gopay",
     "ideal", "twint", "kakao", "ph_short",
 )
 
@@ -30,6 +30,7 @@ def test_reference_mode_preserves_legacy_special_routes() -> None:
     assert shares_checkout_proxy(options, "momo")
     assert checkout_route_proxy(options, "hosted", "entry", "exit") == "entry"
     assert checkout_route_proxy(options, "paypal", "entry", "exit") == "exit"
+    assert checkout_route_proxy(options, "gopay", "entry", "exit") == "exit"
     assert promotion_route_proxy(options, "gcash", "entry", "exit") == "exit"
 
 
