@@ -81,6 +81,17 @@ func TestSunnyPaymentProbeTaskUnionsCountriesAndPersistsImmediately(t *testing.T
 	if account.PaymentProbedAt == nil || account.PaymentProbeError != "" || !strings.Contains(account.PaymentProbeResultsJSON, `"JP"`) || !strings.Contains(account.PaymentProbeResultsJSON, `"PH"`) {
 		t.Fatalf("probe metadata not persisted: %#v", account)
 	}
+	var events []TaskEvent
+	if err := s.db.Where("task_id = ?", task.ID).Order("id asc").Find(&events).Error; err != nil {
+		t.Fatalf("load payment probe events: %v", err)
+	}
+	eventText := ""
+	for _, event := range events {
+		eventText += "\n" + event.Message
+	}
+	if !strings.Contains(eventText, "JP 探测完成") || !strings.Contains(eventText, "PH 探测完成") || !strings.Contains(eventText, "账户任务完成：1/1") {
+		t.Fatalf("payment probe progress events are incomplete: %s", eventText)
+	}
 	if err := s.db.Model(&SunnyAccount{}).Where("id = ?", account.ID).Update("payment_methods_json", `["upi"]`).Error; err != nil {
 		t.Fatal(err)
 	}

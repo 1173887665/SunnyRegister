@@ -476,6 +476,13 @@ func (s *Server) executeSunnyPaymentProbeTask(task *Task, payload map[string]any
 		s.failSunnyPaymentProbeTask(task, err.Error())
 		return
 	}
+	selectedCountries := sunnyPaymentProbeCountryList(groups)
+	s.appendTaskEvent(task.ID,
+		fmt.Sprintf("账户支付方式探测开始：账户 %d 个，国家 %d 个（%s）", len(candidates), len(selectedCountries), strings.Join(selectedCountries, ", ")),
+		"log", "info", map[string]any{
+			"scope": "global", "progress_type": "payment_probe", "current": 0, "total": len(candidates),
+			"countries": selectedCountries,
+		})
 	skipped := map[uint]bool{}
 	for _, id := range uintSlice(payload["skip_session_ids"]) {
 		skipped[id] = true
@@ -500,6 +507,28 @@ func (s *Server) executeSunnyPaymentProbeTask(task *Task, payload map[string]any
 			now := time.Now()
 			item := map[string]any{"session_id": outcome.Candidate.SessionID, "email": outcome.Candidate.Email, "payment_methods": outcome.Methods, "countries": outcome.Countries, "proxy_traffic_bytes": outcome.TrafficBytes}
 			s.recordSunnyProxyTraffic(outcome.Candidate.Email, outcome.TrafficBytes)
+			if outcome.Candidate.SkipReason == "" && outcome.Candidate.Error == "" {
+				countries := make([]string, 0, len(outcome.Countries))
+				for country := range outcome.Countries {
+					countries = append(countries, country)
+				}
+				sort.Strings(countries)
+				for _, country := range countries {
+					detail, _ := outcome.Countries[country].(map[string]any)
+					methods := stringSlice(detail["methods"])
+					errorText := text(detail["error"])
+					level := "info"
+					message := fmt.Sprintf("[%s] [支付探测] %s 探测完成：%s（HTTP %d，代理 #%d，尝试 %d 次）", outcome.Candidate.Email, country, fallback(strings.Join(methods, ", "), "未识别支付方式"), intValue(detail["http"], 0), intValue(detail["proxy_id"], 0), intValue(detail["attempts"], 0))
+					if errorText != "" {
+						level = "warning"
+						message = fmt.Sprintf("[%s] [支付探测] %s 探测失败：%s（代理 #%d，尝试 %d 次）", outcome.Candidate.Email, country, errorText, intValue(detail["proxy_id"], 0), intValue(detail["attempts"], 0))
+					}
+					s.appendAccountTaskEvent(task.ID, outcome.Candidate.Email, "payment", "payment_probe.country", message, level, map[string]any{
+						"session_id": outcome.Candidate.SessionID, "country": country, "methods": methods,
+						"http": detail["http"], "proxy_id": detail["proxy_id"], "attempts": detail["attempts"], "error": errorText,
+					})
+				}
+			}
 			switch {
 			case outcome.Candidate.SkipReason != "":
 				result["skipped"] = result["skipped"].(int) + 1
@@ -552,6 +581,15 @@ func (s *Server) executeSunnyPaymentProbeTask(task *Task, payload map[string]any
 			items = append(items, item)
 			task.ProgressCurrent++
 			s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": task.ProgressCurrent, "updated_at": now})
+			status := text(item["status"])
+			progressMessage := fmt.Sprintf("[%s] [支付探测] 账户任务完成：%d/%d，结果=%s，支付方式=%s", outcome.Candidate.Email, task.ProgressCurrent, task.ProgressTotal, status, fallback(strings.Join(outcome.Methods, ", "), "-"))
+			progressLevel := "info"
+			if status == "failed" {
+				progressLevel = "error"
+			}
+			s.appendAccountTaskEvent(task.ID, outcome.Candidate.Email, "payment", "payment_probe.completed", progressMessage, progressLevel, map[string]any{
+				"session_id": outcome.Candidate.SessionID, "status": status, "current": task.ProgressCurrent, "total": task.ProgressTotal, "methods": outcome.Methods,
+			})
 		}
 	}
 	result["items"] = items
