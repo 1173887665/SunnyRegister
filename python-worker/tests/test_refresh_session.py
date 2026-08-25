@@ -13,6 +13,7 @@ from sunny_core.db import SunnyDB, SunnyTaskCancelled
 class FakeRefreshDB:
     def __init__(self, *, refresh_token: str = "", mailbox_status: str = "已注册") -> None:
         self.refresh_token = refresh_token
+        self.access_token = ""
         self.mailbox_status = mailbox_status
         self.events: list[str] = []
         self.event_details: list[dict] = []
@@ -20,12 +21,13 @@ class FakeRefreshDB:
         self.marked_status = ""
         self.renewal_failure = ""
         self.deactivated_error = ""
+        self.discarded_token = ""
 
     def fetch_accounts(self, _ids=None):
-        return [{"id": 7, "email": "registered@example.com", "openai_rt": self.refresh_token}]
+        return [{"id": 7, "email": "registered@example.com", "openai_rt": self.refresh_token, "access_token": self.access_token}]
 
     def fetch_session_by_email(self, _email):
-        return {"refresh_token": self.refresh_token}
+        return {"refresh_token": self.refresh_token, "access_token": self.access_token, "access_token_status": "invalid" if not self.access_token else "valid"}
 
     def fetch_mailbox_by_email(self, _email):
         return {"id": 11, "email": "registered@example.com", "status": self.mailbox_status}
@@ -44,6 +46,8 @@ class FakeRefreshDB:
 
     def upsert_session(self, _email, _account_id, session, _raw_line=""):
         self.sessions.append(session)
+        self.access_token = str(session.get("access_token") or self.access_token)
+        self.refresh_token = str(session.get("refresh_token") or self.refresh_token)
 
     def upsert_account(self, *_args, **_kwargs):
         return 7
@@ -57,6 +61,11 @@ class FakeRefreshDB:
 
     def mark_account_deactivated(self, _email, error=""):
         self.deactivated_error = str(error)
+
+    def discard_unverified_access_token(self, _email, access_token, _error=""):
+        self.discarded_token = str(access_token)
+        if self.access_token == access_token:
+            self.access_token = ""
 
 
 def test_login_secret_callback_account_deactivated_is_promoted_to_terminal_error():
@@ -77,26 +86,34 @@ class RefreshSessionTests(unittest.TestCase):
 
     def test_missing_refresh_token_reuses_protocol_native_headless_login(self):
         db = FakeRefreshDB()
-        with patch.object(worker, "_run_one", return_value=(True, {"has_access_token": True, "has_refresh_token": False})) as run_one:
+        def login(*_args):
+            db.upsert_session("registered@example.com", 7, {"access_token": "at_login"})
+            return True, {"has_access_token": True, "has_refresh_token": False}
+        with (
+            patch.object(worker, "_run_one", side_effect=login) as run_one,
+            patch.object(worker, "probe_access_token", side_effect=[{"status": "invalid"}, {"status": "valid"}]),
+        ):
             ok, errors, items = worker._refresh_sessions(db, {"account_ids": [7]})
 
         self.assertEqual(ok, 1)
         self.assertEqual(errors, [])
-        self.assertEqual(items[0]["refresh_method"], "headless_login")
+        self.assertEqual(items[0]["refresh_method"], "login")
+        self.assertTrue(items[0]["verified"])
         payload = run_one.call_args.args[2]
         self.assertEqual(payload["execution_mode"], "protocol")
         self.assertEqual(payload["protocol_challenge_strategy"], "sentinel_protocol")
         self.assertEqual(payload["registration_stage"], "register_only")
         self.assertTrue(payload["access_token_renewal"])
         renewal = [item for item in db.event_details if item.get("progress_type") == "access_token_renewal"]
-        self.assertEqual((renewal[0]["current"], renewal[0]["total"]), (1, 7))
-        self.assertEqual((renewal[-1]["current"], renewal[-1]["total"], renewal[-1]["state"]), (9, 9, "succeeded"))
+        self.assertEqual((renewal[0]["current"], renewal[0]["total"]), (1, 10))
+        self.assertEqual((renewal[-1]["current"], renewal[-1]["total"], renewal[-1]["state"]), (10, 10, "succeeded"))
 
     def test_refresh_token_is_used_before_browser_fallback(self):
         db = FakeRefreshDB(refresh_token="rt_test")
         token = {"access_token": "at_new", "refresh_token": "rt_new", "expires_at": 1893456000}
         with (
             patch.object(worker, "refresh_openai_access_token", return_value=token),
+            patch.object(worker, "probe_access_token", side_effect=[{"status": "invalid"}, {"status": "valid"}]),
             patch.object(worker, "_run_one") as run_one,
         ):
             ok, errors, items = worker._refresh_sessions(db, {"account_ids": [7], "proxy_enabled": False})
@@ -107,13 +124,17 @@ class RefreshSessionTests(unittest.TestCase):
         self.assertEqual(db.sessions[0]["expires_at"], 1893456000)
         run_one.assert_not_called()
         renewal = [item for item in db.event_details if item.get("progress_type") == "access_token_renewal"]
-        self.assertEqual([item["current"] for item in renewal], list(range(1, 8)))
+        self.assertEqual(renewal[0]["checkpoint"], "precheck_started")
+        self.assertTrue(any(item["checkpoint"] == "secondary_probe" for item in renewal))
         self.assertEqual(renewal[-1]["state"], "succeeded")
 
     def test_refresh_token_does_not_downgrade_reverse_proxy_status(self):
         db = FakeRefreshDB(refresh_token="rt_test", mailbox_status="已反代")
         token = {"access_token": "at_new", "refresh_token": "rt_new"}
-        with patch.object(worker, "refresh_openai_access_token", return_value=token):
+        with (
+            patch.object(worker, "refresh_openai_access_token", return_value=token),
+            patch.object(worker, "probe_access_token", side_effect=[{"status": "invalid"}, {"status": "valid"}]),
+        ):
             ok, errors, _items = worker._refresh_sessions(db, {"account_ids": [7]})
 
         self.assertEqual(ok, 1)
@@ -122,12 +143,33 @@ class RefreshSessionTests(unittest.TestCase):
 
     def test_failed_renewal_is_persisted_for_account_status_display(self):
         db = FakeRefreshDB()
-        with patch.object(worker, "_run_one", return_value=(False, "login failed")):
+        with (
+            patch.object(worker, "_run_one", return_value=(False, "login failed")),
+            patch.object(worker, "probe_access_token", return_value={"status": "invalid"}),
+        ):
             ok, errors, _items = worker._refresh_sessions(db, {"account_ids": [7]})
 
         self.assertEqual(ok, 0)
         self.assertIn("login failed", errors[0])
         self.assertIn("login failed", db.renewal_failure)
+
+    def test_login_result_that_fails_secondary_probe_is_discarded(self):
+        db = FakeRefreshDB()
+
+        def login(*_args):
+            db.upsert_session("registered@example.com", 7, {"access_token": "at_unverified"})
+            return True, {"has_access_token": True, "has_refresh_token": False}
+
+        with (
+            patch.object(worker, "_run_one", side_effect=login),
+            patch.object(worker, "probe_access_token", side_effect=[{"status": "invalid"}, {"status": "invalid", "error": "AT 已失效"}]),
+        ):
+            ok, errors, items = worker._refresh_sessions(db, {"account_ids": [7]})
+
+        self.assertEqual(ok, 0)
+        self.assertIn("二次验活失败", errors[0])
+        self.assertEqual(db.discarded_token, "at_unverified")
+        self.assertEqual(items[0]["status"], "failed")
 
     def test_account_deactivated_is_banned_without_retry(self):
         db = FakeRefreshDB()
@@ -136,7 +178,10 @@ class RefreshSessionTests(unittest.TestCase):
             '"message": "You do not have an account because it has been deleted or deactivated.", '
             '"code": "account_deactivated"}}'
         )
-        with patch.object(worker, "_run_one", return_value=(False, deactivated)) as run_one:
+        with (
+            patch.object(worker, "_run_one", return_value=(False, deactivated)) as run_one,
+            patch.object(worker, "probe_access_token", return_value={"status": "invalid"}),
+        ):
             ok, errors, _items = worker._refresh_sessions(db, {"account_ids": [7]})
 
         self.assertEqual(ok, 0)
@@ -153,47 +198,57 @@ class RefreshSessionTests(unittest.TestCase):
             "REQ POST https://auth.openai.com/api/accounts/email-otp/validate | "
             "RESP 403 application/json"
         )
+        def successful_login(*_args):
+            db.upsert_session("registered@example.com", 7, {"access_token": "at_login"})
+            return True, {"has_access_token": True, "has_refresh_token": False}
+        responses = iter([(False, otp_error), successful_login])
+        def run_login(*args):
+            response = next(responses)
+            return response(*args) if callable(response) else response
         with (
             patch.object(
                 worker,
                 "_run_one",
-                side_effect=[
-                    (False, otp_error),
-                    (True, {"has_access_token": True, "has_refresh_token": False}),
-                ],
+                side_effect=run_login,
             ) as run_one,
+            patch.object(worker, "probe_access_token", side_effect=[{"status": "invalid"}, {"status": "valid"}]),
             patch.object(worker.time, "sleep", return_value=None) as sleep_mock,
         ):
             ok, errors, items = worker._refresh_sessions(db, {"account_ids": [7]})
 
         self.assertEqual(ok, 1)
         self.assertEqual(errors, [])
-        self.assertEqual(items[0]["refresh_method"], "headless_login")
+        self.assertEqual(items[0]["refresh_method"], "login")
         self.assertEqual(run_one.call_count, 2)
         retry_payload = run_one.call_args_list[1].args[2]
         self.assertEqual(retry_payload["execution_mode"], "background")
         self.assertTrue(retry_payload["renewal_retry_fresh_context"])
         self.assertTrue(any("新的隔离无痕后台浏览器上下文" in message for message in db.events))
-        self.assertEqual(sleep_mock.call_count, 15)
+        self.assertEqual(sleep_mock.call_count, 12)
 
     def test_protocol_failure_falls_back_to_fresh_background_login(self):
         db = FakeRefreshDB()
+        def successful_login(*_args):
+            db.upsert_session("registered@example.com", 7, {"access_token": "at_login"})
+            return True, {"has_access_token": True, "has_refresh_token": False}
+        responses = iter([(False, "protocol request failed"), successful_login])
+        def run_login(*args):
+            response = next(responses)
+            return response(*args) if callable(response) else response
         with (
             patch.object(
                 worker,
                 "_run_one",
-                side_effect=[
-                    (False, "protocol request failed"),
-                    (True, {"has_access_token": True, "has_refresh_token": False}),
-                ],
+                side_effect=run_login,
             ) as run_one,
+            patch.object(worker, "probe_access_token", side_effect=[{"status": "invalid"}, {"status": "valid"}]),
             patch.object(worker.time, "sleep", return_value=None) as sleep_mock,
         ):
             ok, errors, items = worker._refresh_sessions(db, {"account_ids": [7]})
 
         self.assertEqual(ok, 1)
         self.assertEqual(errors, [])
-        self.assertEqual(items[0]["refresh_method"], "headless_login")
+        self.assertEqual(items[0]["refresh_method"], "login")
         self.assertEqual(run_one.call_args_list[0].args[2]["execution_mode"], "protocol")
         self.assertEqual(run_one.call_args_list[1].args[2]["execution_mode"], "background")
         self.assertTrue(run_one.call_args_list[1].args[2]["renewal_retry_fresh_context"])
@@ -234,7 +289,10 @@ class RefreshSessionTests(unittest.TestCase):
                 active -= 1
             return index, 1, [], [{"email": f"user{account_id}@example.com"}]
 
-        with patch.object(worker, "_refresh_sessions_isolated", side_effect=refresh_one) as isolated:
+        with (
+            patch.object(worker, "_refresh_sessions_isolated", side_effect=refresh_one) as isolated,
+            patch.object(worker, "probe_access_token", return_value={"status": "invalid"}),
+        ):
             ok, errors, items = worker._refresh_sessions(db, {"account_ids": [1, 2, 3, 4], "concurrency": 3})
 
         self.assertEqual(ok, 4)
@@ -259,7 +317,10 @@ class RefreshSessionTests(unittest.TestCase):
 
     def test_failed_renewal_does_not_duplicate_email_prefix(self):
         db = FakeRefreshDB()
-        with patch.object(worker, "_run_one", return_value=(False, "[registered@example.com] login failed")):
+        with (
+            patch.object(worker, "_run_one", return_value=(False, "[registered@example.com] login failed")),
+            patch.object(worker, "probe_access_token", return_value={"status": "invalid"}),
+        ):
             _ok, errors, _items = worker._refresh_sessions(db, {"account_ids": [7]})
 
         self.assertEqual(errors, ["[registered@example.com] login failed"])
@@ -298,17 +359,28 @@ class AccountDeactivatedPersistenceTests(unittest.TestCase):
 class AcquireRefreshTokenTests(unittest.TestCase):
     def test_existing_refresh_token_returns_without_login(self):
         db = FakeRefreshDB(refresh_token="rt_existing")
-        with patch.object(worker, "_run_one") as run_one:
+        with (
+            patch.object(worker, "_run_one") as run_one,
+            patch.object(worker, "refresh_openai_access_token", return_value={"access_token": "at_new", "refresh_token": "rt_rotated"}),
+            patch.object(worker, "probe_access_token", return_value={"status": "valid"}),
+        ):
             ok, errors, items = worker._acquire_refresh_tokens(db, {"account_ids": [7]})
 
         self.assertEqual(ok, 1)
         self.assertEqual(errors, [])
-        self.assertEqual(items[0]["acquire_method"], "existing")
+        self.assertEqual(items[0]["acquire_method"], "refresh_token_validated")
+        self.assertTrue(items[0]["verified"])
         run_one.assert_not_called()
 
     def test_missing_refresh_token_runs_protocol_codex_oauth(self):
         db = FakeRefreshDB()
-        with patch.object(worker, "_run_one", return_value=(True, {"has_refresh_token": True})) as run_one:
+        def acquire(*_args):
+            db.upsert_session("registered@example.com", 7, {"access_token": "at_new", "refresh_token": "rt_new"})
+            return True, {"has_refresh_token": True}
+        with (
+            patch.object(worker, "_run_one", side_effect=acquire) as run_one,
+            patch.object(worker, "probe_access_token", return_value={"status": "valid"}),
+        ):
             ok, errors, items = worker._acquire_refresh_tokens(db, {"account_ids": [7]})
 
         self.assertEqual(ok, 1)
@@ -327,7 +399,7 @@ class AcquireRefreshTokenTests(unittest.TestCase):
             ok, errors, items = worker._acquire_refresh_tokens(db, {"account_ids": [7]})
 
         self.assertEqual(ok, 0)
-        self.assertEqual(items, [])
+        self.assertEqual(items[0]["status"], "failed")
         self.assertIn("无法获取该账户RT", errors[0])
         self.assertIn("OAuth phone verification required", errors[0])
 

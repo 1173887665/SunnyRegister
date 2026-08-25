@@ -89,6 +89,17 @@ type SunnyProxy struct {
 
 func (SunnyProxy) TableName() string { return "sunny_proxies" }
 
+type SunnyMailboxLease struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	MailboxID uint      `gorm:"uniqueIndex;not null" json:"mailbox_id"`
+	Owner     string    `gorm:"index;size:255;not null" json:"owner"`
+	ExpiresAt time.Time `gorm:"index;not null" json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (SunnyMailboxLease) TableName() string { return "sunny_mailbox_leases" }
+
 type SunnyAccount struct {
 	ID                      uint       `gorm:"primaryKey" json:"id"`
 	MailboxID               uint       `gorm:"index" json:"mailbox_id"`

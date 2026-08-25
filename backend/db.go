@@ -92,7 +92,7 @@ func databaseModels() []any {
 		&ConfigItem{}, &Account{}, &AccountOverview{}, &AccountCredential{},
 		&ProviderAccount{}, &ProviderResource{}, &ProviderDefinition{}, &ProviderSetting{},
 		&PlatformCapabilityOverride{}, &TaskLog{}, &Task{}, &TaskEvent{}, &Proxy{}, &SmsPoolBlacklist{},
-		&SunnyMailboxGroup{}, &SunnyMailbox{}, &SunnyPhone{}, &SunnyProxy{}, &SunnyAccount{},
+		&SunnyMailboxGroup{}, &SunnyMailbox{}, &SunnyPhone{}, &SunnyProxy{}, &SunnyMailboxLease{}, &SunnyAccount{},
 		&SunnySession{}, &SunnyKVConfig{}, &SunnySMSProviderOption{}, &SunnySMSProviderNumber{},
 		&AuditLog{}, &AuditSetting{}, &AuditExportJob{},
 	}

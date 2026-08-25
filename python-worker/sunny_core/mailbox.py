@@ -68,6 +68,17 @@ class MailboxAccessError(RuntimeError):
         super().__init__(f"{user_message}: {detail}" if detail else user_message)
 
 
+def _recipient_matches(expected: str, value: str) -> bool:
+    target = str(expected or "").strip().casefold()
+    if not target:
+        return True
+    recipients = {
+        item.casefold()
+        for item in re.findall(r"[\w.%+\-]+@[\w.\-]+\.[A-Za-z]{2,}", str(value or ""), flags=re.I)
+    }
+    return not recipients or target in recipients
+
+
 def _outlook_token_error(status_code: int, payload: dict[str, Any]) -> MailboxAccessError:
     error_code = str(payload.get("error") or "").strip().lower()
     detail = str(payload.get("error_description") or payload.get("error") or f"HTTP {status_code}").strip()
@@ -615,6 +626,19 @@ class HotmailReader:
                 detail = payload.get("error", {}).get("message") or payload.get("error")
             except Exception:
                 detail = response.text[:300]
+            if response.status_code == 401:
+                raise MailboxAccessError(
+                    "mailbox_credential_expired",
+                    "Outlook Graph 凭证已过期或被撤销",
+                    f"Graph HTTP {response.status_code}: {detail}",
+                    terminal=True,
+                )
+            if response.status_code == 403:
+                raise MailboxAccessError(
+                    "mailbox_scope_mismatch",
+                    "Outlook Graph 权限不足，正在尝试 IMAP 兼容通道",
+                    f"Graph HTTP 403: {detail}",
+                )
             raise RuntimeError(f"Graph HTTP {response.status_code}: {detail}")
         payload = response.json()
         return list(payload.get("value") or [])
@@ -871,6 +895,8 @@ class HotmailReader:
                 key = f"graph:{item.get('id', '')}"
                 if key in self.seen:
                     continue
+                if not _recipient_matches(self.account.email, str(item.get("to") or "")):
+                    continue
                 try:
                     received = datetime.fromisoformat(str(item.get("date") or "").replace("Z", "+00:00")).timestamp()
                 except Exception:
@@ -887,6 +913,8 @@ class HotmailReader:
                     return code
         except Exception as exc:
             self.log(f"[{self.account.email}] Outlook Graph OTP scan failed: {exc}")
+            if isinstance(exc, MailboxAccessError) and exc.terminal:
+                raise
         return ""
 
     def _scan_folder(self, folder: str, min_timestamp: float) -> str:
@@ -916,6 +944,9 @@ class HotmailReader:
                     continue
                 subject = decode_header_text(msg.get("Subject"))
                 sender = decode_header_text(msg.get("From"))
+                recipient = decode_header_text(msg.get("To"))
+                if not _recipient_matches(self.account.email, recipient):
+                    continue
                 body = extract_message_text(msg)
                 haystack = f"{subject}\n{sender}\n{body}"
                 if not re.search(r"openai|chatgpt", haystack, flags=re.I):

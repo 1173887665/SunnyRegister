@@ -397,6 +397,19 @@ class SunnyDB:
         self.conn.execute(
             "create unique index if not exists idx_sunny_sms_provider_number on sunny_sms_provider_numbers(provider, phone_number, country, service)"
         )
+        self.conn.execute(
+            """
+            create table if not exists sunny_mailbox_leases (
+                id integer primary key autoincrement,
+                mailbox_id integer not null unique,
+                owner text not null,
+                expires_at datetime not null,
+                created_at datetime,
+                updated_at datetime
+            )
+            """
+        )
+        self.conn.execute("create index if not exists idx_sunny_mailbox_leases_expires on sunny_mailbox_leases(expires_at)")
         self.conn.commit()
 
     def _normalize_datetime_storage(self) -> None:
@@ -1344,6 +1357,77 @@ class SunnyDB:
             and int(row["enabled"] or 0) == 1
             and int(row["last_check_ok"] or 0) == 1
         )
+
+    def acquire_mailbox_lease(self, mailbox_id: int, owner: str, ttl_seconds: int = 600) -> bool:
+        if mailbox_id <= 0:
+            return True
+        owner = str(owner or "").strip()
+        if not owner:
+            raise ValueError("mailbox lease owner is required")
+        now = datetime.now(app_timezone())
+        expires_at = sql_datetime(now + timedelta(seconds=max(30, int(ttl_seconds or 600))))
+        timestamp = sql_datetime(now)
+        with self.conn:
+            self.conn.execute("delete from sunny_mailbox_leases where expires_at<=?", (timestamp,))
+            self.conn.execute(
+                "insert into sunny_mailbox_leases(mailbox_id,owner,expires_at,created_at,updated_at) values(?,?,?,?,?) on conflict(mailbox_id) do nothing",
+                (mailbox_id, owner, expires_at, timestamp, timestamp),
+            )
+            row = self.conn.execute(
+                "select owner from sunny_mailbox_leases where mailbox_id=?",
+                (mailbox_id,),
+            ).fetchone()
+            if not row or str(row["owner"] or "") != owner:
+                return False
+            self.conn.execute(
+                "update sunny_mailbox_leases set expires_at=?,updated_at=? where mailbox_id=? and owner=?",
+                (expires_at, timestamp, mailbox_id, owner),
+            )
+        return True
+
+    def release_mailbox_lease(self, mailbox_id: int, owner: str) -> None:
+        if mailbox_id <= 0 or not str(owner or "").strip():
+            return
+        self.conn.execute(
+            "delete from sunny_mailbox_leases where mailbox_id=? and owner=?",
+            (mailbox_id, str(owner).strip()),
+        )
+        self.conn.commit()
+
+    def mark_mailbox_credential_invalid(self, mailbox_id: int, error: str) -> None:
+        if mailbox_id <= 0:
+            return
+        self.conn.execute(
+            "update sunny_mailboxes set enabled=0,last_error=?,updated_at=? where id=?",
+            (str(error or "")[:2000], now_sql(), mailbox_id),
+        )
+        self.conn.commit()
+
+    def mark_access_token_probe(self, email: str, status: str, error: str = "") -> None:
+        if not email:
+            return
+        self.conn.execute(
+            "update sunny_sessions set access_token_status=?,access_token_error=?,access_token_checked_at=?,updated_at=? where lower(email)=lower(?)",
+            (str(status or "unknown"), str(error or "")[:1000], now_sql(), now_sql(), email),
+        )
+        self.conn.commit()
+
+    def discard_unverified_access_token(self, email: str, access_token: str, error: str) -> None:
+        email = str(email or "").strip()
+        access_token = str(access_token or "").strip()
+        if not email or not access_token:
+            return
+        timestamp = now_sql()
+        detail = str(error or "AT 二次验活失败")[:1000]
+        with self.conn:
+            self.conn.execute(
+                "update sunny_accounts set access_token='',last_error=?,updated_at=? where lower(email)=lower(?) and access_token=?",
+                (detail, timestamp, email, access_token),
+            )
+            self.conn.execute(
+                "update sunny_sessions set access_token='',access_token_status='invalid',access_token_error=?,access_token_checked_at=?,updated_at=? where lower(email)=lower(?) and access_token=?",
+                (detail, timestamp, timestamp, email, access_token),
+            )
 
     def save_chatgpt_password(self, mailbox_id: int, password: str) -> None:
         if mailbox_id <= 0 or not password:

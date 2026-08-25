@@ -14,18 +14,21 @@ from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 import requests
 
+from .access_token_probe import probe_access_token
 from .agent_identity import AgentIdentityUnavailableError, create_agent_identity_auth
+from .auth_resilience import classify_auth_failure, retry_allowed
 from .browser_traffic import ProxyTrafficMeter, use_traffic_meter
 from .db import SunnyDB, SunnyTaskCancelled, now_sql
 from .domain_mail_cleanup import cleanup_failed_mailbox
 from .firefox_sms import FIREFOX_RELEASE_DELAY_SECONDS, FireFoxSMSClient
 from .luban_sms import LubanSMSClient
-from .mailbox import account_from_row, parse_account_line
+from .mailbox import MailboxAccessError, account_from_row, parse_account_line
 from .openai_auth import TaskCancelledError, login_or_register, refresh_openai_access_token
 from .phone_pool import read_sms_candidates, wait_sms_code
 from .protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationError, login_or_register_protocol
 from .login_secret import setup_login_secret, setup_login_secret_protocol
 from .proxy import build_proxy, proxy_target_tls_check, redact_proxy_url
+from .proxy_scheduler import ProxyLease, TaskProxyScheduler
 from .smsbower import SMSBowerClient
 from .smspool import SMSPOOL_CODE_TIMEOUT_SECONDS, SMSPoolClient
 from .rebind import rebind_one
@@ -202,16 +205,7 @@ class _ProtocolBatchPolicy:
 
 
 def _is_retryable_protocol_transport_error(error: Exception) -> bool:
-    message = str(error or "").lower()
-    return any(marker in message for marker in (
-        "curl: (28)",
-        "curl: (35)",
-        "connection reset by peer",
-        "recv failure",
-        "operation timed out",
-        "unexpected_eof_while_reading",
-        "unexpected eof while reading",
-    ))
+    return classify_auth_failure(error).category == "transient_transport"
 
 
 _DEFAULT_SUB2API_MODELS = (
@@ -484,6 +478,17 @@ def _proxy_snapshot(payload: dict[str, Any], slot: int = 0) -> dict[str, Any]:
         system_proxy = str(payload.get("system_proxy") or "").strip()
         normalized_system_proxy = _container_host_proxy(build_proxy("", system_proxy).url)
         return {"register": normalized_system_proxy, "mode": "system_proxy" if normalized_system_proxy else "direct", "local_proxy": ""}
+    lease = payload.get("_proxy_lease")
+    if isinstance(lease, dict) and "register" in lease:
+        register_proxy = str(lease.get("register") or "")
+        return {
+            "register": register_proxy,
+            "mode": "task_proxy_lease" if register_proxy else "direct",
+            "local_proxy": _container_host_proxy(build_proxy(str(payload.get("local_proxy") or ""), "").url),
+            "proxy_id": int(lease.get("proxy_id") or 0),
+            "proxy_slot": int(lease.get("slot") or -1),
+            "proxy_latency_ms": int(lease.get("latency_ms") or 0),
+        }
     base = str(payload.get("proxy") or "").strip()
     candidates = _proxy_pool_candidates(payload)
     if candidates:
@@ -1586,7 +1591,7 @@ def _persist_authenticated_login(
     return account_id
 
 
-def _run_one(
+def _run_one_impl(
     db: SunnyDB,
     task_type: str,
     payload: dict[str, Any],
@@ -2386,6 +2391,16 @@ def _run_one(
         err = f"[{email}] {err_text}"
         traffic_snapshot = finalize_traffic(False)
         traffic = getattr(exc, "traffic", None)
+        failure = classify_auth_failure(exc)
+        if isinstance(exc, MailboxAccessError) and exc.terminal or failure.category == "mailbox_credential_invalid":
+            marker = getattr(db, "mark_mailbox_credential_invalid", None)
+            if callable(marker):
+                marker(mailbox_id, err_text)
+            db.event(
+                f"[{email}] [邮箱] 邮箱凭证已确认失效，已停用该邮箱，避免后续任务重复取件",
+                "warning",
+                detail={"email": email, "scope": "selected", "mailbox_id": mailbox_id, "credential_invalid": True},
+            )
         if _is_account_deactivated(err_text):
             db.mark_account_deactivated(email, err_text)
             db.event(
@@ -2417,6 +2432,40 @@ def _run_one(
         return False, err
 
 
+def _run_one(
+    db: SunnyDB,
+    task_type: str,
+    payload: dict[str, Any],
+    mailbox: dict[str, Any],
+    index: int,
+    total: int,
+    protocol_batch_policy: _ProtocolBatchPolicy | None = None,
+) -> tuple[bool, dict[str, Any] | str]:
+    """Serialize operations that consume OTPs from the same mailbox."""
+    mailbox_id = max(0, int(mailbox.get("id") or 0))
+    acquire = getattr(db, "acquire_mailbox_lease", None)
+    release = getattr(db, "release_mailbox_lease", None)
+    owner = f"{getattr(db, 'task_id', 'inline')}:{mailbox_id}:{index}:{uuid.uuid4().hex}"
+    acquired = mailbox_id <= 0 or not callable(acquire)
+    if callable(acquire) and mailbox_id > 0:
+        for _attempt in range(16):
+            db.ensure_not_cancelled()
+            if acquire(mailbox_id, owner, ttl_seconds=900):
+                acquired = True
+                break
+            time.sleep(1)
+    if not acquired:
+        email = str(mailbox.get("email") or "")
+        message = f"[{email}] 邮箱正在被另一个登录/注册任务使用，等待租约超时"
+        db.event(message, "warning", detail={"email": email, "scope": "selected", "mailbox_id": mailbox_id, "mailbox_lease_busy": True})
+        return False, message
+    try:
+        return _run_one_impl(db, task_type, payload, mailbox, index, total, protocol_batch_policy)
+    finally:
+        if callable(release) and mailbox_id > 0:
+            release(mailbox_id, owner)
+
+
 def _run_one_isolated(
     task_id: str,
     task_type: str,
@@ -2440,6 +2489,49 @@ def _run_one_isolated(
         worker_db.close()
 
 
+def _interruptible_delay(db: SunnyDB, seconds: float) -> None:
+    remaining = max(0.0, float(seconds or 0))
+    while remaining > 0:
+        db.ensure_not_cancelled()
+        chunk = min(1.0, remaining)
+        time.sleep(chunk)
+        remaining -= chunk
+
+
+def _refresh_with_retry(db: SunnyDB, refresh_token: str, proxy_url: str) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for attempt in range(3):
+        db.ensure_not_cancelled()
+        try:
+            return refresh_openai_access_token(refresh_token, proxy_url)
+        except Exception as exc:
+            last_error = exc
+            decision = retry_allowed(exc, attempt, operation="token_refresh")
+            if not decision.retryable:
+                raise
+            _interruptible_delay(db, decision.delay_seconds)
+    raise RuntimeError(str(last_error or "Refresh Token 续期失败"))
+
+
+def _verify_access_token(access_token: str, proxy_url: str) -> dict[str, Any]:
+    result = probe_access_token(access_token, proxy_url)
+    if result.get("status") != "valid":
+        error = str(result.get("error") or "AT 二次验活未得到有效响应")
+        marker = "token_invalid: " if result.get("status") == "invalid" else ""
+        raise RuntimeError(f"{marker}AT 二次验活失败[{result.get('status') or 'unknown'}]: {error}")
+    return result
+
+
+def _verify_persisted_access_token(db: SunnyDB, email: str, access_token: str, proxy_url: str) -> dict[str, Any]:
+    try:
+        return _verify_access_token(access_token, proxy_url)
+    except Exception as exc:
+        discard = getattr(db, "discard_unverified_access_token", None)
+        if callable(discard):
+            discard(email, access_token, str(exc))
+        raise
+
+
 def _refresh_sessions_sequential(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
     accounts = db.fetch_accounts(_ids(payload.get("account_ids")) or None)
     index_offset = max(0, int(payload.get("_renewal_index_offset") or 0))
@@ -2451,29 +2543,34 @@ def _refresh_sessions_sequential(db: SunnyDB, payload: dict[str, Any]) -> tuple[
     for idx, acc in enumerate(accounts, start=index_offset + 1):
         db.ensure_not_cancelled()
         email = acc.get("email") or ""
-        renewal_current = 1
-        renewal_total = 7
-        _emit_renewal_progress(db, email, renewal_current, renewal_total, "preparing")
+        renewal_current = 3
+        renewal_total = 10
+        _emit_renewal_progress(db, email, renewal_current, renewal_total, "recovery_preparing")
         try:
             mailbox = db.fetch_mailbox_by_email(email)
             rt = acc.get("openai_rt") or ""
             if not rt:
                 sess = db.fetch_session_by_email(email) or {}
                 rt = sess.get("refresh_token") or ""
-            renewal_current = 2
+            renewal_current = 4
             _emit_renewal_progress(db, email, renewal_current, renewal_total, "credentials_loaded")
             refresh_error = ""
             if rt:
                 try:
-                    renewal_current = 3
-                    _emit_renewal_progress(db, email, renewal_current, renewal_total, "refresh_token_ready")
-                    token = refresh_openai_access_token(rt, _proxy_snapshot(payload, idx - 1)["register"])
-                    db.ensure_not_cancelled()
-                    renewal_current = 4
-                    _emit_renewal_progress(db, email, renewal_current, renewal_total, "token_received")
-                    account_id = int(acc.get("id") or db.upsert_account(email))
-                    payload2 = {"access_token": token.get("access_token"), "refresh_token": token.get("refresh_token") or rt, "id_token": token.get("id_token", ""), "expires_at": token.get("expires_at"), "session_json": token}
                     renewal_current = 5
+                    _emit_renewal_progress(db, email, renewal_current, renewal_total, "refresh_token_ready")
+                    proxy_url = _proxy_snapshot(payload, idx - 1)["register"]
+                    token = _refresh_with_retry(db, rt, proxy_url)
+                    db.ensure_not_cancelled()
+                    renewal_current = 6
+                    _emit_renewal_progress(db, email, renewal_current, renewal_total, "token_received")
+                    new_access_token = str(token.get("access_token") or "").strip()
+                    renewal_current = 7
+                    _emit_renewal_progress(db, email, renewal_current, renewal_total, "secondary_probe")
+                    probe = _verify_access_token(new_access_token, proxy_url)
+                    account_id = int(acc.get("id") or db.upsert_account(email))
+                    payload2 = {"access_token": new_access_token, "refresh_token": token.get("refresh_token") or rt, "id_token": token.get("id_token", ""), "expires_at": token.get("expires_at"), "session_json": token}
+                    renewal_current = 8
                     _emit_renewal_progress(db, email, renewal_current, renewal_total, "saving_session")
                     db.upsert_session(email, account_id, payload2)
                     refreshed_status = "已接码" if payload2["refresh_token"] else "已注册"
@@ -2481,12 +2578,15 @@ def _refresh_sessions_sequential(db: SunnyDB, payload: dict[str, Any]) -> tuple[
                     completed_status = _highest_mailbox_progress(current_status, refreshed_status)
                     db.upsert_account(email, status=_account_status_for_mailbox(completed_status), access_token=payload2["access_token"], openai_rt=payload2["refresh_token"])
                     db.mark_mailbox_by_email(email, completed_status, openai_rt=payload2["refresh_token"])
-                    renewal_current = 6
+                    marker = getattr(db, "mark_access_token_probe", None)
+                    if callable(marker):
+                        marker(email, "valid")
+                    renewal_current = 9
                     _emit_renewal_progress(db, email, renewal_current, renewal_total, "session_saved")
-                    items.append({"email": email, "has_access_token": bool(payload2["access_token"]), "has_refresh_token": bool(payload2["refresh_token"]), "refresh_method": "refresh_token"})
+                    items.append({"email": email, "status": "valid", "has_access_token": True, "has_refresh_token": bool(payload2["refresh_token"]), "refresh_method": "refresh_token", "secondary_probe": probe.get("status"), "verified": True})
                     ok += 1
-                    _account_event(db, email, "session", "access_token.renewed", f"[{email}] [Session] 已通过 Refresh Token 完成 AT 续期", account_id=account_id)
-                    renewal_current = 7
+                    _account_event(db, email, "session", "access_token.renewed", f"[{email}] [Session] 已通过 Refresh Token 完成 AT 续期并通过二次验活", account_id=account_id)
+                    renewal_current = 10
                     _emit_renewal_progress(db, email, renewal_current, renewal_total, "completed", state="succeeded")
                     if not parallel:
                         db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
@@ -2497,19 +2597,17 @@ def _refresh_sessions_sequential(db: SunnyDB, payload: dict[str, Any]) -> tuple[
                     if _is_account_deactivated(exc):
                         raise
                     refresh_error = str(exc)
-                    renewal_total = 9
-                    renewal_current = 3
+                    renewal_current = 5
                     _emit_renewal_progress(db, email, renewal_current, renewal_total, "refresh_token_unavailable")
                     _account_event(db, email, "session", "refresh_token.unavailable", f"[{email}] [Session] Refresh Token 续期不可用，改用后台无头登录更新 AT：{refresh_error}", "warning", account_id=int(acc.get("id") or 0))
             else:
-                renewal_total = 9
-                renewal_current = 3
+                renewal_current = 5
                 _emit_renewal_progress(db, email, renewal_current, renewal_total, "refresh_token_missing")
                 _account_event(db, email, "session", "refresh_token.missing", f"[{email}] [Session] 账户没有可用 Refresh Token，改用后台无头登录更新 AT", "warning", account_id=int(acc.get("id") or 0))
 
             if not mailbox:
                 raise RuntimeError("找不到该账户对应的邮箱凭证，无法回退登录更新 AT")
-            renewal_current = 4
+            renewal_current = 5
             _emit_renewal_progress(db, email, renewal_current, renewal_total, "mailbox_ready")
             fallback_payload = dict(payload)
             fallback_payload.update(
@@ -2521,7 +2619,7 @@ def _refresh_sessions_sequential(db: SunnyDB, payload: dict[str, Any]) -> tuple[
                     "mailbox_ids": [int(mailbox.get("id") or 0)],
                 }
             )
-            renewal_current = 5
+            renewal_current = 6
             _emit_renewal_progress(db, email, renewal_current, renewal_total, "protocol_login_started")
             db.event(
                 f"[{email}] [Session] 复用注册机登录链路更新 AT：协议登录优先，遇到挑战时先由窄范围 Sentinel 生成证明，失败再由无头浏览器接管",
@@ -2532,22 +2630,24 @@ def _refresh_sessions_sequential(db: SunnyDB, payload: dict[str, Any]) -> tuple[
                 raise RuntimeError(str(result).strip())
             if not succeeded:
                 db.ensure_not_cancelled()
-                wait_seconds = 15 if _is_otp_security_context_failure(result) else 2
+                decision = retry_allowed(result, 0, operation="protocol_login")
+                if decision.terminal:
+                    raise RuntimeError(str(result).strip())
+                wait_seconds = decision.delay_seconds or (15 if _is_otp_security_context_failure(result) else 2)
                 db.event(
                     f"[{email}] [认证] 协议/原生挑战登录链路未完成，将建立新的隔离无痕后台浏览器上下文重试一次：{result}",
                     "warning",
                     detail={"email": email, "scope": "selected", "renewal_fallback": "background_headless"},
                 )
-                _emit_renewal_progress(db, email, 6, renewal_total, "headless_login_fallback")
-                for _ in range(wait_seconds):
-                    db.ensure_not_cancelled()
-                    time.sleep(1)
+                _emit_renewal_progress(db, email, 7, renewal_total, "headless_login_fallback")
+                _interruptible_delay(db, wait_seconds)
                 background_payload = dict(fallback_payload)
                 background_payload.update({"execution_mode": "background", "renewal_retry_fresh_context": True})
                 succeeded, result = _run_one(db, "sunny_login", background_payload, mailbox, idx, total_accounts)
             if not succeeded and _is_account_deactivated(result):
                 raise RuntimeError(str(result).strip())
-            if not succeeded and _is_otp_security_context_failure(result):
+            retry_decision = retry_allowed(result, 0, operation="protocol_login") if not succeeded else None
+            if not succeeded and retry_decision and retry_decision.fresh_context and not retry_decision.terminal:
                 db.ensure_not_cancelled()
                 db.event(
                     f"[{email}] [认证] 后台登录的邮箱验证码请求被认证证明层拒绝；"
@@ -2555,12 +2655,10 @@ def _refresh_sessions_sequential(db: SunnyDB, payload: dict[str, Any]) -> tuple[
                     "warning",
                     detail={"email": email, "scope": "selected", "renewal_fallback": "fresh_headless_context"},
                 )
-                _emit_renewal_progress(db, email, 6, renewal_total, "sentinel_login_retry")
+                _emit_renewal_progress(db, email, 7, renewal_total, "sentinel_login_retry")
                 # The next reader filters mail by timestamp. Let the rejected OTP
                 # fall outside that window so the retry cannot consume it again.
-                for _ in range(15):
-                    db.ensure_not_cancelled()
-                    time.sleep(1)
+                _interruptible_delay(db, retry_decision.delay_seconds or 15)
                 retry_payload = dict(fallback_payload)
                 retry_payload["execution_mode"] = "background"
                 retry_payload["renewal_retry_fresh_context"] = True
@@ -2571,17 +2669,27 @@ def _refresh_sessions_sequential(db: SunnyDB, payload: dict[str, Any]) -> tuple[
                 if result_text.startswith(email_prefix):
                     result_text = result_text[len(email_prefix):].strip()
                 raise RuntimeError(result_text)
+            refreshed_session = db.fetch_session_by_email(email) or {}
+            refreshed_token = str(refreshed_session.get("access_token") or "").strip()
             renewal_current = 8
-            _emit_renewal_progress(db, email, renewal_current, renewal_total, "session_refreshed")
-            items.append({"email": email, "has_access_token": bool(isinstance(result, dict) and result.get("has_access_token")), "has_refresh_token": bool(isinstance(result, dict) and result.get("has_refresh_token")), "refresh_method": "headless_login", "refresh_token_error": refresh_error})
-            ok += 1
-            _account_event(db, email, "session", "access_token.renewed", f"[{email}] [Session] 已通过后台无头登录完成 AT 续期", account_id=int(acc.get("id") or 0))
+            _emit_renewal_progress(db, email, renewal_current, renewal_total, "secondary_probe")
+            probe = _verify_persisted_access_token(db, email, refreshed_token, _proxy_snapshot(payload, idx - 1)["register"])
+            marker = getattr(db, "mark_access_token_probe", None)
+            if callable(marker):
+                marker(email, "valid")
             renewal_current = 9
+            _emit_renewal_progress(db, email, renewal_current, renewal_total, "session_refreshed")
+            items.append({"email": email, "status": "valid", "has_access_token": True, "has_refresh_token": bool(refreshed_session.get("refresh_token")), "refresh_method": "login", "refresh_token_error": refresh_error, "secondary_probe": probe.get("status"), "verified": True, "login_required": True, "login_succeeded": True})
+            ok += 1
+            _account_event(db, email, "session", "access_token.renewed", f"[{email}] [Session] 已通过登录完成 AT 续期并通过二次验活", account_id=int(acc.get("id") or 0))
+            renewal_current = 10
             _emit_renewal_progress(db, email, renewal_current, renewal_total, "completed", state="succeeded")
         except Exception as exc:
             if _is_cancel_exception(exc):
                 raise
             errors.append(f"[{email}] {exc}")
+            failure = classify_auth_failure(exc)
+            items.append({"email": email, "status": "failed", "error": str(exc), "error_category": failure.category, "retryable": failure.retryable, "login_required": True, "login_succeeded": False})
             if _is_account_deactivated(exc):
                 db.mark_account_deactivated(email, str(exc))
                 db.event(
@@ -2592,7 +2700,7 @@ def _refresh_sessions_sequential(db: SunnyDB, payload: dict[str, Any]) -> tuple[
                 _emit_renewal_progress(db, email, renewal_current, renewal_total, "account_deactivated", state="failed", error=str(exc))
             else:
                 db.mark_access_token_renewal_failed(email, str(exc))
-                _account_event(db, email, "session", "access_token.renewal_failed", errors[-1], "error", account_id=int(acc.get("id") or 0), detail={"error": str(exc)})
+                _account_event(db, email, "session", "access_token.renewal_failed", errors[-1], "error", account_id=int(acc.get("id") or 0), detail={"error": str(exc), "error_category": failure.category, "retryable": failure.retryable})
                 _emit_renewal_progress(db, email, renewal_current, renewal_total, "failed", state="failed", error=str(exc))
         if not parallel:
             db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
@@ -2626,34 +2734,133 @@ def _refresh_sessions_isolated(
 
 def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
     accounts = db.fetch_accounts(_ids(payload.get("account_ids")) or None)
-    if len(accounts) <= 1:
-        return _refresh_sessions_sequential(db, payload)
     requested = int(payload.get("concurrency") or os.getenv("SUNNY_AT_RENEWAL_CONCURRENCY") or 3)
     concurrency = max(1, min(requested, 6, len(accounts)))
-    if concurrency <= 1:
-        return _refresh_sessions_sequential(db, payload)
+    if not accounts:
+        return 0, [], []
+    candidates = _proxy_pool_candidates(payload) if payload.get("proxy_enabled") is not False else []
+    scheduler = TaskProxyScheduler(candidates, lambda proxy: proxy_target_tls_check(proxy, timeout=10))
+    leases: dict[int, ProxyLease] = {}
+    probe_payloads: dict[int, dict[str, Any]] = {}
+    for index, account in enumerate(accounts):
+        account_id = int(account.get("id") or 0)
+        lease = scheduler.acquire(str(account.get("email") or account_id), index)
+        leases[account_id] = lease
+        current = dict(payload)
+        if lease.address or not candidates:
+            current["_proxy_lease"] = lease.payload()
+        else:
+            current["_proxy_unavailable"] = True
+        probe_payloads[account_id] = current
     db.event(
-        f"[系统] AT续期并发数：{concurrency}，每个账户使用独立 Worker/认证上下文",
-        detail={"scope": "global", "concurrency": concurrency, "total": len(accounts), "operation": "access_token_renewal"},
+        f"[系统] AT续期采用两阶段并发：先验活 {len(accounts)} 个账户，再仅恢复确认失效账户；并发数 {concurrency}",
+        detail={"scope": "global", "concurrency": concurrency, "total": len(accounts), "operation": "access_token_renewal", "strategy": "probe_then_recover_then_verify"},
     )
     success = 0
     completed = 0
     errors: list[str] = []
     items: list[dict[str, Any]] = []
-    for batch_start in range(0, len(accounts), concurrency):
-        batch = accounts[batch_start : batch_start + concurrency]
+
+    probe_specs: list[dict[str, Any]] = []
+    fetch_saved_session = getattr(db, "fetch_session_by_email", None)
+    for index, account in enumerate(accounts):
+        email = str(account.get("email") or "")
+        session = fetch_saved_session(email) if callable(fetch_saved_session) else {}
+        session = session or {}
+        probe_specs.append({
+            "account": account,
+            "index": index,
+            "token": str(account.get("access_token") or session.get("access_token") or "").strip(),
+            "previous_status": str(session.get("access_token_status") or "").strip().lower(),
+        })
+
+    def probe_existing(spec: dict[str, Any]) -> dict[str, Any]:
+        account = spec["account"]
+        account_id = int(account.get("id") or 0)
+        if probe_payloads[account_id].get("_proxy_unavailable") is True:
+            return {**spec, "probe": {"status": "probe_failed", "error": "代理池脉冲预检未找到可用 ChatGPT HTTPS 出口"}}
+        proxy_url = _proxy_snapshot(probe_payloads[account_id], int(spec["index"]))["register"]
+        token = str(spec.get("token") or "")
+        result = probe_access_token(token, proxy_url)
+        return {**spec, "probe": result}
+
+    probe_results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sunny-at-probe") as pool:
+        futures = {pool.submit(probe_existing, spec): spec for spec in probe_specs}
+        for future in futures:
+            ensure_active = getattr(db, "ensure_not_cancelled", None)
+            if callable(ensure_active):
+                ensure_active()
+            probe_results.append(future.result())
+
+    recovery: list[dict[str, Any]] = []
+    for outcome in probe_results:
+        account = outcome["account"]
+        email = str(account.get("email") or "")
+        account_id = int(account.get("id") or 0)
+        probe = outcome["probe"]
+        status = str(probe.get("status") or "probe_failed")
+        _emit_renewal_progress(db, email, 1, 10, "precheck_started")
+        marker = getattr(db, "mark_access_token_probe", None)
+        if status == "valid":
+            if callable(marker):
+                marker(email, "valid")
+            success += 1
+            completed += 1
+            scheduler.record(leases[account_id], success=True)
+            items.append({"email": email, "status": "valid", "refresh_method": "existing_access_token", "login_required": False, "verified": True})
+            _emit_renewal_progress(db, email, 10, 10, "precheck_valid", state="succeeded")
+            db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
+            continue
+        confirmed_invalid = status == "invalid" or not outcome["token"] or outcome["previous_status"] == "invalid"
+        if confirmed_invalid:
+            if callable(marker):
+                marker(email, "invalid", str(probe.get("error") or ""))
+            recovery.append(outcome)
+            _emit_renewal_progress(db, email, 2, 10, "precheck_invalid")
+            continue
+        error = str(probe.get("error") or "AT 验活结果不确定")
+        if callable(marker):
+            marker(email, status, error)
+        failure = classify_auth_failure(error, http_status=int(probe.get("http_status") or 0))
+        errors.append(f"[{email}] {error}")
+        items.append({"email": email, "status": status, "error": error, "error_category": failure.category, "login_required": False})
+        completed += 1
+        scheduler.record(leases[account_id], success=False, error=error)
+        _emit_renewal_progress(db, email, 2, 10, "precheck_unconfirmed", state="failed", error=error)
+        db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
+
+    db.event(
+        f"[系统] AT 第一阶段验活完成：有效 {success}，需要恢复 {len(recovery)}，未确认 {len(errors)}",
+        detail={"scope": "global", "operation": "access_token_renewal", "phase": "probe_complete", "valid": success, "login_required": len(recovery), "unconfirmed": len(errors), "proxy_scheduler": scheduler.snapshot()},
+    )
+    for batch_start in range(0, len(recovery), concurrency):
+        batch = recovery[batch_start : batch_start + concurrency]
+        if not hasattr(db, "task_id"):
+            for outcome in batch:
+                account_id = int(outcome["account"].get("id") or 0)
+                single_payload = dict(probe_payloads[account_id])
+                single_payload.update({"account_ids": [account_id], "_renewal_index_offset": int(outcome["index"]), "_renewal_total": len(accounts), "_renewal_parallel": True})
+                account_ok, account_errors, account_items = _refresh_sessions_sequential(db, single_payload)
+                completed += 1
+                success += account_ok
+                errors.extend(account_errors)
+                items.extend(account_items)
+                scheduler.record(leases[account_id], success=bool(account_ok), error=account_errors[0] if account_errors else "")
+                db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
+            continue
         pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sunny-renewal")
         try:
             futures = {
                 pool.submit(
                     _refresh_sessions_isolated,
                     db.task_id,
-                    payload,
-                    int(account.get("id") or 0),
-                    batch_start + offset,
+                    probe_payloads[int(outcome["account"].get("id") or 0)],
+                    int(outcome["account"].get("id") or 0),
+                    int(outcome["index"]) + 1,
                     len(accounts),
-                ): str(account.get("email") or "")
-                for offset, account in enumerate(batch, start=1)
+                ): str(outcome["account"].get("email") or "")
+                for outcome in batch
             }
             pending = set(futures)
             while pending:
@@ -2677,56 +2884,214 @@ def _refresh_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[s
                     success += ok
                     errors.extend(account_errors)
                     items.extend(account_items)
+                    account_id = next((int(item["account"].get("id") or 0) for item in batch if str(item["account"].get("email") or "") == futures[future]), 0)
+                    scheduler.record(leases.get(account_id, ProxyLease("", 0, "", -1)), success=bool(ok), error=account_errors[0] if account_errors else "")
                     db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
+    db.event(
+        f"[系统] AT 第二阶段恢复完成：成功 {success}，失败 {len(errors)}；新 AT 均已执行二次验活",
+        detail={"scope": "global", "operation": "access_token_renewal", "phase": "recovery_complete", "success": success, "failed": len(errors), "proxy_scheduler": scheduler.snapshot()},
+    )
     return success, errors, items
+
+
+def _persist_maintenance_tokens(
+    db: SunnyDB,
+    account: dict[str, Any],
+    token: dict[str, Any],
+    refresh_token: str,
+) -> dict[str, Any]:
+    email = str(account.get("email") or "")
+    mailbox = db.fetch_mailbox_by_email(email) or {}
+    account_id = int(account.get("id") or db.upsert_account(email))
+    normalized = {
+        "access_token": str(token.get("access_token") or "").strip(),
+        "refresh_token": str(token.get("refresh_token") or refresh_token).strip(),
+        "id_token": str(token.get("id_token") or "").strip(),
+        "expires_at": token.get("expires_at"),
+        "session_json": token,
+    }
+    if not normalized["access_token"] or not normalized["refresh_token"]:
+        raise RuntimeError("令牌响应缺少 Access Token 或 Refresh Token")
+    db.upsert_session(email, account_id, normalized)
+    current_status = str(mailbox.get("status") or account.get("status") or "")
+    completed_status = _highest_mailbox_progress(current_status, "已接码")
+    db.upsert_account(email, status=_account_status_for_mailbox(completed_status), access_token=normalized["access_token"], openai_rt=normalized["refresh_token"], last_error="")
+    db.mark_mailbox_by_email(email, completed_status, openai_rt=normalized["refresh_token"])
+    marker = getattr(db, "mark_access_token_probe", None)
+    if callable(marker):
+        marker(email, "valid")
+    return normalized
+
+
+def _acquire_refresh_token_recovery(
+    db: SunnyDB,
+    payload: dict[str, Any],
+    account: dict[str, Any],
+    index: int,
+    total: int,
+) -> tuple[bool, str, dict[str, Any]]:
+    email = str(account.get("email") or "")
+    account_id = int(account.get("id") or 0)
+    try:
+        mailbox = db.fetch_mailbox_by_email(email)
+        if not mailbox:
+            raise RuntimeError("找不到该账户对应的邮箱凭证")
+        acquire_payload = dict(payload)
+        acquire_payload.update({
+            "execution_mode": "protocol",
+            "protocol_challenge_strategy": "sentinel_protocol",
+            "registration_stage": CODEX_PHONE_BIND,
+            "mailbox_ids": [int(mailbox.get("id") or 0)],
+        })
+        succeeded, result = _run_one(db, "sunny_acquire_rt", acquire_payload, mailbox, index, total)
+        result_map = result if isinstance(result, dict) else {}
+        if not succeeded or not result_map.get("has_refresh_token"):
+            detail = str(result_map.get("stage_error") or result_map.get("phone_skipped_reason") or result)
+            raise RuntimeError(detail if detail and detail != "{}" else "无法获取该账户RT")
+        saved = db.fetch_session_by_email(email) or {}
+        access_token = str(saved.get("access_token") or "").strip()
+        refresh_token = str(saved.get("refresh_token") or "").strip()
+        probe = _verify_persisted_access_token(db, email, access_token, _proxy_snapshot(payload, index - 1)["register"])
+        if not refresh_token:
+            raise RuntimeError("Codex OAuth 登录完成但数据库中没有新的 Refresh Token")
+        marker = getattr(db, "mark_access_token_probe", None)
+        if callable(marker):
+            marker(email, "valid")
+        item = {"email": email, "status": "valid", "has_refresh_token": True, "has_access_token": True, "acquire_method": "codex_oauth", "secondary_probe": probe.get("status"), "verified": True, "login_required": True, "login_succeeded": True}
+        _account_event(db, email, "session", "refresh_token.acquired", f"[{email}] [Session] 已通过 Codex OAuth 获取 Refresh Token，新 AT 已通过二次验活", account_id=account_id)
+        return True, "", item
+    except Exception as exc:
+        if _is_cancel_exception(exc):
+            raise
+        failure = classify_auth_failure(exc)
+        if failure.category == "account_deactivated":
+            db.mark_account_deactivated(email, str(exc))
+        message = str(exc).strip()
+        error = f"[{email}] 无法获取该账户RT" + (f"：{message}" if message else "")
+        _account_event(db, email, "session", "refresh_token.acquire_failed", error, "error", account_id=account_id, detail={"error": message, "error_category": failure.category, "retryable": failure.retryable})
+        return False, error, {"email": email, "status": "failed", "error": message, "error_category": failure.category, "retryable": failure.retryable, "login_required": True, "login_succeeded": False}
+
+
+def _acquire_refresh_token_isolated(task_id: str, payload: dict[str, Any], account_id: int, index: int, total: int) -> tuple[int, bool, str, dict[str, Any]]:
+    worker_db = SunnyDB(task_id, ensure_schema=False)
+    try:
+        accounts = worker_db.fetch_accounts([account_id])
+        if not accounts:
+            return index, False, f"账户 {account_id} 不存在", {"account_id": account_id, "status": "failed"}
+        ok, error, item = _acquire_refresh_token_recovery(worker_db, payload, accounts[0], index, total)
+        return index, ok, error, item
+    finally:
+        worker_db.close()
 
 
 def _acquire_refresh_tokens(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
     accounts = db.fetch_accounts(_ids(payload.get("account_ids")) or None)
+    if not accounts:
+        return 0, [], []
+    requested = int(payload.get("concurrency") or os.getenv("SUNNY_RT_ACQUIRE_CONCURRENCY") or 3)
+    concurrency = max(1, min(requested, 6, len(accounts)))
+    candidates = _proxy_pool_candidates(payload) if payload.get("proxy_enabled") is not False else []
+    scheduler = TaskProxyScheduler(candidates, lambda proxy: proxy_target_tls_check(proxy, timeout=10))
+    specs: list[dict[str, Any]] = []
+    for index, account in enumerate(accounts):
+        email = str(account.get("email") or "")
+        session = db.fetch_session_by_email(email) or {}
+        rt = str(account.get("openai_rt") or session.get("refresh_token") or "").strip()
+        lease = scheduler.acquire(email, index)
+        account_payload = dict(payload)
+        if lease.address or not candidates:
+            account_payload["_proxy_lease"] = lease.payload()
+        else:
+            account_payload["_proxy_unavailable"] = True
+        specs.append({"account": account, "index": index + 1, "refresh_token": rt, "lease": lease, "payload": account_payload})
+
+    db.event(
+        f"[系统] RT任务采用两阶段并发：先校验已有 RT，再仅对缺失或确认失效账户执行 Codex OAuth；并发数 {concurrency}",
+        detail={"scope": "global", "operation": "refresh_token_acquire", "strategy": "refresh_probe_then_oauth", "concurrency": concurrency, "total": len(accounts)},
+    )
+
+    def inspect_existing(spec: dict[str, Any]) -> dict[str, Any]:
+        if spec["payload"].get("_proxy_unavailable") is True:
+            failure = classify_auth_failure("代理池脉冲预检未找到可用 ChatGPT HTTPS 出口")
+            return {**spec, "status": "unconfirmed", "error": "代理池脉冲预检未找到可用 ChatGPT HTTPS 出口", "failure": failure}
+        rt = str(spec.get("refresh_token") or "")
+        if not rt:
+            return {**spec, "status": "missing"}
+        proxy_url = _proxy_snapshot(spec["payload"], int(spec["index"]) - 1)["register"]
+        try:
+            token = refresh_openai_access_token(rt, proxy_url)
+            probe = _verify_access_token(str(token.get("access_token") or ""), proxy_url)
+            return {**spec, "status": "valid", "token": token, "probe": probe}
+        except Exception as exc:
+            failure = classify_auth_failure(exc)
+            return {**spec, "status": "invalid" if failure.category == "token_invalid" else "unconfirmed", "error": str(exc), "failure": failure}
+
+    with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sunny-rt-probe") as pool:
+        inspected = list(pool.map(inspect_existing, specs))
+
     ok = 0
+    completed = 0
     errors: list[str] = []
     items: list[dict[str, Any]] = []
-    for idx, acc in enumerate(accounts, start=1):
+    recovery: list[dict[str, Any]] = []
+    for outcome in inspected:
         db.ensure_not_cancelled()
-        email = str(acc.get("email") or "")
-        try:
-            existing_rt = str(acc.get("openai_rt") or "").strip()
-            if not existing_rt:
-                saved_session = db.fetch_session_by_email(email) or {}
-                existing_rt = str(saved_session.get("refresh_token") or "").strip()
-            if existing_rt:
-                ok += 1
-                items.append({"email": email, "has_refresh_token": True, "acquire_method": "existing"})
-                _account_event(db, email, "session", "refresh_token.present", f"[{email}] [Session] 账户已有 Refresh Token，无需重复授权", account_id=int(acc.get("id") or 0))
-                db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
-                continue
-
-            mailbox = db.fetch_mailbox_by_email(email)
-            if not mailbox:
-                raise RuntimeError("找不到该账户对应的邮箱凭证")
-            acquire_payload = dict(payload)
-            acquire_payload.update({
-                "execution_mode": "protocol",
-                "protocol_challenge_strategy": "sentinel_protocol",
-                "registration_stage": CODEX_PHONE_BIND,
-                "mailbox_ids": [int(mailbox.get("id") or 0)],
-            })
-            succeeded, result = _run_one(db, "sunny_acquire_rt", acquire_payload, mailbox, idx, len(accounts))
-            result_map = result if isinstance(result, dict) else {}
-            if not succeeded or not result_map.get("has_refresh_token"):
-                detail = str(result_map.get("stage_error") or result_map.get("phone_skipped_reason") or result)
-                raise RuntimeError(detail if detail and detail != "{}" else "无法获取该账户RT")
+        account = outcome["account"]
+        email = str(account.get("email") or "")
+        if outcome["status"] == "valid":
+            normalized = _persist_maintenance_tokens(db, account, outcome["token"], str(outcome["refresh_token"]))
+            item = {"email": email, "status": "valid", "has_refresh_token": True, "has_access_token": True, "acquire_method": "refresh_token_validated", "secondary_probe": "valid", "verified": True, "refresh_token_rotated": normalized["refresh_token"] != outcome["refresh_token"], "login_required": False}
+            items.append(item)
             ok += 1
-            items.append({"email": email, "has_refresh_token": True, "acquire_method": "codex_oauth"})
-            _account_event(db, email, "session", "refresh_token.acquired", f"[{email}] [Session] 已通过 Codex OAuth 授权获取 Refresh Token", account_id=int(acc.get("id") or 0))
-        except Exception as exc:
-            message = str(exc).strip()
-            error = f"[{email}] 无法获取该账户RT" + (f"：{message}" if message else "")
-            errors.append(error)
-            _account_event(db, email, "session", "refresh_token.acquire_failed", error, "error", account_id=int(acc.get("id") or 0), detail={"error": message})
-        db.update_task(progress_current=idx, success_count=ok, error_count=len(errors))
+            completed += 1
+            scheduler.record(outcome["lease"], success=True)
+            _account_event(db, email, "session", "refresh_token.valid", f"[{email}] [Session] 已有 Refresh Token 可用，已刷新并验活最新 AT", account_id=int(account.get("id") or 0))
+            db.update_task(progress_current=completed, success_count=ok, error_count=len(errors))
+        elif outcome["status"] in {"missing", "invalid"}:
+            recovery.append(outcome)
+        else:
+            error = str(outcome.get("error") or "Refresh Token 校验结果不确定")
+            failure = outcome.get("failure") or classify_auth_failure(error)
+            errors.append(f"[{email}] {error}")
+            items.append({"email": email, "status": "unconfirmed", "error": error, "error_category": failure.category, "login_required": False})
+            completed += 1
+            scheduler.record(outcome["lease"], success=False, error=error)
+            db.update_task(progress_current=completed, success_count=ok, error_count=len(errors))
+
+    for batch_start in range(0, len(recovery), concurrency):
+        batch = recovery[batch_start : batch_start + concurrency]
+        if concurrency == 1 and not hasattr(db, "task_id"):
+            for outcome in batch:
+                succeeded, error, item = _acquire_refresh_token_recovery(db, outcome["payload"], outcome["account"], int(outcome["index"]), len(accounts))
+                ok += int(succeeded)
+                completed += 1
+                if error:
+                    errors.append(error)
+                items.append(item)
+                scheduler.record(outcome["lease"], success=succeeded, error=error)
+                db.update_task(progress_current=completed, success_count=ok, error_count=len(errors))
+            continue
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sunny-rt-acquire") as pool:
+            futures = {
+                pool.submit(_acquire_refresh_token_isolated, db.task_id, outcome["payload"], int(outcome["account"].get("id") or 0), int(outcome["index"]), len(accounts)): outcome
+                for outcome in batch
+            }
+            for future, outcome in futures.items():
+                db.ensure_not_cancelled()
+                _index, succeeded, error, item = future.result()
+                ok += int(succeeded)
+                completed += 1
+                if error:
+                    errors.append(error)
+                items.append(item)
+                scheduler.record(outcome["lease"], success=succeeded, error=error)
+                db.update_task(progress_current=completed, success_count=ok, error_count=len(errors))
+    db.event(
+        f"[系统] RT 两阶段任务完成：成功 {ok}，失败 {len(errors)}；所有新 AT 均已二次验活",
+        detail={"scope": "global", "operation": "refresh_token_acquire", "success": ok, "failed": len(errors), "proxy_scheduler": scheduler.snapshot()},
+    )
     return ok, errors, items
 
 
@@ -3169,6 +3534,25 @@ def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[st
     return success, errors, items
 
 
+def _token_maintenance_result(success: int, errors: list[str], items: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "selected": len(items),
+        "success": success,
+        "failed": len(errors),
+        "valid": sum(1 for item in items if item.get("status") == "valid"),
+        "verified": sum(1 for item in items if item.get("verified") is True),
+        "already_valid": sum(1 for item in items if item.get("refresh_method") == "existing_access_token"),
+        "refreshed": sum(1 for item in items if item.get("refresh_method") in {"refresh_token", "login"} or item.get("acquire_method") in {"refresh_token_validated", "codex_oauth"}),
+        "login_required": sum(1 for item in items if item.get("login_required") is True),
+        "login_succeeded": sum(1 for item in items if item.get("login_succeeded") is True),
+        "login_failed": sum(1 for item in items if item.get("login_required") is True and item.get("login_succeeded") is False),
+        "banned": sum(1 for item in items if item.get("error_category") == "account_deactivated"),
+        "unconfirmed": sum(1 for item in items if item.get("status") in {"blocked", "probe_failed", "unconfirmed"}),
+        "errors": errors,
+        "items": items,
+    }
+
+
 def run_sunny_task(task_id: str) -> None:
     db = SunnyDB(task_id)
     try:
@@ -3186,13 +3570,17 @@ def run_sunny_task(task_id: str) -> None:
             ok, errors, items = _refresh_sessions(db, payload)
             db.ensure_not_cancelled()
             status = "succeeded" if ok else "failed"
-            db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps({"success": ok, "errors": errors, "items": items}, ensure_ascii=False), error="; ".join(errors[:3]) if not ok else "", finished_at=now_sql())
+            result = _token_maintenance_result(ok, errors, items)
+            db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps(result, ensure_ascii=False), error="; ".join(errors[:3]) if not ok else "", finished_at=now_sql())
+            db.event(f"AT 续期任务总结：有效 {result['valid']}，登录恢复 {result['login_succeeded']}，未确认 {result['unconfirmed']}，失败 {result['failed']}", "info" if status == "succeeded" else "error", detail={"scope": "global", **result})
             return
         if task_type == "sunny_acquire_rt":
             ok, errors, items = _acquire_refresh_tokens(db, payload)
             db.ensure_not_cancelled()
             status = "succeeded" if ok else "failed"
-            db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps({"success": ok, "errors": errors, "items": items}, ensure_ascii=False), error="; ".join(errors[:3]) if not ok else "", finished_at=now_sql())
+            result = _token_maintenance_result(ok, errors, items)
+            db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps(result, ensure_ascii=False), error="; ".join(errors[:3]) if not ok else "", finished_at=now_sql())
+            db.event(f"RT 获取任务总结：有效 {result['valid']}，OAuth 登录 {result['login_succeeded']}，未确认 {result['unconfirmed']}，失败 {result['failed']}", "info" if status == "succeeded" else "error", detail={"scope": "global", **result})
             return
         if task_type == "sunny_sub2_import":
             ok, errors, items = _sub2_import(db, payload)
