@@ -4632,6 +4632,30 @@ func sunnyTrialCountryResults(accountJSON, mailboxJSON string) map[string]string
 	return result
 }
 
+// sunnyPaymentMethodOptions aggregates every normalized method already saved
+// by payment/checkout probes. It intentionally does not use a fixed allowlist:
+// new country-specific methods should become filterable as soon as they are
+// returned by the upstream checkout API.
+func (s *Server) sunnyPaymentMethodOptions() []string {
+	var rows []struct {
+		PaymentMethodsJSON      string `gorm:"column:payment_methods_json"`
+		PaymentProbeMethodsJSON string `gorm:"column:payment_probe_methods_json"`
+	}
+	if err := s.db.Model(&SunnyAccount{}).Select("payment_methods_json, payment_probe_methods_json").Find(&rows).Error; err != nil {
+		return nil
+	}
+	methods := make([]string, 0)
+	for _, row := range rows {
+		for _, raw := range []string{row.PaymentMethodsJSON, row.PaymentProbeMethodsJSON} {
+			var values []string
+			if json.Unmarshal([]byte(raw), &values) == nil {
+				methods = append(methods, values...)
+			}
+		}
+	}
+	return normalizeSunnyPaymentMethods(methods)
+}
+
 func (s *Server) sunnySessionSidecars(rows []SunnySession) (map[string]SunnyAccount, map[string]SunnyMailbox) {
 	emails := []string{}
 	accountIDs := []uint{}
@@ -4841,6 +4865,7 @@ func (s *Server) sunnyMailboxForSession(sess SunnySession) (SunnyMailbox, error)
 func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []string) {
 	if len(parts) == 0 && r.Method == http.MethodGet {
 		q := r.URL.Query()
+		paymentMethodOptions := s.sunnyPaymentMethodOptions()
 		page := intValue(q.Get("page"), 1)
 		if page < 1 {
 			page = 1
@@ -4874,7 +4899,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			if strings.EqualFold(strings.TrimSpace(q.Get("selection")), "all") {
 				var ids []uint
 				query.Order("id desc").Pluck("id", &ids)
-				writeJSON(w, 200, map[string]any{"ids": ids, "total": len(ids)})
+				writeJSON(w, 200, map[string]any{"ids": ids, "total": len(ids), "payment_method_options": paymentMethodOptions})
 				return
 			}
 			var total int64
@@ -4897,7 +4922,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			for _, row := range rows {
 				items = append(items, serializeSunnySessionList(row, accounts, mailboxes))
 			}
-			writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": pageSize})
+			writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": pageSize, "payment_method_options": paymentMethodOptions})
 			return
 		}
 		var rows []sunnySessionListRow
@@ -4938,7 +4963,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 					ids = append(ids, id)
 				}
 			}
-			writeJSON(w, 200, map[string]any{"ids": ids, "total": len(ids)})
+			writeJSON(w, 200, map[string]any{"ids": ids, "total": len(ids), "payment_method_options": paymentMethodOptions})
 			return
 		}
 		if sortBy == "" {
@@ -4961,7 +4986,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		if end > total {
 			end = total
 		}
-		writeJSON(w, 200, map[string]any{"items": itemsAll[start:end], "total": total, "page": page, "page_size": pageSize})
+		writeJSON(w, 200, map[string]any{"items": itemsAll[start:end], "total": total, "page": page, "page_size": pageSize, "payment_method_options": paymentMethodOptions})
 		return
 	}
 	if len(parts) == 1 && parts[0] == "health-check" && r.Method == http.MethodPost {

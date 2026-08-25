@@ -1,7 +1,7 @@
 from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
-from sunny_core.commerce_probe import probe_commerce, probe_payment_methods, probe_trial
+from sunny_core.commerce_probe import _payment_methods, probe_commerce, probe_payment_methods, probe_trial
 
 
 def response(status: int, payload=None, content_type: str = "application/json"):
@@ -156,3 +156,13 @@ def test_probe_payment_methods_only_runs_checkout_for_requested_country() -> Non
     checkout_probe.assert_called_once_with("token", "VN", "VND", "http://vn-proxy")
     assert result["checkout"]["payment_methods"] == ["card", "momo"]
     assert result["traffic"] == {"requests": 2, "total_bytes": 240}
+
+
+def test_payment_methods_merge_standard_custom_and_future_fields() -> None:
+    payload = {
+        "payment_method_types": ["card"],
+        "custom_payment_methods": [{"id": "cpmt_gopay"}],
+        "available_payment_methods": [{"type": "bank_transfer_x"}],
+        "payment_method_specs": [{"type": "future_wallet_v2"}],
+    }
+    assert _payment_methods(payload) == ["card", "cpmt_gopay", "bank_transfer_x", "future_wallet_v2"]

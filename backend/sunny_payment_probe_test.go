@@ -10,8 +10,8 @@ import (
 )
 
 func TestSunnyPaymentMethodNormalizationAndFilter(t *testing.T) {
-	methods := normalizeSunnyPaymentMethods([]string{"cpmt_paypal", "credit-card", "KakaoPay", "paypal", "iDEAL"})
-	if got := strings.Join(methods, ","); got != "paypal,card,kakao_pay,ideal" {
+	methods := normalizeSunnyPaymentMethods([]string{"cpmt_paypal", "credit-card", "KakaoPay", "paypal", "iDEAL", "go-pay", "bank_transfer_x"})
+	if got := strings.Join(methods, ","); got != "paypal,card,gopay,kakao_pay,ideal,bank_transfer_x" {
 		t.Fatalf("methods=%q", got)
 	}
 	if !sunnyHasAllPaymentMethods(methods, []string{"paypal", "card"}) {
@@ -19,6 +19,15 @@ func TestSunnyPaymentMethodNormalizationAndFilter(t *testing.T) {
 	}
 	if sunnyHasAllPaymentMethods(methods, []string{"paypal", "upi"}) {
 		t.Fatal("paypal + upi should not match")
+	}
+}
+
+func TestSunnyPaymentProbeSupportsIndonesiaCurrencyAndDynamicMethods(t *testing.T) {
+	if got := checkoutCountryCurrency["ID"]; got != "IDR" {
+		t.Fatalf("ID currency=%q", got)
+	}
+	if got := strings.Join(normalizeSunnyPaymentMethods([]string{"cpmt_gopay", "future_wallet_v2"}), ","); got != "gopay,future_wallet_v2" {
+		t.Fatalf("dynamic methods=%q", got)
 	}
 }
 
@@ -218,7 +227,7 @@ func TestSunnySessionPaymentMethodFilterUsesANDSemantics(t *testing.T) {
 	if err := s.db.Create(&mailbox).Error; err != nil {
 		t.Fatal(err)
 	}
-	account := SunnyAccount{MailboxID: mailbox.ID, Email: mailbox.Email, Status: "registered", AccountType: "free", AccessToken: "token", PaymentMethodsJSON: `["paypal","upi"]`}
+	account := SunnyAccount{MailboxID: mailbox.ID, Email: mailbox.Email, Status: "registered", AccountType: "free", AccessToken: "token", PaymentMethodsJSON: `["paypal","upi","future_wallet_v2"]`}
 	if err := s.db.Create(&account).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -233,13 +242,17 @@ func TestSunnySessionPaymentMethodFilterUsesANDSemantics(t *testing.T) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	var payload struct {
-		Items []map[string]any `json:"items"`
-		Total int              `json:"total"`
+		Items                []map[string]any `json:"items"`
+		Total                int              `json:"total"`
+		PaymentMethodOptions []string         `json:"payment_method_options"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if payload.Total != 1 || len(payload.Items) != 1 || payload.Items[0]["email"] != "session@example.com" {
 		t.Fatalf("unexpected AND filter result: %#v", payload)
+	}
+	if !containsString(payload.PaymentMethodOptions, "upi") || !containsString(payload.PaymentMethodOptions, "card") || !containsString(payload.PaymentMethodOptions, "future_wallet_v2") {
+		t.Fatalf("dynamic payment method options=%v", payload.PaymentMethodOptions)
 	}
 }

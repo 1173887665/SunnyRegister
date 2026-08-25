@@ -3596,8 +3596,7 @@ function CheckoutBadge({ t, row }: { t: AnyObj; row: AnyObj }) {
   if (!trialCheckable(row) || !row.checkout_kind || row.checkout_kind === "unknown") return <span className="text-slate-400">-</span>;
   return <span className="font-semibold text-sky-600 dark:text-sky-400">{checkoutKindLabel(t, row.checkout_kind)}</span>;
 }
-const PAYMENT_METHOD_OPTIONS = ["paypal","card","link","gcash","kakao_pay","nicepay","ideal","momo","twint","pix","upi"];
-const PAYMENT_METHOD_LABELS: Record<string,string> = {paypal:"PayPal",card:"Card",link:"Link",gcash:"GCash",kakao_pay:"Kakao Pay",nicepay:"Nicepay",ideal:"iDEAL",momo:"MoMo",twint:"TWINT",pix:"PIX",upi:"UPI"};
+const PAYMENT_METHOD_LABELS: Record<string,string> = {paypal:"PayPal",card:"Card",link:"Link",gcash:"GCash",gopay:"GoPay",kakao_pay:"Kakao Pay",nicepay:"Nicepay",ideal:"iDEAL",momo:"MoMo",twint:"TWINT",pix:"PIX",upi:"UPI"};
 function paymentMethodLabel(value: any) {
   const key=String(value||"").trim().toLowerCase();
   return PAYMENT_METHOD_LABELS[key] || key.replace(/_/g," ").replace(/\b\w/g,(char)=>char.toUpperCase());
@@ -3693,6 +3692,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const [trialEligibility,setTrialEligibility]=useCachedState("session.trialEligibility","");
   const [checkoutKind,setCheckoutKind]=useCachedState("session.checkoutKind","");
   const [paymentMethods,setPaymentMethods]=useCachedState<string[]>("session.paymentMethods",[]);
+  const [availablePaymentMethods,setAvailablePaymentMethods]=useState<string[]>([]);
   const [group,setGroup]=useCachedState("session.group","");
   const [groups,setGroups]=useState<AnyObj[]>([]);
   const [selected,setSelected]=useCachedState<number[]>("session.selected",[]);
@@ -3780,6 +3780,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     const res = await apiFetch(`/sunny/sessions?${qs.toString()}`);
     setItems(res.items||[]);
     setTotal(Number(res.total || 0));
+    setAvailablePaymentMethods(Array.isArray(res.payment_method_options) ? res.payment_method_options.map(String) : []);
   });
   useEffect(()=>{
     let completed=false;
@@ -3814,7 +3815,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
   const exportFormat = ["ls", "sk", "at", "sub"].includes(fmt) ? fmt : "sk";
   const allChecked = items.length > 0 && items.every((x)=>selected.includes(x.id));
-  const paymentMethodOptions=Array.from(new Set([...PAYMENT_METHOD_OPTIONS,...paymentMethods,...items.flatMap((item)=>Array.isArray(item.payment_methods)?item.payment_methods:[])])).map(String);
+  const paymentMethodOptions=Array.from(new Set([...availablePaymentMethods,...paymentMethods,...items.flatMap((item)=>Array.isArray(item.payment_methods)?item.payment_methods:[])])).map(String);
   async function exp(ids?: number[], format = exportFormat){
     const sessionIds = ids?.length ? ids : selected;
     if (!sessionIds.length) { notify("fail", t.selectExportRows); return; }

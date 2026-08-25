@@ -48,13 +48,20 @@ def _safe_json(response: Any) -> tuple[dict[str, Any], str]:
 
 def _payment_methods(payload: dict[str, Any]) -> list[str]:
     methods: list[str] = []
-    raw = payload.get("payment_method_types") or payload.get("custom_payment_methods") or []
-    if not isinstance(raw, list):
-        return methods
-    for item in raw:
-        method = str((item.get("type") or item.get("id") or "") if isinstance(item, dict) else item).strip().lower()
-        if method and method not in methods:
-            methods.append(method)
+    # Checkout revisions may expose standard methods and country-specific
+    # custom methods in separate fields. Keep both, including fields added by
+    # future API revisions, so the backend can persist and filter unknown ones.
+    for key in ("payment_method_types", "custom_payment_methods", "payment_methods", "available_payment_methods", "payment_method_specs"):
+        raw = payload.get(key) or []
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            method = str(
+                (item.get("type") or item.get("id") or item.get("name") or "")
+                if isinstance(item, dict) else item
+            ).strip().lower()
+            if method and method not in methods:
+                methods.append(method)
     return methods
 
 
