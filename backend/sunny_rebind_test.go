@@ -19,6 +19,7 @@ func TestSunnyRebindTaskRequiresEnabledDomainMailbox(t *testing.T) {
 
 func TestSunnyRebindTaskCreatesWorkerTask(t *testing.T) {
 	s := newSunnySessionTestServer(t)
+	s.maintenance = map[string]any{"rebind_concurrency": 3}
 	s.sunnySaveConfig(sunnyCfgDomainMailbox, mergeConfig(defaultDomainMailboxConfig(), map[string]any{
 		"enabled_for_rebinding": true,
 		"base_url":              "https://mail.example",
@@ -35,5 +36,12 @@ func TestSunnyRebindTaskCreatesWorkerTask(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"type":"sunny_rebind"`) {
 		t.Fatalf("worker task type missing: %s", rec.Body.String())
+	}
+	var task Task
+	if err := s.db.Where("type = ?", "sunny_rebind").First(&task).Error; err != nil {
+		t.Fatalf("load rebind task: %v", err)
+	}
+	if got := intValue(jsonMap(task.PayloadJSON)["concurrency"], 0); got != 3 {
+		t.Fatalf("rebind concurrency = %d, want 3", got)
 	}
 }

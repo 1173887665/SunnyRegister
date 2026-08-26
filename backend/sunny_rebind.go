@@ -46,6 +46,7 @@ func (s *Server) createSunnyRebindTask(body map[string]any) (Task, error) {
 	}
 	body["account_ids"] = accountIDs
 	body["session_ids"] = sessionIDs
+	body["concurrency"] = s.sunnyRebindConcurrency()
 	body = s.sunnyTaskProxySnapshot(body)
 	return s.createTask("sunny_rebind", "sunny", body, len(accountIDs)), nil
 }

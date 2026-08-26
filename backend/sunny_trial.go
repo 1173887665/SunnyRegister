@@ -598,14 +598,7 @@ func checkSunnyTrialEligibility(ctx context.Context, accessToken string, proxyUR
 }
 
 func (s *Server) sunnyTrialConcurrency() int {
-	value := intValue(strings.TrimSpace(os.Getenv("SUNNY_TRIAL_CONCURRENCY")), 8)
-	if value < 1 {
-		return 1
-	}
-	if value > 16 {
-		return 16
-	}
-	return value
+	return s.sunnyConfiguredConcurrency("trial_concurrency", "SUNNY_TRIAL_CONCURRENCY", 16)
 }
 
 func sunnyCommerceProbeNeedsRetry(result sunnyCommerceProbeResult) bool {

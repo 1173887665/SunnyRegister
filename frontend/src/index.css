@@ -635,8 +635,17 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   font:13px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;
 }
 .sr-maintenance-section { border:1px solid var(--border-soft); border-radius:14px; padding:16px; background:rgba(248,250,252,.62); }
+.sr-feature-config-modal { width:min(920px, 100%); }
+.sr-feature-config-modal .sr-modal-body { max-height:min(680px, calc(100vh - 150px)); overflow-y:auto; }
+.sr-feature-concurrency-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; }
 .dark .sr-failure-detail-content,
 .dark .sr-maintenance-section { background:rgba(15,23,42,.52); }
+@media (max-width:900px) {
+  .sr-feature-concurrency-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width:640px) {
+  .sr-feature-concurrency-grid { grid-template-columns:1fr; }
+}
 .sr-renewal-progress-row td { height:auto; padding:0 14px 10px; background:rgba(248,250,252,.72); }
 .sr-renewal-progress-row td > * { margin:0; }
 .sr-renewal-progress {

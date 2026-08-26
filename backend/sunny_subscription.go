@@ -211,14 +211,7 @@ func (s *Server) detectSunnySubscriptionMail(candidate sunnySubscriptionCandidat
 }
 
 func (s *Server) sunnySubscriptionConcurrency() int {
-	value := intValue(strings.TrimSpace(os.Getenv("SUNNY_SUBSCRIPTION_CONCURRENCY")), 4)
-	if value < 1 {
-		value = 1
-	}
-	if value > 12 {
-		value = 12
-	}
-	return value
+	return s.sunnyConfiguredConcurrency("subscription_concurrency", "SUNNY_SUBSCRIPTION_CONCURRENCY", 12)
 }
 
 func (s *Server) sunnySubscriptionCandidates(ids []uint) ([]sunnySubscriptionCandidate, error) {

@@ -55,14 +55,7 @@ type sunnyHealthResult struct {
 }
 
 func (s *Server) sunnyHealthCheckConcurrency() int {
-	value := intValue(strings.TrimSpace(os.Getenv("SUNNY_HEALTHCHECK_CONCURRENCY")), 6)
-	if value < 1 {
-		value = 1
-	}
-	if value > 16 {
-		value = 16
-	}
-	return value
+	return s.sunnyConfiguredConcurrency("health_concurrency", "SUNNY_HEALTHCHECK_CONCURRENCY", 16)
 }
 
 func (s *Server) sunnyHealthCheckBatchSize() int {

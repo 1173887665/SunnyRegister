@@ -53,16 +53,15 @@ func TestSunnyTrialCheckAPIResponses(t *testing.T) {
 }
 
 func TestSunnyTrialConcurrencyDefaultsAndLimits(t *testing.T) {
-	t.Setenv("SUNNY_TRIAL_CONCURRENCY", "")
-	s := &Server{}
-	if got := s.sunnyTrialConcurrency(); got != 8 {
-		t.Fatalf("default trial concurrency = %d, want 8", got)
+	s := &Server{maintenance: map[string]any{"trial_concurrency": 4}}
+	if got := s.sunnyTrialConcurrency(); got != 4 {
+		t.Fatalf("configured trial concurrency = %d, want 4", got)
 	}
-	t.Setenv("SUNNY_TRIAL_CONCURRENCY", "99")
+	s.maintenance["trial_concurrency"] = 99
 	if got := s.sunnyTrialConcurrency(); got != 16 {
 		t.Fatalf("maximum trial concurrency = %d, want 16", got)
 	}
-	t.Setenv("SUNNY_TRIAL_CONCURRENCY", "1")
+	s.maintenance["trial_concurrency"] = 1
 	if got := s.sunnyTrialConcurrency(); got != 1 {
 		t.Fatalf("configured trial concurrency = %d, want 1", got)
 	}

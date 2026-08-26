@@ -1059,6 +1059,7 @@ func TestSunnyAcquireRTTaskRejectsEmptySelection(t *testing.T) {
 
 func TestSunnySub2ImportTaskResolvesSessionSelection(t *testing.T) {
 	s := newSunnySessionTestServer(t)
+	s.maintenance = map[string]any{"sub2_import_concurrency": 4}
 	var session SunnySession
 	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
 		t.Fatalf("load session: %v", err)
@@ -1075,13 +1076,14 @@ func TestSunnySub2ImportTaskResolvesSessionSelection(t *testing.T) {
 		t.Fatalf("load sub2 import task: %v", err)
 	}
 	payload := jsonMap(task.PayloadJSON)
-	if task.Type != "sunny_sub2_import" || len(uintSlice(payload["account_ids"])) != 1 {
+	if task.Type != "sunny_sub2_import" || len(uintSlice(payload["account_ids"])) != 1 || intValue(payload["concurrency"], 0) != 4 {
 		t.Fatalf("unexpected sub2 import task: type=%s payload=%#v", task.Type, payload)
 	}
 }
 
 func TestSunnyAddLSTaskFiltersCompleteLoginSecretsAndUsesSentinelProtocol(t *testing.T) {
 	s := newSunnySessionTestServer(t)
+	s.maintenance = map[string]any{"add_ls_concurrency": 3}
 	var completeSession SunnySession
 	if err := s.db.Where("email = ?", "session@example.com").First(&completeSession).Error; err != nil {
 		t.Fatalf("load complete session: %v", err)
@@ -1128,6 +1130,9 @@ func TestSunnyAddLSTaskFiltersCompleteLoginSecretsAndUsesSentinelProtocol(t *tes
 	}
 	if text(payload["execution_mode"]) != "protocol" || text(payload["protocol_challenge_strategy"]) != "sentinel_protocol" || payload["setup_login_secret"] != true {
 		t.Fatalf("unexpected add LS runtime payload: %#v", payload)
+	}
+	if intValue(payload["concurrency"], 0) != 3 {
+		t.Fatalf("add LS concurrency = %v, want 3", payload["concurrency"])
 	}
 	if task.ProgressTotal != 2 {
 		t.Fatalf("task progress total = %d, want 2", task.ProgressTotal)
@@ -1291,11 +1296,11 @@ func TestSunnyHealthTaskAliveDoesNotChangeEditOrStatusTime(t *testing.T) {
 	}
 }
 
-func TestSunnyMaintenanceConfigRequiresRestart(t *testing.T) {
+func TestSunnyMaintenanceConfigAppliesImmediatelyAndPersists(t *testing.T) {
 	s := newSunnySessionTestServer(t)
-	s.maintenance = defaultSunnyMaintenanceConfig()
+	s.maintenance = defaultSunnyMaintenanceConfigForCPU(4)
 
-	body := strings.NewReader(`{"health_enabled":true,"health_time":"07:15","health_frequency_hours":12,"at_enabled":true,"at_time":"07:45","at_frequency_hours":6}`)
+	body := strings.NewReader(`{"health_enabled":true,"health_time":"07:15","health_frequency_hours":12,"health_concurrency":5,"at_enabled":true,"at_time":"07:45","at_frequency_hours":6,"at_concurrency":2,"rebind_concurrency":2,"sub2_import_concurrency":4,"trial_concurrency":5,"checkout_probe_concurrency":4,"payment_probe_concurrency":2,"payment_country_concurrency":2,"add_ls_concurrency":3,"subscription_concurrency":3}`)
 	req := httptest.NewRequest(http.MethodPut, "/sunny/maintenance-config", body)
 	recorder := httptest.NewRecorder()
 	s.sunnyMaintenanceConfigHandler(recorder, req)
@@ -1306,14 +1311,32 @@ func TestSunnyMaintenanceConfigRequiresRestart(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !boolValue(response["restart_required"], false) {
-		t.Fatalf("save response did not require restart: %#v", response)
+	if boolValue(response["restart_required"], true) || !boolValue(response["effective_immediately"], false) {
+		t.Fatalf("save response did not apply immediately: %#v", response)
 	}
-	if got := text(s.sunnyMaintenanceSnapshot()["health_time"]); got != "06:00" {
-		t.Fatalf("runtime config changed before restart: %s", got)
+	if got := text(s.sunnyMaintenanceSnapshot()["health_time"]); got != "07:15" {
+		t.Fatalf("runtime config was not updated: %s", got)
+	}
+	if got := s.sunnyHealthCheckConcurrency(); got != 5 {
+		t.Fatalf("runtime health concurrency = %d, want 5", got)
 	}
 	stored := s.sunnyGetConfig(sunnyCfgMaintenance, defaultSunnyMaintenanceConfig())
-	if text(stored["health_time"]) != "07:15" || intValue(stored["at_frequency_hours"], 0) != 6 {
+	if text(stored["health_time"]) != "07:15" || intValue(stored["at_frequency_hours"], 0) != 6 || intValue(stored["rebind_concurrency"], 0) != 2 {
 		t.Fatalf("stored maintenance config mismatch: %#v", stored)
+	}
+}
+
+func TestSunnyMaintenanceCPUDefaultsUseResourceTiers(t *testing.T) {
+	config := defaultSunnyMaintenanceConfigForCPU(4)
+	want := map[string]int{
+		"rebind_concurrency": 3, "sub2_import_concurrency": 4, "trial_concurrency": 4,
+		"checkout_probe_concurrency": 4, "payment_probe_concurrency": 2,
+		"payment_country_concurrency": 2, "add_ls_concurrency": 3,
+		"at_concurrency": 2, "health_concurrency": 4, "subscription_concurrency": 3,
+	}
+	for key, expected := range want {
+		if got := intValue(config[key], 0); got != expected {
+			t.Fatalf("%s default = %d, want %d", key, got, expected)
+		}
 	}
 }

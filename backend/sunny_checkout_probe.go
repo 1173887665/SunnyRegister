@@ -69,7 +69,7 @@ func (s *Server) sunnyCheckoutProbeBatchSize() int {
 }
 
 func (s *Server) sunnyCheckoutProbeConcurrency() int {
-	return sunnyDetectionBatchSize("SUNNY_CHECKOUT_PROBE_CONCURRENCY", 8, 16)
+	return s.sunnyConfiguredConcurrency("checkout_probe_concurrency", "SUNNY_CHECKOUT_PROBE_CONCURRENCY", 16)
 }
 
 func (s *Server) sunnyCheckoutProbeCandidates(ids []uint) ([]sunnyCheckoutProbeCandidate, error) {

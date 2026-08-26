@@ -206,11 +206,11 @@ func (s *Server) sunnyPaymentProbeBatchSize() int {
 }
 
 func (s *Server) sunnyPaymentProbeConcurrency() int {
-	return sunnyDetectionBatchSize("SUNNY_PAYMENT_PROBE_CONCURRENCY", 3, 8)
+	return s.sunnyConfiguredConcurrency("payment_probe_concurrency", "SUNNY_PAYMENT_PROBE_CONCURRENCY", 8)
 }
 
 func (s *Server) sunnyPaymentCountryConcurrency() int {
-	return sunnyDetectionBatchSize("SUNNY_PAYMENT_PROBE_COUNTRY_CONCURRENCY", 3, 8)
+	return s.sunnyConfiguredConcurrency("payment_country_concurrency", "SUNNY_PAYMENT_PROBE_COUNTRY_CONCURRENCY", 8)
 }
 
 func (s *Server) sunnyPaymentProbeCandidates(ids []uint) ([]sunnyPaymentProbeCandidate, error) {

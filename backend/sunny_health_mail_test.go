@@ -100,12 +100,11 @@ func TestFetchOutlookMailSubjectsFallsBackToIMAP(t *testing.T) {
 }
 
 func TestSunnyHealthCheckConcurrencyDefaultsAndBounds(t *testing.T) {
-	server := &Server{}
-	t.Setenv("SUNNY_HEALTHCHECK_CONCURRENCY", "")
-	if got := server.sunnyHealthCheckConcurrency(); got != 6 {
-		t.Fatalf("default concurrency = %d, want 6", got)
+	server := &Server{maintenance: map[string]any{"health_concurrency": 4}}
+	if got := server.sunnyHealthCheckConcurrency(); got != 4 {
+		t.Fatalf("configured concurrency = %d, want 4", got)
 	}
-	t.Setenv("SUNNY_HEALTHCHECK_CONCURRENCY", "99")
+	server.maintenance["health_concurrency"] = 99
 	if got := server.sunnyHealthCheckConcurrency(); got != 16 {
 		t.Fatalf("max concurrency = %d, want 16", got)
 	}

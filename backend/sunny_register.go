@@ -5697,6 +5697,14 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 	if typ == "sunny_add_ls" {
 		total = intValue(body["selected_account_count"], total)
 	}
+	switch typ {
+	case "sunny_refresh_session":
+		body["concurrency"] = s.sunnyATConcurrency()
+	case "sunny_add_ls":
+		body["concurrency"] = s.sunnyAddLSConcurrency()
+	case "sunny_sub2_import":
+		body["concurrency"] = s.sunnySub2ImportConcurrency()
+	}
 	if total == 0 {
 		total = intValue(body["count"], 1)
 	}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -47,13 +48,7 @@ func (s *Server) createSunnyAccessTokenRenewalTask(sourceTask *Task, source stri
 	if len(accountIDs) == 0 {
 		return Task{}
 	}
-	concurrency := intValue(strings.TrimSpace(os.Getenv("SUNNY_AT_RENEWAL_CONCURRENCY")), 3)
-	if concurrency < 1 {
-		concurrency = 1
-	}
-	if concurrency > 6 {
-		concurrency = 6
-	}
+	concurrency := s.sunnyATConcurrency()
 	refreshPayload := s.sunnyTaskProxySnapshot(map[string]any{
 		"account_ids": accountIDs, "automatic": true, "source": source, "source_task_id": sourceTask.ID,
 		"execution_mode": "protocol", "protocol_challenge_strategy": "sentinel_protocol", "registration_stage": "register_only", "concurrency": concurrency,
@@ -94,15 +89,62 @@ func (s *Server) filterActiveSunnyRenewalAccounts(accountIDs []uint) []uint {
 	return filtered
 }
 
-func defaultSunnyMaintenanceConfig() map[string]any {
-	return map[string]any{
-		"health_enabled":         true,
-		"health_time":            "06:00",
-		"health_frequency_hours": 24,
-		"at_enabled":             true,
-		"at_time":                "06:30",
-		"at_frequency_hours":     24,
+type sunnyConcurrencyConfigSpec struct {
+	Key    string
+	EnvKey string
+	Max    int
+}
+
+var sunnyConcurrencyConfigSpecs = []sunnyConcurrencyConfigSpec{
+	{Key: "rebind_concurrency", Max: 6},
+	{Key: "sub2_import_concurrency", Max: 6},
+	{Key: "trial_concurrency", EnvKey: "SUNNY_TRIAL_CONCURRENCY", Max: 16},
+	{Key: "checkout_probe_concurrency", EnvKey: "SUNNY_CHECKOUT_PROBE_CONCURRENCY", Max: 16},
+	{Key: "payment_probe_concurrency", EnvKey: "SUNNY_PAYMENT_PROBE_CONCURRENCY", Max: 8},
+	{Key: "payment_country_concurrency", EnvKey: "SUNNY_PAYMENT_PROBE_COUNTRY_CONCURRENCY", Max: 8},
+	{Key: "add_ls_concurrency", Max: 6},
+	{Key: "at_concurrency", EnvKey: "SUNNY_AT_RENEWAL_CONCURRENCY", Max: 6},
+	{Key: "health_concurrency", EnvKey: "SUNNY_HEALTHCHECK_CONCURRENCY", Max: 16},
+	{Key: "subscription_concurrency", EnvKey: "SUNNY_SUBSCRIPTION_CONCURRENCY", Max: 12},
+}
+
+func sunnyScaledConcurrency(cpu, numerator, denominator, maximum int) int {
+	if cpu < 1 {
+		cpu = 1
 	}
+	value := (cpu*numerator + denominator - 1) / denominator
+	if value < 1 {
+		value = 1
+	}
+	if maximum > 0 && value > maximum {
+		value = maximum
+	}
+	return value
+}
+
+func defaultSunnyMaintenanceConfigForCPU(cpu int) map[string]any {
+	return map[string]any{
+		"health_enabled":              true,
+		"health_time":                 "06:00",
+		"health_frequency_hours":      24,
+		"at_enabled":                  true,
+		"at_time":                     "06:30",
+		"at_frequency_hours":          24,
+		"rebind_concurrency":          sunnyScaledConcurrency(cpu, 3, 4, 6),
+		"sub2_import_concurrency":     sunnyScaledConcurrency(cpu, 1, 1, 6),
+		"trial_concurrency":           sunnyScaledConcurrency(cpu, 1, 1, 16),
+		"checkout_probe_concurrency":  sunnyScaledConcurrency(cpu, 1, 1, 16),
+		"payment_probe_concurrency":   sunnyScaledConcurrency(cpu, 1, 2, 8),
+		"payment_country_concurrency": sunnyScaledConcurrency(cpu, 1, 2, 8),
+		"add_ls_concurrency":          sunnyScaledConcurrency(cpu, 3, 4, 6),
+		"at_concurrency":              sunnyScaledConcurrency(cpu, 1, 2, 6),
+		"health_concurrency":          sunnyScaledConcurrency(cpu, 1, 1, 16),
+		"subscription_concurrency":    sunnyScaledConcurrency(cpu, 3, 4, 12),
+	}
+}
+
+func defaultSunnyMaintenanceConfig() map[string]any {
+	return defaultSunnyMaintenanceConfigForCPU(runtime.NumCPU())
 }
 
 func normalizeSunnyMaintenanceConfig(value map[string]any) (map[string]any, error) {
@@ -123,6 +165,13 @@ func normalizeSunnyMaintenanceConfig(value map[string]any) (map[string]any, erro
 	}
 	config["health_enabled"] = boolValue(config["health_enabled"], true)
 	config["at_enabled"] = boolValue(config["at_enabled"], true)
+	for _, spec := range sunnyConcurrencyConfigSpecs {
+		concurrency := intValue(config[spec.Key], intValue(defaultSunnyMaintenanceConfig()[spec.Key], 1))
+		if concurrency < 1 || concurrency > spec.Max {
+			return nil, fmt.Errorf("%s 必须在 1 到 %d 之间", spec.Key, spec.Max)
+		}
+		config[spec.Key] = concurrency
+	}
 	return config, nil
 }
 
@@ -139,6 +188,37 @@ func (s *Server) sunnyMaintenanceSnapshot() map[string]any {
 	s.maintenanceMu.RLock()
 	defer s.maintenanceMu.RUnlock()
 	return mergeConfig(defaultSunnyMaintenanceConfig(), s.maintenance)
+}
+
+func (s *Server) sunnyConfiguredConcurrency(key, envKey string, maximum int) int {
+	s.maintenanceMu.RLock()
+	raw, configured := s.maintenance[key]
+	s.maintenanceMu.RUnlock()
+	if configured {
+		return max(1, min(intValue(raw, 1), maximum))
+	}
+	if envKey != "" {
+		if rawEnv := strings.TrimSpace(os.Getenv(envKey)); rawEnv != "" {
+			return max(1, min(intValue(rawEnv, 1), maximum))
+		}
+	}
+	return max(1, min(intValue(defaultSunnyMaintenanceConfig()[key], 1), maximum))
+}
+
+func (s *Server) sunnyATConcurrency() int {
+	return s.sunnyConfiguredConcurrency("at_concurrency", "SUNNY_AT_RENEWAL_CONCURRENCY", 6)
+}
+
+func (s *Server) sunnyAddLSConcurrency() int {
+	return s.sunnyConfiguredConcurrency("add_ls_concurrency", "", 6)
+}
+
+func (s *Server) sunnyRebindConcurrency() int {
+	return s.sunnyConfiguredConcurrency("rebind_concurrency", "", 6)
+}
+
+func (s *Server) sunnySub2ImportConcurrency() int {
+	return s.sunnyConfiguredConcurrency("sub2_import_concurrency", "", 6)
 }
 
 func (s *Server) sunnyMaintenanceConfigHandler(w http.ResponseWriter, r *http.Request) {
@@ -162,7 +242,10 @@ func (s *Server) sunnyMaintenanceConfigHandler(w http.ResponseWriter, r *http.Re
 			return
 		}
 		s.sunnySaveConfig(sunnyCfgMaintenance, config)
-		writeJSON(w, http.StatusOK, map[string]any{"config": config, "restart_required": true})
+		s.maintenanceMu.Lock()
+		s.maintenance = mergeConfig(defaultSunnyMaintenanceConfig(), config)
+		s.maintenanceMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"config": config, "restart_required": false, "effective_immediately": true})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -330,14 +413,7 @@ func compactATProbeDetail(status int, payload map[string]any, body []byte) strin
 }
 
 func (s *Server) sunnyAccessTokenCheckConcurrency() int {
-	value := intValue(strings.TrimSpace(os.Getenv("SUNNY_ATCHECK_CONCURRENCY")), 4)
-	if value < 1 {
-		value = 1
-	}
-	if value > 12 {
-		value = 12
-	}
-	return value
+	return s.sunnyConfiguredConcurrency("at_concurrency", "SUNNY_ATCHECK_CONCURRENCY", 6)
 }
 
 func (s *Server) sunnyAccessTokenCheckBatchSize() int {

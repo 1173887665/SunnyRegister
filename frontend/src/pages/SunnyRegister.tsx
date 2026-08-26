@@ -868,6 +868,39 @@ Object.assign(en, {
   allPaymentMethods: "All Payment Methods", paymentMethodFilter: "Payment methods (match all)", clearPaymentMethods: "Clear payment method filters",
 });
 
+zh.maintenanceSettings = "功能配置";
+zh.restartRequired = "配置已保存，后续新任务立即生效";
+Object.assign(zh as AnyObj, {
+  concurrencySettings: "批量功能并发",
+  concurrency: "并发量",
+  rebindConcurrency: "换绑",
+  sub2ImportConcurrency: "反代",
+  trialConcurrency: "试用",
+  checkoutProbeConcurrency: "Checkout探测",
+  paymentProbeConcurrency: "支付探测（账户）",
+  paymentCountryConcurrency: "支付探测（国家）",
+  addLSConcurrency: "添加LS",
+  atConcurrency: "执行并发量",
+  healthConcurrency: "执行并发量",
+  subscriptionConcurrency: "订阅",
+});
+en.maintenanceSettings = "Feature Configuration";
+en.restartRequired = "Configuration saved and will apply to newly created tasks";
+Object.assign(en as AnyObj, {
+  concurrencySettings: "Batch Concurrency",
+  concurrency: "Concurrency",
+  rebindConcurrency: "Rebind",
+  sub2ImportConcurrency: "Reverse Proxy",
+  trialConcurrency: "Trial",
+  checkoutProbeConcurrency: "Checkout Probe",
+  paymentProbeConcurrency: "Payment Probe (Accounts)",
+  paymentCountryConcurrency: "Payment Probe (Countries)",
+  addLSConcurrency: "Add LS",
+  atConcurrency: "Task Concurrency",
+  healthConcurrency: "Task Concurrency",
+  subscriptionConcurrency: "Subscription",
+});
+
 Object.assign(zh, {
   protocolNativeChallengeDesc: "遇到挑战时保存协议认证 Cookie 与当前步骤，由 Camoufox 从断点继续，不重新执行已完成的注册流程",
   backgroundDesc: "直接使用协议模式降级时的 Camoufox 无头注册流程，不预执行协议注册请求",
@@ -4147,7 +4180,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     if (!targetIds.length) { notify("fail",t.sub2NoSelection); return; }
     try {
       const accountIds=Array.from(new Set(items.filter((item)=>targetIds.includes(Number(item.id))).map((item)=>Number(item.account_id)).filter(Boolean)));
-      const task=await runPersistentSessionTask("sub2-import", targetIds, row?.email, () => apiFetch("/sunny/tasks/sub2-import",{method:"POST",body:JSON.stringify({session_ids:targetIds,account_ids:accountIds,concurrency:Math.max(1,Math.ceil((Number(navigator.hardwareConcurrency)||2)*1.5))})}));
+      const task=await runPersistentSessionTask("sub2-import", targetIds, row?.email, () => apiFetch("/sunny/tasks/sub2-import",{method:"POST",body:JSON.stringify({session_ids:targetIds,account_ids:accountIds})}));
       const result=task.result || {};
       const skipped=Array.isArray(result.skipped)?result.skipped:[];
       const selectedCount=Number(result.selected||targetIds.length);
@@ -4330,6 +4363,7 @@ function FailureDetailModal({t,value,onClose}:{t:typeof zh;value:{title:string;c
 }
 
 function MaintenanceSettingsModal({t,notify,onClose}:{t:typeof zh;notify:(type:"ok"|"fail",text:string)=>void;onClose:()=>void}) {
+  const labels=t as AnyObj;
   const [form,setForm]=useState<AnyObj>({health_enabled:true,health_time:"06:00",health_frequency_hours:24,at_enabled:true,at_time:"06:30",at_frequency_hours:24});
   const [loading,setLoading]=useState(true);
   useEffect(()=>{apiFetch("/sunny/maintenance-config").then(setForm).catch((e:any)=>notify("fail",e.message||String(e))).finally(()=>setLoading(false));},[]);
@@ -4339,8 +4373,19 @@ function MaintenanceSettingsModal({t,notify,onClose}:{t:typeof zh;notify:(type:"
     catch(e:any){notify("fail",e.message||String(e));}
     finally{setLoading(false);}
   }
-  const section=(prefix:"health"|"at",title:string)=><div className="sr-maintenance-section"><div className="flex items-center justify-between gap-3"><strong>{title}</strong><button type="button" className={cn("sr-switch-only",form[`${prefix}_enabled`]&&"on")} onClick={()=>setForm({...form,[`${prefix}_enabled`]:!form[`${prefix}_enabled`]})}><span/></button></div><div className="mt-4 grid gap-4 md:grid-cols-2"><div><Label>{t.scheduleTime}</Label><Input type="time" value={form[`${prefix}_time`]||""} onChange={(e)=>setForm({...form,[`${prefix}_time`]:e.target.value})}/></div><div><Label>{t.scheduleFrequency}</Label><Input type="number" min={1} max={720} value={form[`${prefix}_frequency_hours`]||24} onChange={(e)=>setForm({...form,[`${prefix}_frequency_hours`]:Number(e.target.value)})}/></div></div></div>;
-  return createPortal(<div className="sr-modal-mask"><div className="sr-modal sr-mailbox-modal relative"><ListLoadingOverlay loading={loading} label={t.loadingData}/><div className="sr-modal-head"><h3>{t.maintenanceSettings}</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div><div className="sr-modal-body space-y-4">{section("health",t.healthSchedule)}{section("at",t.atSchedule)}</div><div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={loading} onClick={save}><Save className="mr-2 h-4 w-4"/>{t.saveSettings}</Button></div></div></div>,document.body);
+  const setNumber=(key:string,value:string)=>setForm({...form,[key]:Number(value)});
+  const scheduleSection=(prefix:"health"|"at",title:string,concurrencyKey:string,maximum:number)=><div className="sr-maintenance-section"><div className="flex items-center justify-between gap-3"><strong>{title}</strong><button type="button" className={cn("sr-switch-only",form[`${prefix}_enabled`]&&"on")} onClick={()=>setForm({...form,[`${prefix}_enabled`]:!form[`${prefix}_enabled`]})}><span/></button></div><div className="mt-4 grid gap-4 md:grid-cols-3"><div><Label>{t.scheduleTime}</Label><Input type="time" value={form[`${prefix}_time`]||""} onChange={(e)=>setForm({...form,[`${prefix}_time`]:e.target.value})}/></div><div><Label>{t.scheduleFrequency}</Label><Input type="number" min={1} max={720} value={form[`${prefix}_frequency_hours`]||24} onChange={(e)=>setNumber(`${prefix}_frequency_hours`,e.target.value)}/></div><div><Label>{labels[`${prefix}Concurrency`]}</Label><Input type="number" min={1} max={maximum} value={form[concurrencyKey]||1} onChange={(e)=>setNumber(concurrencyKey,e.target.value)}/></div></div></div>;
+  const concurrencyFields=[
+    ["rebind_concurrency",labels.rebindConcurrency,6],
+    ["sub2_import_concurrency",labels.sub2ImportConcurrency,6],
+    ["trial_concurrency",labels.trialConcurrency,16],
+    ["checkout_probe_concurrency",labels.checkoutProbeConcurrency,16],
+    ["payment_probe_concurrency",labels.paymentProbeConcurrency,8],
+    ["payment_country_concurrency",labels.paymentCountryConcurrency,8],
+    ["add_ls_concurrency",labels.addLSConcurrency,6],
+    ["subscription_concurrency",labels.subscriptionConcurrency,12],
+  ] as const;
+  return createPortal(<div className="sr-modal-mask"><div className="sr-modal sr-feature-config-modal relative"><ListLoadingOverlay loading={loading} label={t.loadingData}/><div className="sr-modal-head"><h3>{t.maintenanceSettings}</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div><div className="sr-modal-body space-y-4">{scheduleSection("health",t.healthSchedule,"health_concurrency",16)}{scheduleSection("at",t.atSchedule,"at_concurrency",6)}<section className="sr-maintenance-section"><strong>{labels.concurrencySettings}</strong><div className="sr-feature-concurrency-grid mt-4">{concurrencyFields.map(([key,label,maximum])=><div key={key}><Label>{label}</Label><Input type="number" min={1} max={maximum} value={form[key]||1} onChange={(e)=>setNumber(key,e.target.value)}/></div>)}</div></section></div><div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={loading} onClick={save}><Save className="mr-2 h-4 w-4"/>{t.saveSettings}</Button></div></div></div>,document.body);
 }
 
 function SessionEditModal({ t, item, groups, onClose, onSaved, notify }: { t: typeof zh; item: AnyObj; groups: AnyObj[]; onClose:()=>void; onSaved:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
