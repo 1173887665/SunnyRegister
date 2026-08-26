@@ -883,6 +883,7 @@ func (s *Server) prepareDomainMailboxRegistration(body map[string]any) error {
 	for index := 0; index < count; index++ {
 		mailbox, createErr := s.createDomainMailbox(context.Background(), cfg, client, group.ID)
 		if createErr != nil || mailbox.ID == 0 {
+			cleanupErrors := make([]string, 0)
 			for _, id := range created {
 				var generated SunnyMailbox
 				if s.db.First(&generated, id).Error != nil {
@@ -893,13 +894,17 @@ func (s *Server) prepareDomainMailboxRegistration(body map[string]any) error {
 					continue
 				}
 				if deleteErr := client.deleteUser(context.Background(), generated.Email); deleteErr != nil {
-					s.db.Model(&SunnyMailbox{}).Where("id = ?", id).Updates(map[string]any{"status": "失败", "last_error": "CloudMail 删除失败：" + deleteErr.Error()})
-					continue
+					cleanupErrors = append(cleanupErrors, generated.Email+" CloudMail 删除失败："+deleteErr.Error())
 				}
-				s.db.Delete(&SunnyMailbox{}, id)
+				if localErr := s.db.Delete(&SunnyMailbox{}, id).Error; localErr != nil {
+					cleanupErrors = append(cleanupErrors, generated.Email+" 本地记录删除失败："+localErr.Error())
+				}
 			}
 			if createErr == nil {
 				createErr = fmt.Errorf("生成邮箱失败")
+			}
+			if len(cleanupErrors) > 0 {
+				return fmt.Errorf("自建域名邮箱第 %d 个生成失败：%w；失败邮箱清理未完全完成：%s", index+1, createErr, strings.Join(cleanupErrors, "；"))
 			}
 			return fmt.Errorf("自建域名邮箱第 %d 个生成失败：%w", index+1, createErr)
 		}

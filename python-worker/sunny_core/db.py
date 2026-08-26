@@ -938,11 +938,11 @@ class SunnyDB:
             )
 
     def delete_failed_domain_mailbox(self, email: str, pickup_token_hash: str = "") -> bool:
-        """Delete only a failed domain mailbox created by the current flow."""
+        """Delete only a generated, unfinished domain mailbox from the current flow."""
         email = str(email or '').strip()
         if not email or '@' not in email:
             return False
-        query = "select id from sunny_mailboxes where lower(email)=lower(?) and mailbox_type='domain' and status='失败'"
+        query = "select id from sunny_mailboxes where lower(email)=lower(?) and mailbox_type='domain' and status in ('失败','换绑中')"
         params: list[Any] = [email]
         if pickup_token_hash:
             query += " and pickup_token_hash=?"

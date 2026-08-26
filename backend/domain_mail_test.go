@@ -376,6 +376,46 @@ func TestDomainMailboxRegisterTaskPreparesMailboxIds(t *testing.T) {
 	}
 }
 
+func TestDomainMailboxRegistrationRollbackRemovesLocalRowsWhenCloudMailDeleteFails(t *testing.T) {
+	var addUserCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/public/addUser":
+			addUserCalls++
+			if addUserCalls == 1 {
+				writeJSON(w, http.StatusOK, map[string]any{"code": 0})
+				return
+			}
+			http.Error(w, "provider unavailable", http.StatusBadGateway)
+		case "/api/public/deleteUser":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	s := newSunnySessionTestServer(t)
+	s.sunnySaveConfig(sunnyCfgDomainMailbox, map[string]any{
+		"enabled_for_registration": true, "retain_failed_mailboxes": false,
+		"base_url": server.URL, "auth_token": "token-1", "site_password": "site-password",
+		"pickup_base_url": "https://sunny.example", "domain": "example.com", "auto_add_user": true,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/register", strings.NewReader(`{"identity":"domain","count":2,"concurrency":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	s.handleSunny(recorder, req, "tasks/register")
+	if recorder.Code == http.StatusOK || !strings.Contains(recorder.Body.String(), "CloudMail 删除失败") {
+		t.Fatalf("expected generation and cleanup error, status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var count int64
+	if err := s.db.Model(&SunnyMailbox{}).Where("mailbox_type = ?", "domain").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("rollback retained %d local domain mailbox rows", count)
+	}
+}
+
 func TestDomainMailboxGenerateRejectsWhenPoolDisabled(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("disabled pool should not call upstream: %s", r.URL.Path)

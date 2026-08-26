@@ -2130,6 +2130,10 @@ function DomainMailboxProviderConfig({ t, config, setConfig, notify }: { t: type
   async function toggleEnabled() {
     await save({...config, enabled: !boolConfig(config.enabled)});
   }
+  async function setRetainFailedMailboxes(value: boolean) {
+    const next = {...config, retain_failed_mailboxes: value};
+    await save(next);
+  }
   async function check() {
     setBusy(true);
     try {
@@ -2157,7 +2161,7 @@ function DomainMailboxProviderConfig({ t, config, setConfig, notify }: { t: type
         <div><Label>{t.domainMailboxPickupURL}</Label><Input value={config.pickup_base_url || ""} onChange={(e)=>update("pickup_base_url",e.target.value)} placeholder="https://sunny.example.com"/></div>
         <div><Label>{t.domainMailboxLength}</Label><Input type="number" min={6} max={32} value={config.random_local_length || 12} onChange={(e)=>update("random_local_length",Math.max(6,Math.min(32,Number(e.target.value || 12))))}/></div>
         <div className="flex items-end"><label className="flex min-h-11 items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={config.auto_add_user !== false} onChange={(e)=>update("auto_add_user",e.target.checked)} />{t.domainMailboxAutoAdd}</label></div>
-        <div className="flex items-end"><label className="flex min-h-11 items-center gap-2 text-sm text-slate-600" title={(t as AnyObj).domainMailboxRetainFailedTip}><input type="checkbox" checked={config.retain_failed_mailboxes !== false} onChange={(e)=>update("retain_failed_mailboxes",e.target.checked)} />{(t as AnyObj).domainMailboxRetainFailed}</label></div>
+        <div className="flex items-end"><label className="flex min-h-11 items-center gap-2 text-sm text-slate-600" title={(t as AnyObj).domainMailboxRetainFailedTip}><input type="checkbox" disabled={busy} checked={config.retain_failed_mailboxes !== false} onChange={(e)=>void setRetainFailedMailboxes(e.target.checked)} />{(t as AnyObj).domainMailboxRetainFailed}</label></div>
         <div className="flex flex-wrap items-end gap-5"><label className="flex items-center gap-2 text-sm text-slate-600"><span>{t.domainMailboxRegistration}</span><button type="button" aria-label={t.domainMailboxRegistration} disabled={!boolConfig(config.enabled) || busy} className={cn("sr-switch-only", boolConfig(config.enabled_for_registration) && "on")} onClick={()=>void toggle("enabled_for_registration")}><span/></button></label><label className="flex items-center gap-2 text-sm text-slate-600"><span>{t.domainMailboxRebinding}</span><button type="button" aria-label={t.domainMailboxRebinding} disabled={!boolConfig(config.enabled) || busy} className={cn("sr-switch-only", boolConfig(config.enabled_for_rebinding) && "on")} onClick={()=>void toggle("enabled_for_rebinding")}><span/></button></label></div>
       </div>
        <div className="flex flex-wrap items-center justify-end gap-2"><Button disabled={busy} variant="outline" className="rounded-xl" onClick={check}><RefreshCw className="mr-2 h-4 w-4"/>{t.domainMailboxCheck}</Button><Button disabled={busy || !boolConfig(config.enabled)} variant="outline" className="rounded-xl" onClick={generate}><Plus className="mr-2 h-4 w-4"/>{t.domainMailboxGenerate}</Button><Button disabled={busy} className="rounded-xl bg-emerald-600 px-5 text-white hover:bg-emerald-700" onClick={()=>void save()}><Save className="mr-2 h-4 w-4"/>{t.domainMailboxSave}</Button></div>

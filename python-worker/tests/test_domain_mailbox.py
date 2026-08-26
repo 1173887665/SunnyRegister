@@ -258,7 +258,7 @@ def test_cloudmail_failed_mailbox_delete_accepts_public_delete_extension(monkeyp
     assert calls[0][2]["headers"]["x-custom-auth"] == "password"
 
 
-def test_failed_mailbox_cleanup_keeps_local_row_when_cloudmail_delete_fails(monkeypatch):
+def test_failed_mailbox_cleanup_removes_local_row_when_cloudmail_delete_fails(monkeypatch):
     class DB:
         deleted = False
 
@@ -274,7 +274,34 @@ def test_failed_mailbox_cleanup_keeps_local_row_when_cloudmail_delete_fails(monk
         pass
     else:
         raise AssertionError("CloudMail deletion failure must be surfaced")
-    assert db.deleted is False
+    assert db.deleted is True
+
+
+def test_rebind_failure_retention_policy_controls_persistence(monkeypatch):
+    class DB:
+        def __init__(self, retain):
+            self.retain = retain
+            self.persisted = False
+
+        def get_config(self, key):
+            assert key == "domain_mailbox"
+            return {"retain_failed_mailboxes": self.retain}
+
+        def persist_rebind_failure(self, *args):
+            self.persisted = True
+
+    cleanup_calls = []
+    monkeypatch.setattr(rebind_module, "cleanup_failed_mailbox", lambda *args: cleanup_calls.append(args) or True)
+
+    retained = DB(True)
+    rebind_module._handle_failed_domain_mailbox(retained, "old@example.com", "new@example.com", "pickup", "hash", RuntimeError("failed"), lambda _: None)
+    assert retained.persisted is True
+    assert cleanup_calls == []
+
+    discarded = DB(False)
+    rebind_module._handle_failed_domain_mailbox(discarded, "old@example.com", "new@example.com", "pickup", "hash", RuntimeError("failed"), lambda _: None)
+    assert discarded.persisted is False
+    assert len(cleanup_calls) == 1
 
 
 def test_rebind_client_observation_header_matches_web_format():

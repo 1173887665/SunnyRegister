@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urlsplit
 import requests
 
 from .db import SunnyDB
-from .domain_mail_cleanup import cleanup_failed_mailbox
+from .domain_mail_cleanup import cleanup_failed_mailbox, retain_failed_mailbox
 from .mailbox import DomainMailReader, MailAccount, account_from_row
 from .openai_auth import LoginSecretAuthenticationError, login_or_register
 from .protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationFlow
@@ -415,6 +415,30 @@ def _wait_for_rebind_code(reader: DomainMailReader, client: ChangeEmailClient, e
         return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_FINAL_WAIT_SECONDS)
 
 
+def _handle_failed_domain_mailbox(
+    db: SunnyDB,
+    old_email: str,
+    new_email: str,
+    new_api: str,
+    pickup_token_hash: str,
+    error: Exception,
+    log: Callable[[str], None],
+) -> None:
+    cfg = db.get_config("domain_mailbox")
+    if retain_failed_mailbox(cfg):
+        try:
+            db.persist_rebind_failure(old_email, new_email, new_api, pickup_token_hash, str(error))
+            log(f"[{old_email}] 换绑失败邮箱已保存到自建域名邮箱池：{new_email}")
+        except Exception as persist_exc:
+            log(f"[{old_email}] 保存失败邮箱记录失败：{persist_exc}")
+        return
+    try:
+        cleanup_failed_mailbox(db, cfg, new_email, pickup_token_hash, log)
+        log(f"[{old_email}] 换绑失败邮箱已按配置清理：{new_email}")
+    except Exception as cleanup_exc:
+        log(f"[{old_email}] 失败邮箱清理未完全完成：{cleanup_exc}")
+
+
 def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callable[[str], None]) -> dict[str, Any]:
     old_email = str(account_row.get("email") or "").strip()
     if not old_email:
@@ -489,18 +513,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             except Exception:
                 pass
         if new_email and new_api:
-            cfg = db.get_config("domain_mailbox")
-            try:
-                db.persist_rebind_failure(old_email, new_email, new_api, new_api_token_hash, str(exc))
-            except Exception as persist_exc:
-                log(f"[{old_email}] 保存失败邮箱记录失败：{persist_exc}")
-            try:
-                if cleanup_failed_mailbox(db, cfg, new_email, new_api_token_hash, log):
-                    log(f"[{old_email}] 换绑失败邮箱已按配置清理：{new_email}")
-                else:
-                    log(f"[{old_email}] 换绑失败邮箱已保存到自建域名邮箱池：{new_email}")
-            except Exception as cleanup_exc:
-                log(f"[{old_email}] 失败邮箱清理失败：{cleanup_exc}")
+            _handle_failed_domain_mailbox(db, old_email, new_email, new_api, new_api_token_hash, exc, log)
         raise
     finally:
         for flow in (old_flow, new_flow):

@@ -92,6 +92,11 @@ def delete_cloudmail_user(cfg: dict[str, Any], email: str, *, timeout: float = 3
                 last_error = f"{path} {method} HTTP {response.status_code}: {_response_error(response)}"
                 if response.status_code not in {404, 405, 501}:
                     raise RuntimeError(f"CloudMail 删除邮箱 {email} 失败：{last_error}")
+    if "HTTP 404" in last_error or "HTTP 405" in last_error or "HTTP 501" in last_error:
+        raise RuntimeError(
+            f"CloudMail 删除邮箱 {email} 失败：当前服务未提供可用的 {paths[0]} 删除扩展；"
+            "请在 CloudMail 部署该公开删除接口后重试"
+        )
     raise RuntimeError(f"CloudMail 删除邮箱 {email} 失败：{last_error}")
 
 
@@ -105,9 +110,23 @@ def cleanup_failed_mailbox(
     if retain_failed_mailbox(cfg):
         log(f"[{email}] 任务失败，按配置保留域名邮箱")
         return False
-    delete_cloudmail_user(cfg, email)
+    provider_error: Exception | None = None
+    try:
+        delete_cloudmail_user(cfg, email)
+    except Exception as exc:
+        provider_error = exc
+
+    # Disabling retention is authoritative for SunnyRegister. Never leave the
+    # generated credential visible in the local pool because provider cleanup
+    # is unavailable or temporarily failing.
     removed = db.delete_failed_domain_mailbox(email, pickup_token_hash)
     if not removed:
-        raise RuntimeError("CloudMail 已删除，但本地未找到匹配的失败域名邮箱记录")
+        local_error = RuntimeError("本地未找到匹配的失败域名邮箱记录")
+        if provider_error is not None:
+            raise RuntimeError(f"{provider_error}；{local_error}") from provider_error
+        raise local_error
+    if provider_error is not None:
+        log(f"[{email}] 已删除本地失败域名邮箱记录，但 CloudMail 邮箱仍可能残留：{provider_error}")
+        raise provider_error
     log(f"[{email}] 已删除 CloudMail 邮箱及本地失败域名邮箱记录")
     return True
