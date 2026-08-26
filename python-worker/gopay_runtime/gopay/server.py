@@ -48,6 +48,12 @@ def _sanitize_public_error(value):
     return text[:500]
 
 
+def _paypal_manager():
+    """Load the isolated PayPal protocol module only when its feature is used."""
+    from paypal_runtime import manager
+    return manager
+
+
 def _parse_proxy_list(value):
     raw_items = value if isinstance(value, list) else str(value or "").splitlines()
     proxies = []
@@ -252,6 +258,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sms-status":
             self.send(200, _sms_api_status(include_balance=False))
             return
+        if path == "/api/paypal-config":
+            self.send(200, _paypal_manager().public_config())
+            return
+        if path == "/api/paypal-jobs":
+            self.send(200, {"jobs": _paypal_manager().list_jobs()})
+            return
+        if path.startswith("/api/paypal-jobs/"):
+            job_id = unquote(path[len("/api/paypal-jobs/"):].strip("/"))
+            job = _paypal_manager().get(job_id)
+            self.send(200, job) if job else self.send(404, {"error": "paypal_job_not_found"})
+            return
         if path.startswith("/api/accounts/") and path.endswith("/sms-code"):
             phone = unquote(path[len("/api/accounts/"):-len("/sms-code")].strip("/"))
             self.send(200, {"phone": phone, "code": _poll_imported_sms_code(phone)})
@@ -334,6 +351,26 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/sms-config":
                 self.send(200, _write_sms_config(data))
+                return
+            if path == "/api/paypal-config":
+                self.send(200, _paypal_manager().update_config(data))
+                return
+            if path == "/api/paypal-jobs":
+                self.send(201, _paypal_manager().start(data))
+                return
+            if path.startswith("/api/paypal-jobs/") and path.endswith("/otp"):
+                job_id = unquote(path[len("/api/paypal-jobs/"):-len("/otp")].strip("/"))
+                job = _paypal_manager().submit_otp(job_id, str(data.get("value") or data.get("code") or "").strip())
+                if not job:
+                    raise ValueError("PayPal 任务不存在或当前不在等待短信验证码")
+                self.send(200, job)
+                return
+            if path.startswith("/api/paypal-jobs/") and path.endswith("/cancel"):
+                job_id = unquote(path[len("/api/paypal-jobs/"):-len("/cancel")].strip("/"))
+                job = _paypal_manager().cancel(job_id)
+                if not job:
+                    raise ValueError("PayPal 任务不存在")
+                self.send(200, job)
                 return
             if path == "/api/proxies/check":
                 proxies = _parse_proxy_list(data.get("proxies"))

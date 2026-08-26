@@ -3194,8 +3194,12 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .gopay-segmented { display:flex; gap:4px; width:max-content; margin-bottom:12px; padding:3px; border:1px solid var(--border); background:var(--bg-card); }
 .gopay-segmented button { border:0; background:transparent; color:var(--text-secondary); padding:7px 14px; font-size:12px; font-weight:700; cursor:pointer; }
 .gopay-segmented button.active { background:var(--bg-card); color:var(--text-primary); box-shadow:var(--surface-glow); }
+.paypal-active-count { display:inline-flex; align-items:center; border:1px solid var(--accent-edge); background:var(--accent-soft); color:var(--text-primary); padding:6px 10px; font-size:12px; font-weight:750; }
+.paypal-config-layout { align-items:start; }
+.paypal-view .gopay-warning { margin-top:4px; }
 .gopay-method-mark { display:flex; width:30px; height:30px; flex:0 0 auto; align-items:center; justify-content:center; border-radius:8px; background:#00aa13; color:white; font-size:12px; font-weight:950; }
 .gopay-workspace { display:grid; min-width:0; grid-template-columns:180px minmax(0,1fr); overflow:hidden; border:1px solid var(--border); border-radius:8px; background:var(--bg-card); box-shadow:var(--surface-glow); }
+.gopay-workspace.paypal-workspace { grid-template-columns:minmax(0,1fr); }
 .gopay-nav { display:flex; flex-direction:column; gap:4px; border-right:1px solid var(--border); background:color-mix(in srgb,var(--bg-shell) 88%,var(--accent) 12%); padding:12px; }
 .gopay-nav button { display:flex; min-height:40px; align-items:center; gap:10px; padding:0 11px; color:var(--text-secondary); font-size:13px; font-weight:750; text-align:left; }
 .gopay-nav button svg { width:17px; height:17px; flex:0 0 auto; }

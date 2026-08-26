@@ -67,6 +67,7 @@ COPY python-worker/worker.py /app/worker.py
 COPY python-worker/sunny_runner.py /app/sunny_runner.py
 COPY python-worker/sunny_core/ /app/sunny_core/
 COPY python-worker/gopay_runtime/ /app/gopay_runtime/
+COPY python-worker/paypal_runtime/ /app/paypal_runtime/
 COPY python-worker/tools/ /app/tools/
 COPY --from=upi-builder /out/pix_extract_slot /app/tools/pay153_checkout/tools/upi_go/pix_extract_slot
 RUN chmod 700 /app/tools/pay153_checkout/tools/upi_go/pix_extract_slot

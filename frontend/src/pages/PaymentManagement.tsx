@@ -11,6 +11,7 @@ import { useI18n } from "@/lib/i18n-context";
 
 type Row = Record<string, any>;
 type GoPayView = "overview" | "register" | "pool" | "accounts" | "payment" | "settings";
+type PaymentMethod = "gopay" | "paypal";
 type RunAction = (key: string, action: () => Promise<any>, success: string, refresh?: () => Promise<void>) => Promise<void>;
 
 const api = (path: string, options?: RequestInit) => apiFetch(`/payments/gopay${path}`, options);
@@ -24,7 +25,7 @@ function formatTime(value: unknown) {
 
 function statusLabel(value: unknown) {
   const key = String(value || "unknown");
-  return ({ running: "进行中", waiting_otp: "等待 OTP", success: "成功", failed: "失败", done: "已完成", available: "可用", registered: "已注册", already_registered: "已存在", missing: "未设置", unknown: "未检测" } as Record<string, string>)[key] || key;
+  return ({ queued: "排队中", running: "进行中", awaiting_otp: "等待 OTP", awaiting_captcha: "等待验证", completed: "已完成", success: "成功", failed: "失败", cancelled: "已取消", cancelling: "取消中", done: "已完成", available: "可用", registered: "已注册", already_registered: "已存在", missing: "未设置", unknown: "未检测" } as Record<string, string>)[key] || key;
 }
 
 function Status({ value }: { value: unknown }) {
@@ -46,11 +47,14 @@ function Modal({ title, subtitle, onClose, children }: { title: string; subtitle
 
 export default function PaymentManagement() {
   const { language } = useI18n();
+  const [method, setMethod] = useState<PaymentMethod>("gopay");
   const [view, setView] = useState<GoPayView>("overview");
   const [accounts, setAccounts] = useState<Row[]>([]);
   const [phones, setPhones] = useState<Row[]>([]);
   const [registerJobs, setRegisterJobs] = useState<Row[]>([]);
   const [paymentJobs, setPaymentJobs] = useState<Row[]>([]);
+  const [paypalJobs, setPaypalJobs] = useState<Row[]>([]);
+  const [paypalConfig, setPaypalConfig] = useState<Row>({});
   const [sms, setSms] = useState<Row>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
@@ -75,22 +79,27 @@ export default function PaymentManagement() {
     setPaymentJobs(paymentData.jobs || []);
   }, []);
   const loadSms = useCallback(async () => { setSms(await api("/sms-status")); }, []);
+  const loadPaypal = useCallback(async () => {
+    const [jobs, config] = await Promise.all([api("/paypal-jobs"), api("/paypal-config")]);
+    setPaypalJobs(jobs.jobs || []);
+    setPaypalConfig(config || {});
+  }, []);
   const refreshAll = useCallback(async (showToast = false) => {
     try {
-      await Promise.all([loadAccounts(), loadPhones(), loadJobs(), loadSms()]);
+      await Promise.all([loadAccounts(), loadPhones(), loadJobs(), loadSms(), loadPaypal()]);
       if (showToast) toast("GoPay 数据已刷新");
     } catch (error) { toast(error instanceof Error ? error.message : "GoPay 数据加载失败", "error"); }
     finally { setLoading(false); }
-  }, [loadAccounts, loadPhones, loadJobs, loadSms, toast]);
+  }, [loadAccounts, loadPhones, loadJobs, loadSms, loadPaypal, toast]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => { void refreshAll(); }, 0);
     return () => window.clearTimeout(timer);
   }, [refreshAll]);
   useEffect(() => {
-    const timer = window.setInterval(() => { void loadJobs().catch(() => undefined); }, 3000);
+    const timer = window.setInterval(() => { void Promise.all([loadJobs(), loadPaypal()]).catch(() => undefined); }, 3000);
     return () => window.clearInterval(timer);
-  }, [loadJobs]);
+  }, [loadJobs, loadPaypal]);
 
   const run = useCallback(async (key: string, action: () => Promise<any>, success: string, refresh?: () => Promise<void>) => {
     setBusy(key);
@@ -124,29 +133,31 @@ export default function PaymentManagement() {
     </header>
 
     <nav className="payment-method-tabs" aria-label="支付方式">
-      <button className="active" type="button"><span className="gopay-method-mark">Go</span><span><strong>GoPay 支付</strong><small>Indonesia</small></span></button>
-      <button type="button" disabled title="PayPal 模块后续接入"><CreditCard /><span><strong>PayPal 支付</strong><small>待接入</small></span></button>
+      <button className={method === "gopay" ? "active" : ""} type="button" onClick={() => setMethod("gopay")}><span className="gopay-method-mark">Go</span><span><strong>GoPay 支付</strong><small>Indonesia</small></span></button>
+      <button className={method === "paypal" ? "active" : ""} type="button" onClick={() => setMethod("paypal")}><CreditCard /><span><strong>PayPal 支付</strong><small>Billing Agreement</small></span></button>
     </nav>
 
-    <div className="gopay-workspace">
-      <nav className="gopay-nav" aria-label="GoPay 功能">
+    <div className={cn("gopay-workspace", method === "paypal" && "paypal-workspace")}>
+      {method === "gopay" && <nav className="gopay-nav" aria-label="GoPay 功能">
         {nav.map(([key, label, icon]) => <button key={key} type="button" className={view === key ? "active" : ""} onClick={() => setView(key)}>{icon}<span>{label}</span></button>)}
-      </nav>
+      </nav>}
       <main className="gopay-content">
-        <section className="gopay-summary" aria-label="GoPay 实时概览">
+        {method === "gopay" && <section className="gopay-summary" aria-label="GoPay 实时概览">
           <div><span><UserRound />GoPay 账号</span><strong>{stats.accounts}</strong></div>
           <div><span><Phone />号码池</span><strong>{stats.phones}</strong></div>
           <div><span><MessageSquareText />等待 OTP</span><strong>{stats.otp}</strong></div>
           <div><span><Activity />进行中</span><strong>{stats.running}</strong></div>
-        </section>
+        </section>}
 
-        {loading ? <div className="gopay-loading"><Loader2 className="animate-spin" />正在加载 GoPay 模块...</div> : <>
-          {view === "overview" && <Overview registerJobs={registerJobs} paymentJobs={paymentJobs} onView={setView} />}
-          {view === "register" && <RegisterView jobs={registerJobs} busy={busy} run={run} refresh={loadJobs} onLogs={setLogJob} />}
-          {view === "pool" && <PoolView phones={phones} search={poolSearch} setSearch={setPoolSearch} busy={busy} run={run} refresh={loadPhones} />}
-          {view === "accounts" && <AccountsView accounts={accounts} search={accountSearch} setSearch={setAccountSearch} busy={busy} run={run} refresh={loadAccounts} onPin={setPinAccount} onRegister={() => setView("register")} />}
-          {view === "payment" && <PaymentView accounts={accounts} jobs={paymentJobs} filter={paymentFilter} setFilter={setPaymentFilter} selected={selectedPayment} select={setSelectedPaymentId} busy={busy} run={run} refresh={loadJobs} onLogs={setLogJob} />}
-          {view === "settings" && <SettingsView sms={sms} busy={busy} run={run} refresh={loadSms} />}
+        {loading ? <div className="gopay-loading"><Loader2 className="animate-spin" />正在加载支付模块...</div> : <>
+          {method === "paypal" ? <PayPalView key={`${paypalConfig.country || ""}-${paypalConfig.buyer_mode || ""}`} jobs={paypalJobs} config={paypalConfig} busy={busy} run={run} refresh={loadPaypal} /> : <>
+            {view === "overview" && <Overview registerJobs={registerJobs} paymentJobs={paymentJobs} onView={setView} />}
+            {view === "register" && <RegisterView jobs={registerJobs} busy={busy} run={run} refresh={loadJobs} onLogs={setLogJob} />}
+            {view === "pool" && <PoolView phones={phones} search={poolSearch} setSearch={setPoolSearch} busy={busy} run={run} refresh={loadPhones} />}
+            {view === "accounts" && <AccountsView accounts={accounts} search={accountSearch} setSearch={setAccountSearch} busy={busy} run={run} refresh={loadAccounts} onPin={setPinAccount} onRegister={() => setView("register")} />}
+            {view === "payment" && <PaymentView accounts={accounts} jobs={paymentJobs} filter={paymentFilter} setFilter={setPaymentFilter} selected={selectedPayment} select={setSelectedPaymentId} busy={busy} run={run} refresh={loadJobs} onLogs={setLogJob} />}
+            {view === "settings" && <SettingsView sms={sms} busy={busy} run={run} refresh={loadSms} />}
+          </>}
         </>}
       </main>
     </div>
@@ -197,6 +208,49 @@ function RegisterView({ jobs, busy, run, refresh, onLogs }: { jobs: Row[]; busy:
 function OtpSubmit({ onSubmit }: { onSubmit: (code: string) => void }) {
   const [code, setCode] = useState("");
   return <span className="gopay-otp-inline"><input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" placeholder="4-6 位" /><Button size="sm" disabled={!/^\d{4,6}$/.test(code)} onClick={() => onSubmit(code)}>提交</Button></span>;
+}
+
+const paypalCountries = ["BR", "GB", "US", "JP", "TH", "ID", "PH", "TW", "MX", "AE", "AU", "CA"];
+const paypalCallingCodes: Record<string, string> = { BR: "+55", GB: "+44", US: "+1", JP: "+81", TH: "+66", ID: "+62", PH: "+63", TW: "+886", MX: "+52", AE: "+971", AU: "+61", CA: "+1" };
+
+function PayPalView({ jobs, config, busy, run, refresh }: { jobs: Row[]; config: Row; busy: string; run: RunAction; refresh: () => Promise<void> }) {
+  const [country, setCountry] = useState(String(config.country || "BR"));
+  const [buyerMode, setBuyerMode] = useState(String(config.buyer_mode || "identity_elevation"));
+  const [proxyPool, setProxyPool] = useState("");
+  const [baToken, setBaToken] = useState("");
+  const [phone, setPhone] = useState("");
+
+  async function saveConfig() {
+    await run("paypal-config", () => post("/paypal-config", { country, buyer_mode: buyerMode, proxy_pool: proxyPool }), "PayPal 配置已保存", refresh);
+  }
+  async function createTask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await run("paypal-start", () => post("/paypal-jobs", { ba_token: baToken, phone, country, buyer_mode: buyerMode }), "PayPal 协议任务已创建", refresh);
+    setBaToken("");
+    setPhone("");
+  }
+  return <div className="gopay-view paypal-view">
+    <div className="gopay-section-title"><div><h2>PayPal 协议支付</h2><p>每个任务独立使用一个 BA 链接、手机号和代理出口，可同时运行多个任务</p></div><span className="paypal-active-count">{jobs.filter((job) => ["queued", "running", "awaiting_otp", "awaiting_captcha", "cancelling"].includes(String(job.status))).length} 个运行中</span></div>
+    <div className="gopay-two-column paypal-config-layout">
+      <Panel title="协议支付配置"><form className="gopay-form" onSubmit={(event) => { event.preventDefault(); void saveConfig(); }}><div className="gopay-form-grid"><label><span>账单国家</span><select value={country} onChange={(event) => setCountry(event.target.value)}>{paypalCountries.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><label><span>Buyer 模式</span><select value={buyerMode} onChange={(event) => setBuyerMode(event.target.value)}><option value="identity_elevation">身份提升</option><option value="original">原始协议流程</option></select></label><label className="wide"><span>国家代理池</span><textarea value={proxyPool} onChange={(event) => setProxyPool(event.target.value)} rows={5} placeholder={config.proxy_count ? `已配置 ${config.proxy_count} 条代理，留空保持原配置` : "每行一条 host:port:user:password；需与账单国家匹配"} /></label></div><div className="gopay-field-foot"><small>{config.proxy_count ? `当前已配置 ${config.proxy_count} 条代理` : "尚未配置代理池"}</small><Button type="submit" size="sm" disabled={busy !== ""}><Settings2 className="mr-1 h-3.5 w-3.5" />保存配置</Button></div></form></Panel>
+      <Panel title="创建协议任务"><form className="gopay-form" onSubmit={createTask}><label className="wide"><span>PayPal BA 链接或 Token</span><textarea value={baToken} onChange={(event) => setBaToken(event.target.value)} rows={3} required placeholder="https://www.paypal.com/agreements/approve?ba_token=BA-..." /></label><div className="gopay-form-grid"><label className="wide"><span>手机号（含国家码）</span><input value={phone} onChange={(event) => setPhone(event.target.value)} required placeholder={`${paypalCallingCodes[country] || "+"}...`} /></label></div><div className="gopay-warning"><ShieldCheck />每次提交都会创建独立任务；请为不同任务使用不同 BA 链接和手机号。</div><Button type="submit" disabled={busy !== ""}><Plus className="mr-2 h-4 w-4" />创建 PayPal 任务</Button></form></Panel>
+    </div>
+    <Panel title={`协议任务 · ${jobs.length}`} action={<Button size="sm" variant="outline" onClick={() => void refresh()}><RefreshCw className="mr-1 h-3.5 w-3.5" />刷新</Button>}>
+      <div className="gopay-table-wrap"><table><thead><tr><th>任务 ID</th><th>BA 链接</th><th>手机号</th><th>国家</th><th>阶段</th><th>状态</th><th>消息</th><th>操作</th></tr></thead><tbody>
+        {jobs.length ? (
+          jobs.map((job) => <tr key={job.id}>
+          <td className="mono">{job.id}</td><td className="mono">{job.ba_token || "-"}</td><td className="mono">{job.phone || "-"}</td><td>{job.country || "-"}</td><td>{job.stage || "-"}</td><td><Status value={job.status} /></td><td className="gopay-message">{job.error || job.awaiting_prompt || job.stage || "-"}</td>
+          <td><div className="gopay-row-actions">
+            {job.status === "awaiting_otp" && <OtpSubmit onSubmit={(code) => void run(`paypal-otp-${job.id}`, () => post(`/paypal-jobs/${encodeURIComponent(job.id)}/otp`, { value: code }), "PayPal 验证码已提交", refresh)} />}
+            {["queued", "running", "awaiting_otp", "awaiting_captcha", "cancelling"].includes(String(job.status)) && <Button size="sm" variant="outline" onClick={() => void run(`paypal-cancel-${job.id}`, () => post(`/paypal-jobs/${encodeURIComponent(job.id)}/cancel`), "PayPal 任务已取消", refresh)}>取消</Button>}
+          </div></td>
+          </tr>)
+        ) : (
+          <tr><td colSpan={8}><Empty title="暂无 PayPal 协议任务" detail="配置国家代理池后，输入 BA 链接和手机号创建任务" /></td></tr>
+        )}
+      </tbody></table></div>
+    </Panel>
+  </div>;
 }
 
 function PoolView({ phones, search, setSearch, busy, run, refresh }: { phones: Row[]; search: string; setSearch: (value: string) => void; busy: string; run: RunAction; refresh: () => Promise<void> }) {
