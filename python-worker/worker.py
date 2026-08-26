@@ -7,9 +7,12 @@ import sys
 import threading
 import time
 import traceback
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 os.environ.setdefault("PYTHONUTF8", "1")
@@ -25,6 +28,25 @@ def _secret_value(env_key: str, file_key: str) -> str:
 
 
 WORKER_TOKEN = _secret_value("PYTHON_WORKER_TOKEN", "PYTHON_WORKER_TOKEN_FILE")
+
+
+def _configure_gopay_runtime() -> None:
+    worker_dir = Path(__file__).resolve().parent
+    runtime_dir = worker_dir / "gopay_runtime"
+    data_root = Path(os.getenv("SUNNY_DATA_DIR") or ("/app/data" if Path("/app/data").is_dir() else worker_dir.parent / "data"))
+    gopay_data = data_root / "gopay"
+    gopay_data.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("OPAI_GOPAY_ACCOUNTS_FILE", str(gopay_data / "accounts.json"))
+    os.environ.setdefault("OPAI_GOPAY_PHONE_POOL_FILE", str(gopay_data / "phone_pool.json"))
+    os.environ.setdefault("OPAI_GOPAY_SMS_ENV_FILE", str(gopay_data / "sms.env"))
+    os.environ.setdefault("OPAI_PAYMENT_INBOX_PATH", str(gopay_data / "payment_inbox.json"))
+    os.environ.setdefault("OPAI_PAYMENT_INBOX_DB_PATH", str(gopay_data / "payment_inbox.db"))
+    os.environ.setdefault("OPAI_GOPAY_ENVELOPE_STORE", str(gopay_data / "envelope_links.json"))
+    os.environ.setdefault("OPAI_MIDTRANS_SNAP_STATE_FILE", str(gopay_data / "midtrans_snap_state.json"))
+    os.environ.setdefault("OPAI_GOPAY_SUPPORT_BODY_CORPUS", str(runtime_dir / "config" / "support_sdk_body_corpus.json"))
+
+
+_configure_gopay_runtime()
 # A browser driver can occasionally remain busy after its browser disconnects. The
 # worker already runs each task in a dedicated process; reclaim an inactive child
 # after 15 minutes so its browser, IMAP sockets and memory cannot leak forever.
@@ -35,6 +57,7 @@ app = FastAPI(title="SunnyRegister Python Automation Worker", version="1.0.0")
 _state_lock = threading.Lock()
 _running: set[str] = set()
 _processes: dict[str, subprocess.Popen] = {}
+_gopay_server = None
 
 
 def _check_token(auth: str | None) -> None:
@@ -49,7 +72,40 @@ def _check_token(auth: str | None) -> None:
 def on_startup() -> None:
     # Do not import or validate Playwright/Camoufox here. Browser automation is
     # lazy-loaded by the isolated task subprocess only when a task is accepted.
-    print("[worker] SunnyRegister automation worker ready (browser lazy loading enabled)", flush=True)
+    global _gopay_server
+    from gopay_runtime.gopay.server import start_embedded
+
+    _gopay_server = start_embedded()
+    print("[worker] SunnyRegister automation worker ready (browser lazy loading enabled, GoPay enabled)", flush=True)
+
+
+@app.api_route("/gopay/{path:path}", methods=["GET", "POST"])
+async def gopay_proxy(path: str, request: Request, authorization: str | None = Header(default=None)) -> Response:
+    _check_token(authorization)
+    if _gopay_server is None:
+        raise HTTPException(status_code=503, detail="GoPay service is not ready")
+    if "\\" in path or any(segment in {".", ".."} for segment in path.split("/")):
+        raise HTTPException(status_code=404, detail="Not found")
+    body = await request.body()
+    query = f"?{request.url.query}" if request.url.query else ""
+    target = f"http://127.0.0.1:{_gopay_server.server_port}/api/{path}{query}"
+    upstream = urllib.request.Request(
+        target,
+        data=body if request.method == "POST" else None,
+        method=request.method,
+        headers={"Content-Type": request.headers.get("content-type", "application/json")},
+    )
+
+    def send() -> Response:
+        try:
+            with urllib.request.urlopen(upstream, timeout=300) as result:
+                return Response(content=result.read(), status_code=result.status, media_type="application/json")
+        except urllib.error.HTTPError as exc:
+            return Response(content=exc.read(), status_code=exc.code, media_type="application/json")
+        except OSError as exc:
+            raise HTTPException(status_code=502, detail=f"GoPay service unavailable: {exc}") from exc
+
+    return await run_in_threadpool(send)
 
 
 class ExecuteRequest(BaseModel):
@@ -254,6 +310,11 @@ def cancel_checkout_job(job_id: str, authorization: str | None = Header(default=
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
+    global _gopay_server
+    if _gopay_server is not None:
+        _gopay_server.shutdown()
+        _gopay_server.server_close()
+        _gopay_server = None
     with _state_lock:
         processes = list(_processes.values())
         _processes.clear()

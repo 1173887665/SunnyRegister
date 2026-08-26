@@ -436,6 +436,8 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleActions(w, r, strings.TrimPrefix(p, "/actions"))
 	case strings.HasPrefix(p, "/audit"):
 		s.handleAudit(w, r, strings.TrimPrefix(p, "/audit"))
+	case strings.HasPrefix(p, "/payments"):
+		s.handlePayments(w, r, strings.TrimPrefix(p, "/payments"))
 	default:
 		writeError(w, 404, "not found")
 	}
