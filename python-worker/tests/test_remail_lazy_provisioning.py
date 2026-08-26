@@ -133,3 +133,57 @@ def test_remail_balance_failure_stops_new_orders_after_running_slots_finish():
     assert final["status"] == "failed"
     assert "余额不足" in result["provider_stop_reason"]
     assert result["success"] == 3
+
+
+def test_url_api_registration_uses_requested_concurrency_without_three_worker_cap():
+    lock = threading.Lock()
+    all_workers_started = threading.Barrier(5)
+    active = 0
+    max_active = 0
+
+    class UrlApiTaskDB(FakeTaskDB):
+        def __init__(self, task_id):
+            super().__init__(task_id)
+            self.payload = {
+                "identity": "system",
+                "count": 5,
+                "concurrency": 5,
+                "proxy_enabled": False,
+            }
+
+        @staticmethod
+        def fetch_mailboxes(_ids=None, _count=0):
+            return [
+                {
+                    "id": sequence,
+                    "email": f"url-api-{sequence}@icloud.com",
+                    "mailbox_type": "apple",
+                    "mailbox_channel": "url_api",
+                }
+                for sequence in range(1, 6)
+            ]
+
+    def run_one(_task_id, _task_type, _payload, mailbox, idx, _total, _policy):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        all_workers_started.wait(timeout=1)
+        with lock:
+            active -= 1
+        return idx, True, {"email": mailbox["email"], "auth_action": "register"}
+
+    with (
+        patch.object(worker, "SunnyDB", UrlApiTaskDB),
+        patch.object(worker, "_run_one_isolated", side_effect=run_one),
+        patch.object(worker, "_log_proxy_startup"),
+    ):
+        worker.run_sunny_task("task-url-api-concurrency")
+
+    assert max_active == 5
+    concurrency_events = [
+        detail
+        for message, _level, detail in UrlApiTaskDB.instance.events
+        if "注册任务并发数" in message
+    ]
+    assert concurrency_events == [{"scope": "global", "concurrency": 5, "total": 5}]

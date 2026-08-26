@@ -3689,23 +3689,6 @@ def run_sunny_task(task_id: str) -> None:
             raise RuntimeError("代理开关已开启，但没有可用于注册机的启用代理；请在代理配置中新增并启用代理，或关闭代理开关后再开始任务")
         requested_concurrency = int(payload.get("concurrency") or 1)
         concurrency = max(1, min(requested_concurrency, total))
-        url_api_count = sum(
-            1
-            for item in mailboxes
-            if str(item.get("mailbox_channel") or "").strip().lower() == "url_api"
-        )
-        if not is_remail_task and url_api_count == total and concurrency > 3:
-            db.event(
-                f"[系统] 本批次全部使用 url_api 邮箱，为避免取码服务被高并发轮询压垮，并发数由 {concurrency} 限制为 3",
-                "warning",
-                detail={
-                    "scope": "global",
-                    "requested_concurrency": concurrency,
-                    "effective_concurrency": 3,
-                    "mailbox_channel": "url_api",
-                },
-            )
-            concurrency = 3
         db.event(
             f"[系统] 注册任务并发数：{concurrency}，每个邮箱使用独立 Worker/浏览器上下文/邮箱验证码读取器",
             detail={"scope": "global", "concurrency": concurrency, "total": total},
