@@ -741,7 +741,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			if summary {
 				allQuery = allQuery.Select("id", "group_id", "email", "rebind_email", "rebind_mailbox_api", "mailbox_type", "mailbox_channel", "access_key", "password", "client_id", "refresh_token", "raw", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
 			}
-			allQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "status_changed_at": "status_changed_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Find(&allRows)
+			allQuery.Order(sunnyMailboxListSortClause(q.Get("sort_by"), q.Get("sort_order"))).Find(&allRows)
 			gm := s.sunnyGroupMap()
 			emails := []string{}
 			for _, m := range allRows {
@@ -822,7 +822,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		if summary {
 			listQuery = listQuery.Select("id", "group_id", "email", "rebind_email", "rebind_mailbox_api", "mailbox_type", "mailbox_channel", "access_key", "password", "client_id", "refresh_token", "raw", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
 		}
-		listQuery.Order(sunnySortClause(q.Get("sort_by"), q.Get("sort_order"), map[string]string{"updated_at": "updated_at", "status_changed_at": "status_changed_at", "created_at": "created_at", "registered_at": "registered_at"}, "id desc")).Offset((page - 1) * size).Limit(size).Find(&rows)
+		listQuery.Order(sunnyMailboxListSortClause(q.Get("sort_by"), q.Get("sort_order"))).Offset((page - 1) * size).Limit(size).Find(&rows)
 		gm := s.sunnyGroupMap()
 		emails := []string{}
 		for _, m := range rows {
@@ -4923,8 +4923,8 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		checkoutFilter := normalizeSunnyCheckoutFilter(q.Get("checkout_kind"))
 		paymentMethodFilter := normalizeSunnyPaymentMethodFilter(q.Get("payment_methods"))
 		groupFilter := uint(intValue(q.Get("group_id"), 0))
-		sortBy := strings.TrimSpace(q.Get("sort_by"))
-		if statusFilter == "" && planFilter == "" && trialFilter == "" && checkoutFilter == "" && len(paymentMethodFilter) == 0 {
+		sortBy := strings.ToLower(strings.TrimSpace(q.Get("sort_by")))
+		if statusFilter == "" && planFilter == "" && trialFilter == "" && checkoutFilter == "" && len(paymentMethodFilter) == 0 && sortBy != "rebind_email" {
 			query := s.db.Model(&SunnySession{})
 			query = sunnyUniqueSessionIdentityScope(query)
 			if kw != "" {
@@ -5013,6 +5013,24 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		desc := strings.ToLower(q.Get("sort_order")) != "asc"
 		sort.SliceStable(itemsAll, func(i, j int) bool {
 			a, b := text(itemsAll[i][sortBy]), text(itemsAll[j][sortBy])
+			if sortBy == "rebind_email" {
+				a = strings.ToLower(strings.TrimSpace(a))
+				b = strings.ToLower(strings.TrimSpace(b))
+				aRebound, bRebound := a != "", b != ""
+				if aRebound != bRebound {
+					if desc {
+						return aRebound
+					}
+					return !aRebound
+				}
+				if a != b {
+					if desc {
+						return a > b
+					}
+					return a < b
+				}
+				return intValue(itemsAll[i]["id"], 0) > intValue(itemsAll[j]["id"], 0)
+			}
 			if desc {
 				return a > b
 			}
@@ -5733,6 +5751,26 @@ func sunnySortClause(sortBy string, sortOrder string, allowed map[string]string,
 		order = "desc"
 	}
 	return col + " " + order
+}
+
+func sunnyMailboxListSortClause(sortBy string, sortOrder string) string {
+	if strings.EqualFold(strings.TrimSpace(sortBy), "rebind_email") {
+		emptyFirst := strings.EqualFold(strings.TrimSpace(sortOrder), "asc")
+		emptyRank, valueRank := "1", "0"
+		if emptyFirst {
+			emptyRank, valueRank = "0", "1"
+		}
+		valueOrder := "ASC"
+		if !emptyFirst {
+			valueOrder = "DESC"
+		}
+		return "CASE WHEN TRIM(COALESCE(rebind_email, '')) = '' THEN " + emptyRank +
+			" ELSE " + valueRank + " END ASC, LOWER(TRIM(COALESCE(rebind_email, ''))) " + valueOrder + ", id DESC"
+	}
+	return sunnySortClause(sortBy, sortOrder, map[string]string{
+		"updated_at": "updated_at", "status_changed_at": "status_changed_at",
+		"created_at": "created_at", "registered_at": "registered_at",
+	}, "id desc")
 }
 
 func (s *Server) sunnyValidateRegisterStageResources(body map[string]any) error {

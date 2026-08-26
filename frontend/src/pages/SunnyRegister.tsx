@@ -1878,6 +1878,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   const [groupFilter,setGroupFilter]=useCachedState("mailbox.groupFilter", 0);
   const [statusFilter,setStatusFilter]=useCachedState("mailbox.statusFilter", "");
   const [planFilter,setPlanFilter]=useCachedState("mailbox.planFilter", "");
+  const [sortBy,setSortBy]=useCachedState("mailbox.sortBy", "updated_at");
   const [timeSort,setTimeSort]=useCachedState<SortOrder>("mailbox.timeSort", "desc");
   const [selected,setSelected]=useCachedState<number[]>("mailbox.selected", []);
   const [selectingAll,setSelectingAll]=useState(false);
@@ -1899,7 +1900,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
     if (groupFilter) params.set("group_id", String(groupFilter));
     if (statusFilter) params.set("status", statusFilter);
     if (planFilter) params.set("plan_type", planFilter);
-    params.set("sort_by", "updated_at");
+    params.set("sort_by", sortBy);
     params.set("sort_order", timeSort);
     const m=await apiFetch(`/sunny/mailboxes?${params.toString()}`);
     setItems(m.items||[]);
@@ -1910,7 +1911,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   const selectAllFiltered=async()=>{
     setSelectingAll(true);
     try {
-      const params=new URLSearchParams({summary:"true",sort_by:"updated_at",sort_order:timeSort});
+      const params=new URLSearchParams({summary:"true",sort_by:sortBy,sort_order:timeSort});
       if(debouncedQuery.trim()) params.set("q",debouncedQuery.trim());
       if(groupFilter) params.set("group_id",String(groupFilter));
       if(statusFilter) params.set("status",statusFilter);
@@ -1922,13 +1923,13 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
     } catch(e:any) { notify("fail",e.message||String(e)); }
     finally { setSelectingAll(false); }
   };
-  useEffect(()=>{void load()},[page, debouncedQuery, groupFilter, statusFilter, planFilter, timeSort, pageSize]);
+  useEffect(()=>{void load()},[page, debouncedQuery, groupFilter, statusFilter, planFilter, sortBy, timeSort, pageSize]);
   const loadGroups=()=>apiFetch("/sunny/mailbox-groups").then((g)=>{const next=sortMailboxGroups(g.items||[]);setGroups(next);return next});
   useEffect(()=>{void loadGroups().catch(()=>{})},[]);
   useEffect(()=>{apiFetch("/sunny/mailboxes/config").then((cfg)=>setMailboxCfg(cfg || {pool_enabled:true})).catch(()=>{})},[]);
   useEffect(()=>{apiFetch("/sunny/remail/config").then((cfg)=>setRemailCfg(cfg || {})).catch(()=>{})},[]);
   useEffect(()=>{apiFetch("/sunny/domain-mail/config").then((cfg)=>setDomainCfg(cfg || {enabled:true})).catch(()=>{})},[]);
-  useEffect(()=>{setPage(1)},[query, groupFilter, statusFilter, planFilter, timeSort, pageSize]);
+  useEffect(()=>{setPage(1)},[query, groupFilter, statusFilter, planFilter, sortBy, timeSort, pageSize]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
   async function run(label:string, fn:()=>Promise<any>){try{await fn();notify("ok",label);void load();void loadGroups().catch(()=>{})}catch(e:any){notify("fail",e.message||String(e))}}
   async function toggleMailboxCredential(m: AnyObj, field: "chatgpt_password" | "totp_secret") {
@@ -2000,6 +2001,10 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
     } catch(e:any) { notify("fail", e.message || String(e)); }
   }
   const allChecked = items.length > 0 && items.every((m)=>selected.includes(m.id));
+  const toggleSort = (field: string) => {
+    if (sortBy === field) setTimeSort(nextSortOrder(timeSort));
+    else { setSortBy(field); setTimeSort("desc"); }
+  };
   const mailboxPoolEnabled = mailboxCfg.pool_enabled !== false;
   const overviewCards = [
     { status:"", label:t.mailboxOverviewTotal, count:mailboxTotal, tone:"total" },
@@ -2044,7 +2049,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
         </div>
         <div className="sr-table-card sr-mailbox-table-panel overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
           <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
-          <div className="sr-table-scroll"><ResizableDataTable tableKey="mailboxes" columns={DATA_TABLE_COLUMNS.mailboxes} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/>,t.mailbox,"换绑邮箱",t.mailboxGroup,t.status,t.planType,"AT","SK",t.chatgptPasswordColumn,t.twoFactorColumn,t.enabled,t.trafficUsage,<SortTimeHeader label={t.updatedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.actions]}>
+          <div className="sr-table-scroll"><ResizableDataTable tableKey="mailboxes" columns={DATA_TABLE_COLUMNS.mailboxes} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/>,t.mailbox,<SortTimeHeader label={t.rebindEmail} order={sortBy==="rebind_email"?timeSort:"desc"} onToggle={()=>toggleSort("rebind_email")}/>,t.mailboxGroup,t.status,t.planType,"AT","SK",t.chatgptPasswordColumn,t.twoFactorColumn,t.enabled,t.trafficUsage,<SortTimeHeader label={t.updatedAt} order={sortBy==="updated_at"?timeSort:"desc"} onToggle={()=>toggleSort("updated_at")}/>,t.actions]}>
             <tbody>{items.length ? items.map((m)=><tr key={m.id}>
               <td><input type="checkbox" checked={selected.includes(m.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,m.id])) : selected.filter((id)=>id!==m.id))}/></td>
               <td title={m.email}><div className="font-semibold">{m.email}</div></td>
@@ -4249,7 +4254,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       </div>
     </div>
     <div className="sr-table-scroll">
-      <ResizableDataTable tableKey="sessions-v2" columns={DATA_TABLE_COLUMNS.sessions} className="sr-session-table" headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/>,t.email,"换绑邮箱",t.groupFilter,t.status,t.planType,t.loginSecret,"SK","AT","RT",t.trialEligibility,t.checkoutKind,t.paymentMethods,<SortTimeHeader label={t.atExpiresAt} order={sortBy==="access_token_expires_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("access_token_expires_at")}/>,<SortTimeHeader label={t.lastHealthCheckedAt} order={sortBy==="last_health_checked_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("last_health_checked_at")}/>,t.operation]}>
+      <ResizableDataTable tableKey="sessions-v2" columns={DATA_TABLE_COLUMNS.sessions} className="sr-session-table" headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/>,t.email,<SortTimeHeader label={t.rebindEmail} order={sortBy==="rebind_email"?timeSort:"desc"} onToggle={()=>toggleTimeSort("rebind_email")}/>,t.groupFilter,t.status,t.planType,t.loginSecret,"SK","AT","RT",t.trialEligibility,t.checkoutKind,t.paymentMethods,<SortTimeHeader label={t.atExpiresAt} order={sortBy==="access_token_expires_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("access_token_expires_at")}/>,<SortTimeHeader label={t.lastHealthCheckedAt} order={sortBy==="last_health_checked_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("last_health_checked_at")}/>,t.operation]}>
         <tbody>{items.length ? items.map((s)=>{
           const refreshing=refreshingSessionIds.includes(s.id);
           const checkingAT=atCheckingSessionIds.includes(s.id);

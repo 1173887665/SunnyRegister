@@ -247,6 +247,95 @@ func TestSunnySessionListSearchesRebindEmail(t *testing.T) {
 	}
 }
 
+func TestSunnyMailboxListSortsRebindEmailBeforePagination(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	if err := s.db.Model(&SunnyMailbox{}).Where("email = ?", "session@example.com").Update("rebind_email", "m-replacement@example.com").Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, email := range []string{"z-rebind@example.com", "empty@example.com", "a-rebind@example.com"} {
+		mailbox := SunnyMailbox{Email: email, RebindEmail: strings.TrimSuffix(strings.TrimSuffix(email, "-rebind@example.com"), "@example.com") + "-replacement@example.com", Status: "未注册", Enabled: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+		if email == "empty@example.com" {
+			mailbox.RebindEmail = ""
+		}
+		if err := s.db.Create(&mailbox).Error; err != nil {
+			t.Fatalf("create mailbox %s: %v", email, err)
+		}
+	}
+	request := func(order string) []map[string]any {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/sunny/mailboxes?page=1&page_size=2&sort_by=rebind_email&sort_order="+order, nil)
+		s.sunnyMailboxes(rec, req, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("mailbox list status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode mailbox list: %v", err)
+		}
+		return payload.Items
+	}
+	desc := request("desc")
+	if len(desc) != 2 || desc[0]["rebind_email"] != "z-replacement@example.com" || desc[1]["rebind_email"] != "m-replacement@example.com" {
+		t.Fatalf("desc rebind order = %#v", desc)
+	}
+	asc := request("asc")
+	if len(asc) != 2 || asc[0]["rebind_email"] != "" || asc[1]["rebind_email"] != "a-replacement@example.com" {
+		t.Fatalf("asc rebind order = %#v", asc)
+	}
+}
+
+func TestSunnySessionListSortsRebindEmailBeforePagination(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var base SunnyMailbox
+	if err := s.db.Where("email = ?", "session@example.com").First(&base).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Model(&base).Update("rebind_email", "z-replacement@example.com").Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, email := range []string{"empty-session@example.com", "b-session@example.com"} {
+		mailbox := SunnyMailbox{Email: email, Status: "已注册", Enabled: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+		if err := s.db.Create(&mailbox).Error; err != nil {
+			t.Fatal(err)
+		}
+		account := SunnyAccount{MailboxID: mailbox.ID, Email: email, Status: "registered", AccountType: "plus", AccessToken: "at-" + email, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+		if err := s.db.Create(&account).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := s.db.Create(&SunnySession{AccountID: account.ID, Email: email, AccessToken: account.AccessToken, CreatedAt: time.Now(), UpdatedAt: time.Now()}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.db.Model(&SunnyMailbox{}).Where("email = ?", "b-session@example.com").Update("rebind_email", "b-replacement@example.com").Error; err != nil {
+		t.Fatal(err)
+	}
+	request := func(order string, page int) []map[string]any {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/sunny/sessions?page=%d&page_size=2&sort_by=rebind_email&sort_order=%s", page, order), nil)
+		s.sunnySessions(rec, req, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("session list status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode session list: %v", err)
+		}
+		return payload.Items
+	}
+	desc := request("desc", 1)
+	if len(desc) != 2 || desc[0]["rebind_email"] != "z-replacement@example.com" || desc[1]["rebind_email"] != "b-replacement@example.com" {
+		t.Fatalf("desc session rebind order = %#v", desc)
+	}
+	asc := request("asc", 1)
+	if len(asc) != 2 || asc[0]["rebind_email"] != "" || asc[1]["rebind_email"] != "b-replacement@example.com" {
+		t.Fatalf("asc session rebind order = %#v", asc)
+	}
+}
+
 func TestSunnyMailboxAndSessionListsShareMailboxIdentityFields(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	var mailbox SunnyMailbox
