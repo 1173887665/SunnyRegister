@@ -8,6 +8,7 @@ import re
 import secrets
 import time
 import uuid
+from dataclasses import replace
 from typing import Any, Callable
 from urllib.parse import urlencode, urlsplit
 
@@ -16,7 +17,7 @@ import requests
 from .db import SunnyDB
 from .domain_mail_cleanup import cleanup_failed_mailbox
 from .mailbox import DomainMailReader, MailAccount, account_from_row
-from .openai_auth import login_or_register
+from .openai_auth import LoginSecretAuthenticationError, login_or_register
 from .protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationFlow
 
 CHATGPT_ORIGIN = "https://chatgpt.com"
@@ -28,8 +29,11 @@ VERIFY_PATH = "/backend-api/accounts/change_email/verify"
 # workflow, which leaves the mailbox listener waiting until it times out.
 CLIENT_VERSION = "prod-180ca8b8699a733aef330b7026892aee9bf85fbe"
 CLIENT_BUILD = "9758774"
-REBIND_OTP_FIRST_WAIT_SECONDS = 45
-REBIND_OTP_RETRY_WAIT_SECONDS = 75
+# OpenAI may accept the begin request before its outbound mail pipeline has
+# delivered the message. Keep the total wait aligned with the web flow and the
+# standalone rebind implementation (120s + one resend + 180s).
+REBIND_OTP_FIRST_WAIT_SECONDS = 120
+REBIND_OTP_RETRY_WAIT_SECONDS = 180
 _DOMAIN_ROTATION = itertools.count()
 
 
@@ -231,16 +235,35 @@ def _login_flow(account: MailAccount, proxy: str, log: Callable[[str], None], *,
             "[认证] Sentinel 协议运行时遇到浏览器挑战，自动切换 Camoufox 后台无头登录；"
             "仍优先使用完整 LS，LS 失败时再使用邮箱凭证"
         )
-        result = login_or_register(
-            account,
-            proxy,
-            True,
-            log,
-            existing_account=True,
-            require_refresh_token=False,
-            should_cancel=should_cancel,
-            execution_mode="protocol_headless_fallback",
-        )
+        try:
+            result = login_or_register(
+                account,
+                proxy,
+                True,
+                log,
+                existing_account=True,
+                require_refresh_token=False,
+                should_cancel=should_cancel,
+                execution_mode="protocol_headless_fallback",
+            )
+        except Exception as browser_exc:
+            if not _should_use_protocol_mailbox_fallback(browser_exc):
+                raise
+            # A browser page can remain on /log-in/password without exposing
+            # an email-code switch. Retry with the protocol OTP state machine
+            # so this case does not fail before the mailbox is consulted.
+            try:
+                if flow.session:
+                    flow.session.close()
+            except Exception:
+                pass
+            return _protocol_mailbox_fallback(
+                account,
+                proxy,
+                log,
+                keep_session=keep_session,
+                should_cancel=should_cancel,
+            )
         _hydrate_protocol_flow_from_browser(flow, result)
         result["requested_execution_mode"] = "protocol"
         result["execution_mode"] = "protocol_headless_fallback"
@@ -295,6 +318,70 @@ def _hydrate_protocol_flow_from_browser(flow: ProtocolRegistrationFlow, result: 
         result["account_id"] = account_id
     flow.device_id = device_id or str(uuid.uuid4())
     flow._last_access_token = access_token
+
+
+def _should_use_protocol_mailbox_fallback(error: Exception) -> bool:
+    """Identify a browser LS failure that can safely retry through protocol OTP."""
+    message = str(error or "").lower()
+    if any(
+        marker in message
+        for marker in (
+            "account_deactivated",
+            "account disabled",
+            "account banned",
+            "account suspended",
+            "账号已封禁",
+            "账户已封禁",
+            "账户已停用",
+        )
+    ):
+        return False
+    if isinstance(error, LoginSecretAuthenticationError):
+        return True
+    return any(
+        marker in message
+        for marker in (
+            "未提供邮箱验证码切换入口",
+            "邮箱验证码切换入口",
+            "ls login",
+            "密码登录未完成",
+            "密码提交后认证页面未继续",
+            "2fa 提交后认证页面未继续",
+        )
+    )
+
+
+def _protocol_mailbox_fallback(
+    account: MailAccount,
+    proxy: str,
+    log: Callable[[str], None],
+    *,
+    keep_session: bool,
+    should_cancel: Callable[[], bool] | None,
+) -> tuple[ProtocolRegistrationFlow, dict[str, Any]]:
+    """Retry an LS browser failure with the existing account's mailbox OTP.
+
+    Clearing only the ChatGPT password/TOTP fields forces the existing,
+    already-tested protocol email-verification state machine without changing
+    the mailbox credentials or account identity.
+    """
+    mailbox_account = replace(account, chatgpt_password="", totp_secret="")
+    log("[认证] LS 浏览器登录未完成，改用纯协议邮箱验证码登录重试；保留当前账户邮箱凭证")
+    flow = ProtocolRegistrationFlow(
+        mailbox_account,
+        proxy,
+        log,
+        existing_account=True,
+        should_cancel=should_cancel,
+        challenge_strategy="native_headless",
+        keep_session=keep_session,
+        skip_mailbox=False,
+    )
+    result = flow.run()
+    result["execution_mode"] = "protocol_mailbox_fallback"
+    result["protocol_fallback"] = "mailbox_otp"
+    log("[认证] 纯协议邮箱验证码登录完成，继续执行邮箱换绑")
+    return flow, result
 
 
 def _persist_login_result(db: SunnyDB, identity_email: str, mailbox: dict[str, Any], result: dict[str, Any], log: Callable[[str], None]) -> None:

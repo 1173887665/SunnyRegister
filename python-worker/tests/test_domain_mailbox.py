@@ -326,3 +326,63 @@ def test_rebind_login_falls_back_to_headless_browser_after_sentinel_challenge(mo
     assert calls[0][1]["execution_mode"] == "protocol_headless_fallback"
     assert any("自动切换 Camoufox" in message for message in logs)
     assert any("继续执行换绑接口" in message for message in logs)
+
+
+def test_rebind_login_falls_back_to_protocol_mailbox_after_browser_ls_failure(monkeypatch):
+    account = account_from_row({
+        "email": "original@example.com",
+        "raw": "original@example.com----mail-password----client-id----refresh-token",
+        "chatgpt_password": "chatgpt-password",
+        "totp_secret": "JBSWY3DPEHPK3PXP",
+    })
+    challenge = ProtocolChallengeRequired("Sentinel challenge")
+    created = []
+
+    class Session:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeFlow:
+        def __init__(self, flow_account, proxy_url, log, **kwargs):
+            self.account = flow_account
+            self.proxy_url = proxy_url
+            self.session = Session()
+            self.device_id = "protocol-device"
+            self._last_access_token = ""
+            self.kwargs = kwargs
+            created.append(self)
+
+        def run(self):
+            if len(created) == 1:
+                raise challenge
+            return {"access_token": "mailbox-access-token", "account_id": "mailbox-account-id"}
+
+    logs = []
+    monkeypatch.setattr(rebind_module, "ProtocolRegistrationFlow", FakeFlow)
+    monkeypatch.setattr(
+        rebind_module,
+        "login_or_register",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("OpenAI 未提供邮箱验证码切换入口，且当前 LS 登录未完成")
+        ),
+    )
+
+    flow, result = rebind_module._login_flow(account, "http://proxy.example:8080", logs.append, keep_session=True)
+
+    assert len(created) == 2
+    assert created[1].account.has_login_secret is False
+    assert created[1].kwargs["skip_mailbox"] is False
+    assert created[1].kwargs["challenge_strategy"] == "native_headless"
+    assert flow is created[1]
+    assert result["access_token"] == "mailbox-access-token"
+    assert result["execution_mode"] == "protocol_mailbox_fallback"
+    assert result["protocol_fallback"] == "mailbox_otp"
+    assert any("纯协议邮箱验证码登录" in message for message in logs)
+
+
+def test_rebind_login_does_not_mailbox_retry_when_account_is_deactivated():
+    error = rebind_module.LoginSecretAuthenticationError("account_deactivated: account is disabled")
+    assert rebind_module._should_use_protocol_mailbox_fallback(error) is False
