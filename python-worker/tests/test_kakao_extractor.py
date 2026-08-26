@@ -27,3 +27,16 @@ def test_kakao_proxy_chain_preserves_sticky_seed():
     assert "country-vn" in promotion
     assert "country-kr" in provider
     assert kakao.proxy_chain_key(checkout) == kakao.proxy_chain_key(promotion) == kakao.proxy_chain_key(provider)
+
+
+def test_kakao_proxy_chain_provider_follows_checkout_country():
+    seed = "http://user:pass_country-us@proxy.example:8080"
+    checkout, promotion, provider = kakao.kakao_proxy_chain(
+        seed,
+        checkout_country="US",
+        promotion_country="KR",
+        provider_country="US",
+    )
+    assert "country-us" in checkout
+    assert "country-kr" in promotion
+    assert "country-us" in provider

@@ -4549,19 +4549,34 @@ class JobStore:
             if not entry_proxy or not exit_proxy:
                 raise RuntimeError("Kakao 提链缺少 Checkout 或 Promotion 代理")
 
+            # Checkout is the primary route. Promotion follows it by default
+            # and only separates when the user explicitly supplied a country.
+            checkout_country = str(options.get("exit_proxy_country") or options.get("country") or "KR").upper()
+            promotion_country = str(options.get("entry_proxy_country") or checkout_country).upper()
+            if not re.fullmatch(r"[A-Z]{2}", checkout_country):
+                checkout_country = "KR"
+            if not re.fullmatch(r"[A-Z]{2}", promotion_country):
+                promotion_country = checkout_country
+            provider_country = checkout_country
             # Named pools already represent their target countries. When a
-            # sticky country/region selector is present, use the exact pidan
-            # KR -> VN -> KR derivation from one Seed.
+            # sticky country/region selector is present, derive all roles from
+            # one Seed while keeping Provider/Approve equal to Checkout.
             checkout_proxy, promotion_proxy, provider_proxy = exit_proxy, entry_proxy, exit_proxy
             if re.search(r"(?i)(?:country|region)[-_=][a-z]{2}", entry_proxy):
                 try:
-                    checkout_proxy, promotion_proxy, provider_proxy = kakao.kakao_proxy_chain(entry_proxy)
+                    checkout_proxy, promotion_proxy, provider_proxy = kakao.kakao_proxy_chain(
+                        entry_proxy,
+                        checkout_country=checkout_country,
+                        promotion_country=promotion_country,
+                        provider_country=provider_country,
+                    )
                 except Exception as exc:
                     self.log(job_id, f"Kakao Seed 地区派生失败，沿用已配置角色代理：{type(exc).__name__}")
             self.log(
                 job_id,
-                "Kakao 专用链路：KR Checkout/Bootstrap -> VN checkout/update -> "
-                "KR Stripe/taxes/Kakao/approve/redirect",
+                f"Kakao 专用链路：{checkout_country} Checkout/Bootstrap -> "
+                f"{promotion_country} checkout/update -> "
+                f"{provider_country} Stripe/taxes/Kakao/approve/redirect",
             )
             self.log(job_id, "Kakao 代理角色：Checkout={}；Promotion={}；Provider/Approve={}".format(
                 kakao.proxy_label(checkout_proxy),
@@ -4577,7 +4592,12 @@ class JobStore:
                 if proxy in checked:
                     continue
                 checked.add(proxy)
-                ok, detail = kakao.preflight_proxy(proxy, role)
+                expected = {
+                    "checkout": checkout_country,
+                    "promotion": promotion_country,
+                    "provider": provider_country,
+                }[role]
+                ok, detail = kakao.preflight_proxy(proxy, role, expected)
                 if not ok:
                     raise RuntimeError(f"Kakao {role} 代理预检失败：{detail}")
                 self.log(job_id, f"Kakao {role} 代理出口预检通过：{detail}")
@@ -4616,9 +4636,10 @@ class JobStore:
                 "currency": "KRW",
                 "checkout_country": "KR",
                 "checkout_currency": "KRW",
-                "entry_country": str(options.get("entry_proxy_country") or "VN").upper(),
-                "payment_proxy_country": str(options.get("exit_proxy_country") or "KR").upper(),
-                "proxy_mode": "kr_checkout_vn_promotion_kr_provider",
+                "entry_country": promotion_country,
+                "payment_proxy_country": checkout_country,
+                "provider_proxy_country": provider_country,
+                "proxy_mode": f"{checkout_country.lower()}_checkout_{promotion_country.lower()}_promotion_{provider_country.lower()}_provider",
                 "entry_proxy_pool_size": len(entry_pool),
                 "exit_proxy_pool_size": len(exit_pool),
                 "promo_requested": bool(options.get("use_promo")),
@@ -4870,8 +4891,8 @@ def start_checkout():
         "use_so": data.get("use_so", True) is not False,
         "dynamic_proxy_api": dynamic_proxy_api,
         "allow_missing_customer_session": bool(data.get("allow_missing_customer_session")) and internal_request,
-        "entry_proxy_country": str(data.get("entry_proxy_country") or ("VN" if link_type in {"gcash", "kakao"} else ("US" if link_type == "ph_short" and country == "PH" else country))).upper(),
-        "exit_proxy_country": str(data.get("exit_proxy_country") or ("PH" if link_type == "gcash" else ("KR" if link_type == "kakao" else ((str(data.get("promo_country") or ("TR" if country == "PH" else country))) if link_type == "ph_short" and bool(data.get("use_promo", True)) else country)))).upper(),
+        "entry_proxy_country": str(data.get("entry_proxy_country") or (str(data.get("promo_country") or country) if link_type == "kakao" else ("VN" if link_type == "gcash" else ("US" if link_type == "ph_short" and country == "PH" else country)))).upper(),
+        "exit_proxy_country": str(data.get("exit_proxy_country") or ("PH" if link_type == "gcash" else ((str(data.get("promo_country") or ("TR" if country == "PH" else country))) if link_type == "ph_short" and bool(data.get("use_promo", True)) else country))).upper(),
         "proxy_session_time": min(120, max(1, int(data.get("proxy_session_time") or 10))),
     }
     if link_type == "ph_short":

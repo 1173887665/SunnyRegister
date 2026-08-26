@@ -272,10 +272,16 @@ def proxy_for_country(proxy: str, country: str) -> str:
     return derived
 
 
-def kakao_proxy_chain(proxy_seed: str) -> tuple[str, str, str]:
-    checkout_proxy = proxy_for_country(proxy_seed, CHECKOUT_COUNTRY)
-    promotion_proxy = proxy_for_country(proxy_seed, PROMOTION_COUNTRY)
-    provider_proxy = proxy_for_country(proxy_seed, PROVIDER_COUNTRY)
+def kakao_proxy_chain(
+    proxy_seed: str,
+    *,
+    checkout_country: str = CHECKOUT_COUNTRY,
+    promotion_country: str = PROMOTION_COUNTRY,
+    provider_country: str = PROVIDER_COUNTRY,
+) -> tuple[str, str, str]:
+    checkout_proxy = proxy_for_country(proxy_seed, checkout_country)
+    promotion_proxy = proxy_for_country(proxy_seed, promotion_country)
+    provider_proxy = proxy_for_country(proxy_seed, provider_country)
     key = proxy_chain_key(proxy_seed)
     if not key or any(
         proxy_chain_key(proxy) != key
@@ -713,8 +719,8 @@ def ip_info(proxy: str) -> dict[str, str]:
     raise RuntimeError("出口 IP 查询失败：" + "；".join(failures[:4]))
 
 
-def preflight_proxy(proxy: str, role: str) -> tuple[bool, str]:
-    expected = role_country(role)
+def preflight_proxy(proxy: str, role: str, expected_country: str | None = None) -> tuple[bool, str]:
+    expected = str(expected_country or role_country(role)).upper()
     try:
         country = str(ip_info(proxy).get("country") or "").upper()
     except Exception as exc:
