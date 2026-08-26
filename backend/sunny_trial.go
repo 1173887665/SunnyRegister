@@ -749,6 +749,15 @@ func (s *Server) sunnyCommerceProxyURLForCountries(accountKey string, countries 
 	return normalizeSunnyProxyAddress(proxies[int(hash.Sum32()/uint32(len(selected)))%len(proxies)].Address)
 }
 
+func sunnyProxyURLFromCountryGroup(accountKey string, proxies []SunnyProxy) string {
+	if len(proxies) == 0 {
+		return ""
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(strings.ToLower(strings.TrimSpace(accountKey))))
+	return normalizeSunnyProxyAddress(proxies[int(hash.Sum32())%len(proxies)].Address)
+}
+
 func (s *Server) sunnyTrialCandidates(ids []uint) ([]sunnyTrialCandidate, error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("请选择需要检测试用资格的账户")
@@ -782,10 +791,31 @@ func (s *Server) sunnyTrialCandidates(ids []uint) ([]sunnyTrialCandidate, error)
 	return candidates, nil
 }
 
-func (s *Server) persistSunnyTrialSidecars(candidate sunnyTrialCandidate, accountUpdates, mailboxUpdates map[string]any) error {
+func mergeSunnyTrialCountryResults(accountJSON, mailboxJSON string, current map[string]string) (map[string]string, string) {
+	merged := sunnyTrialCountryResults(accountJSON, mailboxJSON)
+	for country, eligibility := range current {
+		country = strings.ToUpper(strings.TrimSpace(country))
+		eligibility = normalizeSunnyTrialEligibility(eligibility)
+		if country != "" && eligibility != sunnyTrialUnknown {
+			merged[country] = eligibility
+		}
+	}
+	overall := sunnyTrialUnknown
+	for _, eligibility := range merged {
+		if eligibility == sunnyTrialEligible {
+			return merged, sunnyTrialEligible
+		}
+		if eligibility == sunnyTrialIneligible {
+			overall = sunnyTrialIneligible
+		}
+	}
+	return merged, overall
+}
+
+func (s *Server) persistSunnyTrialSidecars(candidate sunnyTrialCandidate, currentCountryResults map[string]string, accountUpdates, mailboxUpdates map[string]any) (map[string]string, string, error) {
 	tx := s.db.Begin()
 	if tx.Error != nil {
-		return tx.Error
+		return nil, sunnyTrialUnknown, tx.Error
 	}
 	accountQuery := tx.Model(&SunnyAccount{})
 	if candidate.AccountID != 0 {
@@ -796,12 +826,7 @@ func (s *Server) persistSunnyTrialSidecars(candidate sunnyTrialCandidate, accoun
 	var account SunnyAccount
 	if err := accountQuery.First(&account).Error; err != nil {
 		tx.Rollback()
-		return fmt.Errorf("账户 %s 不存在，试用资格未保存", candidate.Email)
-	}
-	accountResult := tx.Model(&SunnyAccount{}).Where("id = ?", account.ID).Updates(accountUpdates)
-	if accountResult.Error != nil {
-		tx.Rollback()
-		return accountResult.Error
+		return nil, sunnyTrialUnknown, fmt.Errorf("账户 %s 不存在，试用资格未保存", candidate.Email)
 	}
 	mailboxQuery := tx.Model(&SunnyMailbox{})
 	if candidate.MailboxID != 0 {
@@ -812,14 +837,28 @@ func (s *Server) persistSunnyTrialSidecars(candidate sunnyTrialCandidate, accoun
 	var mailbox SunnyMailbox
 	if err := mailboxQuery.First(&mailbox).Error; err != nil {
 		tx.Rollback()
-		return fmt.Errorf("邮箱 %s 不存在，试用资格未保存", candidate.Email)
+		return nil, sunnyTrialUnknown, fmt.Errorf("邮箱 %s 不存在，试用资格未保存", candidate.Email)
+	}
+	mergedCountryResults, eligibility := mergeSunnyTrialCountryResults(account.TrialCountryResultsJSON, mailbox.TrialCountryResultsJSON, currentCountryResults)
+	countryResultsJSON := dumpJSON(mergedCountryResults)
+	accountUpdates["trial_country_results_json"] = countryResultsJSON
+	accountUpdates["trial_eligibility"] = eligibility
+	mailboxUpdates["trial_country_results_json"] = countryResultsJSON
+	mailboxUpdates["trial_eligibility"] = eligibility
+	accountResult := tx.Model(&SunnyAccount{}).Where("id = ?", account.ID).Updates(accountUpdates)
+	if accountResult.Error != nil {
+		tx.Rollback()
+		return nil, sunnyTrialUnknown, accountResult.Error
 	}
 	mailboxResult := tx.Model(&SunnyMailbox{}).Where("id = ?", mailbox.ID).Updates(mailboxUpdates)
 	if mailboxResult.Error != nil {
 		tx.Rollback()
-		return mailboxResult.Error
+		return nil, sunnyTrialUnknown, mailboxResult.Error
 	}
-	return tx.Commit().Error
+	if err := tx.Commit().Error; err != nil {
+		return nil, sunnyTrialUnknown, err
+	}
+	return mergedCountryResults, eligibility, nil
 }
 
 func (s *Server) activeSunnyTrialSessionIDs() (map[uint]bool, error) {
@@ -868,17 +907,17 @@ func (s *Server) createSunnyTrialTask(body map[string]any) (Task, error) {
 	if len(candidates) == 0 {
 		return Task{}, fmt.Errorf("未找到需要检测试用资格的账户")
 	}
-	var requestedCountries []string
-	if raw, exists := body["countries"]; exists {
-		requestedCountries = stringSlice(raw)
-		groups, groupErr := s.sunnyCommerceProxyGroups()
-		if groupErr != nil {
-			return Task{}, groupErr
-		}
-		requestedCountries, err = selectSunnyCommerceProxyCountries(groups, requestedCountries)
-		if err != nil {
-			return Task{}, err
-		}
+	rawCountries, exists := body["countries"]
+	if !exists {
+		return Task{}, fmt.Errorf("请至少选择一个账户检测国家")
+	}
+	groups, err := s.sunnyCommerceProxyGroups()
+	if err != nil {
+		return Task{}, err
+	}
+	requestedCountries, err := selectSunnyCommerceProxyCountries(groups, stringSlice(rawCountries))
+	if err != nil {
+		return Task{}, err
 	}
 	active, err := s.activeSunnyTrialSessionIDs()
 	if err != nil {
@@ -892,10 +931,7 @@ func (s *Server) createSunnyTrialTask(body map[string]any) (Task, error) {
 			seen[candidate.SessionID] = true
 		}
 	}
-	payload := map[string]any{"session_ids": ids, "skip_session_ids": skipSessionIDs}
-	if requestedCountries != nil {
-		payload["countries"] = requestedCountries
-	}
+	payload := map[string]any{"session_ids": ids, "skip_session_ids": skipSessionIDs, "countries": requestedCountries}
 	return s.createTask(sunnyTrialTaskType, "sunny", payload, len(candidates)), nil
 }
 
@@ -904,6 +940,21 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 	task.StartedAt = sql.NullTime{Time: time.Now(), Valid: true}
 	s.db.Save(task)
 	candidates, err := s.sunnyTrialCandidates(uintSlice(payload["session_ids"]))
+	if err != nil {
+		s.failSunnyTrialTask(task, err.Error())
+		return
+	}
+	rawCountries, exists := payload["countries"]
+	if !exists {
+		s.failSunnyTrialTask(task, "请至少选择一个账户检测国家")
+		return
+	}
+	trialProxyGroups, err := s.sunnyCommerceProxyGroups()
+	if err != nil {
+		s.failSunnyTrialTask(task, err.Error())
+		return
+	}
+	trialCountries, err := selectSunnyCommerceProxyCountries(trialProxyGroups, stringSlice(rawCountries))
 	if err != nil {
 		s.failSunnyTrialTask(task, err.Error())
 		return
@@ -928,7 +979,6 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 	}
 	batchSize := s.sunnyTrialBatchSize()
 	concurrency := s.sunnyTrialConcurrency()
-	trialCountries := stringSlice(payload["countries"])
 	for start := 0; start < len(candidates); start += batchSize {
 		end := start + batchSize
 		if end > len(candidates) {
@@ -938,18 +988,11 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 			outcome := sunnyTrialResult{SessionID: candidate.SessionID, AccountID: candidate.AccountID, Email: candidate.Email, SkipReason: candidate.SkipReason, Error: candidate.Error}
 			if outcome.SkipReason == "" && outcome.Error == "" {
 				meter := &sunnyTrafficMeter{}
-				countries := trialCountries
-				if len(countries) == 0 {
-					countries = []string{""}
-				}
 				outcome.CountryResults = map[string]string{}
-				for _, country := range countries {
+				for _, country := range trialCountries {
 					trialCtx := withSunnyTrafficMeter(context.Background(), meter)
-					proxyCountries := []string(nil)
-					if country != "" {
-						proxyCountries = []string{country}
-					}
-					trialCtx = context.WithValue(trialCtx, sunnyTrialProxyContextKey{}, s.sunnyCommerceProxyURLForCountries(candidate.Email, proxyCountries))
+					proxyURL := sunnyProxyURLFromCountryGroup(candidate.Email, trialProxyGroups[country])
+					trialCtx = context.WithValue(trialCtx, sunnyTrialProxyContextKey{}, proxyURL)
 					trial, retried := checkSunnyTrialWithRetry(trialCtx, candidate.AccessToken)
 					eligibility := normalizeSunnyTrialEligibility(trial.Eligibility)
 					if country != "" && eligibility != sunnyTrialUnknown {
@@ -999,44 +1042,39 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 			case outcome.Error != "":
 				result["failed"] = result["failed"].(int) + 1
 				item["status"], item["error"] = "failed", outcome.Error
-				accountUpdates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_country_results_json": "{}", "trial_checked_at": now}
-				mailboxUpdates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_country_results_json": "{}", "trial_checked_at": now}
-				if persistErr := s.persistSunnyTrialSidecars(candidateBySession[outcome.SessionID], accountUpdates, mailboxUpdates); persistErr != nil {
+				accountUpdates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now}
+				mailboxUpdates := map[string]any{"trial_eligibility": sunnyTrialUnknown, "trial_check_error": outcome.Error, "trial_checked_at": now}
+				if _, _, persistErr := s.persistSunnyTrialSidecars(candidateBySession[outcome.SessionID], outcome.CountryResults, accountUpdates, mailboxUpdates); persistErr != nil {
 					item["status"], item["error"] = "failed", persistErr.Error()
 				}
 			default:
-				eligibility := normalizeSunnyTrialEligibility(outcome.Eligibility)
-				item["trial_eligibility"] = eligibility
-				if len(outcome.CountryResults) > 0 {
-					item["trial_country_results"] = outcome.CountryResults
-				}
+				probeEligibility := normalizeSunnyTrialEligibility(outcome.Eligibility)
 				item["trial_state"] = outcome.TrialState
 				if outcome.TrialError != "" {
 					item["trial_error"] = outcome.TrialError
 				}
-				if eligibility == sunnyTrialEligible || eligibility == sunnyTrialIneligible {
-					result[eligibility] = result[eligibility].(int) + 1
-					item["status"], item["message"] = eligibility, outcome.Message
-				} else {
-					result["failed"] = result["failed"].(int) + 1
-					item["status"], item["error"] = "failed", fallback(outcome.TrialError, "无法确认试用资格")
-				}
-				countryResultsJSON := "{}"
-				if len(outcome.CountryResults) > 0 {
-					countryResultsJSON = dumpJSON(outcome.CountryResults)
-				}
 				accountUpdates := map[string]any{
-					"trial_eligibility": eligibility, "trial_check_error": outcome.TrialError, "trial_country_results_json": countryResultsJSON, "trial_checked_at": now,
+					"trial_eligibility": probeEligibility, "trial_check_error": outcome.TrialError, "trial_checked_at": now,
 				}
-				mailboxUpdates := map[string]any{"trial_eligibility": eligibility, "trial_check_error": outcome.TrialError, "trial_country_results_json": countryResultsJSON, "trial_checked_at": now}
-				updateErr := s.persistSunnyTrialSidecars(candidateBySession[outcome.SessionID], accountUpdates, mailboxUpdates)
+				mailboxUpdates := map[string]any{"trial_eligibility": probeEligibility, "trial_check_error": outcome.TrialError, "trial_checked_at": now}
+				countryResults, eligibility, updateErr := s.persistSunnyTrialSidecars(candidateBySession[outcome.SessionID], outcome.CountryResults, accountUpdates, mailboxUpdates)
 				if updateErr != nil {
-					if item["status"] != "failed" {
-						result[eligibility] = result[eligibility].(int) - 1
-						result["failed"] = result["failed"].(int) + 1
-					}
+					result["failed"] = result["failed"].(int) + 1
 					item["status"], item["error"] = "failed", updateErr.Error()
-				} else if item["status"] == "failed" {
+				} else {
+					item["trial_eligibility"] = eligibility
+					if len(countryResults) > 0 {
+						item["trial_country_results"] = countryResults
+					}
+					if eligibility == sunnyTrialEligible || eligibility == sunnyTrialIneligible {
+						result[eligibility] = result[eligibility].(int) + 1
+						item["status"], item["message"] = eligibility, outcome.Message
+					} else {
+						result["failed"] = result["failed"].(int) + 1
+						item["status"], item["error"] = "failed", fallback(outcome.TrialError, "无法确认试用资格")
+					}
+				}
+				if item["status"] == "failed" {
 					s.appendAccountTaskEvent(task.ID, outcome.Email, "trial", "trial.check_failed", fmt.Sprintf("账户 %s 试用资格检测失败：%s", outcome.Email, item["error"]), "warning", map[string]any{"error": item["error"]})
 				} else {
 					s.appendAccountTaskEvent(task.ID, outcome.Email, "trial", "trial.checked", fmt.Sprintf("账户 %s 试用资格检测完成：%s", outcome.Email, eligibility), "info", map[string]any{"trial_eligibility": eligibility})

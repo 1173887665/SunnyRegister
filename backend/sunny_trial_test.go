@@ -117,6 +117,9 @@ func TestSunnyCommerceCheckDoesNotRetryInvalidToken(t *testing.T) {
 
 func prepareSunnyTrialAccount(t *testing.T, s *Server) SunnySession {
 	t.Helper()
+	if err := s.db.Create(&SunnyProxy{Address: "http://jp-trial.example:8080", Country: "JP", PurposeTags: sunnyProxyPurposeCommerce, Status: "enabled", Enabled: true}).Error; err != nil {
+		t.Fatalf("prepare trial proxy: %v", err)
+	}
 	if err := s.db.Model(&SunnyAccount{}).Where("email = ?", "session@example.com").Updates(map[string]any{
 		"status": "registered", "account_type": "free", "trial_eligibility": sunnyTrialUnknown,
 	}).Error; err != nil {
@@ -153,8 +156,9 @@ func TestSunnyTrialTaskPersistsAndFiltersEligibility(t *testing.T) {
 	}
 	t.Cleanup(func() { sunnyCheckTrialOnly = previousCheck })
 
-	task := s.createTask(sunnyTrialTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
-	s.executeSunnyTrialTask(&task, map[string]any{"session_ids": []uint{session.ID}})
+	payload := map[string]any{"session_ids": []uint{session.ID}, "countries": []string{"JP"}}
+	task := s.createTask(sunnyTrialTaskType, "sunny", payload, 1)
+	s.executeSunnyTrialTask(&task, payload)
 	var account SunnyAccount
 	var mailbox SunnyMailbox
 	s.db.Where("email = ?", session.Email).First(&account)
@@ -185,8 +189,9 @@ func TestSunnyTrialTaskDoesNotOverwriteCheckoutOrPaymentData(t *testing.T) {
 	}
 	t.Cleanup(func() { sunnyCheckTrialOnly = previousCheck })
 
-	task := s.createTask(sunnyTrialTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
-	s.executeSunnyTrialTask(&task, map[string]any{"session_ids": []uint{session.ID}})
+	payload := map[string]any{"session_ids": []uint{session.ID}, "countries": []string{"JP"}}
+	task := s.createTask(sunnyTrialTaskType, "sunny", payload, 1)
+	s.executeSunnyTrialTask(&task, payload)
 	var account SunnyAccount
 	s.db.Where("email = ?", session.Email).First(&account)
 	if account.TrialEligibility != sunnyTrialIneligible || account.CheckoutKind != "oaics" || account.PaymentMethodsJSON != `["card","paypal"]` {
@@ -206,8 +211,9 @@ func TestSunnyTrialInvalidTokenClearsEligibilityAndMarksATInvalid(t *testing.T) 
 	}
 	t.Cleanup(func() { sunnyCheckTrialOnly = previousCheck })
 
-	task := s.createTask(sunnyTrialTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
-	s.executeSunnyTrialTask(&task, map[string]any{"session_ids": []uint{session.ID}})
+	payload := map[string]any{"session_ids": []uint{session.ID}, "countries": []string{"JP"}}
+	task := s.createTask(sunnyTrialTaskType, "sunny", payload, 1)
+	s.executeSunnyTrialTask(&task, payload)
 	var account SunnyAccount
 	s.db.Where("email = ?", session.Email).First(&account)
 	s.db.First(&session, session.ID)
@@ -241,8 +247,9 @@ func TestSunnyTrialDoesNotQueueDuplicateRenewalForActiveAccount(t *testing.T) {
 	}
 	t.Cleanup(func() { sunnyCheckTrialOnly = previousCheck })
 
-	task := s.createTask(sunnyTrialTaskType, "sunny", map[string]any{"session_ids": []uint{session.ID}}, 1)
-	s.executeSunnyTrialTask(&task, map[string]any{"session_ids": []uint{session.ID}})
+	payload := map[string]any{"session_ids": []uint{session.ID}, "countries": []string{"JP"}}
+	task := s.createTask(sunnyTrialTaskType, "sunny", payload, 1)
+	s.executeSunnyTrialTask(&task, payload)
 	result := jsonMap(task.ResultJSON)
 	if text(result["renewal_task_id"]) != "" || intValue(result["renewal_queued"], 0) != 0 {
 		t.Fatalf("duplicate renewal task was queued: %#v", result)
@@ -314,7 +321,7 @@ func TestSunnyMailboxTrialEligibilityFilterUsesLinkedDataAndPaginates(t *testing
 func TestSunnyTrialRouteCreatesLocalTask(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	session := prepareSunnyTrialAccount(t, s)
-	req := httptest.NewRequest(http.MethodPost, "/api/sunny/sessions/trial-check", strings.NewReader(fmt.Sprintf(`{"session_ids":[%d]}`, session.ID)))
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/sessions/trial-check", strings.NewReader(fmt.Sprintf(`{"session_ids":[%d],"countries":["JP"]}`, session.ID)))
 	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	s.sunnySessions(recorder, req, []string{"trial-check"})
@@ -353,6 +360,76 @@ func TestSunnyTrialCountryRouteUsesEnabledCommerceCountries(t *testing.T) {
 	}
 }
 
+func TestSunnyTrialTaskUsesOnlySelectedCountriesAndMergesHistory(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	session := prepareSunnyTrialAccount(t, s)
+	if err := s.db.Create(&SunnyProxy{Address: "http://vn-trial.example:8080", Country: "VN", PurposeTags: sunnyProxyPurposeCommerce, Status: "enabled", Enabled: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	history := `{"JP":"eligible","VN":"eligible"}`
+	if err := s.db.Model(&SunnyAccount{}).Where("email = ?", session.Email).Update("trial_country_results_json", history).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Model(&SunnyMailbox{}).Where("email = ?", session.Email).Update("trial_country_results_json", history).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	previousCheck := sunnyCheckTrialOnly
+	calledProxies := []string{}
+	sunnyCheckTrialOnly = func(ctx context.Context, _ string) sunnyCommerceProbeResult {
+		calledProxies = append(calledProxies, text(ctx.Value(sunnyTrialProxyContextKey{})))
+		return sunnyCommerceProbeResult{Eligibility: sunnyTrialIneligible, TrialState: sunnyTrialIneligible, TrialMessage: "ineligible"}
+	}
+	t.Cleanup(func() { sunnyCheckTrialOnly = previousCheck })
+
+	if _, err := s.createSunnyTrialTask(map[string]any{"session_ids": []uint{session.ID}}); err == nil || !strings.Contains(err.Error(), "至少选择") {
+		t.Fatalf("missing countries should be rejected, got %v", err)
+	}
+	if _, err := s.createSunnyTrialTask(map[string]any{"session_ids": []uint{session.ID}, "countries": []string{"US"}}); err == nil || !strings.Contains(err.Error(), "US") {
+		t.Fatalf("unavailable trial country should be rejected, got %v", err)
+	}
+	missingCountryPayload := map[string]any{"session_ids": []uint{session.ID}}
+	missingCountryTask := s.createTask(sunnyTrialTaskType, "sunny", missingCountryPayload, 1)
+	s.executeSunnyTrialTask(&missingCountryTask, missingCountryPayload)
+	if missingCountryTask.Status != TaskFailed || len(calledProxies) != 0 {
+		t.Fatalf("trial executor accepted a task without selected countries: status=%q proxies=%v", missingCountryTask.Status, calledProxies)
+	}
+	task, err := s.createSunnyTrialTask(map[string]any{"session_ids": []uint{session.ID}, "countries": []any{"VN", "VN"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := jsonMap(task.PayloadJSON)
+	if got := strings.Join(stringSlice(payload["countries"]), ","); got != "VN" {
+		t.Fatalf("countries payload=%q", got)
+	}
+	s.executeSunnyTrialTask(&task, payload)
+	if got := strings.Join(calledProxies, ","); got != "http://vn-trial.example:8080" {
+		t.Fatalf("trial used proxies outside the selected VN group: %q", got)
+	}
+
+	var account SunnyAccount
+	var mailbox SunnyMailbox
+	if err := s.db.Where("email = ?", session.Email).First(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Where("email = ?", session.Email).First(&mailbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range map[string]string{"account": account.TrialCountryResultsJSON, "mailbox": mailbox.TrialCountryResultsJSON} {
+		results := sunnyTrialCountryResults(raw, "{}")
+		if results["JP"] != sunnyTrialEligible || results["VN"] != sunnyTrialIneligible {
+			t.Fatalf("%s country history was not merged selectively: %#v", name, results)
+		}
+	}
+	if account.TrialEligibility != sunnyTrialEligible || mailbox.TrialEligibility != sunnyTrialEligible {
+		t.Fatalf("overall eligibility should remain eligible because historical JP is eligible: account=%q mailbox=%q", account.TrialEligibility, mailbox.TrialEligibility)
+	}
+	result := jsonMap(task.ResultJSON)
+	if intValue(result["eligible"], 0) != 1 || intValue(result["ineligible"], 0) != 0 {
+		t.Fatalf("task summary did not use merged country eligibility: %#v", result)
+	}
+}
+
 func TestSunnyTrialTasksSkipSessionsAlreadyBeingChecked(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	first := prepareSunnyTrialAccount(t, s)
@@ -370,11 +447,11 @@ func TestSunnyTrialTasksSkipSessionsAlreadyBeingChecked(t *testing.T) {
 		t.Fatalf("create second session: %v", err)
 	}
 
-	firstTask, err := s.createSunnyTrialTask(map[string]any{"session_ids": []uint{first.ID}})
+	firstTask, err := s.createSunnyTrialTask(map[string]any{"session_ids": []uint{first.ID}, "countries": []string{"JP"}})
 	if err != nil {
 		t.Fatalf("create first trial task: %v", err)
 	}
-	secondTask, err := s.createSunnyTrialTask(map[string]any{"session_ids": []uint{first.ID, second.ID}})
+	secondTask, err := s.createSunnyTrialTask(map[string]any{"session_ids": []uint{first.ID, second.ID}, "countries": []string{"JP"}})
 	if err != nil {
 		t.Fatalf("create overlapping trial task: %v", err)
 	}

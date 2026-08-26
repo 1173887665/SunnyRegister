@@ -331,10 +331,11 @@ func (s *Server) createSunnyPaymentProbeTask(body map[string]any) (Task, error) 
 	if err != nil {
 		return Task{}, err
 	}
-	var requestedCountries []string
-	if raw, exists := body["countries"]; exists {
-		requestedCountries = stringSlice(raw)
+	rawCountries, exists := body["countries"]
+	if !exists {
+		return Task{}, fmt.Errorf("请至少选择一个支付探测国家")
 	}
+	requestedCountries := stringSlice(rawCountries)
 	_, countries, err := selectSunnyPaymentProxyGroups(groups, requestedCountries)
 	if err != nil {
 		return Task{}, err
@@ -467,10 +468,12 @@ func (s *Server) executeSunnyPaymentProbeTask(task *Task, payload map[string]any
 		s.failSunnyPaymentProbeTask(task, err.Error())
 		return
 	}
-	var requestedCountries []string
-	if _, exists := payload["countries"]; exists {
-		requestedCountries = stringSlice(payload["countries"])
+	rawCountries, exists := payload["countries"]
+	if !exists {
+		s.failSunnyPaymentProbeTask(task, "请至少选择一个支付探测国家")
+		return
 	}
+	requestedCountries := stringSlice(rawCountries)
 	groups, _, err = selectSunnyPaymentProxyGroups(groups, requestedCountries)
 	if err != nil {
 		s.failSunnyPaymentProbeTask(task, err.Error())
