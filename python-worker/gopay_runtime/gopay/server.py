@@ -357,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/batch-register":
                 source = str(data.get("source") or "pool")
-                if source not in {"pool", "smsbower"}:
+                if source not in {"pool", "smsbower", "smspool"}:
                     raise ValueError("号码来源无效")
                 count = min(500, max(1, int(data.get("count") or 1)))
                 workers = min(50, max(1, int(data.get("workers") or 1)))
@@ -415,7 +415,7 @@ class Handler(BaseHTTPRequestHandler):
                                 batch["status"] = "failed"
                                 batch["finished"] = count
                                 batch["failed"] = count
-                                batch["error"] = f"{checked['total']} 条代理全部不可用，未购买 SMSBower 号码"
+                                batch["error"] = f"{checked['total']} 条代理全部不可用，未购买 {('SMSPool' if source == 'smspool' else 'SMSBower')} 号码"
                                 batch["message"] = batch["error"]
                         if not healthy_proxies:
                             return
@@ -493,7 +493,7 @@ class Handler(BaseHTTPRequestHandler):
                                 release_proxy(candidate, usable=True)
                                 break
                             if candidate is None and not last_error:
-                                last_error = "可用代理已全部失效，未购买 SMSBower 号码"
+                                last_error = f"可用代理已全部失效，未购买 {('SMSPool' if source == 'smspool' else 'SMSBower')} 号码"
                             with batch_jobs_lock:
                                 batch = batch_jobs[bid]
                                 batch["finished"] += 1

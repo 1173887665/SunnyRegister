@@ -164,6 +164,34 @@ def _sms_api_status(otp_box: Any = None, include_balance: bool = False) -> dict[
             status["balance_error"] = "SMS API key not configured"
         else:
             status["balance_raw"] = "未刷新"
+    try:
+        from opai.core.smspool_helpers import smspool_balance, smspool_config
+
+        pool_config = smspool_config()
+        pool_status: dict[str, Any] = {
+            "provider": "SMSPool",
+            "api_base_url": pool_config["api_base_url"],
+            "api_key_configured": bool(pool_config["api_key"]),
+            "api_key": _mask_secret(pool_config["api_key"]),
+            "country": pool_config["country"] or "9",
+            "service": pool_config["service"] or "392",
+            "pool": pool_config["pool"],
+            "max_price": pool_config["max_price"],
+        }
+        if pool_config["api_key"] and include_balance:
+            try:
+                pool_status["balance_raw"] = smspool_balance()
+                pool_status["balance"] = pool_status["balance_raw"].get("balance")
+                pool_status["ok"] = True
+            except Exception as exc:
+                pool_status["ok"] = False
+                pool_status["balance_error"] = str(exc)[:300]
+        else:
+            pool_status["ok"] = bool(pool_config["api_key"])
+            pool_status["balance_raw"] = "未刷新" if pool_config["api_key"] else ""
+        status["providers"] = {"smsbower": status.copy(), "smspool": pool_status}
+    except Exception:
+        log.debug("SMSPool status unavailable", exc_info=True)
     return status
 
 
@@ -192,6 +220,31 @@ def _read_env_pairs(path: Path) -> dict[str, str]:
 
 def _write_sms_config(data: dict[str, Any]) -> dict[str, Any]:
     path = _sms_env_path()
+    provider = str(data.get("provider") or "smsbower").strip().lower()
+    if provider == "smspool":
+        pairs = _read_env_pairs(path)
+        api_key = str(data.get("api_key") or "").strip()
+        current_key = pairs.get("OPAI_SMSPOOL_API_KEY") or os.environ.get("OPAI_SMSPOOL_API_KEY", "")
+        pairs["OPAI_SMSPOOL_API_KEY"] = api_key or current_key
+        pairs["OPAI_SMSPOOL_API_BASE_URL"] = str(data.get("api_base_url") or "https://api.smspool.net").strip().rstrip("/") or "https://api.smspool.net"
+        pairs["OPAI_SMSPOOL_COUNTRY"] = str(data.get("country") or "9").strip() or "9"
+        pairs["OPAI_SMSPOOL_SERVICE"] = str(data.get("service") or "392").strip() or "392"
+        pairs["OPAI_SMSPOOL_POOL"] = str(data.get("pool") or "").strip()
+        pairs["OPAI_SMSPOOL_MAX_PRICE"] = str(data.get("max_price") or "").strip()
+        ordered = [
+            "OPAI_SMSBOWER_API_KEY", "OPAI_SMSBOWER_API_KEY_FILE", "OPAI_SMSBOWER_API_BASE_URL",
+            "OPAI_SMSBOWER_SERVICE", "OPAI_SMSBOWER_COUNTRY",
+            "OPAI_SMSPOOL_API_KEY", "OPAI_SMSPOOL_API_BASE_URL", "OPAI_SMSPOOL_COUNTRY",
+            "OPAI_SMSPOOL_SERVICE", "OPAI_SMSPOOL_POOL", "OPAI_SMSPOOL_MAX_PRICE",
+        ]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# GoPay SMSPool API 配置\n" + "\n".join(f"{key}={pairs.get(key, '')}" for key in ordered) + "\n", encoding="utf-8")
+        os.environ["OPAI_GOPAY_SMS_ENV_FILE"] = str(path)
+        for key in ordered:
+            os.environ[key] = pairs.get(key, "")
+        return {"ok": True, "provider": "smspool", "path": str(path), "api_key_configured": bool(pairs.get("OPAI_SMSPOOL_API_KEY"))}
+
+    path = _sms_env_path()
     pairs = _read_env_pairs(path)
     current_key = pairs.get("OPAI_SMSBOWER_API_KEY") or os.environ.get("OPAI_SMSBOWER_API_KEY", "")
     api_key = str(data.get("api_key") or "").strip()
@@ -209,6 +262,12 @@ def _write_sms_config(data: dict[str, Any]) -> dict[str, Any]:
         "OPAI_SMSBOWER_API_BASE_URL",
         "OPAI_SMSBOWER_SERVICE",
         "OPAI_SMSBOWER_COUNTRY",
+        "OPAI_SMSPOOL_API_KEY",
+        "OPAI_SMSPOOL_API_BASE_URL",
+        "OPAI_SMSPOOL_COUNTRY",
+        "OPAI_SMSPOOL_SERVICE",
+        "OPAI_SMSPOOL_POOL",
+        "OPAI_SMSPOOL_MAX_PRICE",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -1031,6 +1090,7 @@ def _load_gopay_accounts() -> list[dict[str, Any]]:
             "registered_at": item.get("registered_at", ""),
             "balance": balance_value,
             "activation_id": activation_id,
+            "sms_provider": str(item.get("sms_provider") or ("smsbower" if re.fullmatch(r"\d+", activation_id) else "")).strip(),
             "sms_activation_status": sms_activation_status,
             "sms_activation_label": sms_label,
             "sms_activation_updated_at": item.get("sms_activation_updated_at", ""),
@@ -1261,7 +1321,13 @@ def _gopay_payment_sms_active(account: dict[str, Any]) -> bool:
     aid = str(account.get("activation_id") or account.get("aid") or "").strip()
     if not aid:
         return False
+    provider = str(account.get("sms_provider") or "smsbower").strip().lower()
     try:
+        if provider == "smspool":
+            from opai.core.smspool_helpers import smspool_check, smspool_api_key
+            if not smspool_api_key(""):
+                return False
+            return str(smspool_check(aid).get("status") or "") not in {"6", "0"}
         from opai.core.sms_helpers import get_sms_api_key, sms_api
 
         api_key = get_sms_api_key("")
@@ -1297,11 +1363,18 @@ def _set_gopay_sms_status(phone: str, status: str) -> None:
 def _mark_gopay_sms_done(account: dict[str, Any]) -> bool:
     aid = str(account.get("activation_id") or account.get("aid") or "").strip()
     phone = str(account.get("phone") or account.get("local") or "").strip()
-    if not re.fullmatch(r"\d+", aid):
+    provider = str(account.get("sms_provider") or "smsbower").strip().lower()
+    if provider == "smsbower" and not re.fullmatch(r"\d+", aid):
         return False
     if str(account.get("sms_activation_status") or "").strip() == "completed":
         return True
     try:
+        if provider == "smspool":
+            from opai.core.smspool_helpers import smspool_cancel
+            if smspool_cancel(aid):
+                _set_gopay_sms_status(phone, "completed")
+                return True
+            return False
         from opai.core.sms_helpers import get_sms_api_key, sms_done
 
         api_key = get_sms_api_key("")
@@ -1318,10 +1391,13 @@ def _release_gopay_sms(phone: str) -> dict[str, Any]:
     if account is None:
         raise ValueError(f"账号不存在: {phone}")
     aid = str(account.get("activation_id") or account.get("aid") or "").strip()
-    if not re.fullmatch(r"\d+", aid):
+    provider = str(account.get("sms_provider") or "smsbower").strip().lower()
+    if provider == "smsbower" and not re.fullmatch(r"\d+", aid):
         raise ValueError("该账号没有可用的 SMSBower 激活 ID")
+    if provider == "smspool" and not aid:
+        raise ValueError("该账号没有可用的 SMSPool 订单号")
     if not _mark_gopay_sms_done(account):
-        raise RuntimeError("SMSBower 号码释放失败，订单可能已结束或接口暂时不可用")
+        raise RuntimeError(f"{('SMSPool' if provider == 'smspool' else 'SMSBower')} 号码释放失败，订单可能已结束或接口暂时不可用")
     return {"ok": True, "phone": account.get("phone") or phone, "sms_activation_status": "completed"}
 
 
@@ -1339,6 +1415,29 @@ def _cancel_sms_activation_with_retry(api_key: str, aid: str) -> None:
         sms_cancel(api_key, aid)
 
     threading.Thread(target=retry, daemon=True, name=f"sms-cancel-{aid}").start()
+
+
+def _cancel_gopay_sms(provider: str, api_key: str, activation_id: str) -> None:
+    if not activation_id:
+        return
+    if str(provider or "smsbower").strip().lower() == "smspool":
+        from opai.core.smspool_helpers import smspool_cancel
+        smspool_cancel(activation_id)
+    else:
+        _cancel_sms_activation_with_retry(api_key, activation_id)
+
+
+def _set_gopay_sms_provider(phone: str, provider: str) -> None:
+    target = _digits(phone)
+    if not target:
+        return
+    with _gopay_accounts_write_guard():
+        accounts = _load_gopay_accounts_raw()
+        for item in accounts:
+            if target in {_digits(item.get("phone", "")), _digits(item.get("local", ""))}:
+                item["sms_provider"] = provider
+                _write_gopay_accounts_raw(accounts)
+                return
 
 
 def _reserve_gopay_midtrans_binding(
@@ -2144,7 +2243,7 @@ label{color:#4b5563}.input,.select{height:40px;border:1px solid #dce3ee;border-r
       </div>
       <div class="card form gopay-only">
         <h2>GoPay 注册 / 登录</h2>
-        <div class="field"><label>号码来源</label><select id="regSource"><option value="pool">号码池</option><option value="smsbower">SMSBower</option></select></div>
+        <div class="field"><label>号码来源</label><select id="regSource"><option value="pool">号码池</option><option value="smsbower">SMSBower</option><option value="smspool">SMSPool</option></select></div>
         <div class="field"><label>手机号（号码池模式）</label><input id="regPhone" placeholder="+62..."></div>
         <div class="field"><label>模式</label><select id="regTaskType"><option value="register">注册</option><option value="login">登录已有号</option></select></div>
         <div class="field"><label>PIN</label><input id="regPin" value="147258"></div>
@@ -2512,7 +2611,7 @@ class _ManualRegisterManager:
             _normalize_phone_for_country,
         )
 
-        source = source if source in {"pool", "smsbower"} else "pool"
+        source = source if source in {"pool", "smsbower", "smspool"} else "pool"
         pin = str(pin or "").strip()
         if not re.fullmatch(r"\d{6}", pin):
             label = "原 PIN（账号无 PIN 时作为新 PIN）" if login_existing else "新 PIN"
@@ -2527,12 +2626,20 @@ class _ManualRegisterManager:
             if new_pin == pin:
                 raise ValueError("新 PIN 不能和原 PIN 相同")
         sms_api_key = sms_activation_id = ""
+        sms_provider = ""
         activation_lease_owned = False
         if source == "smsbower":
             from opai.core.sms_helpers import get_sms_api_key
             sms_api_key = get_sms_api_key("")
             if not sms_api_key:
                 raise ValueError("SMSBower API key is not configured")
+            sms_provider = "smsbower"
+        elif source == "smspool":
+            from opai.core.smspool_helpers import smspool_api_key, smspool_get_number
+            sms_api_key = smspool_api_key("")
+            if not sms_api_key:
+                raise ValueError("SMSPool API key is not configured")
+            sms_provider = "smspool"
 
         # Verify the selected proxy before purchasing a disposable number.
         # This prevents dead proxies from consuming SMSBower activations.
@@ -2545,6 +2652,10 @@ class _ManualRegisterManager:
             from opai.core.sms_helpers import sms_get_number
             phone, sms_activation_id = sms_get_number(sms_api_key)
             activation_lease_owned = bool(sms_api_key and sms_activation_id)
+        elif source == "smspool":
+            from opai.core.smspool_helpers import smspool_get_number
+            phone, sms_activation_id = smspool_get_number()
+            activation_lease_owned = bool(sms_api_key and sms_activation_id)
 
         def cancel_acquired_sms() -> None:
             nonlocal activation_lease_owned
@@ -2555,8 +2666,8 @@ class _ManualRegisterManager:
                 return
             try:
                 threading.Thread(
-                    target=_cancel_sms_activation_with_retry,
-                    args=(sms_api_key, sms_activation_id),
+                    target=_cancel_gopay_sms,
+                    args=(sms_provider, sms_api_key, sms_activation_id),
                     daemon=True,
                     name=f"sms-cancel-start-{sms_activation_id}",
                 ).start()
@@ -2593,7 +2704,7 @@ class _ManualRegisterManager:
                     self._jobs[job_id] = {
                         "id": job_id,
                         "source": source, "phone": normalized,
-                        "sms_activation_id": sms_activation_id, "sms_provider": "smsbower" if source == "smsbower" else "sms_url",
+                        "sms_activation_id": sms_activation_id, "sms_provider": sms_provider or ("sms_url" if source == "pool" else source),
                         "raw_phone": phone,
                         "pin": pin,
                         "country_code": f"+{cc}",
@@ -2625,7 +2736,7 @@ class _ManualRegisterManager:
                 self._jobs[job_id] = {
                     "id": job_id, "source": source,
                     "phone": normalized,
-                    "sms_activation_id": sms_activation_id, "sms_provider": "smsbower" if source == "smsbower" else "sms_url",
+                    "sms_activation_id": sms_activation_id, "sms_provider": sms_provider or ("sms_url" if source == "pool" else source),
                     "raw_phone": phone,
                     "pin": pin,
                     "country_code": f"+{cc}",
@@ -2654,6 +2765,7 @@ class _ManualRegisterManager:
                     "job_id": job_id,
                     "phone": normalized,
                     "source": source,
+                    "sms_provider": sms_provider,
                     "sms_api_key": sms_api_key,
                     "sms_activation_id": sms_activation_id,
                     "pin": pin,
@@ -2788,6 +2900,7 @@ class _ManualRegisterManager:
         job_id: str,
         source: str = "pool",
         phone: str,
+        sms_provider: str = "",
         sms_api_key: str = "",
         sms_activation_id: str = "",
         pin: str,
@@ -2803,7 +2916,7 @@ class _ManualRegisterManager:
         consumed_sms_code_hashes: set[str] = set()
 
         def persist_consumed_sms_hashes() -> None:
-            if source != "smsbower" or not sms_activation_id or not consumed_sms_code_hashes:
+            if source not in {"smsbower", "smspool"} or not sms_activation_id or not consumed_sms_code_hashes:
                 return
             try:
                 _record_gopay_consumed_sms_code_hashes(
@@ -2825,7 +2938,7 @@ class _ManualRegisterManager:
 
             self._append_log(job_id, f"开始真实请求 GoPay: {phone} country_code={country_code}")
             envelope_did = _get_envelope_did()
-            if source == "smsbower":
+            if source in {"smsbower", "smspool"}:
                 from opai.core.sms_helpers import sms_code_sha256, sms_wait_code, sms_request_another
                 retry_ready = False
 
@@ -2833,7 +2946,11 @@ class _ManualRegisterManager:
                     nonlocal retry_ready
                     if retry_ready:
                         return True
-                    retry_ready = bool(sms_request_another(sms_api_key, sms_activation_id))
+                    if sms_provider == "smspool":
+                        from opai.core.smspool_helpers import smspool_resend
+                        retry_ready = bool(smspool_resend(sms_activation_id))
+                    else:
+                        retry_ready = bool(sms_request_another(sms_api_key, sms_activation_id))
                     return retry_ready
 
                 def wait_code(purpose: str, timeout: int) -> str | None:
@@ -2841,12 +2958,11 @@ class _ManualRegisterManager:
                     # A previously prepared retry slot is consumed by the OTP
                     # request that led to this wait.
                     retry_ready = False
-                    code = sms_wait_code(
-                        sms_api_key,
-                        sms_activation_id,
-                        timeout=timeout,
-                        ignore_code_hashes=consumed_sms_code_hashes,
-                    )
+                    if sms_provider == "smspool":
+                        from opai.core.smspool_helpers import smspool_wait_code
+                        code = smspool_wait_code(sms_activation_id, timeout=max(timeout, 180), ignore_code_hashes=consumed_sms_code_hashes)
+                    else:
+                        code = sms_wait_code(sms_api_key, sms_activation_id, timeout=timeout, ignore_code_hashes=consumed_sms_code_hashes)
                     if code:
                         digest = sms_code_sha256(code)
                         if digest:
@@ -2911,8 +3027,8 @@ class _ManualRegisterManager:
                 if result and result.get("failed"):
                     job["status"] = "failed"
                     job["message"] = result.get("error") or "注册失败"
-                    if source == "smsbower" and result.get("keep_sms"):
-                        job["message"] += "；已登录账号和 SMSBower 号码仍保留，可以稍后重试或手动释放"
+                    if source in {"smsbower", "smspool"} and result.get("keep_sms"):
+                        job["message"] += f"；已登录账号和{('SMSPool' if source == 'smspool' else 'SMSBower')}号码仍保留，可以稍后重试或手动释放"
                     job["result"] = {
                         "phone": result.get("phone", phone),
                         "local": result.get("local", ""),
@@ -2937,14 +3053,15 @@ class _ManualRegisterManager:
                             pin_message = "账号已设置 PIN，但本次 OTP 登录未验证原 PIN，本机不保存 PIN"
                         else:
                             pin_message = "账号原 PIN 已验证"
-                        suffix = "，SMSBower 号码已保留等待付款 OTP" if source == "smsbower" else ""
+                        suffix = f"，{('SMSPool' if source == 'smspool' else 'SMSBower')}号码已保留等待付款 OTP" if source in {"smsbower", "smspool"} else ""
                         job["message"] = f"已有账号登录完成；{pin_message}{suffix}"
                     elif result.get("relogged_in"):
                         job["status"] = "success"
-                        job["message"] = "注册完成，token 已更新，SMSBower 号码已保留等待付款 OTP" if source == "smsbower" else "注册完成，已退出登录并重新登录更新 token"
+                        provider_label = "SMSPool" if source == "smspool" else "SMSBower"
+                        job["message"] = f"注册完成，token 已更新，{provider_label} 号码已保留等待付款 OTP" if source in {"smsbower", "smspool"} else "注册完成，已退出登录并重新登录更新 token"
                     else:
                         job["status"] = "success"
-                        job["message"] = "注册完成，SMSBower 号码已保留等待付款 OTP" if source == "smsbower" else "注册完成"
+                        job["message"] = f"注册完成，{('SMSPool' if source == 'smspool' else 'SMSBower')}号码已保留等待付款 OTP" if source in {"smsbower", "smspool"} else "注册完成"
                     job["result"] = {
                         "phone": result.get("phone", phone),
                         "local": result.get("local", ""),
@@ -2964,7 +3081,7 @@ class _ManualRegisterManager:
                     job["message"] = "注册失败，查看服务端日志里的接口返回"
                 job["prompt"] = None
                 job["updated_at"] = _now_iso()
-            if source == "smsbower" and sms_activation_id:
+            if source in {"smsbower", "smspool"} and sms_activation_id:
                 # Keep a successful activation open: payment may require a
                 # second/third OTP.  Complete it only after payment succeeds or
                 # when the user explicitly releases the number.
@@ -2973,16 +3090,17 @@ class _ManualRegisterManager:
                     or (not result.get("failed") and not result.get("already_registered"))
                 ):
                     _set_gopay_sms_status(phone, "active")
+                    _set_gopay_sms_provider(phone, sms_provider or source)
                 else:
-                    _cancel_sms_activation_with_retry(sms_api_key, sms_activation_id)
+                    _cancel_gopay_sms(sms_provider or source, sms_api_key, sms_activation_id)
         except Exception as exc:
             log.exception("manual register job failed: %s", job_id)
             persist_consumed_sms_hashes()
-            if source == "smsbower" and sms_activation_id:
+            if source in {"smsbower", "smspool"} and sms_activation_id:
                 try:
-                    _cancel_sms_activation_with_retry(sms_api_key, sms_activation_id)
+                    _cancel_gopay_sms(sms_provider or source, sms_api_key, sms_activation_id)
                 except Exception:
-                    log.debug("SMSBower cancellation failed", exc_info=True)
+                    log.debug("SMS provider cancellation failed", exc_info=True)
             with self._lock:
                 job = self._jobs.get(job_id)
                 if job:
@@ -3351,16 +3469,19 @@ class _WebPaymentManager:
 
         api_key = ""
         aid = ""
+        sms_provider = "smsbower"
         ignored_hashes: set[str] = set()
         try:
             account, _idx = _find_gopay_account(phone)
             aid = str((account or {}).get("activation_id") or (account or {}).get("aid") or "").strip()
+            sms_provider = str((account or {}).get("sms_provider") or "smsbower").strip().lower()
             if aid:
-                from opai.core.sms_helpers import (
-                    get_sms_api_key,
-                )
-
-                api_key = get_sms_api_key("")
+                if sms_provider == "smspool":
+                    from opai.core.smspool_helpers import smspool_api_key
+                    api_key = smspool_api_key("")
+                else:
+                    from opai.core.sms_helpers import get_sms_api_key
+                    api_key = get_sms_api_key("")
                 if api_key:
                     self._append_log(job_id, "使用短信 API 自动等待支付 OTP")
                     ignored_hashes = _account_consumed_sms_code_hashes(account or {}, aid)
@@ -3395,12 +3516,11 @@ class _WebPaymentManager:
                     remaining = max(0.0, deadline - time.time())
                     if remaining <= 0:
                         break
-                    code = sms_wait_code(
-                        api_key,
-                        aid,
-                        timeout=min(2.0, remaining),
-                        ignore_code_hashes=ignored_hashes,
-                    )
+                    if sms_provider == "smspool":
+                        from opai.core.smspool_helpers import smspool_wait_code
+                        code = smspool_wait_code(aid, timeout=min(3, max(1, int(remaining))), ignore_code_hashes=ignored_hashes)
+                    else:
+                        code = sms_wait_code(api_key, aid, timeout=min(2.0, remaining), ignore_code_hashes=ignored_hashes)
                     if code:
                         # A manual submission may have arrived while the SMS API
                         # request was in flight.  Honor that explicit submission
@@ -3488,18 +3608,26 @@ class _WebPaymentManager:
             self._append_log(job_id, f"支付前代理复检通过: 出口 IP {probe.get('ip') or '-'}")
             account, _idx = _find_gopay_account(phone)
             aid = str((account or {}).get("activation_id") or (account or {}).get("aid") or "").strip()
+            sms_provider = str((account or {}).get("sms_provider") or "smsbower").strip().lower()
             if aid:
                 try:
-                    from opai.core.sms_helpers import get_sms_api_key, sms_request_another
-
-                    api_key = get_sms_api_key("")
-                    if api_key and sms_request_another(api_key, aid):
-                        self._append_log(job_id, "支付前已准备 SMSBower 接收下一条验证码")
+                    if sms_provider == "smspool":
+                        from opai.core.smspool_helpers import smspool_resend, smspool_api_key
+                        api_key = smspool_api_key("")
+                        prepared = bool(api_key and smspool_resend(aid))
+                        provider_label = "SMSPool"
+                    else:
+                        from opai.core.sms_helpers import get_sms_api_key, sms_request_another
+                        api_key = get_sms_api_key("")
+                        prepared = bool(api_key and sms_request_another(api_key, aid))
+                        provider_label = "SMSBower"
+                    if prepared:
+                        self._append_log(job_id, f"支付前已准备 {provider_label} 接收下一条验证码")
                     elif api_key:
-                        self._append_log(job_id, "SMSBower 下一条验证码准备失败，仍可在网页手动输入")
+                        self._append_log(job_id, f"{provider_label} 下一条验证码准备失败，仍可在网页手动输入")
                 except Exception:
                     log.debug("payment sms preparation failed", exc_info=True)
-                    self._append_log(job_id, "SMSBower 下一条验证码准备异常，仍可在网页手动输入")
+                    self._append_log(job_id, f"{('SMSPool' if sms_provider == 'smspool' else 'SMSBower')} 下一条验证码准备异常，仍可在网页手动输入")
             self._append_log(job_id, f"开始支付: {phone} -> {midtrans_url}")
             self._update_snap_state(snap, "linking", job_id=job_id)
             payment = GoPayPayment(proxy=proxy, payment_fingerprint=payment_fingerprint)
@@ -3547,11 +3675,11 @@ class _WebPaymentManager:
                 self._save_state_locked()
             if payment_succeeded:
                 account, _idx = _find_gopay_account(phone)
-                if account and re.fullmatch(r"\d+", str(account.get("activation_id") or "").strip()):
+                if account and str(account.get("activation_id") or "").strip() and str(account.get("sms_provider") or "smsbower").strip().lower() in {"smsbower", "smspool"}:
                     if _mark_gopay_sms_done(account):
-                        self._append_log(job_id, "付款完成，SMSBower 号码已自动释放")
+                        self._append_log(job_id, f"付款完成，{('SMSPool' if str((account or {}).get('sms_provider') or '').lower() == 'smspool' else 'SMSBower')} 号码已自动释放")
                     else:
-                        self._append_log(job_id, "付款完成，但 SMSBower 号码自动释放失败，请在账号列表手动释放")
+                        self._append_log(job_id, "付款完成，但短信号码自动释放失败，请在账号列表手动释放")
         except GoPayFraudDenyError as exc:
             label = _payment_failure_label(str(exc))
             log.exception("web payment fraud denied: %s", job_id)

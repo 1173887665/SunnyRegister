@@ -3191,6 +3191,9 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .payment-method-tabs button span:last-child { display:flex; flex-direction:column; gap:1px; }
 .payment-method-tabs strong { font-size:13px; }
 .payment-method-tabs small { color:var(--text-muted); font-size:10px; font-weight:700; text-transform:uppercase; }
+.gopay-segmented { display:flex; gap:4px; width:max-content; margin-bottom:12px; padding:3px; border:1px solid var(--border); background:var(--bg-card); }
+.gopay-segmented button { border:0; background:transparent; color:var(--text-secondary); padding:7px 14px; font-size:12px; font-weight:700; cursor:pointer; }
+.gopay-segmented button.active { background:var(--bg-card); color:var(--text-primary); box-shadow:var(--surface-glow); }
 .gopay-method-mark { display:flex; width:30px; height:30px; flex:0 0 auto; align-items:center; justify-content:center; border-radius:8px; background:#00aa13; color:white; font-size:12px; font-weight:950; }
 .gopay-workspace { display:grid; min-width:0; grid-template-columns:180px minmax(0,1fr); overflow:hidden; border:1px solid var(--border); border-radius:8px; background:var(--bg-card); box-shadow:var(--surface-glow); }
 .gopay-nav { display:flex; flex-direction:column; gap:4px; border-right:1px solid var(--border); background:color-mix(in srgb,var(--bg-shell) 88%,var(--accent) 12%); padding:12px; }

@@ -275,8 +275,10 @@ def _save_account(phone: str, local: str, pin: str, aid: str, client: GojekClien
                 # A manual re-login must not destroy a real SMSBower activation
                 # id that is still needed for a later payment OTP.
                 old_activation_id = str(account.get("activation_id") or account.get("aid") or "").strip()
-                if not has_live_sms_activation and re.fullmatch(r"\d+", old_activation_id):
+                old_provider = str(account.get("sms_provider") or "").strip().lower()
+                if not has_live_sms_activation and old_provider in {"smsbower", "smspool"} and old_activation_id:
                     entry["activation_id"] = old_activation_id
+                    entry["sms_provider"] = old_provider
                     entry["sms_activation_status"] = account.get("sms_activation_status") or "active"
                     entry["sms_activation_updated_at"] = account.get("sms_activation_updated_at") or entry["sms_activation_updated_at"]
                 if account.get("payment_fingerprint"):
