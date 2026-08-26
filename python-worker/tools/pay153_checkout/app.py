@@ -23,6 +23,7 @@ from flask import Flask, jsonify, redirect, request, send_from_directory
 from curl_cffi import requests
 
 import stripe_checkout as sc
+import kakao_extractor as kakao
 from provider_checkout import (
     PROVIDER_DEFAULTS,
     canonical_ideal_payment_url,
@@ -3000,10 +3001,12 @@ class JobStore:
         if options.get("link_type") == "paypal":
             mode_label = {"oaics": "OAICS", "cs_live": "CS Live"}.get(paypal_mode, "自动识别")
             self.log(job_id, f"PayPal Checkout 类型：{mode_label}；将使用对应提链流程")
-        if rust_execute and rust_base and options.get("link_type") in {"paypal", "pix", "upi", "ideal", "kakao"} and not (
+        if rust_execute and rust_base and options.get("link_type") in {"paypal", "pix", "upi", "ideal"} and not (
             options.get("link_type") == "paypal" and options.get("oaics_paypal")
         ):
             return self._run_rust_workflow(job_id, options, rust_base)
+        if options.get("link_type") == "kakao":
+            return self._run_kakao_pidan(job_id, options)
         transport_stage = "初始化"
         try:
             self.update(job_id, status="running", percent=6, text="解析 Access Token")
@@ -4528,6 +4531,118 @@ class JobStore:
                 self.update(job_id, status="error", percent=100, text="任务失败", error=error_text[:1200])
 
 
+    def _run_kakao_pidan(self, job_id: str, options: dict):
+        """Run the dedicated pidan Kakao/Nicepay flow inside this worker."""
+        stop_event = threading.Event()
+        watcher_stop = threading.Event()
+        watcher = None
+        callback_token = None
+        try:
+            if str(options.get("plan") or "plus").lower() != "plus" or not options.get("use_promo", True):
+                raise RuntimeError("KAKAO_ZERO_DUE_REQUIRED: Kakao Pay 提链仅支持已开启优惠的 Plus 0 元试用")
+            raw_token = str(options.get("token_raw") or "")
+            token, meta = extract_access_token(raw_token)
+            entry_pool = list(options.get("entry_proxies") or [])
+            exit_pool = list(options.get("exit_proxies") or entry_pool)
+            entry_proxy = str(options.get("fixed_entry_proxy") or (secrets.choice(entry_pool) if entry_pool else ""))
+            exit_proxy = str(options.get("fixed_exit_proxy") or (secrets.choice(exit_pool) if exit_pool else entry_proxy))
+            if not entry_proxy or not exit_proxy:
+                raise RuntimeError("Kakao 提链缺少 Checkout 或 Promotion 代理")
+
+            # Named pools already represent their target countries. When a
+            # sticky country/region selector is present, use the exact pidan
+            # KR -> VN -> KR derivation from one Seed.
+            checkout_proxy, promotion_proxy, provider_proxy = exit_proxy, entry_proxy, exit_proxy
+            if re.search(r"(?i)(?:country|region)[-_=][a-z]{2}", entry_proxy):
+                try:
+                    checkout_proxy, promotion_proxy, provider_proxy = kakao.kakao_proxy_chain(entry_proxy)
+                except Exception as exc:
+                    self.log(job_id, f"Kakao Seed 地区派生失败，沿用已配置角色代理：{type(exc).__name__}")
+            self.log(
+                job_id,
+                "Kakao 专用链路：KR Checkout/Bootstrap -> VN checkout/update -> "
+                "KR Stripe/taxes/Kakao/approve/redirect",
+            )
+            self.log(job_id, "Kakao 代理角色：Checkout={}；Promotion={}；Provider/Approve={}".format(
+                kakao.proxy_label(checkout_proxy),
+                kakao.proxy_label(promotion_proxy),
+                kakao.proxy_label(provider_proxy),
+            ))
+            checked = set()
+            for role, proxy in (
+                ("checkout", checkout_proxy),
+                ("promotion", promotion_proxy),
+                ("provider", provider_proxy),
+            ):
+                if proxy in checked:
+                    continue
+                checked.add(proxy)
+                ok, detail = kakao.preflight_proxy(proxy, role)
+                if not ok:
+                    raise RuntimeError(f"Kakao {role} 代理预检失败：{detail}")
+                self.log(job_id, f"Kakao {role} 代理出口预检通过：{detail}")
+
+            def watch_cancel() -> None:
+                while not watcher_stop.wait(0.25):
+                    if self.cancelled(job_id):
+                        stop_event.set()
+                        return
+
+            watcher = threading.Thread(target=watch_cancel, name=f"kakao-cancel-{job_id}", daemon=True)
+            watcher.start()
+            callback_token = kakao.set_log_callback(lambda message: self.log(job_id, message))
+            self.update(job_id, status="running", percent=12, text="执行 Kakao/Nicepay 专用提链流程", error="")
+            extracted = kakao.kakao_link(
+                token,
+                checkout_proxy,
+                promotion_proxy,
+                provider_proxy,
+                stop_event=stop_event,
+            )
+            final_url = str(extracted.get("provider_redirect_url") or "")
+            host = urlsplit(final_url).netloc.lower()
+            if "nicepay" not in host and "kakao" not in host:
+                raise RuntimeError(f"Kakao/Nicepay 跳转域名不受支持：{final_url[:180]}")
+            result = {
+                "plan": options.get("plan") or "plus",
+                "link_type": "kakao",
+                "checkout_session_id": extracted.get("checkout_session_id") or "",
+                "payment_method_id": extracted.get("payment_method_id") or "",
+                "stripe_redirect_url": extracted.get("stripe_redirect_url") or "",
+                "provider_redirect_url": final_url,
+                "account_email": meta.get("email") or "",
+                "account_id": meta.get("account_id") or "",
+                "country": "KR",
+                "currency": "KRW",
+                "checkout_country": "KR",
+                "checkout_currency": "KRW",
+                "entry_country": str(options.get("entry_proxy_country") or "VN").upper(),
+                "payment_proxy_country": str(options.get("exit_proxy_country") or "KR").upper(),
+                "proxy_mode": "kr_checkout_vn_promotion_kr_provider",
+                "entry_proxy_pool_size": len(entry_pool),
+                "exit_proxy_pool_size": len(exit_pool),
+                "promo_requested": bool(options.get("use_promo")),
+                "promo_applied": True,
+                "extractor": "pidan_kakao_nicepay",
+            }
+            self.update(job_id, status="done", percent=100, text="Kakao/Nicepay 提取完成", error="", result=result)
+        except (InterruptedError, kakao.TaskStopped) as exc:
+            self.update(job_id, status="cancelled", percent=100, text="任务已停止", error=str(exc) or "任务已停止")
+        except Exception as exc:
+            error = str(exc)[:1200]
+            if options.get("retry_wrapper"):
+                self.update(job_id, status="running", percent=8, text="本轮未成功，正在更换代理重试", error=error)
+            else:
+                self.update(job_id, status="error", percent=100, text="任务失败", error=error)
+        finally:
+            if callback_token is not None:
+                kakao.reset_log_callback(callback_token)
+            watcher_stop.set()
+            stop_event.set()
+            if watcher is not None:
+                watcher.join(timeout=1)
+
+
 class IpTaskLimiter:
     def __init__(self, limit: int = 3, window_seconds: int = 60):
         self.limit = max(1, int(limit))
@@ -4755,8 +4870,8 @@ def start_checkout():
         "use_so": data.get("use_so", True) is not False,
         "dynamic_proxy_api": dynamic_proxy_api,
         "allow_missing_customer_session": bool(data.get("allow_missing_customer_session")) and internal_request,
-        "entry_proxy_country": str(data.get("entry_proxy_country") or ("VN" if link_type == "gcash" else ("US" if link_type == "ph_short" and country == "PH" else country))).upper(),
-        "exit_proxy_country": str(data.get("exit_proxy_country") or ("PH" if link_type == "gcash" else ((str(data.get("promo_country") or ("TR" if country == "PH" else country))) if link_type == "ph_short" and bool(data.get("use_promo", True)) else country))).upper(),
+        "entry_proxy_country": str(data.get("entry_proxy_country") or ("VN" if link_type in {"gcash", "kakao"} else ("US" if link_type == "ph_short" and country == "PH" else country))).upper(),
+        "exit_proxy_country": str(data.get("exit_proxy_country") or ("PH" if link_type == "gcash" else ("KR" if link_type == "kakao" else ((str(data.get("promo_country") or ("TR" if country == "PH" else country))) if link_type == "ph_short" and bool(data.get("use_promo", True)) else country)))).upper(),
         "proxy_session_time": min(120, max(1, int(data.get("proxy_session_time") or 10))),
     }
     if link_type == "ph_short":
