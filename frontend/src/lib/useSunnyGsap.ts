@@ -70,7 +70,7 @@ export function useSunnyGsap(rootRef: RefObject<HTMLElement | null>, pageKey: st
         const revealTargets = gsap.utils.toArray<HTMLElement>(
           ".hero-card, .sr-toolbar, .sr-table-card, .sr-log-card, .sr-proxy-stat, .soft-table",
           root,
-        ).slice(0, 8);
+        ).filter((target) => target.offsetParent !== null).slice(0, 8);
         if (revealTargets.length) {
           gsap.fromTo(
             revealTargets,
@@ -86,8 +86,9 @@ export function useSunnyGsap(rootRef: RefObject<HTMLElement | null>, pageKey: st
           );
         }
 
-        const heroTitle = root.querySelector<HTMLElement>(".hero-card h1");
-        const heroDesc = root.querySelector<HTMLElement>(".hero-card p");
+        const visibleHero = gsap.utils.toArray<HTMLElement>(".hero-card", root).find((target) => target.offsetParent !== null);
+        const heroTitle = visibleHero?.querySelector<HTMLElement>("h1");
+        const heroDesc = visibleHero?.querySelector<HTMLElement>("p");
         if (heroTitle) {
           gsap.fromTo(
             [heroTitle, heroDesc].filter(Boolean),

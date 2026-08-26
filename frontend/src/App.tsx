@@ -1,9 +1,11 @@
-﻿import { BrowserRouter, Route, Routes, NavLink, useLocation } from "react-router-dom";
+﻿import { BrowserRouter, NavLink, useLocation } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Languages, Link2, LogOut, Moon, Sun } from "lucide-react";
 import { API, cn } from "@/lib/utils";
 import { I18nProvider, useI18n } from "@/lib/i18n-context";
 import { useTopBarGsap } from "@/lib/useSunnyGsap";
+import { CachedPage } from "@/lib/page-cache";
+import { usePageScrollCache, useVisitedPageKeys } from "@/lib/page-cache-hooks";
 import SunnyRegister, { clearSunnyRegisterTaskHistory } from "@/pages/SunnyRegister";
 import PublicLanding from "@/pages/PublicLanding";
 import AuditLogPage from "@/pages/AuditLogPage";
@@ -49,19 +51,42 @@ function TopBar({ theme, setTheme, onLogout }: { theme: string; setTheme: (v: st
   );
 }
 
+type ShellPage = "sunny" | "checkout" | "payments" | "audit";
+
+function shellPage(pathname: string): ShellPage {
+  if (pathname.startsWith("/audit")) return "audit";
+  if (pathname.startsWith("/checkout")) return "checkout";
+  if (pathname.startsWith("/payments")) return "payments";
+  return "sunny";
+}
+
+function menuPage(pathname: string) {
+  const segment = pathname.split("/").filter(Boolean)[0];
+  return segment || "workbench";
+}
+
+function CachedShellPages() {
+  const location = useLocation();
+  const activePage = shellPage(location.pathname);
+  const visitedPages = useVisitedPageKeys(activePage);
+  usePageScrollCache(menuPage(location.pathname));
+
+  return (
+    <main className="app-shell mx-auto py-6 md:py-8">
+      <CachedPage active={activePage === "sunny"}>{visitedPages.has("sunny") && <SunnyRegister />}</CachedPage>
+      <CachedPage active={activePage === "checkout"}>{visitedPages.has("checkout") && <CheckoutManager />}</CachedPage>
+      <CachedPage active={activePage === "payments"}>{visitedPages.has("payments") && <PaymentManagement />}</CachedPage>
+      <CachedPage active={activePage === "audit"}>{visitedPages.has("audit") && <AuditLogPage />}</CachedPage>
+    </main>
+  );
+}
+
 function Shell({ theme, setTheme, onLogout }: { theme: string; setTheme: (v: string) => void; onLogout: () => Promise<void> }) {
   return (
     <BrowserRouter>
       <div className="min-h-screen bg-[var(--bg-base)]">
         <TopBar theme={theme} setTheme={setTheme} onLogout={onLogout} />
-        <main className="app-shell mx-auto py-6 md:py-8">
-          <Routes>
-            <Route path="/audit" element={<AuditLogPage />} />
-            <Route path="/checkout" element={<CheckoutManager />} />
-            <Route path="/payments" element={<PaymentManagement />} />
-            <Route path="*" element={<SunnyRegister />} />
-          </Routes>
-        </main>
+        <CachedShellPages />
       </div>
     </BrowserRouter>
   );

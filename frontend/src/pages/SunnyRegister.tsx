@@ -1,6 +1,5 @@
 import { Fragment, useDeferredValue, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Dispatch, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
-import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
 import { Activity, ArrowLeft, ArrowRight, ChevronDown, ChevronUp, CircleHelp, CreditCard, Crown, Download, Eye, EyeOff, Globe2, Inbox, KeyRound, ListChecks, Loader2, Pencil, Plus, RefreshCw, RotateCw, Save, ScrollText, Search, Settings2, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,6 +9,8 @@ import { ConfirmBubble } from "@/components/ui/confirm-bubble";
 import { API_BASE, apiDownload, apiFetch, cn, triggerBrowserDownload } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n-context";
 import { useSunnyGsap } from "@/lib/useSunnyGsap";
+import { CachedPage, PagePortal } from "@/lib/page-cache";
+import { useVisitedPageKeys } from "@/lib/page-cache-hooks";
 
 type AnyObj = Record<string, any>;
 type ToastState = { type: "ok" | "fail"; text: string } | null;
@@ -1039,7 +1040,7 @@ function SelectBox({ value, onChange, options, className, searchable = false, se
     setOpen(false);
     setSearchQuery("");
   };
-  const menu = open && menuRect ? createPortal(<div ref={menuRef} role="listbox" className={cn("sr-custom-select-menu sr-custom-select-menu-portal", searchable && "sr-custom-select-menu-searchable", className?.includes("sr-page-size-select") && "sr-page-size-select-menu", className?.includes("sr-mailbox-group-select") && "sr-mailbox-group-select-menu")} style={{ position: "fixed", left: menuRect.left, top: menuRect.top, width: menuRect.width, maxHeight: menuRect.maxHeight, overflowY: "auto", right: "auto", zIndex: menuRect.zIndex }}>
+  const menu = open && menuRect ? <PagePortal><div ref={menuRef} role="listbox" className={cn("sr-custom-select-menu sr-custom-select-menu-portal", searchable && "sr-custom-select-menu-searchable", className?.includes("sr-page-size-select") && "sr-page-size-select-menu", className?.includes("sr-mailbox-group-select") && "sr-mailbox-group-select-menu")} style={{ position: "fixed", left: menuRect.left, top: menuRect.top, width: menuRect.width, maxHeight: menuRect.maxHeight, overflowY: "auto", right: "auto", zIndex: menuRect.zIndex }}>
       {searchable && <div className="sr-custom-select-search" onMouseDown={(event)=>event.stopPropagation()}>
         <Search className="h-4 w-4" aria-hidden="true"/>
         <input ref={searchRef} value={searchQuery} onChange={(event)=>setSearchQuery(event.target.value)} placeholder={searchPlaceholder} aria-label={searchPlaceholder} onKeyDown={(event)=>{
@@ -1050,7 +1051,7 @@ function SelectBox({ value, onChange, options, className, searchable = false, se
       </div>}
       {filteredOptions.map((opt) => <button type="button" role="option" aria-selected={String(opt.value) === String(value)} key={String(opt.value)} className={cn("sr-custom-select-option", String(opt.value) === String(value) && "active")} onMouseDown={(e)=>e.preventDefault()} onClick={() => { onChange(opt.value); closeMenu(); }}>{opt.label}</button>)}
       {searchable && filteredOptions.length === 0 && <div className="sr-custom-select-empty" role="status">{noResultsLabel}</div>}
-    </div>, document.body) : null;
+    </div></PagePortal> : null;
   return <div ref={wrapRef} className={cn("sr-custom-select", className)}>
     <button ref={triggerRef} type="button" aria-haspopup="listbox" aria-expanded={open} className={cn("sr-custom-select-trigger", open && "open")} onClick={() => { updateRect(); setSearchQuery(""); setOpen((v) => !v); }} onKeyDown={(event)=>{ if (event.key === "Escape" && open) closeMenu(); }}>
       <span>{active?.label}</span><ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")} />
@@ -1233,11 +1234,18 @@ export default function SunnyRegister() {
   const location = useLocation();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const page = location.pathname.includes("mailbox") ? "mailbox" : location.pathname.includes("phone") ? "phone" : location.pathname.includes("sub2api") ? "sub2api" : location.pathname.includes("proxy") ? "proxy" : location.pathname.includes("session") ? "session" : "workbench";
-  const renderedPage = useDeferredValue(page);
-  useSunnyGsap(rootRef, renderedPage);
+  const visitedPages = useVisitedPageKeys(page);
+  useSunnyGsap(rootRef, page);
   const [toast, setToast] = useState<ToastState>(null);
   const notify = (type: "ok" | "fail", text: string) => { setToast({ type, text }); };
-  return <div ref={rootRef} className="sunny-page space-y-6" aria-busy={renderedPage !== page}><Toast toast={toast} clear={() => setToast(null)} />{renderedPage === "workbench" && <Hero t={t} />}{renderedPage === "workbench" && <Workbench t={t} notify={notify} />}{renderedPage === "mailbox" && <MailboxConfig t={t} notify={notify} />}{renderedPage === "phone" && <PhoneConfig t={t} notify={notify} />}{renderedPage === "sub2api" && <Sub2APIConfig t={t} notify={notify} />}{renderedPage === "proxy" && <ProxyConfigPage t={t} notify={notify} />}{renderedPage === "session" && <SessionManager t={t} notify={notify} />}</div>;
+  return <div ref={rootRef} className="sunny-page"><Toast toast={toast} clear={() => setToast(null)} />
+    <CachedPage active={page === "workbench"} className="space-y-6">{visitedPages.has("workbench") && <><Hero t={t} /><Workbench t={t} notify={notify} /></>}</CachedPage>
+    <CachedPage active={page === "mailbox"} className="space-y-6">{visitedPages.has("mailbox") && <MailboxConfig t={t} notify={notify} />}</CachedPage>
+    <CachedPage active={page === "phone"} className="space-y-6">{visitedPages.has("phone") && <PhoneConfig t={t} notify={notify} />}</CachedPage>
+    <CachedPage active={page === "sub2api"} className="space-y-6">{visitedPages.has("sub2api") && <Sub2APIConfig t={t} notify={notify} />}</CachedPage>
+    <CachedPage active={page === "proxy"} className="space-y-6">{visitedPages.has("proxy") && <ProxyConfigPage t={t} notify={notify} />}</CachedPage>
+    <CachedPage active={page === "session"} className="space-y-6">{visitedPages.has("session") && <SessionManager t={t} notify={notify} />}</CachedPage>
+  </div>;
 }
 
 function Hero({ t }: { t: typeof zh }) { return <section className="hero-card rounded-[34px] border border-[var(--border)] p-6 md:p-8"><Badge className="rounded-full px-3 py-1">SunnyRegister</Badge><h1 className="mt-4 text-4xl font-black tracking-[-0.05em] md:text-5xl">{t.title}</h1><p className="mt-3 max-w-4xl leading-7 text-[var(--text-secondary)]">{t.desc}</p></section>; }
@@ -2463,7 +2471,7 @@ function MailboxMailModal({ t, mailbox, onClose, notify }: { t: typeof zh; mailb
   useEffect(()=>{void load()},[]);
   const mail = items[selected] || {};
   const useURLAPIBrowser=!mailbox.rebind_email && String(mailbox.mailbox_type||"").toLowerCase()==="apple" && String(mailbox.mailbox_channel||"").toLowerCase()==="url_api";
-  return createPortal(<div className="sr-modal-mask"><div className="sr-modal sr-mail-modal">
+  return <PagePortal><div className="sr-modal-mask"><div className="sr-modal sr-mail-modal">
     <div className="sr-mail-head">
       <div className="sr-current-mail">{t.currentMailbox}: <b>{mailbox.rebind_email || mailbox.email}</b></div>
       <div className="sr-mail-actions">
@@ -2493,7 +2501,7 @@ function MailboxMailModal({ t, mailbox, onClose, notify }: { t: typeof zh; mailb
         </> : <div className="sr-empty"><Inbox className="h-10 w-10 text-slate-400"/><p>{t.emptyMail}</p></div>}
       </section>
     </div>
-  </div></div>, document.body);
+  </div></div></PagePortal>;
 }
 
 function MailboxImportModal({ t, groups, onGroupsChanged, onClose, onImported, notify }: { t: typeof zh; groups: AnyObj[]; onGroupsChanged:(groups:AnyObj[])=>void; onClose:()=>void; onImported:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
@@ -4291,7 +4299,7 @@ function PaymentProbeCountryModal({t,countries,selected,loading,onToggle,onSelec
   onClose:()=>void;
   onConfirm:()=>void;
 }) {
-  return createPortal(<div className="sr-modal-mask"><div className="sr-modal sr-payment-country-modal" role="dialog" aria-modal="true" aria-labelledby="payment-probe-country-title">
+  return <PagePortal><div className="sr-modal-mask"><div className="sr-modal sr-payment-country-modal" role="dialog" aria-modal="true" aria-labelledby="payment-probe-country-title">
     <div className="sr-modal-head"><h3 id="payment-probe-country-title">{t.paymentProbeCountryTitle}</h3><button title={t.close} onClick={onClose}><X className="h-5 w-5"/></button></div>
     <div className="sr-modal-body">
       <div className="sr-payment-country-toolbar"><p>{t.paymentProbeCountryHint}</p><div><button disabled={loading||countries.length===0} onClick={onSelectAll}>{t.paymentProbeCountryAll}</button><button disabled={loading||selected.length===0} onClick={onClear}>{t.paymentProbeCountryClear}</button></div></div>
@@ -4301,7 +4309,7 @@ function PaymentProbeCountryModal({t,countries,selected,loading,onToggle,onSelec
       })}</div> : <div className="sr-payment-country-state">{t.paymentProbeCountryEmpty}</div>}
     </div>
     <div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={loading||selected.length===0} onClick={onConfirm}><CreditCard className="mr-2 h-4 w-4"/>{t.paymentProbeStart}</Button></div>
-  </div></div>,document.body);
+  </div></div></PagePortal>;
 }
 
 function CountryProbeModal({t,title,hint,empty,start,countries,selected,loading,onToggle,onSelectAll,onClear,onClose,onConfirm}:{
@@ -4319,7 +4327,7 @@ function CountryProbeModal({t,title,hint,empty,start,countries,selected,loading,
   onClose:()=>void;
   onConfirm:()=>void;
 }) {
-  return createPortal(<div className="sr-modal-mask"><div className="sr-modal sr-payment-country-modal" role="dialog" aria-modal="true">
+  return <PagePortal><div className="sr-modal-mask"><div className="sr-modal sr-payment-country-modal" role="dialog" aria-modal="true">
     <div className="sr-modal-head"><h3>{title}</h3><button title={t.close} onClick={onClose}><X className="h-5 w-5"/></button></div>
     <div className="sr-modal-body">
       <div className="sr-payment-country-toolbar"><p>{hint}</p><div><button disabled={loading||countries.length===0} onClick={onSelectAll}>{t.paymentProbeCountryAll}</button><button disabled={loading||selected.length===0} onClick={onClear}>{t.paymentProbeCountryClear}</button></div></div>
@@ -4329,7 +4337,7 @@ function CountryProbeModal({t,title,hint,empty,start,countries,selected,loading,
       })}</div> : <div className="sr-payment-country-state">{empty}</div>}
     </div>
     <div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={loading||selected.length===0} onClick={onConfirm}><Sparkles className="mr-2 h-4 w-4"/>{start}</Button></div>
-  </div></div>,document.body);
+  </div></div></PagePortal>;
 }
 
 const ACCOUNT_LOG_LABELS: Record<AccountLogKind, string> = {
@@ -4354,7 +4362,7 @@ function AccountLogFloat({ open, kind, logs, onToggle, onKindChange, onClear }: 
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", stop, { once: true });
   }
   const renderLog = (item: AccountOperationLog, index: number) => <div key={item.id || index} className="grid grid-cols-[62px_8px_minmax(0,1fr)] gap-2"><span className="text-[var(--text-muted)]">{String(item.createdAt || "").slice(11, 19) || "--:--:--"}</span><span className={item.level === "error" ? "text-red-400" : item.level === "warning" ? "text-amber-400" : "text-emerald-400"}>●</span><span className="break-words">{item.message}{item.email ? <span className="ml-1 text-[var(--text-muted)]">[{item.email}]</span> : null}</span></div>;
-  return createPortal(<div className="sr-account-log-float fixed right-5 z-[500] flex flex-col items-end gap-2">
+  return <PagePortal><div className="sr-account-log-float fixed right-5 z-[500] flex flex-col items-end gap-2">
     {open && <div className="relative flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" style={{ width: size.width, height: size.height }}>
       <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2.5"><div className="flex min-w-0 items-center gap-2"><ScrollText className="h-4 w-4 shrink-0 text-[var(--accent)]"/><span className="text-sm font-bold">账户管理日志</span><span className="truncate text-[11px] text-[var(--text-muted)]">{ACCOUNT_LOG_LABELS[kind]}</span></div><div className="flex items-center gap-1"><button className="round-tool h-7 w-7" title="清除当前日志" onClick={onClear}><Trash2 className="h-3.5 w-3.5"/></button><button className="round-tool h-7 w-7" title="隐藏日志" onClick={onToggle}><ChevronDown className="h-4 w-4"/></button></div></div>
       <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--border)] bg-[var(--bg-main)] p-2">{ACCOUNT_LOG_KINDS.map((value) => <button key={value} type="button" className={cn("whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-semibold", value === kind ? "bg-[var(--accent)] text-white" : "text-[var(--text-muted)] hover:bg-[var(--bg-card)]")} onClick={() => onKindChange(value)}>{ACCOUNT_LOG_LABELS[value]}</button>)}</div>
@@ -4362,7 +4370,7 @@ function AccountLogFloat({ open, kind, logs, onToggle, onKindChange, onClear }: 
       <button type="button" aria-label="调整日志窗口大小" title="拖动调整日志窗口大小" className="absolute left-0 top-0 h-4 w-4 cursor-nwse-resize opacity-60 hover:opacity-100" onPointerDown={beginResize}><span className="absolute left-1 top-1 h-2 w-2 border-l-2 border-t-2 border-[var(--accent)]"/></button>
     </div>}
     <button className="inline-flex h-10 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] px-3 text-sm font-semibold shadow-lg hover:border-[var(--accent)]" title={open ? "隐藏账户管理日志" : "显示账户管理日志"} onClick={onToggle}><ScrollText className="h-4 w-4 text-[var(--accent)]"/>日志{open ? <ChevronDown className="h-4 w-4"/> : <ChevronUp className="h-4 w-4"/>}</button>
-  </div>, document.body);
+  </div></PagePortal>;
 }
 
 function FailureState({label,detail,onOpen}:{label:string;detail:string;onOpen:(value:{title:string;content:string})=>void}) {
@@ -4370,7 +4378,7 @@ function FailureState({label,detail,onOpen}:{label:string;detail:string;onOpen:(
 }
 
 function FailureDetailModal({t,value,onClose}:{t:typeof zh;value:{title:string;content:string};onClose:()=>void}) {
-  return createPortal(<div className="sr-modal-mask"><div className="sr-modal sr-mailbox-modal max-w-2xl"><div className="sr-modal-head"><h3>{t.failureDetails} · {value.title}</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div><div className="sr-modal-body"><pre className="sr-failure-detail-content">{value.content}</pre></div><div className="sr-modal-foot"><Button variant="outline" onClick={onClose}>{t.close}</Button></div></div></div>,document.body);
+  return <PagePortal><div className="sr-modal-mask"><div className="sr-modal sr-mailbox-modal max-w-2xl"><div className="sr-modal-head"><h3>{t.failureDetails} · {value.title}</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div><div className="sr-modal-body"><pre className="sr-failure-detail-content">{value.content}</pre></div><div className="sr-modal-foot"><Button variant="outline" onClick={onClose}>{t.close}</Button></div></div></div></PagePortal>;
 }
 
 function MaintenanceSettingsModal({t,notify,onClose}:{t:typeof zh;notify:(type:"ok"|"fail",text:string)=>void;onClose:()=>void}) {
@@ -4396,7 +4404,7 @@ function MaintenanceSettingsModal({t,notify,onClose}:{t:typeof zh;notify:(type:"
     ["add_ls_concurrency",labels.addLSConcurrency,6],
     ["subscription_concurrency",labels.subscriptionConcurrency,12],
   ] as const;
-  return createPortal(<div className="sr-modal-mask"><div className="sr-modal sr-feature-config-modal relative"><ListLoadingOverlay loading={loading} label={t.loadingData}/><div className="sr-modal-head"><h3>{t.maintenanceSettings}</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div><div className="sr-modal-body space-y-4">{scheduleSection("health",t.healthSchedule,"health_concurrency",16)}{scheduleSection("at",t.atSchedule,"at_concurrency",6)}<section className="sr-maintenance-section"><strong>{labels.concurrencySettings}</strong><div className="sr-feature-concurrency-grid mt-4">{concurrencyFields.map(([key,label,maximum])=><div key={key}><Label>{label}</Label><Input type="number" min={1} max={maximum} value={form[key]||1} onChange={(e)=>setNumber(key,e.target.value)}/></div>)}</div></section></div><div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={loading} onClick={save}><Save className="mr-2 h-4 w-4"/>{t.saveSettings}</Button></div></div></div>,document.body);
+  return <PagePortal><div className="sr-modal-mask"><div className="sr-modal sr-feature-config-modal relative"><ListLoadingOverlay loading={loading} label={t.loadingData}/><div className="sr-modal-head"><h3>{t.maintenanceSettings}</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div><div className="sr-modal-body space-y-4">{scheduleSection("health",t.healthSchedule,"health_concurrency",16)}{scheduleSection("at",t.atSchedule,"at_concurrency",6)}<section className="sr-maintenance-section"><strong>{labels.concurrencySettings}</strong><div className="sr-feature-concurrency-grid mt-4">{concurrencyFields.map(([key,label,maximum])=><div key={key}><Label>{label}</Label><Input type="number" min={1} max={maximum} value={form[key]||1} onChange={(e)=>setNumber(key,e.target.value)}/></div>)}</div></section></div><div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={loading} onClick={save}><Save className="mr-2 h-4 w-4"/>{t.saveSettings}</Button></div></div></div></PagePortal>;
 }
 
 function SessionEditModal({ t, item, groups, onClose, onSaved, notify }: { t: typeof zh; item: AnyObj; groups: AnyObj[]; onClose:()=>void; onSaved:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
@@ -4424,7 +4432,7 @@ function SessionEditModal({ t, item, groups, onClose, onSaved, notify }: { t: ty
       onSaved();
     } catch(e:any) { notify("fail", e.message || String(e)); }
   }
-  return createPortal(<div className="sr-modal-mask"><div className="sr-modal sr-mailbox-modal relative">
+  return <PagePortal><div className="sr-modal-mask"><div className="sr-modal sr-mailbox-modal relative">
     <ListLoadingOverlay loading={loading} label={t.loadingData}/>
     <div className="sr-modal-head"><h3>{t.edit} Session</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div>
     <div className="sr-modal-body space-y-4">
@@ -4441,7 +4449,7 @@ function SessionEditModal({ t, item, groups, onClose, onSaved, notify }: { t: ty
       <div><Label>换绑邮箱 API</Label><Textarea className="min-h-20 rounded-[14px]" value={form.rebind_mailbox_api||""} onChange={(e)=>setForm({...form,rebind_mailbox_api:e.target.value})} placeholder="https://mail-api.example/api/sunny/domain-mail/pickup?email=...&token=dmsk_..."/></div>
     </div>
     <div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={loading} onClick={save}><Save className="mr-2 h-4 w-4"/>{t.save}</Button></div>
-  </div></div>, document.body);
+  </div></div></PagePortal>;
 }
 function logModuleLabel(t: typeof zh, module: string) {
   const map: Record<string,string> = {
