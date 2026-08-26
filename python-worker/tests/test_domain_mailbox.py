@@ -182,14 +182,14 @@ def test_rebind_domain_mailbox_creates_individual_pickup_credential(monkeypatch)
     assert any(f"{email}----{credential}" in message for message in logs)
 
 
-def test_rebind_retries_begin_after_first_otp_delivery_timeout():
+def test_rebind_resends_twice_after_otp_delivery_timeouts():
     calls = []
     logs = []
 
     class Reader:
         def wait_for_code(self, timestamp, timeout):
             calls.append((timestamp, timeout))
-            if len(calls) == 1:
+            if len(calls) < 3:
                 raise TimeoutError("mailbox timeout")
             return "123456"
 
@@ -202,9 +202,14 @@ def test_rebind_retries_begin_after_first_otp_delivery_timeout():
 
     client = Client()
     assert rebind_module._wait_for_rebind_code(Reader(), client, "new@example.com", 123.0, logs.append) == "123456"
-    assert calls == [(123.0, rebind_module.REBIND_OTP_FIRST_WAIT_SECONDS), (123.0, rebind_module.REBIND_OTP_RETRY_WAIT_SECONDS)]
-    assert client.begin_calls == ["new@example.com"]
-    assert any("自动重新请求一次" in message for message in logs)
+    assert calls == [
+        (123.0, 20),
+        (123.0, 45),
+        (123.0, 45),
+    ]
+    assert client.begin_calls == ["new@example.com", "new@example.com"]
+    assert any("进行第 1 次重发" in message for message in logs)
+    assert any("进行第 2 次重发" in message for message in logs)
 
 
 def test_rebind_begin_retries_transient_network_error():

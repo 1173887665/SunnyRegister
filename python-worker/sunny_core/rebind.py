@@ -29,11 +29,12 @@ VERIFY_PATH = "/backend-api/accounts/change_email/verify"
 # workflow, which leaves the mailbox listener waiting until it times out.
 CLIENT_VERSION = "prod-180ca8b8699a733aef330b7026892aee9bf85fbe"
 CLIENT_BUILD = "9758774"
-# OpenAI may accept the begin request before its outbound mail pipeline has
-# delivered the message. Keep the total wait aligned with the web flow and the
-# standalone rebind implementation (120s + one resend + 180s).
-REBIND_OTP_FIRST_WAIT_SECONDS = 120
-REBIND_OTP_RETRY_WAIT_SECONDS = 180
+# CloudMail pickup is near real time. If no message arrives quickly, resend the
+# accepted request twice instead of spending several minutes polling an empty
+# mailbox: 20s + resend + 45s + resend + 45s.
+REBIND_OTP_FIRST_WAIT_SECONDS = 20
+REBIND_OTP_SECOND_WAIT_SECONDS = 45
+REBIND_OTP_FINAL_WAIT_SECONDS = 45
 _DOMAIN_ROTATION = itertools.count()
 
 
@@ -398,14 +399,20 @@ def _persist_login_result(db: SunnyDB, identity_email: str, mailbox: dict[str, A
 
 
 def _wait_for_rebind_code(reader: DomainMailReader, client: ChangeEmailClient, email: str, min_timestamp: float, log: Callable[[str], None]) -> str:
-    """Mirror the web UI's resend path when the first accepted request is not delivered."""
+    """Use two bounded resends when an accepted request is not delivered."""
     try:
         return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_FIRST_WAIT_SECONDS)
     except TimeoutError:
-        log(f"[{email}] 首次换绑验证码请求已接受但 {REBIND_OTP_FIRST_WAIT_SECONDS} 秒内未收到邮件，自动重新请求一次")
+        log(f"[{email}] 首次换绑验证码请求已接受但 {REBIND_OTP_FIRST_WAIT_SECONDS} 秒内未收到邮件，进行第 1 次重发")
         _begin_with_retry(client, email, log)
-        log(f"[{email}] 已重新请求换绑验证码，继续等待邮箱投递")
-        return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_RETRY_WAIT_SECONDS)
+        log(f"[{email}] 第 1 次重发已接受，继续等待邮箱投递")
+    try:
+        return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_SECOND_WAIT_SECONDS)
+    except TimeoutError:
+        log(f"[{email}] 第 1 次重发后 {REBIND_OTP_SECOND_WAIT_SECONDS} 秒内仍未收到邮件，进行第 2 次重发")
+        _begin_with_retry(client, email, log)
+        log(f"[{email}] 第 2 次重发已接受，进行最后一次邮箱等待")
+        return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_FINAL_WAIT_SECONDS)
 
 
 def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callable[[str], None]) -> dict[str, Any]:
