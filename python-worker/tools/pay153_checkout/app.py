@@ -1155,10 +1155,17 @@ def fetch_custom_checkout_session_with_retry(
 ) -> dict[str, Any]:
     """Read an OAICS session until its custom payment methods are published."""
     last: dict[str, Any] = {}
+    # Only carry forward methods that are explicitly identified as the
+    # requested provider.  Carrying every cpmt_* entry from the creation
+    # response can make a later response look ready for the wrong method.
     preserved_methods = (
         list(preserve_payment_methods_from.get("custom_payment_methods") or [])
         if isinstance(preserve_payment_methods_from, dict) else []
     )
+    if required_provider:
+        preserved_methods = custom_payment_methods_for(
+            {"custom_payment_methods": preserved_methods}, required_provider,
+        )
     total_attempts = max(1, int(attempts))
     for attempt in range(total_attempts):
         last = fetch_custom_checkout_session(
@@ -1200,21 +1207,69 @@ def fetch_custom_checkout_session_with_retry(
 
 
 def custom_payment_methods_for(payload: dict[str, Any], provider: str) -> list[dict[str, Any]]:
-    """Return OAICS custom payment methods whose payload identifies a provider."""
-    provider_name = str(provider or "").strip().lower()
-    methods = payload.get("custom_payment_methods") or []
-    return [
-        item for item in methods
-        if isinstance(item, dict)
-        and str(item.get("id") or "").startswith("cpmt_")
-        and provider_name in json.dumps(item, ensure_ascii=False).lower()
-    ]
+    """Return OAICS custom methods identified by provider-specific fields.
+
+    OAICS has returned several shapes over time (for example ``name``,
+    ``paymentMethodType`` and nested ``provider`` objects).  Matching the
+    complete JSON string is too brittle and can also match unrelated values.
+    """
+    provider_name = str(provider or "").strip().lower().replace("-", "_")
+    aliases = {
+        "gopay": {"gopay", "gopay_wallet", "gopay_tokenization", "gopay_tokenization_linking"},
+        "gcash": {"gcash", "gcash_wallet"},
+        "paypal": {"paypal"},
+        "blik": {"blik"},
+        "ideal": {"ideal", "ideal_bank"},
+        "kakao": {"kakao", "kakao_pay", "kakaopay"},
+    }.get(provider_name, {provider_name})
+    methods = payload.get("custom_payment_methods") or payload.get("payment_methods") or []
+    if not isinstance(methods, list):
+        return []
+
+    def values(value: Any, depth: int = 0) -> list[str]:
+        if depth > 3:
+            return []
+        if isinstance(value, dict):
+            result: list[str] = []
+            for key in (
+                "id", "type", "name", "label", "display_name", "provider",
+                "payment_method_type", "paymentMethodType", "method_type",
+                "custom_payment_method_type", "customPaymentMethodType",
+            ):
+                if key in value:
+                    result.extend(values(value.get(key), depth + 1))
+            return result
+        if isinstance(value, (list, tuple)):
+            result: list[str] = []
+            for item in value:
+                result.extend(values(item, depth + 1))
+            return result
+        text = str(value or "").strip().lower().replace("-", "_")
+        return [text] if text else []
+
+    matched: list[dict[str, Any]] = []
+    for item in methods:
+        if not isinstance(item, dict) or not str(item.get("id") or "").startswith("cpmt_"):
+            continue
+        tokens = set(values(item))
+        if tokens & aliases:
+            matched.append(item)
+            continue
+        # Some payloads use a human label such as "GoPay wallet".  Restrict
+        # this fallback to labels and only when the provider is unambiguous.
+        labels = {
+            str(item.get(key) or "").strip().lower().replace("-", "_")
+            for key in ("name", "label", "display_name")
+        }
+        if any(alias in label.replace(" ", "_") for alias in aliases for label in labels):
+            matched.append(item)
+    return matched
 
 
 def custom_payment_method_id_for(payload: dict[str, Any], provider: str) -> str:
     """Select a provider-specific cpmt id, allowing an unlabelled sole method."""
     methods = [
-        item for item in (payload.get("custom_payment_methods") or [])
+        item for item in (payload.get("custom_payment_methods") or payload.get("payment_methods") or [])
         if isinstance(item, dict) and str(item.get("id") or "").startswith("cpmt_")
     ]
     matched = custom_payment_methods_for(payload, provider)
@@ -1226,6 +1281,25 @@ def custom_payment_method_id_for(payload: dict[str, Any], provider: str) -> str:
         if not any(name in serialized for name in known_providers):
             return str(methods[0].get("id") or "")
     return ""
+
+
+def custom_payment_methods_diagnostic(payload: dict[str, Any]) -> str:
+    """Return a compact, secret-free method summary for failure diagnostics."""
+    methods = payload.get("custom_payment_methods") or payload.get("payment_methods") or []
+    if not isinstance(methods, list):
+        return "[]"
+    out: list[str] = []
+    for item in methods:
+        if not isinstance(item, dict):
+            continue
+        method_id = str(item.get("id") or "")
+        labels = [
+            str(item.get(key) or "")
+            for key in ("type", "name", "payment_method_type", "paymentMethodType")
+            if item.get(key)
+        ]
+        out.append(": ".join(part for part in (method_id, "/".join(labels)) if part))
+    return ", ".join(out) or "[]"
 
 
 def submit_custom_checkout_taxes(
@@ -1353,6 +1427,56 @@ def confirm_custom_checkout_method(
             )
         raise RuntimeError(f"确认 {method_name} 支付方式失败：status={status}；{text[:300]}")
     return payload
+
+
+def confirm_custom_checkout_method_with_retry(
+    http,
+    token: str,
+    session_id: str,
+    processor_entity: str,
+    custom_payment_method_id: str,
+    proxy: str,
+    device_id: str,
+    did: str,
+    *,
+    use_sen: bool = True,
+    use_so: bool = True,
+    method_name: str = "GCash",
+    allow_sentinel_fallback: bool = False,
+    max_retries: int = 2,
+    delay_seconds: float = 1.2,
+    log=lambda _message: None,
+) -> dict[str, Any]:
+    """Retry only upstream ``blocked`` confirmations within one Checkout.
+
+    A blocked confirmation is transient in the same way as the reference
+    GoPay flow's final-review rejection.  Method-unavailable and HTTP errors
+    are intentionally propagated immediately so the outer job can rebuild
+    the Checkout and rotate its proxy pair.
+    """
+    total = max(1, min(6, int(max_retries) + 1))
+    last_error: RuntimeError | None = None
+    for attempt in range(total):
+        if attempt:
+            log(f"{method_name} confirm 第 {attempt + 1}/{total} 次重试（刷新 SEN/SO）")
+            time.sleep(max(0.0, float(delay_seconds)) * min(attempt, 2))
+        try:
+            return confirm_custom_checkout_method(
+                http, token, session_id, processor_entity,
+                custom_payment_method_id, proxy, device_id, did,
+                use_sen=True if attempt else use_sen,
+                use_so=True if attempt else use_so,
+                method_name=method_name,
+                allow_sentinel_fallback=allow_sentinel_fallback,
+                log=log,
+            )
+        except RuntimeError as exc:
+            if "CUSTOM_CONFIRM_BLOCKED" not in str(exc):
+                raise
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise RuntimeError(f"确认 {method_name} 支付方式失败：未执行确认")
 
 
 def start_custom_checkout_method(
@@ -2550,9 +2674,12 @@ class JobStore:
                 )
             if current.get("link_type") == "gopay":
                 # Midtrans GoPay is exposed by the CS Live/Stripe Checkout.
-                # OAICS custom sessions require cpmt_gopay, which may be absent
-                # even when the account's standard ID payment probe sees GoPay.
-                current["checkout_ui_mode"] = "redirect"
+                # Some accounts still return an OAICS session for redirect
+                # mode, where cpmt_gopay is not published even though the
+                # account probe reports GoPay.  Alternate the two supported
+                # Checkout modes on outer retries so a mode-specific OAICS
+                # response does not consume the whole retry budget.
+                current["checkout_ui_mode"] = "redirect" if logical_attempt % 2 else "custom"
                 current["promo_on_create"] = False
             if current.get("link_type") == "pix" and current.get("pix_tax_id_auto"):
                 auto_kind = current.get("pix_auto_kind") or "cpf"
@@ -3626,7 +3753,8 @@ class JobStore:
                     custom_method_id = custom_payment_method_id_for(custom_state, "gopay")
                     if not custom_method_id:
                         raise RuntimeError(
-                            "GOPAY_METHOD_UNAVAILABLE: ID Checkout 首次响应和详情均未返回 GoPay 支付方式，将更换代理重建"
+                            "GOPAY_METHOD_UNAVAILABLE: ID Checkout 首次响应和详情均未返回明确的 GoPay 支付方式"
+                            f"；实际返回={custom_payment_methods_diagnostic(custom_state)}"
                         )
                     custom_amount = custom_checkout_amount_minor(custom_state)
                     custom_currency = custom_checkout_currency(custom_state) or "IDR"
@@ -3689,29 +3817,19 @@ class JobStore:
                     custom_method_id = custom_payment_method_id_for(custom_state, "gopay") or custom_method_id
                     if not custom_method_id:
                         raise RuntimeError(
-                            "GOPAY_METHOD_UNAVAILABLE: 当前 ID Checkout 尚未返回 GoPay 支付方式，将更换代理重建"
+                            "GOPAY_METHOD_UNAVAILABLE: 当前 ID Checkout 尚未返回明确的 GoPay 支付方式"
+                            f"；实际返回={custom_payment_methods_diagnostic(custom_state)}"
                         )
                     self.update(job_id, percent=78, text="正在确认 GoPay 支付方式")
-                    try:
-                        confirmed = confirm_custom_checkout_method(
-                            chatgpt_http, token, session_id, custom_processor,
-                            custom_method_id, checkout_proxy, device_id, did,
-                            use_sen=bool(options.get("use_sen", True)),
-                            use_so=bool(options.get("use_so", True)),
-                            method_name="GoPay",
-                            log=lambda message: self.log(job_id, message),
-                        )
-                    except RuntimeError as confirm_error:
-                        if "CUSTOM_CONFIRM_BLOCKED" not in str(confirm_error):
-                            raise
-                        self.log(job_id, "GoPay confirm 首次被拦截，正在更新 SEN/SO 后重试")
-                        time.sleep(1.2)
-                        confirmed = confirm_custom_checkout_method(
-                            chatgpt_http, token, session_id, custom_processor,
-                            custom_method_id, checkout_proxy, device_id, did,
-                            use_sen=True, use_so=True, method_name="GoPay",
-                            log=lambda message: self.log(job_id, message),
-                        )
+                    confirmed = confirm_custom_checkout_method_with_retry(
+                        chatgpt_http, token, session_id, custom_processor,
+                        custom_method_id, checkout_proxy, device_id, did,
+                        use_sen=bool(options.get("use_sen", True)),
+                        use_so=bool(options.get("use_so", True)),
+                        method_name="GoPay",
+                        max_retries=int(options.get("gopay_confirm_retries") or 2),
+                        log=lambda message: self.log(job_id, message),
+                    )
                     self.update(job_id, percent=90, text="正在生成 GoPay Midtrans 跳转链接")
                     started = start_custom_checkout_method(
                         chatgpt_http, token, session_id, custom_processor,

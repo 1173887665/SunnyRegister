@@ -90,6 +90,58 @@ def test_gopay_method_selection_prefers_gopay_cpmt() -> None:
     assert checkout_app.custom_payment_method_id_for(payload, "gopay") == "cpmt_gopay"
 
 
+def test_gopay_method_selection_accepts_protocol_aliases_but_not_other_cpmt() -> None:
+    payload = {
+        "custom_payment_methods": [
+            {"id": "cpmt_unknown", "name": "wallet"},
+            {"id": "cpmt_alias", "paymentMethodType": "gopay-tokenization"},
+            {"id": "cpmt_p24", "name": "Przelewy24"},
+        ],
+    }
+    assert checkout_app.custom_payment_method_id_for(payload, "gopay") == "cpmt_alias"
+    assert checkout_app.custom_payment_methods_for(payload, "gopay") == [payload["custom_payment_methods"][1]]
+
+
+def test_gopay_confirm_retries_only_blocked_responses() -> None:
+    responses = [
+        RuntimeError("CUSTOM_CONFIRM_BLOCKED: transient"),
+        RuntimeError("CUSTOM_CONFIRM_BLOCKED: transient"),
+        {"status": "success"},
+    ]
+
+    def fake_confirm(*_args, **_kwargs):
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    with patch.object(checkout_app, "confirm_custom_checkout_method", side_effect=fake_confirm) as confirm:
+        result = checkout_app.confirm_custom_checkout_method_with_retry(
+            object(), "token", "oaics_test", "openai_ie", "cpmt_gopay",
+            "http://proxy:1", "device", "did", max_retries=2,
+        )
+    assert result == {"status": "success"}
+    assert confirm.call_count == 3
+
+
+def test_gopay_confirm_does_not_retry_non_blocked_errors() -> None:
+    with patch.object(
+        checkout_app,
+        "confirm_custom_checkout_method",
+        side_effect=RuntimeError("确认 GoPay 支付方式失败：HTTP 400"),
+    ) as confirm:
+        try:
+            checkout_app.confirm_custom_checkout_method_with_retry(
+                object(), "token", "oaics_test", "openai_ie", "cpmt_gopay",
+                "http://proxy:1", "device", "did", max_retries=3,
+            )
+        except RuntimeError as exc:
+            assert "HTTP 400" in str(exc)
+        else:
+            raise AssertionError("非 blocked 错误不应重试")
+    assert confirm.call_count == 1
+
+
 def test_gopay_checkout_preserves_method_from_creation_response() -> None:
     creation = {
         "custom_payment_methods": [
@@ -137,9 +189,10 @@ def test_gopay_checkout_payload_delays_promo_until_method_is_published() -> None
     assert payload["checkout_ui_mode"] == "redirect"
 
 
-def test_gopay_attempt_always_creates_checkout_before_applying_promo() -> None:
+def test_gopay_attempt_alternates_checkout_modes_before_applying_promo() -> None:
     store = object.__new__(checkout_app.JobStore)
     state = {"status": "running", "error": "", "result": None}
+    calls = 0
     strategies: list[tuple[bool, str]] = []
     store.cancelled = lambda _job_id: False
     store.get = lambda _job_id: dict(state)
@@ -148,15 +201,20 @@ def test_gopay_attempt_always_creates_checkout_before_applying_promo() -> None:
     store._record_success = lambda _job_id, _result: None
 
     def run_single(_job_id: str, attempt_options: dict) -> None:
+        nonlocal calls
+        calls += 1
         strategies.append((
             bool(attempt_options["promo_on_create"]),
             str(attempt_options["checkout_ui_mode"]),
         ))
-        state.update(status="done", result={})
+        if calls >= 2:
+            state.update(status="done", result={})
+        else:
+            state.update(status="error", error="GOPAY_METHOD_UNAVAILABLE")
 
     store._run_single = run_single
     store._run_locked("job-gopay", {
-        "retry_count": 0,
+        "retry_count": 1,
         "link_type": "gopay",
         "use_promo": True,
         "country": "ID",
@@ -166,7 +224,7 @@ def test_gopay_attempt_always_creates_checkout_before_applying_promo() -> None:
         "paired_proxy_rotation": True,
     })
 
-    assert strategies == [(False, "redirect")]
+    assert strategies == [(False, "redirect"), (False, "custom")]
 
 
 def test_gopay_defaults_use_indonesia_billing() -> None:
