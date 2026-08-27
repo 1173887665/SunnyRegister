@@ -796,6 +796,67 @@ def create_checkout(
     return {"data": data, "http": http}
 
 
+def create_gopay_cs_live_checkout(
+    token: str,
+    payload: dict,
+    proxy: str,
+    device_id: str,
+    did: str,
+    log,
+    *,
+    attempts: int = 10,
+    use_sen: bool = True,
+    use_so: bool = True,
+) -> tuple[dict, str, str]:
+    """Rebuild redirect Checkouts until GoPay receives a Stripe CS Live session."""
+    max_attempts = max(1, min(int(attempts or 10), 10))
+    current_device_id = device_id
+    current_did = did
+    last_kind = "unknown"
+    for attempt in range(1, max_attempts + 1):
+        created = create_checkout(
+            token,
+            payload,
+            proxy,
+            current_device_id,
+            current_did,
+            log,
+            use_sen=use_sen,
+            use_so=use_so,
+            # This is the same fallback policy used by the account-management
+            # payment probe that discovers GoPay on ID/IDR Checkouts.
+            allow_sentinel_fallback=True,
+        )
+        checkout_data = created.get("data") or {}
+        session_id = str(checkout_data.get("checkout_session_id") or "")
+        last_kind = session_checkout_kind(session_id)
+        kind_label = {
+            "oaics": "OAICS",
+            "cs_live": "CS Live",
+            "cs_test": "CS Test",
+        }.get(last_kind, "unknown")
+        log(f"GoPay CS Live 创建尝试 {attempt}/{max_attempts}：{kind_label}")
+        if last_kind == "cs_live":
+            return created, current_device_id, current_did
+
+        http = created.get("http")
+        close = getattr(http, "close", None)
+        if callable(close):
+            close()
+        if last_kind != "oaics":
+            raise RuntimeError(
+                "GOPAY_CHECKOUT_TYPE_UNKNOWN: GoPay redirect Checkout 未返回可识别的 cs_live/oaics 会话"
+            )
+        if attempt < max_attempts:
+            log("GoPay 当前返回 OAICS；丢弃该会话并刷新设备标识，继续强制重建 CS Live")
+            current_device_id, current_did = str(uuid.uuid4()), str(uuid.uuid4())
+
+    raise RuntimeError(
+        f"GOPAY_CS_LIVE_REBUILD_EXHAUSTED: 同一 Checkout 代理连续 {max_attempts} 次返回 "
+        f"{last_kind.upper()}，将切换代理后继续重建"
+    )
+
+
 def preflight_trial_eligibility(token: str, account_id: str, proxy: str, device_id: str, did: str, log) -> dict:
     rust_base = str(os.getenv("PAY153_RUST_URL") or "").strip().rstrip("/")
     if rust_base:
@@ -2062,6 +2123,35 @@ def approve_checkout(
     return payload
 
 
+def approve_checkout_with_retry(
+    *args,
+    max_retries: int = 9,
+    log=lambda _message: None,
+    **kwargs,
+) -> dict:
+    """Retry transient approval blocks without creating a second Checkout.
+
+    The approval endpoint occasionally returns ``blocked`` while the Stripe
+    submission is already in ``requires_approval``.  Reusing the same CS Live
+    session and payment method is safe here; rebuilding the Checkout would
+    lose the attached GoPay submission.  Keep the retry budget bounded so a
+    malformed request cannot create an unbounded approval loop.
+    """
+    attempts = max(1, min(10, int(max_retries or 0) + 1))
+    last_error: RuntimeError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return approve_checkout(*args, log=log, **kwargs)
+        except RuntimeError as exc:
+            last_error = exc
+            if "blocked" not in str(exc).lower() or attempt >= attempts:
+                raise
+            log(f"GoPay approval 返回 blocked，将复用当前 CS Live 重试 ({attempt + 1}/{attempts})")
+            time.sleep(min(1.5, 0.35 * attempt))
+    assert last_error is not None
+    raise last_error
+
+
 def _proxy_transport_error_kind(message: str) -> str:
     """Classify transport failures that should rotate the proxy route."""
     lowered = str(message or "").lower()
@@ -2675,12 +2765,11 @@ class JobStore:
                 )
             if current.get("link_type") == "gopay":
                 # Midtrans GoPay is exposed by the CS Live/Stripe Checkout.
-                # Some accounts still return an OAICS session for redirect
-                # mode, where cpmt_gopay is not published even though the
-                # account probe reports GoPay.  Alternate the two supported
-                # Checkout modes on outer retries so a mode-specific OAICS
-                # response does not consume the whole retry budget.
-                current["checkout_ui_mode"] = "redirect" if logical_attempt % 2 else "custom"
+                # Keep every retry aligned with the account-management ID
+                # payment probe.  Switching later attempts to custom mode
+                # asks for OAICS and can hide Stripe's GoPay method even when
+                # the same account was just probed successfully.
+                current["checkout_ui_mode"] = "redirect"
                 current["promo_on_create"] = False
             if current.get("link_type") == "pix" and current.get("pix_tax_id_auto"):
                 auto_kind = current.get("pix_auto_kind") or "cpf"
@@ -3518,17 +3607,30 @@ class JobStore:
                 self.log(job_id, "官方 Checkout 使用 Checkout代理池创建和读取支付页面，Promotion代理池负责试用检查与优惠更新")
             elif provider != "hosted":
                 self.log(job_id, f"Checkout 将使用所选的 {country} 地区代理")
-            created = create_checkout(
-                token,
-                payload,
-                checkout_proxy,
-                device_id,
-                did,
-                lambda m: self.log(job_id, m),
-                use_sen=(True if provider == "gcash" else bool(options.get("use_sen", True))),
-                use_so=(True if provider == "gcash" else bool(options.get("use_so", True))),
-                allow_sentinel_fallback=provider == "paypal",
-            )
+            if provider == "gopay":
+                created, device_id, did = create_gopay_cs_live_checkout(
+                    token,
+                    payload,
+                    checkout_proxy,
+                    device_id,
+                    did,
+                    lambda message: self.log(job_id, message),
+                    attempts=int(options.get("gopay_cs_live_attempts") or 10),
+                    use_sen=bool(options.get("use_sen", True)),
+                    use_so=bool(options.get("use_so", True)),
+                )
+            else:
+                created = create_checkout(
+                    token,
+                    payload,
+                    checkout_proxy,
+                    device_id,
+                    did,
+                    lambda m: self.log(job_id, m),
+                    use_sen=(True if provider == "gcash" else bool(options.get("use_sen", True))),
+                    use_so=(True if provider == "gcash" else bool(options.get("use_so", True))),
+                    allow_sentinel_fallback=provider == "paypal",
+                )
             self.ensure_not_cancelled(job_id)
             self.update(job_id, percent=44, text="Checkout 创建完成，正在准备支付方式")
             checkout_data = created["data"]
@@ -3756,8 +3858,9 @@ class JobStore:
                     custom_method_id = custom_payment_method_id_for(custom_state, "gopay")
                     if not custom_method_id:
                         raise RuntimeError(
-                            "GOPAY_METHOD_UNAVAILABLE: ID Checkout 首次响应和详情均未返回明确的 GoPay 支付方式"
-                            f"；实际返回={custom_payment_methods_diagnostic(custom_state)}"
+                            "GOPAY_STRIPE_CHECKOUT_REQUIRED: 账户支付探测与当前 OAICS 属于不同协议；"
+                            "OAICS 未发布 cpmt_gopay，需要更换代理重建 redirect/Stripe Checkout"
+                            f"；OAICS实际返回={custom_payment_methods_diagnostic(custom_state)}"
                         )
                     custom_amount = custom_checkout_amount_minor(custom_state)
                     custom_currency = custom_checkout_currency(custom_state) or "IDR"
@@ -3820,8 +3923,9 @@ class JobStore:
                     custom_method_id = custom_payment_method_id_for(custom_state, "gopay") or custom_method_id
                     if not custom_method_id:
                         raise RuntimeError(
-                            "GOPAY_METHOD_UNAVAILABLE: 当前 ID Checkout 尚未返回明确的 GoPay 支付方式"
-                            f"；实际返回={custom_payment_methods_diagnostic(custom_state)}"
+                            "GOPAY_STRIPE_CHECKOUT_REQUIRED: 当前 OAICS 未发布 cpmt_gopay，"
+                            "需要更换代理重建 redirect/Stripe Checkout"
+                            f"；OAICS实际返回={custom_payment_methods_diagnostic(custom_state)}"
                         )
                     self.update(job_id, percent=78, text="正在确认 GoPay 支付方式")
                     confirmed = confirm_custom_checkout_method_with_retry(
@@ -3830,6 +3934,7 @@ class JobStore:
                         use_sen=bool(options.get("use_sen", True)),
                         use_so=bool(options.get("use_so", True)),
                         method_name="GoPay",
+                        allow_sentinel_fallback=True,
                         max_retries=int(options.get("gopay_confirm_retries") or 2),
                         log=lambda message: self.log(job_id, message),
                     )
@@ -4631,16 +4736,27 @@ class JobStore:
                 self.ensure_not_cancelled(job_id)
                 advance_progress(90, "正在确认支付请求")
                 self.log(job_id, "提交 Checkout approval")
-                approve_checkout(
+                approval_fn = approve_checkout_with_retry if provider == "gopay" else approve_checkout
+                approval_kwargs = {
+                    "http": provider_chatgpt_http,
+                    "log": provider_log,
+                    # GoPay's Stripe CS Live manual approval uses the same
+                    # Sentinel fallback path as the account payment probe.
+                    # Without it the approval endpoint can return
+                    # {"result":"blocked"} even after GoPay and zero due are
+                    # confirmed successfully.
+                    "allow_sentinel_fallback": provider in {"paypal", "gopay"},
+                }
+                if provider == "gopay":
+                    approval_kwargs["max_retries"] = int(options.get("gopay_approval_retries") or 9)
+                approval_fn(
                     token,
                     session_id,
                     processor,
                     checkout_proxy,
                     device_id,
                     did,
-                    http=provider_chatgpt_http,
-                    log=provider_log,
-                    allow_sentinel_fallback=provider == "paypal",
+                    **approval_kwargs,
                 )
                 self.ensure_not_cancelled(job_id)
 

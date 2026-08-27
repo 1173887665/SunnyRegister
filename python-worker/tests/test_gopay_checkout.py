@@ -142,6 +142,65 @@ def test_gopay_confirm_does_not_retry_non_blocked_errors() -> None:
     assert confirm.call_count == 1
 
 
+def test_gopay_approval_retries_blocked_results_on_same_checkout() -> None:
+    responses = [
+        RuntimeError("manual_approval approve blocked: result=blocked"),
+        RuntimeError("manual_approval approve blocked: result=blocked"),
+        {"result": "approved"},
+    ]
+    calls: list[tuple[tuple, dict]] = []
+
+    def fake_approve(*args, **kwargs):
+        calls.append((args, kwargs))
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    with patch.object(checkout_app, "approve_checkout", side_effect=fake_approve):
+        result = checkout_app.approve_checkout_with_retry(
+            "token", "cs_live_test", "openai_ie", "http://proxy", "device", "did",
+            max_retries=2, log=lambda _message: None, allow_sentinel_fallback=True,
+        )
+
+    assert result == {"result": "approved"}
+    assert len(calls) == 3
+    assert all(call[0][1] == "cs_live_test" for call in calls)
+    assert all(call[1]["allow_sentinel_fallback"] is True for call in calls)
+
+
+def test_gopay_approval_does_not_retry_non_blocked_errors() -> None:
+    with patch.object(
+        checkout_app,
+        "approve_checkout",
+        side_effect=RuntimeError("Checkout approve HTTP 400"),
+    ) as approve:
+        try:
+            checkout_app.approve_checkout_with_retry(
+                "token", "cs_live_test", "openai_ie", "http://proxy", "device", "did",
+                max_retries=5, log=lambda _message: None,
+            )
+        except RuntimeError as exc:
+            assert "HTTP 400" in str(exc)
+        else:
+            raise AssertionError("非 blocked approval 错误不应重试")
+    assert approve.call_count == 1
+
+
+def test_gopay_approval_default_budget_is_ten_total_attempts() -> None:
+    responses = [RuntimeError("manual_approval approve blocked: result=blocked") for _ in range(9)]
+    responses.append({"result": "approved"})
+
+    with patch.object(checkout_app, "approve_checkout", side_effect=responses) as approve:
+        result = checkout_app.approve_checkout_with_retry(
+            "token", "cs_live_test", "openai_ie", "http://proxy", "device", "did",
+            log=lambda _message: None,
+        )
+
+    assert result == {"result": "approved"}
+    assert approve.call_count == 10
+
+
 def test_gopay_checkout_preserves_method_from_creation_response() -> None:
     creation = {
         "custom_payment_methods": [
@@ -189,7 +248,99 @@ def test_gopay_checkout_payload_delays_promo_until_method_is_published() -> None
     assert payload["checkout_ui_mode"] == "redirect"
 
 
-def test_gopay_attempt_alternates_checkout_modes_before_applying_promo() -> None:
+def test_gopay_cs_live_creation_rebuilds_oaics_with_fresh_identity() -> None:
+    closed: list[str] = []
+
+    class FakeHttp:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def close(self) -> None:
+            closed.append(self.name)
+
+    responses = [
+        {"data": {"checkout_session_id": "oaics_first"}, "http": FakeHttp("first")},
+        {"data": {"checkout_session_id": "oaics_second"}, "http": FakeHttp("second")},
+        {"data": {"checkout_session_id": "cs_live_success"}, "http": FakeHttp("success")},
+    ]
+    calls: list[tuple[str, str, bool]] = []
+
+    def fake_create(_token, _payload, _proxy, device_id, did, _log, **kwargs):
+        calls.append((device_id, did, bool(kwargs.get("allow_sentinel_fallback"))))
+        return responses.pop(0)
+
+    generated_ids = iter(["device-2", "did-2", "device-3", "did-3"])
+    with (
+        patch.object(checkout_app, "create_checkout", side_effect=fake_create),
+        patch.object(checkout_app.uuid, "uuid4", side_effect=lambda: next(generated_ids)),
+    ):
+        created, device_id, did = checkout_app.create_gopay_cs_live_checkout(
+            "token", {"checkout_ui_mode": "redirect"}, "http://proxy",
+            "device-1", "did-1", lambda _message: None, attempts=3,
+        )
+
+    assert created["data"]["checkout_session_id"] == "cs_live_success"
+    assert (device_id, did) == ("device-3", "did-3")
+    assert calls == [
+        ("device-1", "did-1", True),
+        ("device-2", "did-2", True),
+        ("device-3", "did-3", True),
+    ]
+    assert closed == ["first", "second"]
+
+
+def test_gopay_cs_live_creation_stops_after_rebuild_budget() -> None:
+    class FakeHttp:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    sessions = [FakeHttp(), FakeHttp(), FakeHttp()]
+    with patch.object(
+        checkout_app,
+        "create_checkout",
+        side_effect=[
+            {"data": {"checkout_session_id": f"oaics_{index}"}, "http": http}
+            for index, http in enumerate(sessions)
+        ],
+    ) as create:
+        try:
+            checkout_app.create_gopay_cs_live_checkout(
+                "token", {"checkout_ui_mode": "redirect"}, "http://proxy",
+                "device", "did", lambda _message: None, attempts=3,
+            )
+        except RuntimeError as exc:
+            assert str(exc).startswith("GOPAY_CS_LIVE_REBUILD_EXHAUSTED")
+        else:
+            raise AssertionError("连续 OAICS 应耗尽 GoPay CS Live 重建预算")
+
+    assert create.call_count == 3
+    assert all(http.closed for http in sessions)
+
+
+def test_gopay_cs_live_creation_defaults_to_ten_rebuilds() -> None:
+    class FakeHttp:
+        def close(self) -> None:
+            pass
+
+    responses = [
+        {"data": {"checkout_session_id": f"oaics_{index}"}, "http": FakeHttp()}
+        for index in range(9)
+    ]
+    responses.append({"data": {"checkout_session_id": "cs_live_tenth"}, "http": FakeHttp()})
+    with patch.object(checkout_app, "create_checkout", side_effect=responses) as create:
+        created, _device_id, _did = checkout_app.create_gopay_cs_live_checkout(
+            "token", {"checkout_ui_mode": "redirect"}, "http://proxy",
+            "device", "did", lambda _message: None,
+        )
+
+    assert created["data"]["checkout_session_id"] == "cs_live_tenth"
+    assert create.call_count == 10
+
+
+def test_gopay_attempts_keep_redirect_mode_before_applying_promo() -> None:
     store = object.__new__(checkout_app.JobStore)
     state = {"status": "running", "error": "", "result": None}
     calls = 0
@@ -224,7 +375,7 @@ def test_gopay_attempt_alternates_checkout_modes_before_applying_promo() -> None
         "paired_proxy_rotation": True,
     })
 
-    assert strategies == [(False, "redirect"), (False, "custom")]
+    assert strategies == [(False, "redirect"), (False, "redirect")]
 
 
 def test_gopay_defaults_use_indonesia_billing() -> None:
