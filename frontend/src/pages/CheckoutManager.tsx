@@ -14,12 +14,28 @@ const fallbackProviders: Provider[] = [
 ].map(([value, label, hint, country, currency]) => ({ value, label, hint, country, currency }));
 
 const planOptions = [{ value: "plus", label: "Plus", hint: "个人订阅" }, { value: "pro", label: "Pro", hint: "专业计划" }, { value: "team", label: "Team", hint: "工作空间" }, { value: "codex_low", label: "Codex", hint: "低价空间" }];
-const countryNames: Record<string, string> = { US: "美国", DE: "德国", FR: "法国", NL: "荷兰", IN: "印度", ID: "印度尼西亚", BR: "巴西", VN: "越南", GB: "英国", JP: "日本", KR: "韩国", PH: "菲律宾", AU: "澳大利亚", CA: "加拿大", CH: "瑞士", PL: "波兰" };
+const countryNames: Record<string, string> = {
+  US: "美国", GB: "英国", JP: "日本", CN: "中国", HK: "中国香港", TW: "中国台湾", KR: "韩国",
+  IN: "印度", BR: "巴西", AU: "澳大利亚", CA: "加拿大", NZ: "新西兰", SG: "新加坡", MY: "马来西亚",
+  TH: "泰国", ID: "印度尼西亚", PH: "菲律宾", VN: "越南", TR: "土耳其", IL: "以色列", AE: "阿联酋",
+  SA: "沙特阿拉伯", QA: "卡塔尔", KW: "科威特", BH: "巴林", OM: "阿曼", ZA: "南非", EG: "埃及",
+  NG: "尼日利亚", KE: "肯尼亚", MX: "墨西哥", AR: "阿根廷", CL: "智利", CO: "哥伦比亚", PE: "秘鲁",
+  UY: "乌拉圭", PY: "巴拉圭", BO: "玻利维亚", CR: "哥斯达黎加", DO: "多米尼加共和国", CH: "瑞士",
+  SE: "瑞典", NO: "挪威", DK: "丹麦", PL: "波兰", CZ: "捷克", HU: "匈牙利", RO: "罗马尼亚",
+  BG: "保加利亚", IS: "冰岛", RS: "塞尔维亚", UA: "乌克兰", GE: "格鲁吉亚", KZ: "哈萨克斯坦",
+  DE: "德国", FR: "法国", IE: "爱尔兰", NL: "荷兰", ES: "西班牙", IT: "意大利", AT: "奥地利",
+  BE: "比利时", FI: "芬兰", PT: "葡萄牙", GR: "希腊", LU: "卢森堡", SK: "斯洛伐克", SI: "斯洛文尼亚",
+  EE: "爱沙尼亚", LV: "拉脱维亚", LT: "立陶宛", CY: "塞浦路斯", MT: "马耳他", HR: "克罗地亚",
+};
 const currencyByCountry: Record<string, string> = { US: "USD", DE: "EUR", FR: "EUR", NL: "EUR", IN: "INR", ID: "IDR", BR: "BRL", VN: "VND", GB: "GBP", JP: "JPY", KR: "KRW", PH: "PHP", AU: "AUD", CA: "CAD", CH: "CHF", PL: "PLN" };
 const sessionStatuses = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "登录刷新", "失败"];
 const sessionPlans = ["free", "plus", "k12", "team", "pro"];
 const checkoutPreferencesStorageKey = "sunnyregister.checkout.preferences.v1";
 const checkoutTaskStorageKey = "sunnyregister.checkout.last-task-id.v1";
+const checkoutProxyPoolsStorageKey = "sunnyregister.checkout.proxy-pools-by-path.v1";
+
+type ProxyPoolSnapshot = { checkout: string; promotion: string };
+type ProxyPoolsByPath = Record<string, ProxyPoolSnapshot>;
 
 type CheckoutPreferences = {
   checkoutProxies?: string;
@@ -183,6 +199,29 @@ function readCheckoutPreferences(): CheckoutPreferences {
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch { return {}; }
 }
+function readProxyPoolsByPath(): ProxyPoolsByPath {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(checkoutProxyPoolsStorageKey) || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).flatMap(([path, value]) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+      const snapshot = value as Record<string, unknown>;
+      return [[path, {
+        checkout: typeof snapshot.checkout === "string" ? snapshot.checkout : "",
+        promotion: typeof snapshot.promotion === "string" ? snapshot.promotion : "",
+      }]];
+    }));
+  } catch { return {}; }
+}
+function writeProxyPoolsForPath(path: string, checkout: string, promotion: string) {
+  if (typeof window === "undefined" || !path) return;
+  try {
+    const saved = readProxyPoolsByPath();
+    saved[path] = { checkout, promotion };
+    window.localStorage.setItem(checkoutProxyPoolsStorageKey, JSON.stringify(saved));
+  } catch { /* private browsing may disable local storage */ }
+}
 function savedNumber(value: unknown, fallback: number, minimum: number, maximum: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback;
@@ -315,10 +354,16 @@ function CheckoutAccountDetail({ email, state, onClose }: { email: string; state
 export default function CheckoutManager() {
   const savedPreferences = useMemo(() => readCheckoutPreferences(), []);
   const savedTaskID = useMemo(() => readBrowserText(checkoutTaskStorageKey), []);
+  const initialLinkType = savedPreferences.linkType ?? "hosted";
+  const savedProxyPools = useMemo(() => readProxyPoolsByPath(), []);
+  const initialProxyPools = savedProxyPools[initialLinkType] ?? {
+    checkout: savedPreferences.checkoutProxies ?? readBrowserText("pay153.proxy_pool_2"),
+    promotion: savedPreferences.promotionProxies ?? readBrowserText("pay153.proxy_pool_1"),
+  };
   const [providers, setProviders] = useState<Provider[]>(fallbackProviders);
   const [countries, setCountries] = useState<Record<string, string>>(currencyByCountry);
-  const [checkoutProxies, setCheckoutProxies] = useState(() => savedPreferences.checkoutProxies ?? readBrowserText("pay153.proxy_pool_2"));
-  const [promotionProxies, setPromotionProxies] = useState(() => savedPreferences.promotionProxies ?? readBrowserText("pay153.proxy_pool_1"));
+  const [checkoutProxies, setCheckoutProxies] = useState(initialProxyPools.checkout);
+  const [promotionProxies, setPromotionProxies] = useState(initialProxyPools.promotion);
   const [systemAT, setSystemAT] = useState(savedPreferences.systemAT ?? true);
   const [sessions, setSessions] = useState<AnyRow[]>([]);
   const [groups, setGroups] = useState<AnyRow[]>([]);
@@ -333,7 +378,7 @@ export default function CheckoutManager() {
   const [checkoutFilter, setCheckoutFilter] = useState(savedPreferences.checkoutFilter ?? "");
   const [paymentMethods, setPaymentMethods] = useState<string[]>(() => Array.isArray(savedPreferences.paymentMethods) ? savedPreferences.paymentMethods : []);
   const [plan, setPlan] = useState(savedPreferences.plan ?? "plus");
-  const [linkType, setLinkType] = useState(savedPreferences.linkType ?? "hosted");
+  const [linkType, setLinkType] = useState(initialLinkType);
   const [country, setCountry] = useState(savedPreferences.country ?? "US");
   const [currency, setCurrency] = useState(savedPreferences.currency ?? "USD");
   const [retryCount, setRetryCount] = useState(() => savedNumber(savedPreferences.retryCount, 10, 0, 50));
@@ -654,7 +699,25 @@ export default function CheckoutManager() {
       setSelectingAll(false);
     }
   }
-  function updatePath(value: string) { setLinkType(value); const provider = providers.find((x) => x.value === value); if (provider) { setCountry(provider.country); setCurrency(provider.currency); } }
+  function updateCheckoutProxies(value: string) {
+    setCheckoutProxies(value);
+    writeProxyPoolsForPath(linkType, value, promotionProxies);
+  }
+  function updatePromotionProxies(value: string) {
+    setPromotionProxies(value);
+    writeProxyPoolsForPath(linkType, checkoutProxies, value);
+  }
+  function updatePath(value: string) {
+    if (value !== linkType) {
+      writeProxyPoolsForPath(linkType, checkoutProxies, promotionProxies);
+      const targetPools = readProxyPoolsByPath()[value] ?? { checkout: "", promotion: "" };
+      setCheckoutProxies(targetPools.checkout);
+      setPromotionProxies(targetPools.promotion);
+      setLinkType(value);
+    }
+    const provider = providers.find((item) => item.value === value);
+    if (provider) { setCountry(provider.country); setCurrency(provider.currency); }
+  }
   async function precheck() {
     const effectivePromotionProxies = linkType === "gcash" ? checkoutProxies : promotionProxies;
     if (!splitLines(checkoutProxies).length || !splitLines(effectivePromotionProxies).length || !selected.length) { setNotice(linkType === "gcash" ? "请先填写 PH Checkout 代理池并勾选账户" : "请先填写两个代理池并勾选账户"); return; }
@@ -718,7 +781,7 @@ export default function CheckoutManager() {
   return <div className="checkout-manager space-y-5">
     {notice && <div className="fixed right-5 top-20 z-[500] rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white shadow-xl">{notice}</div>}
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5 shadow-sm"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--accent)]">PAYMENT ROUTER</p><h1 className="mt-1 text-2xl font-black">提链管理</h1><p className="mt-2 text-sm text-[var(--text-secondary)]">为已注册 ChatGPT 账户批量提取支付链接、跳转地址和支付二维码。</p></div><div className="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--text-muted)]">{statusLabel}</div></div></section>
-    <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5"><div className={`grid gap-4 ${linkType === "gcash" ? "md:grid-cols-1" : "md:grid-cols-2"}`}><label><span className="mb-2 block text-sm font-semibold">{linkType === "gcash" ? "PH Checkout 代理池" : "Checkout 代理池"} <b className="text-red-500">*</b></span><textarea className="min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)]" value={checkoutProxies} onChange={(e) => setCheckoutProxies(e.target.value)} placeholder="每行一个代理，支持 http://、https://、socks5://" /></label>{linkType !== "gcash" && <label><span className="mb-2 block text-sm font-semibold">Promotion 代理池 <b className="text-red-500">*</b></span><textarea className="min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)]" value={promotionProxies} onChange={(e) => setPromotionProxies(e.target.value)} placeholder="每行一个代理，支持 http://、https://、socks5://" /></label>}</div><p className="mt-3 text-xs text-[var(--text-muted)]">{linkType === "gcash" ? "GCash 每次尝试选用一个 PH 代理，并复用同一会话完成 Checkout、taxes、confirm 与 start。" : "每个代理池最多 500 条。每轮重试会重新选择代理组合；Checkout 创建与支付处理使用 Checkout 代理池，试用检查与优惠更新使用 Promotion 代理池。"}</p></section>
+    <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5"><div className={`grid gap-4 ${linkType === "gcash" ? "md:grid-cols-1" : "md:grid-cols-2"}`}><label><span className="mb-2 block text-sm font-semibold">{linkType === "gcash" ? "PH Checkout 代理池" : "Checkout 代理池"} <b className="text-red-500">*</b></span><textarea className="min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)]" value={checkoutProxies} onChange={(e) => updateCheckoutProxies(e.target.value)} placeholder="每行一个代理，支持 http://、https://、socks5://" /></label>{linkType !== "gcash" && <label><span className="mb-2 block text-sm font-semibold">Promotion 代理池 <b className="text-red-500">*</b></span><textarea className="min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)]" value={promotionProxies} onChange={(e) => updatePromotionProxies(e.target.value)} placeholder="每行一个代理，支持 http://、https://、socks5://" /></label>}</div><p className="mt-3 text-xs text-[var(--text-muted)]">{linkType === "gcash" ? "GCash 每次尝试选用一个 PH 代理，并复用同一会话完成 Checkout、taxes、confirm 与 start。" : "每个代理池最多 500 条。每轮重试会重新选择代理组合；Checkout 创建与支付处理使用 Checkout 代理池，试用检查与优惠更新使用 Promotion 代理池。"}</p></section>
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5"><h2 className="mb-3 text-sm font-semibold">订阅 / 空间</h2><div className="grid grid-cols-2 gap-2 md:grid-cols-4">{planOptions.map((item) => <button key={item.value} type="button" onClick={() => setPlan(item.value)} className={`rounded-xl border p-3 text-left transition ${plan === item.value ? "border-[var(--accent)] bg-[var(--accent)]/10" : "border-[var(--border)] hover:border-[var(--accent)]/60"}`}><b className="block">{item.label}</b><small className="text-xs text-[var(--text-muted)]">{item.hint}</small></button>)}</div>{plan === "team" && <div className="mt-4 grid gap-3 md:grid-cols-4"><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} placeholder="空间名称" /><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} placeholder="已有空间 ID" /><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" type="number" min={2} value={seatQuantity} onChange={(e) => setSeatQuantity(Number(e.target.value))} placeholder="席位数量" /><select className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={priceInterval} onChange={(e) => setPriceInterval(e.target.value)}><option value="month">按月</option><option value="year">按年</option></select></div>}{plan === "codex_low" && <div className="mt-4 grid gap-3 md:grid-cols-2"><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} placeholder="Codex 空间名称" /><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" type="number" min={1} value={creditQuantity} onChange={(e) => setCreditQuantity(Number(e.target.value))} placeholder="积分数量" /></div>}</section>
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5">
       <h2 className="mb-3 text-sm font-semibold">支付路径</h2>
@@ -726,7 +789,7 @@ export default function CheckoutManager() {
       <div className="mt-4 flex flex-wrap items-end gap-3">
         <label className="w-56 max-w-full"><span className="mb-1 block text-xs text-[var(--text-muted)]">国家 / 地区</span><select className="h-10 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 text-sm" value={country} onChange={(e) => { setCountry(e.target.value); setCurrency(countries[e.target.value] || currencyByCountry[e.target.value] || "USD"); }}>{Object.keys(countries).map((key) => <option key={key} value={key}>{key} · {countryNames[key] || key}</option>)}</select></label>
         <label className="w-36 max-w-full"><span className="mb-1 block text-xs text-[var(--text-muted)]">币种</span><select className="h-10 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 text-sm" value={currency} onChange={(e) => setCurrency(e.target.value)}>{Object.values(countries).filter((x, i, a) => a.indexOf(x) === i).map((value) => <option key={value}>{value}</option>)}</select></label>
-        <label className="w-56 max-w-full"><span className="mb-1 block text-xs text-[var(--text-muted)]">Promotion 国家 / 地区</span><select className="h-10 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 text-sm" value={promoCountry} onChange={(e) => setPromoCountry(e.target.value)}><option value="">按支付路径默认</option>{Object.keys(countries).map((key) => <option key={key} value={key}>{key} · {countryNames[key] || key}</option>)}<option value="TR">TR · 土耳其</option></select></label>
+        <label className="w-56 max-w-full"><span className="mb-1 block text-xs text-[var(--text-muted)]">Promotion 国家 / 地区</span><select className="h-10 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 text-sm" value={promoCountry} onChange={(e) => setPromoCountry(e.target.value)}><option value="">按支付路径默认</option>{Object.keys(countries).map((key) => <option key={key} value={key}>{key} · {countryNames[key] || key}</option>)}{!countries.TR && <option value="TR">TR · 土耳其</option>}</select></label>
         {linkType === "ideal" && <label className="w-60 max-w-full"><span className="mb-1 block text-xs text-[var(--text-muted)]">iDEAL 银行</span><select className="h-10 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 text-sm" value={idealBank} onChange={(e) => setIdealBank(e.target.value)}><option value="">在 iDEAL 支付页面选择</option></select></label>}
       </div>
       {linkType === "pix" && <div className="mt-3 grid gap-3 md:grid-cols-2"><select className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={pixAutoKind} onChange={(e) => setPixAutoKind(e.target.value)}><option value="cpf">主要生成 CPF</option><option value="mixed">CPF / CNPJ 交替</option><option value="cnpj">仅生成 CNPJ</option></select><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={pixTaxID} onChange={(e) => setPixTaxID(e.target.value)} placeholder="固定 CPF / CNPJ（选填）" /></div>}
