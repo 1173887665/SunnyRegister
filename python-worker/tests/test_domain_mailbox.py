@@ -360,7 +360,7 @@ def test_rebind_login_falls_back_to_headless_browser_after_sentinel_challenge(mo
     assert any("继续执行换绑接口" in message for message in logs)
 
 
-def test_rebind_login_falls_back_to_protocol_mailbox_after_browser_ls_failure(monkeypatch):
+def test_rebind_login_falls_back_to_browser_mailbox_after_browser_ls_failure(monkeypatch):
     account = account_from_row({
         "email": "original@example.com",
         "raw": "original@example.com----mail-password----client-id----refresh-token",
@@ -373,6 +373,7 @@ def test_rebind_login_falls_back_to_protocol_mailbox_after_browser_ls_failure(mo
     class Session:
         def __init__(self):
             self.closed = False
+            self.cookies = type("Cookies", (), {"jar": [], "clear": lambda self: None, "set": lambda self, *args, **kwargs: None})()
 
         def close(self):
             self.closed = True
@@ -387,34 +388,50 @@ def test_rebind_login_falls_back_to_protocol_mailbox_after_browser_ls_failure(mo
             self.kwargs = kwargs
             created.append(self)
 
+        def _new_session(self):
+            return Session()
+
         def run(self):
-            if len(created) == 1:
-                raise challenge
-            return {"access_token": "mailbox-access-token", "account_id": "mailbox-account-id"}
+            raise challenge
+
+    browser_result = {
+        "access_token": "mailbox-access-token",
+        "account_id": "mailbox-account-id",
+        "session_json": {"account": {"id": "mailbox-account-id"}},
+        "storage_state_json": {
+            "cookies": [
+                {"name": "oai-did", "value": "mailbox-device-id", "domain": ".chatgpt.com", "path": "/", "secure": True},
+                {"name": "session", "value": "mailbox-session", "domain": "chatgpt.com", "path": "/", "secure": True},
+            ],
+            "origins": [],
+        },
+    }
+    calls = []
+
+    def browser_login(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            raise RuntimeError("OpenAI 未提供邮箱验证码切换入口，且当前 LS 登录未完成")
+        return browser_result
 
     logs = []
     monkeypatch.setattr(rebind_module, "ProtocolRegistrationFlow", FakeFlow)
-    monkeypatch.setattr(
-        rebind_module,
-        "login_or_register",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            RuntimeError("OpenAI 未提供邮箱验证码切换入口，且当前 LS 登录未完成")
-        ),
-    )
+    monkeypatch.setattr(rebind_module, "login_or_register", browser_login)
 
     flow, result = rebind_module._login_flow(account, "http://proxy.example:8080", logs.append, keep_session=True)
 
     assert len(created) == 2
-    assert created[1].account.has_login_secret is False
-    assert created[1].kwargs["skip_mailbox"] is False
-    assert created[1].kwargs["challenge_strategy"] == "native_headless"
+    assert calls[1][0][0].has_login_secret is False
+    assert calls[1][1]["existing_account"] is True
+    assert calls[1][1]["require_refresh_token"] is False
+    assert calls[1][1]["execution_mode"] == "protocol_headless_fallback"
     assert flow is created[1]
     assert result["access_token"] == "mailbox-access-token"
-    assert result["execution_mode"] == "protocol_mailbox_fallback"
-    assert result["protocol_fallback"] == "mailbox_otp"
-    assert any("纯协议邮箱验证码登录" in message for message in logs)
+    assert result["execution_mode"] == "protocol_headless_fallback"
+    assert result["protocol_fallback"] == "mailbox_browser"
+    assert any("Camoufox 邮箱验证码登录" in message for message in logs)
 
 
 def test_rebind_login_does_not_mailbox_retry_when_account_is_deactivated():
     error = rebind_module.LoginSecretAuthenticationError("account_deactivated: account is disabled")
-    assert rebind_module._should_use_protocol_mailbox_fallback(error) is False
+    assert rebind_module._should_use_mailbox_browser_fallback(error) is False

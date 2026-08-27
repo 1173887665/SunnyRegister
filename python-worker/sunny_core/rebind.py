@@ -216,7 +216,14 @@ def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str, 
 
 def _login_flow(account: MailAccount, proxy: str, log: Callable[[str], None], *, keep_session: bool, should_cancel: Callable[[], bool] | None = None) -> tuple[ProtocolRegistrationFlow, dict[str, Any]]:
     if not account.has_login_secret:
-        raise RebindError("账户缺少 ChatGPT 密码或 2FA，无法执行协议换绑")
+        log("[认证] 未检测到完整 LS，直接使用 Camoufox 邮箱验证码登录")
+        return _browser_mailbox_fallback(
+            account,
+            proxy,
+            log,
+            keep_session=keep_session,
+            should_cancel=should_cancel,
+        )
     flow = ProtocolRegistrationFlow(
         account,
         proxy,
@@ -248,7 +255,7 @@ def _login_flow(account: MailAccount, proxy: str, log: Callable[[str], None], *,
                 execution_mode="protocol_headless_fallback",
             )
         except Exception as browser_exc:
-            if not _should_use_protocol_mailbox_fallback(browser_exc):
+            if not _should_use_mailbox_browser_fallback(browser_exc):
                 raise
             # A browser page can remain on /log-in/password without exposing
             # an email-code switch. Retry with the protocol OTP state machine
@@ -258,7 +265,7 @@ def _login_flow(account: MailAccount, proxy: str, log: Callable[[str], None], *,
                     flow.session.close()
             except Exception:
                 pass
-            return _protocol_mailbox_fallback(
+            return _browser_mailbox_fallback(
                 account,
                 proxy,
                 log,
@@ -321,8 +328,8 @@ def _hydrate_protocol_flow_from_browser(flow: ProtocolRegistrationFlow, result: 
     flow._last_access_token = access_token
 
 
-def _should_use_protocol_mailbox_fallback(error: Exception) -> bool:
-    """Identify a browser LS failure that can safely retry through protocol OTP."""
+def _should_use_mailbox_browser_fallback(error: Exception) -> bool:
+    """Identify an LS/browser failure that can safely retry with mailbox OTP."""
     message = str(error or "").lower()
     if any(
         marker in message
@@ -348,11 +355,14 @@ def _should_use_protocol_mailbox_fallback(error: Exception) -> bool:
             "密码登录未完成",
             "密码提交后认证页面未继续",
             "2fa 提交后认证页面未继续",
+            "interactive anti-bot challenge",
+            "upstream html challenge",
+            "requires an interactive",
         )
     )
 
 
-def _protocol_mailbox_fallback(
+def _browser_mailbox_fallback(
     account: MailAccount,
     proxy: str,
     log: Callable[[str], None],
@@ -360,28 +370,57 @@ def _protocol_mailbox_fallback(
     keep_session: bool,
     should_cancel: Callable[[], bool] | None,
 ) -> tuple[ProtocolRegistrationFlow, dict[str, Any]]:
-    """Retry an LS browser failure with the existing account's mailbox OTP.
+    """Retry an LS failure through the full Camoufox mailbox OTP flow.
 
-    Clearing only the ChatGPT password/TOTP fields forces the existing,
-    already-tested protocol email-verification state machine without changing
-    the mailbox credentials or account identity.
+    Clearing only the ChatGPT password/TOTP fields forces the browser login
+    state machine to use the mailbox credentials while preserving the account
+    identity. This path must remain browser-backed because an OTP login can
+    still require Turnstile or a device challenge.
     """
     mailbox_account = replace(account, chatgpt_password="", totp_secret="")
-    log("[认证] LS 浏览器登录未完成，改用纯协议邮箱验证码登录重试；保留当前账户邮箱凭证")
+    if account.has_login_secret:
+        log("[认证] LS 浏览器登录未完成，改用 Camoufox 邮箱验证码登录重试；保留当前账户邮箱凭证")
+    else:
+        log("[认证] 使用 Camoufox 邮箱验证码登录；保留当前账户邮箱凭证")
     flow = ProtocolRegistrationFlow(
         mailbox_account,
         proxy,
         log,
         existing_account=True,
         should_cancel=should_cancel,
-        challenge_strategy="native_headless",
+        challenge_strategy="sentinel_protocol",
         keep_session=keep_session,
         skip_mailbox=False,
     )
-    result = flow.run()
-    result["execution_mode"] = "protocol_mailbox_fallback"
-    result["protocol_fallback"] = "mailbox_otp"
-    log("[认证] 纯协议邮箱验证码登录完成，继续执行邮箱换绑")
+    result = None
+    for attempt in range(2):
+        try:
+            result = login_or_register(
+                mailbox_account,
+                proxy,
+                True,
+                log,
+                existing_account=True,
+                require_refresh_token=False,
+                should_cancel=should_cancel,
+                execution_mode="protocol_headless_fallback",
+            )
+            break
+        except Exception as exc:
+            message = str(exc or "").lower()
+            retryable = any(marker in message for marker in (
+                "challenge", "turnstile", "captcha", "cloudflare", "timed out", "timeout",
+                "connection reset", "connection refused", "curl: (", "tls",
+            ))
+            if attempt != 0 or not retryable:
+                raise
+            log("[认证] 邮箱验证码浏览器登录遇到临时挑战或网络错误，正在建立全新会话重试一次")
+    if result is None:
+        raise RebindError("邮箱验证码浏览器登录未返回结果")
+    _hydrate_protocol_flow_from_browser(flow, result)
+    result["execution_mode"] = "protocol_headless_fallback"
+    result["protocol_fallback"] = "mailbox_browser"
+    log("[认证] Camoufox 邮箱验证码登录完成，继续执行邮箱换绑")
     return flow, result
 
 
