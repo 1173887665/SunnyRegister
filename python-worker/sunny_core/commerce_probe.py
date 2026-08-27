@@ -22,6 +22,7 @@ TRIAL_URL = (
 )
 CHECKOUT_URL = "https://chatgpt.com/backend-api/payments/checkout"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0"
+STRIPE_HOSTED_PAYMENT_COUNTRIES = {"SG", "MY", "TH", "IN", "JP", "BR", "NL", "PL", "PT"}
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -65,6 +66,16 @@ def _payment_methods(payload: dict[str, Any]) -> list[str]:
     return methods
 
 
+def _merge_payment_methods(*groups: list[str]) -> list[str]:
+    methods: list[str] = []
+    for group in groups:
+        for method in group:
+            normalized = str(method or "").strip().lower()
+            if normalized and normalized not in methods:
+                methods.append(normalized)
+    return methods
+
+
 def _request_with_retry(request: Any) -> Any:
     last_error: Exception | None = None
     for attempt in range(2):
@@ -91,6 +102,7 @@ def _session(proxy_url: str) -> Any:
 
 def _checkout_probe_options(country: str, currency: str) -> dict[str, Any]:
     indonesia_gopay_probe = country.upper() == "ID" and currency.upper() == "IDR"
+    hosted_payment_probe = country.upper() in STRIPE_HOSTED_PAYMENT_COUNTRIES
     return {
         "plan": "plus",
         "country": country,
@@ -98,7 +110,7 @@ def _checkout_probe_options(country: str, currency: str) -> dict[str, Any]:
         "checkout_country": country,
         "checkout_currency": currency,
         "link_type": "gopay" if indonesia_gopay_probe else "paypal",
-        "checkout_ui_mode": "redirect" if indonesia_gopay_probe else "custom",
+        "checkout_ui_mode": "redirect" if indonesia_gopay_probe or hosted_payment_probe else "custom",
         "use_promo": False,
         "promo_campaign": "",
     }
@@ -114,16 +126,22 @@ def _task_style_checkout_probe(
     engine_dir = Path(__file__).resolve().parents[1] / "tools" / "pay153_checkout"
     if str(engine_dir) not in sys.path:
         sys.path.insert(0, str(engine_dir))
-    from app import checkout_payload, create_checkout
+    from app import (
+        checkout_payload,
+        create_checkout,
+        fetch_custom_checkout_session_with_retry,
+    )
 
     options = _checkout_probe_options(country, currency)
     payload = checkout_payload(options, {})
+    device_id = str(uuid.uuid4())
+    did = str(uuid.uuid4())
     created = create_checkout(
         access_token,
         payload,
         checkout_proxy_url,
-        str(uuid.uuid4()),
-        str(uuid.uuid4()),
+        device_id,
+        did,
         lambda _message: None,
         use_sen=True,
         use_so=True,
@@ -132,9 +150,42 @@ def _task_style_checkout_probe(
     data = created.get("data") or {}
     session_id = str(data.get("checkout_session_id") or "")
     try:
+        methods = _payment_methods(data)
+        if session_id.startswith("oaics_"):
+            processor = str(data.get("processor_entity") or "openai_ie").strip() or "openai_ie"
+            custom_data = fetch_custom_checkout_session_with_retry(
+                created.get("http"),
+                access_token,
+                session_id,
+                processor,
+                device_id,
+                attempts=3,
+                delay_seconds=0.5,
+            )
+            methods = _merge_payment_methods(methods, _payment_methods(custom_data))
+        elif session_id.startswith(("cs_live_", "cs_test_")):
+            import stripe_checkout as stripe
+
+            profile = stripe._profile(country)
+            publishable_key = str(data.get("publishable_key") or "") or stripe.verify_pk(
+                created.get("http"), session_id, lambda _message: None,
+            )
+            init_data, version, context = stripe.init_checkout(
+                created.get("http"), session_id, publishable_key, profile, lambda _message: None,
+            )
+            elements_data = stripe.fetch_elements_session(
+                created.get("http"), publishable_key, session_id, context, version, profile, lambda _message: None,
+            )
+            methods = _merge_payment_methods(
+                methods,
+                _payment_methods(init_data),
+                _payment_methods(elements_data),
+                [str(item) for item in context.get("payment_method_types") or []],
+                [str(item) for item in context.get("elements_payment_method_types") or []],
+            )
         return {
             "kind": session_checkout_kind(session_id),
-            "payment_methods": _payment_methods(data),
+            "payment_methods": methods,
             "http": 200,
             "error": "",
         }

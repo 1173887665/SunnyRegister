@@ -68,6 +68,8 @@ func normalizeSunnyPaymentMethod(value string) string {
 		"gcash_wallet": "gcash", "kakao": "kakao_pay", "kakaopay": "kakao_pay",
 		"nice_pay": "nicepay", "ideal_bank": "ideal", "momo_wallet": "momo",
 		"twint_wallet": "twint", "pix_qr": "pix", "upi_collect": "upi", "go_pay": "gopay",
+		"pay_now": "paynow", "grab_pay": "grabpay", "prompt_pay": "promptpay",
+		"pay_pay": "paypay", "przelewy24": "p24", "mbway": "mb_way",
 	}
 	if canonical := aliases[method]; canonical != "" {
 		method = canonical
@@ -93,7 +95,13 @@ func normalizeSunnyPaymentMethods(values []string) []string {
 			methods = append(methods, method)
 		}
 	}
-	priority := map[string]int{"paypal": 0, "card": 1, "link": 2, "gcash": 3, "gopay": 4, "kakao_pay": 5, "nicepay": 6, "ideal": 7, "momo": 8, "twint": 9, "pix": 10, "upi": 11}
+	priority := map[string]int{
+		"paypal": 0, "card": 1, "link": 2, "gcash": 3, "gopay": 4,
+		"kakao_pay": 5, "nicepay": 6, "ideal": 7, "momo": 8, "twint": 9,
+		"pix": 10, "upi": 11, "paynow": 12, "grabpay": 13, "fpx": 14,
+		"promptpay": 15, "paypay": 16, "konbini": 17, "boleto": 18,
+		"blik": 19, "p24": 20, "mb_way": 21,
+	}
 	sort.Slice(methods, func(i, j int) bool {
 		left, leftKnown := priority[methods[i]]
 		right, rightKnown := priority[methods[j]]

@@ -1,9 +1,11 @@
 from contextlib import nullcontext
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 from sunny_core.commerce_probe import (
     _checkout_probe_options,
     _payment_methods,
+    _task_style_checkout_probe,
     probe_commerce,
     probe_payment_methods,
     probe_trial,
@@ -179,3 +181,48 @@ def test_indonesia_payment_probe_matches_gopay_cs_live_mode() -> None:
     assert options["link_type"] == "gopay"
     assert options["checkout_ui_mode"] == "redirect"
     assert options["use_promo"] is False
+
+
+def test_local_stripe_payment_countries_use_hosted_checkout_mode() -> None:
+    countries = {
+        "SG": "SGD", "MY": "MYR", "TH": "THB", "IN": "INR", "JP": "JPY",
+        "BR": "BRL", "NL": "EUR", "PL": "PLN", "PT": "EUR",
+    }
+    for country, currency in countries.items():
+        options = _checkout_probe_options(country, currency)
+        assert options["checkout_ui_mode"] == "redirect"
+        assert options["checkout_country"] == country
+        assert options["checkout_currency"] == currency
+
+
+def test_task_style_probe_reads_stripe_init_and_elements_payment_methods() -> None:
+    http = MagicMock()
+    app = ModuleType("app")
+    app.checkout_payload = MagicMock(return_value={"billing_details": {"country": "PL", "currency": "PLN"}})
+    app.create_checkout = MagicMock(return_value={
+        "data": {"checkout_session_id": "cs_live_test", "payment_method_types": ["card"]},
+        "http": http,
+    })
+    app.fetch_custom_checkout_session_with_retry = MagicMock()
+
+    stripe = ModuleType("stripe_checkout")
+    stripe._profile = MagicMock(return_value={"browser_locale": "pl-PL"})
+    stripe.verify_pk = MagicMock(return_value="pk_live_test")
+    stripe.init_checkout = MagicMock(return_value=(
+        {"payment_method_types": ["card", "blik"]},
+        "2025-03-31.basil",
+        {"payment_method_types": ["card", "blik"], "elements_payment_method_types": ["card", "blik", "p24"]},
+    ))
+    stripe.fetch_elements_session = MagicMock(return_value={
+        "payment_method_specs": [{"type": "card"}, {"type": "blik"}, {"type": "p24"}],
+    })
+
+    with patch.dict("sys.modules", {"app": app, "stripe_checkout": stripe}):
+        result = _task_style_checkout_probe("token", "PL", "PLN", "http://pl-proxy")
+
+    assert result["kind"] == "cs_live"
+    assert result["payment_methods"] == ["card", "blik", "p24"]
+    app.checkout_payload.assert_called_once()
+    stripe.init_checkout.assert_called_once()
+    stripe.fetch_elements_session.assert_called_once()
+    http.close.assert_called_once()

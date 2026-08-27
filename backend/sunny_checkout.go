@@ -42,7 +42,12 @@ var checkoutProviderSet = func() map[string]bool {
 	return out
 }()
 
-var checkoutCountryCurrency = map[string]string{"US": "USD", "DE": "EUR", "FR": "EUR", "NL": "EUR", "IN": "INR", "ID": "IDR", "BR": "BRL", "VN": "VND", "GB": "GBP", "JP": "JPY", "KR": "KRW", "PH": "PHP", "AU": "AUD", "CA": "CAD", "CH": "CHF", "PL": "PLN"}
+var checkoutCountryCurrency = map[string]string{
+	"US": "USD", "DE": "EUR", "FR": "EUR", "NL": "EUR", "PT": "EUR",
+	"IN": "INR", "ID": "IDR", "BR": "BRL", "VN": "VND", "GB": "GBP",
+	"JP": "JPY", "KR": "KRW", "PH": "PHP", "SG": "SGD", "MY": "MYR",
+	"TH": "THB", "AU": "AUD", "CA": "CAD", "CH": "CHF", "PL": "PLN",
+}
 
 type sunnyCheckoutRequest struct {
 	SystemAT         bool     `json:"system_at"`

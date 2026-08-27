@@ -69,8 +69,8 @@ const pathLabels: Record<string, string> = {
   hosted: "官方长链", ph_short: "菲律宾短链", paypal: "PayPal", ideal: "iDEAL", upi: "UPI",
   pix: "PIX", twint: "TWINT", momo: "MoMo", gcash: "GCash", gopay: "GoPay", kakao: "Kakao Pay",
 };
-const paymentMethodOptions = ["paypal", "card", "link", "gcash", "gopay", "kakao_pay", "nicepay", "ideal", "momo", "twint", "pix", "upi"];
-const paymentMethodLabels: Record<string, string> = { paypal: "PayPal", card: "Card", link: "Link", gcash: "GCash", gopay: "GoPay", kakao_pay: "Kakao Pay", nicepay: "Nicepay", ideal: "iDEAL", momo: "MoMo", twint: "TWINT", pix: "PIX", upi: "UPI" };
+const paymentMethodOptions = ["paypal", "card", "link", "gcash", "gopay", "kakao_pay", "nicepay", "ideal", "momo", "twint", "pix", "upi", "paynow", "grabpay", "fpx", "promptpay", "paypay", "konbini", "boleto", "blik", "p24", "mb_way"];
+const paymentMethodLabels: Record<string, string> = { paypal: "PayPal", card: "Card", link: "Link", gcash: "GCash", gopay: "GoPay", kakao_pay: "Kakao Pay", nicepay: "Nicepay", ideal: "iDEAL", momo: "MoMo", twint: "TWINT", pix: "PIX", upi: "UPI", paynow: "PayNow", grabpay: "GrabPay", fpx: "FPX", promptpay: "PromptPay", paypay: "PayPay", konbini: "Konbini", boleto: "Boleto", blik: "BLIK", p24: "P24", mb_way: "MB WAY" };
 
 type BadgeTone = "slate" | "blue" | "green" | "cyan" | "red" | "amber" | "violet" | "rose";
 const badgeTones: Record<BadgeTone, string> = {

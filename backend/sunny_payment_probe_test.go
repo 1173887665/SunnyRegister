@@ -10,8 +10,8 @@ import (
 )
 
 func TestSunnyPaymentMethodNormalizationAndFilter(t *testing.T) {
-	methods := normalizeSunnyPaymentMethods([]string{"cpmt_paypal", "credit-card", "KakaoPay", "paypal", "iDEAL", "go-pay", "bank_transfer_x"})
-	if got := strings.Join(methods, ","); got != "paypal,card,gopay,kakao_pay,ideal,bank_transfer_x" {
+	methods := normalizeSunnyPaymentMethods([]string{"cpmt_paypal", "credit-card", "KakaoPay", "paypal", "iDEAL", "go-pay", "przelewy24", "mbway", "bank_transfer_x"})
+	if got := strings.Join(methods, ","); got != "paypal,card,gopay,kakao_pay,ideal,p24,mb_way,bank_transfer_x" {
 		t.Fatalf("methods=%q", got)
 	}
 	if !sunnyHasAllPaymentMethods(methods, []string{"paypal", "card"}) {
@@ -23,8 +23,14 @@ func TestSunnyPaymentMethodNormalizationAndFilter(t *testing.T) {
 }
 
 func TestSunnyPaymentProbeSupportsIndonesiaCurrencyAndDynamicMethods(t *testing.T) {
-	if got := checkoutCountryCurrency["ID"]; got != "IDR" {
-		t.Fatalf("ID currency=%q", got)
+	expected := map[string]string{
+		"SG": "SGD", "MY": "MYR", "TH": "THB", "IN": "INR", "JP": "JPY",
+		"BR": "BRL", "NL": "EUR", "PL": "PLN", "PT": "EUR", "ID": "IDR",
+	}
+	for country, currency := range expected {
+		if got := checkoutCountryCurrency[country]; got != currency {
+			t.Fatalf("%s currency=%q, want %q", country, got, currency)
+		}
 	}
 	if got := strings.Join(normalizeSunnyPaymentMethods([]string{"cpmt_gopay", "future_wallet_v2"}), ","); got != "gopay,future_wallet_v2" {
 		t.Fatalf("dynamic methods=%q", got)

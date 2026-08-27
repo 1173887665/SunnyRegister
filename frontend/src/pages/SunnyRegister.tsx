@@ -3622,7 +3622,7 @@ function CheckoutBadge({ t, row }: { t: AnyObj; row: AnyObj }) {
   if (!trialCheckable(row) || !row.checkout_kind || row.checkout_kind === "unknown") return <span className="text-slate-400">-</span>;
   return <span className="font-semibold text-sky-600 dark:text-sky-400">{checkoutKindLabel(t, row.checkout_kind)}</span>;
 }
-const PAYMENT_METHOD_LABELS: Record<string,string> = {paypal:"PayPal",card:"Card",link:"Link",gcash:"GCash",gopay:"GoPay",kakao_pay:"Kakao Pay",nicepay:"Nicepay",ideal:"iDEAL",momo:"MoMo",twint:"TWINT",pix:"PIX",upi:"UPI"};
+const PAYMENT_METHOD_LABELS: Record<string,string> = {paypal:"PayPal",card:"Card",link:"Link",gcash:"GCash",gopay:"GoPay",kakao_pay:"Kakao Pay",nicepay:"Nicepay",ideal:"iDEAL",momo:"MoMo",twint:"TWINT",pix:"PIX",upi:"UPI",paynow:"PayNow",grabpay:"GrabPay",fpx:"FPX",promptpay:"PromptPay",paypay:"PayPay",konbini:"Konbini",boleto:"Boleto",blik:"BLIK",p24:"P24",mb_way:"MB WAY"};
 function paymentMethodLabel(value: any) {
   const key=String(value||"").trim().toLowerCase();
   return PAYMENT_METHOD_LABELS[key] || key.replace(/_/g," ").replace(/\b\w/g,(char)=>char.toUpperCase());
