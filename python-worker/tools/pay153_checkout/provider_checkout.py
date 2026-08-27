@@ -7,7 +7,7 @@ import random
 import re
 import time
 import uuid
-from urllib.parse import parse_qs, quote, unquote, urlsplit
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 from datetime import date, timedelta
 from typing import Any, Callable
 
@@ -23,6 +23,7 @@ PROVIDER_DEFAULTS = {
     "momo": {"country": "VN", "currency": "VND"},
     "gcash": {"country": "PH", "currency": "PHP"},
     "gopay": {"country": "ID", "currency": "IDR"},
+    "blik": {"country": "PL", "currency": "PLN"},
     "twint": {"country": "CH", "currency": "CHF"},
 }
 
@@ -308,6 +309,7 @@ def default_billing(country: str, email: str = "", tax_id: str = "", geo: dict[s
         "JP": ("Haruto Sato", "1-1 Marunouchi", "Chiyoda", "100-0005", "Tokyo"),
         "KR": ("Minjun Kim", "30 Eulji-ro", "Seoul", "04533", "Seoul"),
         "PH": ("Sofia Torres", "1000 Roxas Boulevard", "Manila", "1000", "Metro Manila"),
+        "PL": ("Jan Kowalski", "Marszalkowska 1", "Warszawa", "00-001", "Mazowieckie"),
         "BA": ("Adnan Hadzic", "Zmaja od Bosne 7", "Sarajevo", "71000", ""),
         "CH": ("Luca Meier", "Bahnhofstrasse 1", "Zurich", "8001", "ZH"),
     }
@@ -322,6 +324,7 @@ def default_billing(country: str, email: str = "", tax_id: str = "", geo: dict[s
         "ID": ["Budi Santoso", "Agus Wijaya", "Siti Rahma", "Dewi Lestari"],
         "KR": ["Minjun Kim", "Jihoon Lee", "Seo-yeon Kim", "Ji-woo Park"],
         "PH": ["Sofia Torres", "Maria Santos", "Angela Reyes", "Paolo Garcia", "Miguel Cruz"],
+        "PL": ["Jan Kowalski", "Piotr Nowak", "Anna Wisniewska", "Katarzyna Wojcik"],
         "VN": ["Nguyen Minh Anh", "Tran Quoc Bao", "Le Thu Ha", "Pham Gia Huy"],
         "CH": ["Luca Meier", "Noah Keller", "Lea Schmid", "Mia Frei"],
     }
@@ -412,6 +415,11 @@ def default_billing(country: str, email: str = "", tax_id: str = "", geo: dict[s
             postal = "1000"
         city = str(city or "Manila").strip() or "Manila"
         state = str(state or "Metro Manila").strip() or "Metro Manila"
+    if country == "PL":
+        postal_digits = re.sub(r"\D", "", str(postal or ""))
+        postal = f"{postal_digits[:2]}-{postal_digits[2:]}" if len(postal_digits) == 5 else "00-001"
+        city = str(city or "Warszawa").strip() or "Warszawa"
+        state = str(state or "Mazowieckie").strip() or "Mazowieckie"
     if country not in rows and address_source == "country_profile":
         line1 = "1 Main Street"
         postal = geo.get("postal") or "00000"
@@ -1105,6 +1113,35 @@ def extract_provider_result(data: dict, provider: str) -> dict[str, Any]:
     return result
 
 
+def blik_hosted_payment_url(value: str, session_id: str = "") -> str:
+    """Build a public Hosted Checkout URL with BLIK selected."""
+    raw = str(value or "").strip()
+    if not raw and str(session_id or "").startswith("cs_"):
+        raw = f"https://pay.openai.com/c/pay/{session_id}"
+    parsed = urlsplit(raw)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.update({
+        "redirect_pm_type": "blik",
+        "lid": str(uuid.uuid4()),
+        "ui_mode": "custom",
+    })
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+
+
+def is_valid_blik_hosted_payment_url(value: str, session_id: str = "") -> bool:
+    parsed = urlsplit(str(value or "").strip())
+    host = parsed.netloc.lower().rstrip(".")
+    path = parsed.path.lower()
+    expected_session = str(session_id or "").lower()
+    return (
+        parsed.scheme.lower() == "https"
+        and host in {"pay.openai.com", "checkout.stripe.com"}
+        and path.startswith("/c/pay/cs_")
+        and (not expected_session or expected_session in path)
+        and parse_qs(parsed.query).get("redirect_pm_type", [""])[0].lower() == "blik"
+    )
+
+
 def stripe_to_provider(
     http,
     session_id: str,
@@ -1202,9 +1239,29 @@ def stripe_to_provider(
             )
     ctx["billing"] = billing
     sc.update_tax_region(http, session_id, pk, version, ctx, billing, profile, log)
+    if provider == "blik":
+        original_checkout_amount = ctx.get("original_checkout_amount")
+        init_data, version, ctx = sc.init_checkout(http, session_id, pk, profile, log)
+        ctx["billing"] = billing
+        ctx["original_checkout_amount"] = original_checkout_amount
+        methods = ctx.get("payment_method_types") or []
+        if "blik" not in methods:
+            raise RuntimeError(
+                f"BLIK_METHOD_UNAVAILABLE: PL Checkout 在 taxes 后未开放 BLIK，可用方式：{', '.join(methods) or 'card'}"
+            )
+        sc.fetch_elements_session(http, pk, session_id, ctx, version, profile, log)
     checkout_amount = ctx.get("checkout_amount")
     if ctx.get("original_checkout_amount") in (None, "", 0, "0"):
         ctx["original_checkout_amount"] = checkout_amount
+    if provider == "blik" and require_zero_due:
+        try:
+            blik_zero_due = int(str(checkout_amount)) == 0
+        except (TypeError, ValueError):
+            blik_zero_due = str(checkout_amount).strip() in {"0", "0.0", "0.00"}
+        if not blik_zero_due:
+            raise RuntimeError(
+                f"BLIK_ZERO_DUE_REQUIRED: taxes 后今日应付金额不是 0：amount={checkout_amount}"
+            )
     promo_applied = None
     if require_zero_due:
         if late_promo:
@@ -1234,6 +1291,29 @@ def stripe_to_provider(
             else:
                 log("[promo] Plus 首月免费校验通过：Stripe 今日应付 amount=0")
     sc.snapshot_billing(chatgpt_http, access_token, session_id, processor, billing, log)
+
+    if provider == "blik":
+        payment_url = blik_hosted_payment_url(
+            str(ctx.get("stripe_hosted_url") or init_data.get("stripe_hosted_url") or ""),
+            session_id,
+        )
+        if not is_valid_blik_hosted_payment_url(payment_url, session_id):
+            raise RuntimeError(
+                "BLIK_PAYMENT_LINK_INVALID: Stripe 未返回当前 BLIK Checkout 对应的 Hosted 支付页面"
+            )
+        log("[blik] BLIK 已开放；返回 Hosted 支付页，由付款人在页面输入银行 App 生成的动态码")
+        return {
+            "provider": provider,
+            "provider_redirect_url": payment_url,
+            "blik_payment_url": payment_url,
+            "payment_method_types": ctx.get("payment_method_types") or methods,
+            "processor_entity": processor,
+            "stripe_publishable_key": pk,
+            "checkout_amount": checkout_amount,
+            "checkout_currency": str(ctx.get("currency") or "").upper(),
+            "promo_requested": require_zero_due,
+            "promo_applied": promo_applied,
+        }
 
     if provider == "pix":
         log("[pix] 第 6/7 步：创建独立 PIX PaymentMethod")

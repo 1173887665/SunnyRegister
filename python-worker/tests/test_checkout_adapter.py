@@ -122,6 +122,34 @@ class CheckoutAdapterTests(unittest.TestCase):
         self.assertEqual(options["exit_proxies"], ["id-checkout-proxy"])
         self.assertEqual(options["exit_proxy_country"], "ID")
 
+    def test_start_checkout_defaults_blik_to_poland_and_honors_proxy_countries(self) -> None:
+        with patch.object(sunny_adapter.STORE, "create", create=True, return_value="job-blik") as create:
+            sunny_adapter.start_checkout({
+                "token": "token",
+                "link_type": "blik",
+                "country": "DE",
+                "promo_country": "NL",
+                "currency": "EUR",
+                "checkout_proxies": ["de-checkout-proxy"],
+                "promotion_proxies": ["nl-promotion-proxy"],
+            })
+
+        options = create.call_args.args[0]
+        self.assertEqual(options["country"], "PL")
+        self.assertEqual(options["currency"], "PLN")
+        self.assertEqual(options["entry_proxy_country"], "NL")
+        self.assertEqual(options["exit_proxy_country"], "DE")
+        self.assertEqual(options["entry_proxies"], ["nl-promotion-proxy"])
+        self.assertEqual(options["exit_proxies"], ["de-checkout-proxy"])
+
+    def test_start_checkout_defaults_blik_proxy_countries_to_poland(self) -> None:
+        with patch.object(sunny_adapter.STORE, "create", create=True, return_value="job-blik-default") as create:
+            sunny_adapter.start_checkout({"token": "token", "link_type": "blik"})
+
+        options = create.call_args.args[0]
+        self.assertEqual(options["entry_proxy_country"], "PL")
+        self.assertEqual(options["exit_proxy_country"], "PL")
+
     def test_checkout_status_returns_ordered_sanitized_logs(self) -> None:
         token = "eyJ" + "a" * 80
         job = {
@@ -215,6 +243,26 @@ class CheckoutAdapterTests(unittest.TestCase):
 
         self.assertEqual(result["result"]["payment_link"], midtrans_url)
         self.assertEqual(result["result"]["gopay_midtrans_url"], midtrans_url)
+
+    def test_checkout_status_preserves_blik_payment_url(self) -> None:
+        blik_url = "https://pay.openai.com/c/pay/cs_live_123?redirect_pm_type=blik"
+        job = {
+            "status": "done",
+            "percent": 100,
+            "text": "BLIK 提取完成",
+            "error": "",
+            "logs": [],
+            "result": {
+                "link_type": "blik",
+                "provider_redirect_url": blik_url,
+                "blik_payment_url": blik_url,
+            },
+        }
+        with patch.object(sunny_adapter.STORE, "get", return_value=job):
+            result = sunny_adapter.checkout_status("job-blik")
+
+        self.assertEqual(result["result"]["payment_link"], blik_url)
+        self.assertEqual(result["result"]["blik_payment_url"], blik_url)
 
 
 if __name__ == "__main__":

@@ -42,6 +42,7 @@ def start_checkout(payload: dict[str, Any]) -> str:
     default_country, default_currency = {
         "gcash": ("PH", "PHP"),
         "gopay": ("ID", "IDR"),
+        "blik": ("PL", "PLN"),
     }.get(link_type, ("US", "USD"))
     options = {
         "token_raw": str(payload.get("token") or ""),
@@ -79,13 +80,18 @@ def start_checkout(payload: dict[str, Any]) -> str:
         "paired_proxy_rotation": True,
         "use_sen": True,
         "use_so": True,
-        "entry_proxy_country": str(payload.get("promo_country") or payload.get("country") or "US").upper(),
+        "entry_proxy_country": str(payload.get("promo_country") or payload.get("country") or default_country).upper(),
         "exit_proxy_country": str(payload.get("country") or default_country).upper(),
     }
     if options["link_type"] == "gcash":
         options["country"] = options["checkout_country"] = "PH"
         options["currency"] = options["checkout_currency"] = "PHP"
         options["entry_proxy_country"] = options["exit_proxy_country"] = "PH"
+    if options["link_type"] == "blik":
+        # BLIK billing is always Polish. Proxy-country hints remain driven by
+        # the two front-end selectors, so an explicit user route still wins.
+        options["country"] = options["checkout_country"] = "PL"
+        options["currency"] = options["checkout_currency"] = "PLN"
     if options["link_type"] == "ph_short" and options["use_promo"]:
         options["entry_proxy_country"] = str(payload.get("promo_country") or "TR").upper()
     return STORE.create(options, internal=True)
@@ -100,7 +106,7 @@ def checkout_status(job_id: str) -> dict[str, Any] | None:
         (
             str(raw.get(key) or "")
             for key in (
-                "paypal_link", "provider_redirect_url", "ideal_redirect_url",
+                "paypal_link", "blik_payment_url", "provider_redirect_url", "ideal_redirect_url",
                 "redirect_url", "checkout_url", "short_link", "url", "link",
             )
             if raw.get(key)
@@ -152,6 +158,7 @@ def checkout_status(job_id: str) -> dict[str, Any] | None:
         "gcash_net_auth_id": str(raw.get("gcash_net_auth_id") or ""),
         "gcash_client_id": str(raw.get("gcash_client_id") or ""),
         "gopay_midtrans_url": str(raw.get("gopay_midtrans_url") or ""),
+        "blik_payment_url": str(raw.get("blik_payment_url") or ""),
         "payment_status": str(raw.get("payment_status") or ""),
         "payment_callback_path": str(raw.get("payment_callback_path") or ""),
         "payment_expires_at": raw.get("payment_expires_at"),

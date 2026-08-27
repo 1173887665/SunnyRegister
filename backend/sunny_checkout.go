@@ -31,6 +31,7 @@ var checkoutProviders = []map[string]string{
 	{"value": "momo", "label": "MoMo", "hint": "越南电子钱包", "country": "VN", "currency": "VND"},
 	{"value": "gcash", "label": "GCash", "hint": "菲律宾电子钱包", "country": "PH", "currency": "PHP"},
 	{"value": "gopay", "label": "GoPay", "hint": "印尼 Midtrans 跳转", "country": "ID", "currency": "IDR"},
+	{"value": "blik", "label": "BLIK", "hint": "波兰银行动态码支付", "country": "PL", "currency": "PLN"},
 	{"value": "kakao", "label": "Kakao Pay", "hint": "韩国 Nicepay 跳转", "country": "KR", "currency": "KRW"},
 }
 
@@ -820,6 +821,20 @@ func isSunnyGopayMidtransURL(value string) bool {
 		sunnyGopayMidtransPath.MatchString(parsed.EscapedPath())
 }
 
+func isSunnyBlikPaymentURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	path := strings.ToLower(parsed.EscapedPath())
+	if host == "pay.openai.com" || host == "checkout.stripe.com" {
+		return strings.HasPrefix(path, "/c/pay/cs_") && strings.EqualFold(parsed.Query().Get("redirect_pm_type"), "blik")
+	}
+	return (host == "chatgpt.com" || host == "chat.openai.com") &&
+		strings.Contains(path, "/checkout/") && strings.Contains(path, "/oaics_")
+}
+
 func sanitizeCheckoutError(value string) string {
 	clean := checkoutSecretPattern.ReplaceAllStringFunc(value, func(match string) string {
 		if strings.HasPrefix(strings.ToLower(match), "http") {
@@ -836,6 +851,7 @@ func sanitizeCheckoutError(value string) string {
 func extractSunnyCheckoutResult(v map[string]any, provider string) map[string]any {
 	out := map[string]any{"link_type": provider, "checkout_session_id": "", "payment_link": "", "qr_data": "", "qr_image": "", "raw_provider": ""}
 	gopayMidtransURL := ""
+	blikPaymentURL := ""
 	if provider == "gcash" {
 		out["qr_status"] = ""
 		out["qr_expires_at"] = nil
@@ -856,6 +872,9 @@ func extractSunnyCheckoutResult(v map[string]any, provider string) map[string]an
 				if s, ok := val.(string); ok {
 					if provider == "gopay" && isSunnyGopayMidtransURL(s) {
 						gopayMidtransURL = strings.TrimSpace(s)
+					}
+					if provider == "blik" && (lk == "blik_payment_url" || lk == "provider_redirect_url") && isSunnyBlikPaymentURL(s) {
+						blikPaymentURL = strings.TrimSpace(s)
 					}
 					if strings.Contains(lk, "checkout_session") || lk == "session_id" {
 						out["checkout_session_id"] = s
@@ -907,6 +926,9 @@ func extractSunnyCheckoutResult(v map[string]any, provider string) map[string]an
 	walk(v)
 	if gopayMidtransURL != "" {
 		out["payment_link"] = gopayMidtransURL
+	}
+	if blikPaymentURL != "" {
+		out["payment_link"] = blikPaymentURL
 	}
 	if text(out["payment_link"]) == "" {
 		sid := text(out["checkout_session_id"])

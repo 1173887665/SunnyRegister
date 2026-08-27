@@ -263,6 +263,20 @@ def normalize_hosted_checkout_url(url: str, session_id: str = "") -> str:
     return value
 
 
+def is_valid_oaics_blik_payment_url(url: str, session_id: str) -> bool:
+    parsed = urlsplit(str(url or "").strip())
+    host = parsed.netloc.lower().rstrip(".")
+    path = parsed.path.lower()
+    expected_session = str(session_id or "").lower()
+    return (
+        parsed.scheme.lower() == "https"
+        and host in {"chatgpt.com", "chat.openai.com"}
+        and "/checkout/" in path
+        and expected_session.startswith("oaics_")
+        and f"/{expected_session}" in path
+    )
+
+
 PLANS = {
     "plus": "chatgptplusplan",
     "pro": "chatgptpro",
@@ -694,7 +708,7 @@ def checkout_payload(options: dict, meta: dict) -> dict[str, Any]:
             "auto_top_up_enabled": True,
         }
     elif plan == "plus" and options.get("use_promo") and (
-        options.get("link_type") not in {"pix", "momo", "gcash", "gopay", "paypal", "upi", "ideal", "twint"}
+        options.get("link_type") not in {"pix", "momo", "gcash", "gopay", "blik", "paypal", "upi", "ideal", "twint"}
         or options.get("promo_on_create")
     ):
         common["promo_campaign"] = {
@@ -1208,7 +1222,7 @@ def custom_payment_method_id_for(payload: dict[str, Any], provider: str) -> str:
         return str(matched[0].get("id") or "")
     if len(methods) == 1:
         serialized = json.dumps(methods[0], ensure_ascii=False).lower()
-        known_providers = {"paypal", "gcash", "gopay", "ideal", "momo", "twint", "pix", "upi", "kakao"}
+        known_providers = {"paypal", "gcash", "gopay", "blik", "ideal", "momo", "twint", "pix", "upi", "kakao"}
         if not any(name in serialized for name in known_providers):
             return str(methods[0].get("id") or "")
     return ""
@@ -3163,6 +3177,20 @@ class JobStore:
                 if payment_country != "ID":
                     self.log(job_id, f"GoPay Checkout 代理当前为 {payment_country or '?'}；目标为 ID，继续由上游校验")
                 self.ensure_not_cancelled(job_id)
+            if provider == "blik":
+                self.update(job_id, percent=9, text="校验 BLIK 波兰支付代理")
+                main_country, main_region = proxy_country(entry_proxy, options.get("entry_proxy_country"))
+                payment_country, payment_region = proxy_country(exit_proxy, options.get("exit_proxy_country"))
+                country = options["country"] = options["checkout_country"] = "PL"
+                options["currency"] = options["checkout_currency"] = "PLN"
+                self.log(
+                    job_id,
+                    f"BLIK 路由：Promotion={main_country}/{main_region}，"
+                    f"Checkout={payment_country}/{payment_region}，账单=PL/PLN",
+                )
+                if payment_country != "PL" or main_country != "PL":
+                    self.log(job_id, "BLIK 检测到用户指定的非默认代理国家；保留当前 Checkout/Promotion 路由，由上游判断支付方式")
+                self.ensure_not_cancelled(job_id)
             if provider == "paypal":
                 self.update(job_id, percent=9, text="第 1/7 步：校验 PayPal 优惠识别代理与支付代理")
                 main_country, main_region = proxy_country(entry_proxy)
@@ -3327,7 +3355,9 @@ class JobStore:
                         "第 2/7 步：使用 VN 代理创建 MoMo Checkout" if provider == "momo" else (
                             "第 2/7 步：使用 PH 代理创建原生带优惠的 GCash Checkout"
                             if provider == "gcash" and promo_requested else (
-                                "使用 ID 代理创建 GoPay Checkout" if provider == "gopay" else "创建 OpenAI Checkout"
+                                "使用 ID 代理创建 GoPay Checkout" if provider == "gopay" else (
+                                    "使用 Checkout代理池创建 PL/PLN BLIK Checkout" if provider == "blik" else "创建 OpenAI Checkout"
+                                )
                             )
                         )
                     )
@@ -3346,6 +3376,8 @@ class JobStore:
                 self.log(job_id, "GCash 设置：单个 PH Checkout 代理与同一 HTTP 会话贯穿创建、优惠、taxes、confirm 和 start")
             elif provider == "gopay":
                 self.log(job_id, "GoPay 设置：Checkout代理池创建 ID/IDR Checkout 并贯穿 taxes、confirm 和 start；Promotion代理池负责试用检查与优惠更新")
+            elif provider == "blik":
+                self.log(job_id, "BLIK 设置：Checkout代理池创建 PL/PLN Checkout 并提交 taxes；Promotion代理池负责试用检查与优惠更新")
             elif provider == "paypal" and promo_requested:
                 self.log(job_id, f"PayPal 设置：Promotion代理池用于优惠检查，Checkout代理池创建 {country}/{options['currency']} Checkout")
             elif provider == "upi":
@@ -3383,7 +3415,7 @@ class JobStore:
             provider_chatgpt_http = chatgpt_http
             promo_chatgpt_http = chatgpt_http
             promotion_proxy = promotion_route_proxy(options, provider, entry_proxy, exit_proxy)
-            if provider in {"paypal", "upi", "ideal", "twint", "gopay"} or (
+            if provider in {"paypal", "upi", "ideal", "twint", "gopay", "blik"} or (
                 options.get("named_proxy_pools") and promo_requested and provider != "gcash"
             ):
                 promo_chatgpt_http = sc.build_http(promotion_proxy)
@@ -3408,6 +3440,8 @@ class JobStore:
                     self.log(job_id, "TWINT 支付处理使用 Checkout代理池（CH/CHF），优惠更新使用 Promotion代理池")
                 elif provider == "gopay":
                     self.log(job_id, "GoPay Checkout、taxes、confirm 与 start 使用 Checkout代理池（ID/IDR），优惠更新使用 Promotion代理池")
+                elif provider == "blik":
+                    self.log(job_id, "BLIK Checkout、taxes 与支付页面读取使用 Checkout代理池，优惠更新使用 Promotion代理池")
                 elif provider in {"pix", "momo", "hosted"}:
                     self.log(job_id, f"{provider.upper()} 优惠更新使用 Promotion代理池，Checkout 与支付处理使用 Checkout代理池")
             session_id = checkout_data.get("checkout_session_id") or ""
@@ -3493,6 +3527,91 @@ class JobStore:
                     str(checkout_data.get("processor_entity") or "").strip()
                     or ("openai_llc" if country == "US" else "openai_ie")
                 )
+                if provider == "blik":
+                    self.update(job_id, percent=58, text="正在读取 OAICS BLIK 支付方式")
+                    custom_state = fetch_custom_checkout_session_with_retry(
+                        chatgpt_http, token, session_id, custom_processor, device_id,
+                        log=lambda message: self.log(job_id, message), attempts=6,
+                        required_provider="blik",
+                        preserve_payment_methods_from=checkout_data,
+                    )
+                    custom_amount = custom_checkout_amount_minor(custom_state)
+                    custom_currency = custom_checkout_currency(custom_state) or "PLN"
+                    if promo_requested and custom_amount != 0:
+                        self.update(job_id, percent=66, text="正在为 OAICS BLIK 应用优惠")
+                        updated = update_checkout_promo(
+                            promo_chatgpt_http, token, session_id, custom_processor,
+                            options.get("promo_campaign") or "plus-1-month-free",
+                            lambda message: self.log(job_id, message), device_id=device_id,
+                        )
+                        updated_amount = custom_checkout_amount_minor(updated)
+                        if updated_amount is not None:
+                            custom_amount = updated_amount
+                        custom_currency = custom_checkout_currency(updated) or custom_currency
+                        custom_state = fetch_custom_checkout_session_with_retry(
+                            chatgpt_http, token, session_id, custom_processor, device_id,
+                            log=lambda message: self.log(job_id, message), attempts=6,
+                            required_provider="blik",
+                            preserve_payment_methods_from=custom_state,
+                        )
+                        refreshed_amount = custom_checkout_amount_minor(custom_state)
+                        if refreshed_amount is not None:
+                            custom_amount = refreshed_amount
+                        custom_currency = custom_checkout_currency(custom_state) or custom_currency
+
+                    blik_billing = default_billing("PL", meta.get("email") or "")
+                    self.update(job_id, percent=74, text="正在提交 PL BLIK 账单信息")
+                    tax_checkout = submit_custom_checkout_taxes(
+                        chatgpt_http, token, session_id, custom_processor,
+                        blik_billing, custom_currency, device_id,
+                    )
+                    custom_state = fetch_custom_checkout_session_with_retry(
+                        chatgpt_http, token, session_id, custom_processor, device_id,
+                        log=lambda message: self.log(job_id, message), attempts=6,
+                        required_provider="blik",
+                        preserve_payment_methods_from=custom_state,
+                    )
+                    refreshed_amount = custom_checkout_amount_minor(custom_state)
+                    if refreshed_amount is None and tax_checkout:
+                        refreshed_amount = custom_checkout_amount_minor(tax_checkout)
+                    if refreshed_amount is not None:
+                        custom_amount = refreshed_amount
+                    custom_currency = custom_checkout_currency(custom_state) or custom_currency
+                    methods = custom_payment_methods_for(custom_state, "blik")
+                    if not methods:
+                        raise RuntimeError(
+                            "BLIK_METHOD_UNAVAILABLE: PL Checkout 在 taxes 后未返回明确的 BLIK 支付方式"
+                        )
+                    if promo_requested and custom_amount != 0:
+                        raise RuntimeError(
+                            f"BLIK_ZERO_DUE_REQUIRED: BLIK 优惠未生效或金额未知：amount={custom_amount} {custom_currency}"
+                        )
+                    custom_url = str(checkout_data.get("checkout_url") or "").strip()
+                    if not is_valid_oaics_blik_payment_url(custom_url, session_id):
+                        custom_url = f"https://chatgpt.com/checkout/{custom_processor}/{session_id}"
+                    if not is_valid_oaics_blik_payment_url(custom_url, session_id):
+                        raise RuntimeError("BLIK_PAYMENT_LINK_INVALID: 无法生成当前 OAICS BLIK Checkout 的公共支付页面")
+                    method_id = str(methods[0].get("id") or "")
+                    result.update({
+                        "link_type": "blik",
+                        "checkout_provider": "open_ai_oaics",
+                        "checkout_ui_mode": "custom",
+                        "processor_entity": custom_processor,
+                        "custom_payment_method_id": method_id,
+                        "payment_method_type": "blik",
+                        "provider_redirect_url": custom_url,
+                        "blik_payment_url": custom_url,
+                        "short_link": custom_url,
+                        "checkout_url": custom_url,
+                        "checkout_amount": custom_amount,
+                        "amount_currency": custom_currency,
+                        "amount_verification": "verified_zero" if custom_amount == 0 else "nonzero",
+                        "promo_applied": custom_amount == 0 if promo_requested else None,
+                        "expires_at": int(time.time()) + 1800,
+                    })
+                    self.log(job_id, "BLIK 支付方式已确认；支付页将由付款人输入银行 App 生成的动态码")
+                    self.update(job_id, percent=100, text="BLIK 支付页面提取完成", status="done", result=result)
+                    return
                 if provider == "gopay":
                     self.update(job_id, percent=58, text="正在读取 GoPay 自定义支付方式")
                     stage1_gopay_method_id = custom_payment_method_id_for(checkout_data, "gopay")
@@ -4420,6 +4539,8 @@ class JobStore:
                     self.log(job_id, "TWINT 已确认可用，正在应用首月优惠并校验 CHF 今日应付金额")
                 elif provider == "gopay":
                     self.log(job_id, "GoPay 已确认可用，正在应用优惠并校验 IDR 今日应付金额")
+                elif provider == "blik":
+                    self.log(job_id, "BLIK 已确认可用，正在通过 Promotion代理池应用优惠并校验 PLN 今日应付金额")
                 advance_progress(70, "正在应用优惠")
                 campaign = options.get("promo_campaign") or "plus-1-month-free"
                 if provider == "paypal":
@@ -4462,7 +4583,7 @@ class JobStore:
                 # 卡住时，额外 Sentinel 上下文会让批准结果与 Stripe
                 # submission 不同步。
                 approve_callback=None if provider == "paypal" else approve_cb,
-                apply_promo_callback=apply_promo_cb if provider in {"pix", "momo", "gcash", "gopay", "paypal", "upi", "ideal", "twint"} and promo_requested else None,
+                apply_promo_callback=apply_promo_cb if provider in {"pix", "momo", "gcash", "gopay", "blik", "paypal", "upi", "ideal", "twint"} and promo_requested else None,
                 ideal_bank=options.get("ideal_bank", ""),
                 require_zero_due=promo_requested,
                 local_method_strategy=options.get("local_method_strategy") or "standalone",
@@ -4763,14 +4884,14 @@ def health():
 def config():
     return jsonify({
         "plans": list(PLANS),
-        "link_types": ["hosted", "ph_short", "paypal", "ideal", "twint", "pix", "momo", "gcash", "gopay", "kakao"]
+        "link_types": ["hosted", "ph_short", "paypal", "ideal", "twint", "pix", "momo", "gcash", "gopay", "blik", "kakao"]
             + (["upi"] if UPI_ENABLED else []),
         "disabled_link_types": [] if UPI_ENABLED else ["upi"],
         "country_currency": COUNTRY_CURRENCY,
         "provider_defaults": PROVIDER_DEFAULTS,
         "proxy_policy": {
             "entry_required": True,
-            "exit_required_for": ["ph_short", "paypal", "ideal", "twint", "upi", "gcash", "gopay", "kakao"],
+            "exit_required_for": ["ph_short", "paypal", "ideal", "twint", "upi", "gcash", "gopay", "blik", "kakao"],
             "single_chain_for": ["pix", "momo"],
             "max_per_pool": 500,
             "selection": "random_per_job",
@@ -4797,7 +4918,7 @@ def start_checkout():
     link_type = str(data.get("link_type") or "hosted").lower()
     if plan not in PLANS:
         return jsonify({"error": "计划类型不正确"}), 400
-    if link_type not in {"hosted", "ph_short", "paypal", "ideal", "twint", "upi", "pix", "momo", "gcash", "gopay", "kakao"}:
+    if link_type not in {"hosted", "ph_short", "paypal", "ideal", "twint", "upi", "pix", "momo", "gcash", "gopay", "blik", "kakao"}:
         return jsonify({"error": "提取方式不正确"}), 400
     if link_type == "upi" and not UPI_ENABLED:
         return jsonify({"error": "UPI 提链已暂停维护"}), 503

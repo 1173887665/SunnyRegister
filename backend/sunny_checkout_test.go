@@ -20,14 +20,21 @@ func TestSplitCheckoutPoolNormalizesAndLimits(t *testing.T) {
 }
 
 func TestCheckoutProviderDefaultsIncludeAllCurrentPaths(t *testing.T) {
-	if len(checkoutProviders) != 11 {
+	if len(checkoutProviders) != 12 {
 		t.Fatalf("providers=%d", len(checkoutProviders))
 	}
-	for _, value := range []string{"hosted", "ph_short", "paypal", "ideal", "twint", "upi", "pix", "momo", "gcash", "gopay", "kakao"} {
+	for _, value := range []string{"hosted", "ph_short", "paypal", "ideal", "twint", "upi", "pix", "momo", "gcash", "gopay", "blik", "kakao"} {
 		country, currency := checkoutProviderDefaults(value)
 		if country == "" || currency == "" {
 			t.Fatalf("missing defaults for %s", value)
 		}
+	}
+}
+
+func TestBlikProviderDefaultsToPoland(t *testing.T) {
+	country, currency := checkoutProviderDefaults("blik")
+	if country != "PL" || currency != "PLN" {
+		t.Fatalf("BLIK defaults=%s/%s", country, currency)
 	}
 }
 
@@ -130,6 +137,20 @@ func TestExtractSunnyCheckoutResultPrefersGoPayMidtransURL(t *testing.T) {
 	}
 	if isSunnyGopayMidtransURL("https://app.midtrans.com.evil.example/snap/v4/redirection/123e4567-e89b-12d3-a456-426614174000") {
 		t.Fatal("lookalike Midtrans host must be rejected")
+	}
+}
+
+func TestExtractSunnyCheckoutResultPrefersValidatedBlikURL(t *testing.T) {
+	blikURL := "https://pay.openai.com/c/pay/cs_live_123?redirect_pm_type=blik&ui_mode=custom"
+	result := extractSunnyCheckoutResult(map[string]any{
+		"blik_payment_url": blikURL,
+		"checkout_url":     "https://chatgpt.com/checkout/openai_ie/cs_live_123",
+	}, "blik")
+	if result["payment_link"] != blikURL {
+		t.Fatalf("result=%#v", result)
+	}
+	if isSunnyBlikPaymentURL("https://chatgpt.com/checkout/openai_ie/cs_live_123") {
+		t.Fatal("ordinary ChatGPT Checkout URL must not pass BLIK validation")
 	}
 }
 
