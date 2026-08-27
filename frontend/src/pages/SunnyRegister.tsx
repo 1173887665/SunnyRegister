@@ -827,6 +827,7 @@ Object.assign(zh, {
   checkoutProbeSummary: "Checkout 探测完成：检测成功 {detected} 个，重试 {retried} 个，跳过 {skipped} 个，失败 {failed} 个",
   allPaymentMethods: "全部支付方式", paymentMethodFilter: "支付方式筛选（同时满足）", clearPaymentMethods: "清除支付方式筛选",
   loginSecretFilterTitle: "筛选登录密钥", loginSecretFilterAll: "全部", loginSecretFilterPresent: "有 LS", loginSecretFilterMissing: "无 LS",
+  terminateTask: "终止", terminatingTask: "终止中...", terminateTaskRequested: "已请求终止当前日志对应的任务", terminateTaskFailed: "终止任务失败",
 });
 (zh as AnyObj).domainMailboxRetainFailed = "保留失败域名邮箱";
 (zh as AnyObj).domainMailboxRetainFailedTip = "关闭后，注册或换绑失败时会同时删除 CloudMail 和本项目中的本次邮箱";
@@ -834,6 +835,7 @@ Object.assign(zh, {
 (en as AnyObj).domainMailboxRetainFailedTip = "When disabled, failed registration or rebinding mailboxes are deleted from CloudMail and this project";
 Object.assign(en, {
   loginSecretFilterTitle: "Filter Login Secret", loginSecretFilterAll: "All", loginSecretFilterPresent: "Has LS", loginSecretFilterMissing: "No LS",
+  terminateTask: "Terminate", terminatingTask: "Terminating...", terminateTaskRequested: "Termination requested for the selected log task", terminateTaskFailed: "Failed to terminate task",
   rebindEmail: "Rebound Email",
   searchAccount: "Search email or rebound email...",
   addPassword2FA: "Add Password 2FA",
@@ -3773,6 +3775,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const accountLogs = useAccountLogs();
   const [accountLogOpen,setAccountLogOpen]=useState(false);
   const [accountLogKind,setAccountLogKind]=useState<AccountLogKind>("mail-query");
+  const [terminatingAccountLog,setTerminatingAccountLog]=useState(false);
   const renewalTaskStateRef = useRef<Record<string, SessionTaskState>>({});
   const activeSessionTasks = persistentTasks.filter((task)=>task.state === "running");
   const activeTaskForKind = (kind: PersistentSessionTaskKind) => activeSessionTasks.filter((task)=>task.kind === kind);
@@ -3823,6 +3826,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const stoppingRenewal = activeRenewalTasks.some((task)=>stoppingRenewalTaskIds.includes(task.taskId));
   const refreshingSessionIds = Array.from(new Set(persistentTasks.filter((task)=>task.kind==="refresh-at" && task.state==="running").flatMap((task)=>task.sessionIds)));
   const acquiringRTSessionIds = Array.from(new Set(persistentTasks.filter((task)=>task.kind==="acquire-rt" && task.state==="running").flatMap((task)=>task.sessionIds)));
+  const cancellableAccountLogTasks = activeSessionTasks.filter((task)=>task.kind===accountLogKind && Boolean(task.taskId) && !task.taskId.startsWith("local:"));
   const [sortBy,setSortBy]=useCachedState("session.sortBy","last_health_checked_at");
   const [timeSort,setTimeSort]=useCachedState<SortOrder>("session.timeSort","desc");
   const [page,setPage]=useCachedState("session.page",1);
@@ -4195,6 +4199,20 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       notify("fail",`${t.stopRenewalFailed}: ${e?.message||String(e)}`);
     }
   }
+  async function terminateAccountLogTasks() {
+    if (terminatingAccountLog || !cancellableAccountLogTasks.length) return;
+    setTerminatingAccountLog(true);
+    const results = await Promise.allSettled(cancellableAccountLogTasks.map((task)=>apiFetch(`/tasks/${encodeURIComponent(task.taskId)}/cancel`,{method:"POST"})));
+    const failed = results.filter((result)=>result.status === "rejected");
+    if (failed.length) {
+      const message = `${t.terminateTaskFailed}：${failed.length}/${results.length}`;
+      appendAccountOperationLog(accountLogKind as PersistentSessionTaskKind, "result", message, "error");
+      notify("fail", message);
+    } else {
+      notify("ok", t.terminateTaskRequested);
+    }
+    setTerminatingAccountLog(false);
+  }
   async function acquireRefreshToken(row: AnyObj) {
     const id = Number(row.id || 0);
     if (!id || acquiringRTSessionIds.includes(id)) return;
@@ -4304,7 +4322,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     {failureDetail && <FailureDetailModal t={t} value={failureDetail} onClose={()=>setFailureDetail(null)}/>}
     {trialCountryDialog && <CountryProbeModal title={t.trialCountryTitle} hint={t.trialCountryHint} empty={t.trialCountryEmpty} start={t.trialStart} t={t} countries={trialCountries} selected={trialCountrySelection} loading={trialCountriesLoading} onToggle={(country)=>setTrialCountrySelection((old)=>old.includes(country)?old.filter((value)=>value!==country):[...old,country])} onSelectAll={()=>setTrialCountrySelection(trialCountries)} onClear={()=>setTrialCountrySelection([])} onClose={()=>setTrialCountryDialog(null)} onConfirm={confirmTrialCountries}/>}
     {paymentProbeDialog && <PaymentProbeCountryModal t={t} countries={paymentProbeCountries} selected={paymentProbeCountrySelection} loading={paymentProbeCountriesLoading} onToggle={(country)=>setPaymentProbeCountrySelection((old)=>old.includes(country)?old.filter((value)=>value!==country):[...old,country])} onSelectAll={()=>setPaymentProbeCountrySelection(paymentProbeCountries)} onClear={()=>setPaymentProbeCountrySelection([])} onClose={()=>setPaymentProbeDialog(null)} onConfirm={confirmPaymentProbeCountries}/>}
-    <AccountLogFloat open={accountLogOpen} kind={accountLogKind} logs={accountLogs[accountLogKind] || []} onToggle={()=>setAccountLogOpen((value)=>!value)} onKindChange={setAccountLogKind} onClear={()=>publishAccountLogs({ ...accountLogSnapshot, [accountLogKind]: [] })} />
+    <AccountLogFloat t={t} open={accountLogOpen} kind={accountLogKind} logs={accountLogs[accountLogKind] || []} canCancel={cancellableAccountLogTasks.length > 0} cancelling={terminatingAccountLog} onCancel={()=>void terminateAccountLogTasks()} onToggle={()=>setAccountLogOpen((value)=>!value)} onKindChange={setAccountLogKind} onClear={()=>publishAccountLogs({ ...accountLogSnapshot, [accountLogKind]: [] })} />
   </Card>;
 }
 
@@ -4367,7 +4385,7 @@ const ACCOUNT_LOG_LABELS: Record<AccountLogKind, string> = {
   "acquire-rt": "获取RT", "sub2-import": "反代导入",
 };
 
-function AccountLogFloat({ open, kind, logs, onToggle, onKindChange, onClear }: { open: boolean; kind: AccountLogKind; logs: AccountOperationLog[]; onToggle: () => void; onKindChange: (kind: AccountLogKind) => void; onClear: () => void }) {
+function AccountLogFloat({ t, open, kind, logs, canCancel, cancelling, onCancel, onToggle, onKindChange, onClear }: { t: typeof zh; open: boolean; kind: AccountLogKind; logs: AccountOperationLog[]; canCancel: boolean; cancelling: boolean; onCancel: () => void; onToggle: () => void; onKindChange: (kind: AccountLogKind) => void; onClear: () => void }) {
   const [size, setSize] = useState({ width: 760, height: 560 });
   const processLogs = logs.filter((item) => item.phase === "process");
   const resultLogs = logs.filter((item) => item.phase === "result");
@@ -4377,14 +4395,19 @@ function AccountLogFloat({ open, kind, logs, onToggle, onKindChange, onClear }: 
   function beginResize(event: ReactPointerEvent<HTMLButtonElement>) {
     event.preventDefault();
     const startX = event.clientX, startY = event.clientY, start = size;
-    const move = (current: PointerEvent) => setSize({ width: Math.max(360, Math.min(760, start.width + startX - current.clientX)), height: Math.max(300, Math.min(760, start.height + startY - current.clientY)) });
+    const move = (current: PointerEvent) => setSize({ width: Math.max(360, Math.min(1200, start.width + startX - current.clientX)), height: Math.max(300, Math.min(760, start.height + startY - current.clientY)) });
     const stop = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", stop); };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", stop, { once: true });
   }
-  const renderLog = (item: AccountOperationLog, index: number) => <div key={item.id || index} className="grid grid-cols-[62px_8px_minmax(0,1fr)] gap-2"><span className="text-[var(--text-muted)]">{String(item.createdAt || "").slice(11, 19) || "--:--:--"}</span><span className={item.level === "error" ? "text-red-400" : item.level === "warning" ? "text-amber-400" : "text-emerald-400"}>●</span><span className="break-words">{item.message}{item.email ? <span className="ml-1 text-[var(--text-muted)]">[{item.email}]</span> : null}</span></div>;
+  const renderLog = (item: AccountOperationLog, index: number) => {
+    const message = String(item.message || "");
+    const emailSuffix = item.email ? ` [${item.email}]` : "";
+    const displayMessage = emailSuffix && message.endsWith(emailSuffix) ? message.slice(0, -emailSuffix.length) : message;
+    return <div key={item.id || index} className="grid grid-cols-[62px_8px_minmax(0,1fr)] gap-2"><span className="text-[var(--text-muted)]">{String(item.createdAt || "").slice(11, 19) || "--:--:--"}</span><span className={item.level === "error" ? "text-red-400" : item.level === "warning" ? "text-amber-400" : "text-emerald-400"}>●</span><span className="break-words"><span className="text-[var(--text-muted)]">{item.email ? `[${item.email}] ` : ""}</span>{displayMessage}</span></div>;
+  };
   return <PagePortal><div className="sr-account-log-float fixed right-5 z-[500] flex flex-col items-end gap-2">
     {open && <div className="relative flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" style={{ width: size.width, height: size.height }}>
-      <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2.5"><div className="flex min-w-0 items-center gap-2"><ScrollText className="h-4 w-4 shrink-0 text-[var(--accent)]"/><span className="text-sm font-bold">账户管理日志</span><span className="truncate text-[11px] text-[var(--text-muted)]">{ACCOUNT_LOG_LABELS[kind]}</span></div><div className="flex items-center gap-1"><button className="round-tool h-7 w-7" title="清除当前日志" onClick={onClear}><Trash2 className="h-3.5 w-3.5"/></button><button className="round-tool h-7 w-7" title="隐藏日志" onClick={onToggle}><ChevronDown className="h-4 w-4"/></button></div></div>
+      <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2.5"><div className="flex min-w-0 items-center gap-2"><ScrollText className="h-4 w-4 shrink-0 text-[var(--accent)]"/><span className="text-sm font-bold">账户管理日志</span><span className="truncate text-[11px] text-[var(--text-muted)]">{ACCOUNT_LOG_LABELS[kind]}</span></div><div className="flex items-center gap-1">{canCancel && <button className="round-tool h-7 w-7" title={cancelling ? t.terminatingTask : t.terminateTask} aria-label={cancelling ? t.terminatingTask : t.terminateTask} disabled={cancelling} onClick={onCancel}>{cancelling ? <Loader2 className="h-3.5 w-3.5 animate-spin"/> : <X className="h-3.5 w-3.5"/>}</button>}<button className="round-tool h-7 w-7" title="清除当前日志" onClick={onClear}><Trash2 className="h-3.5 w-3.5"/></button><button className="round-tool h-7 w-7" title="隐藏日志" onClick={onToggle}><ChevronDown className="h-3.5 w-3.5"/></button></div></div>
       <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--border)] bg-[var(--bg-main)] p-2">{ACCOUNT_LOG_KINDS.map((value) => <button key={value} type="button" className={cn("whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-semibold", value === kind ? "bg-[var(--accent)] text-white" : "text-[var(--text-muted)] hover:bg-[var(--bg-card)]")} onClick={() => onKindChange(value)}>{ACCOUNT_LOG_LABELS[value]}</button>)}</div>
       <div className="grid min-h-0 flex-1 grid-rows-[1fr_0.72fr] divide-y divide-[var(--border)]"><section className="flex min-h-0 flex-col"><div className="flex items-center justify-between px-3 py-1.5 text-[11px] font-bold text-[var(--text-muted)]"><span>过程日志</span><span>{processLogs.length}</span></div><div ref={scrollProcess} className="min-h-0 flex-1 overflow-y-auto bg-[var(--bg-main)] px-3 pb-3 font-mono text-[11px] leading-5 text-[var(--text-secondary)]">{processLogs.length ? processLogs.map(renderLog) : <div className="flex h-full items-center justify-center text-[var(--text-muted)]">暂无过程日志</div>}</div></section><section className="flex min-h-0 flex-col"><div className="flex items-center justify-between px-3 py-1.5 text-[11px] font-bold text-[var(--text-muted)]"><span>结果日志</span><span>{resultLogs.length}</span></div><div ref={scrollResult} className="min-h-0 flex-1 overflow-y-auto bg-[var(--bg-main)] px-3 pb-3 font-mono text-[11px] leading-5 text-[var(--text-secondary)]">{resultLogs.length ? resultLogs.map(renderLog) : <div className="flex h-full items-center justify-center text-[var(--text-muted)]">暂无结果日志</div>}</div></section></div>
       <button type="button" aria-label="调整日志窗口大小" title="拖动调整日志窗口大小" className="absolute left-0 top-0 h-4 w-4 cursor-nwse-resize opacity-60 hover:opacity-100" onPointerDown={beginResize}><span className="absolute left-1 top-1 h-2 w-2 border-l-2 border-t-2 border-[var(--accent)]"/></button>
