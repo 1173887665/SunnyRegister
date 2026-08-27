@@ -3733,7 +3733,7 @@ function SessionInlineProgressRow({ view, label, closeTitle }: { view: { task: P
 
 function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", text: string) => void }) {
   const [items,setItems]=useCachedState<AnyObj[]>("session.items",[]);
-  const [fmt,setFmt]=useCachedState("session.fmt","sk");
+  const [fmt,setFmt]=useCachedState("session.fmt.v2","at");
   const [query,setQuery]=useCachedState("session.query","");
   const debouncedQuery = useDebouncedValue(query);
   const [status,setStatus]=useCachedState("session.status","");
@@ -3873,7 +3873,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   useEffect(()=>{setPage(1)},[sortBy, timeSort, pageSize, query, status, plan, trialEligibility, checkoutKind, paymentMethods, group]);
   useEffect(()=>{apiFetch("/sunny/mailbox-groups").then((res)=>setGroups(sortMailboxGroups(res.items||[]))).catch(()=>setGroups([]));},[]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
-  const exportFormat = ["ls", "sk", "at", "sub"].includes(fmt) ? fmt : "sk";
+  const exportFormat = ["at", "ls", "sk", "sub"].includes(fmt) ? fmt : "at";
   const allChecked = items.length > 0 && items.every((x)=>selected.includes(x.id));
   const paymentMethodOptions=Array.from(new Set([...availablePaymentMethods,...paymentMethods,...items.flatMap((item)=>Array.isArray(item.payment_methods)?item.payment_methods:[])])).map(String);
   async function exp(ids?: number[], format = exportFormat){
@@ -4228,7 +4228,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
       <div className="flex items-center gap-2"><h2 className="text-xl font-bold">{t.session}</h2><button type="button" className="sr-icon-command" title={t.maintenanceSettings} onClick={()=>setMaintenanceOpen(true)}><Settings2 className="h-4 w-4"/></button></div>
       <div className="flex flex-wrap items-center gap-2">
-        <SelectBox className="sr-select-like" value={exportFormat} onChange={(v)=>setFmt(String(v))} options={[{value:"ls",label:t.exportLS},{value:"sk",label:t.exportSK},{value:"at",label:t.exportAT},{value:"sub",label:t.exportSUB}]} />
+        <SelectBox className="sr-select-like" value={exportFormat} onChange={(v)=>setFmt(String(v))} options={[{value:"at",label:t.exportAT},{value:"ls",label:t.exportLS},{value:"sk",label:t.exportSK},{value:"sub",label:t.exportSUB}]} />
         <Button className="rounded-full" onClick={()=>exp()}><Download className="mr-2 h-4 w-4"/>{t.export}</Button>
       </div>
     </div>
