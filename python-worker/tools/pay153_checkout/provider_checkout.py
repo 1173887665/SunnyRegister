@@ -1152,6 +1152,51 @@ def is_valid_blik_hosted_payment_url(value: str, session_id: str = "") -> bool:
     )
 
 
+def generate_payment_qr_images(value: str, log: Callable[[str], None] = lambda _message: None) -> dict[str, str]:
+    """Generate QR data URLs that encode the exact provider payment URL."""
+    qr_url = str(value or "").strip()
+    if not qr_url:
+        return {}
+    try:
+        import qrcode
+        from qrcode.constants import ERROR_CORRECT_L
+
+        image = qrcode.QRCode(
+            version=None,
+            error_correction=ERROR_CORRECT_L,
+            box_size=8,
+            border=4,
+        )
+        image.add_data(qr_url)
+        image.make(fit=True)
+        png = image.make_image(fill_color="black", back_color="white")
+        png_buffer = io.BytesIO()
+        png.save(png_buffer, format="PNG")
+        result = {
+            "qr_data": qr_url,
+            "qr_image_png": "data:image/png;base64," + base64.b64encode(png_buffer.getvalue()).decode("ascii"),
+        }
+        try:
+            import qrcode.image.svg
+            svg = qrcode.QRCode(
+                version=None,
+                error_correction=ERROR_CORRECT_L,
+                box_size=8,
+                border=4,
+            )
+            svg.add_data(qr_url)
+            svg.make(fit=True)
+            svg_buffer = io.BytesIO()
+            svg.make_image(image_factory=qrcode.image.svg.SvgPathImage).save(svg_buffer)
+            result["qr_image_svg"] = "data:image/svg+xml;base64," + base64.b64encode(svg_buffer.getvalue()).decode("ascii")
+        except Exception:
+            pass
+        return result
+    except Exception as exc:
+        log(f"[blik] 二维码生成提示：{type(exc).__name__}: {str(exc)[:160]}")
+        return {"qr_data": qr_url}
+
+
 def stripe_to_provider(
     http,
     session_id: str,
@@ -1311,11 +1356,13 @@ def stripe_to_provider(
             raise RuntimeError(
                 "BLIK_PAYMENT_LINK_INVALID: Stripe 未返回当前 BLIK Checkout 对应的 Hosted 支付页面"
             )
-        log("[blik] BLIK 已开放；返回 Hosted 支付页，由付款人在页面输入银行 App 生成的动态码")
+        qr_images = generate_payment_qr_images(payment_url, log)
+        log("[blik] BLIK 已开放；已生成可扫码打开同一 Hosted 支付页的二维码")
         return {
             "provider": provider,
             "provider_redirect_url": payment_url,
             "blik_payment_url": payment_url,
+            **qr_images,
             "payment_method_types": ctx.get("payment_method_types") or methods,
             "processor_entity": processor,
             "stripe_publishable_key": pk,

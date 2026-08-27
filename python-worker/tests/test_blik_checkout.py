@@ -13,6 +13,7 @@ from provider_checkout import (  # noqa: E402
     PROVIDER_DEFAULTS,
     blik_hosted_payment_url,
     default_billing,
+    generate_payment_qr_images,
     is_valid_blik_hosted_payment_url,
 )
 
@@ -57,6 +58,18 @@ def test_blik_hosted_url_rejects_legacy_synthetic_query_parameters() -> None:
     )
     assert not is_valid_blik_hosted_payment_url(broken, "cs_live_123")
     assert blik_hosted_payment_url(broken, "cs_live_123") == ""
+
+
+def test_blik_qr_encodes_exact_original_payment_url() -> None:
+    url = "https://checkout.stripe.com/c/pay/cs_live_123#fid-example"
+    result = generate_payment_qr_images(url)
+    assert result["qr_data"] == url
+    # The frontend can render qr_data directly; environments with the
+    # optional Python qrcode package additionally receive PNG/SVG data URLs.
+    if result.get("qr_image_png"):
+        assert result["qr_image_png"].startswith("data:image/png;base64,")
+    if result.get("qr_image_svg"):
+        assert result["qr_image_svg"].startswith("data:image/svg+xml;base64,")
 
 
 def test_oaics_blik_url_requires_matching_session() -> None:

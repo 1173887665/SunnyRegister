@@ -29,6 +29,7 @@ from provider_checkout import (
     canonical_ideal_payment_url,
     default_billing,
     enrich_ideal_redirect,
+    generate_payment_qr_images,
     is_valid_ideal_payment_url,
     stripe_to_provider,
 )
@@ -3719,6 +3720,7 @@ class JobStore:
                     if not is_valid_oaics_blik_payment_url(custom_url, session_id):
                         raise RuntimeError("BLIK_PAYMENT_LINK_INVALID: 无法生成当前 OAICS BLIK Checkout 的公共支付页面")
                     method_id = str(methods[0].get("id") or "")
+                    qr_images = generate_payment_qr_images(custom_url, lambda message: self.log(job_id, message))
                     result.update({
                         "link_type": "blik",
                         "checkout_provider": "open_ai_oaics",
@@ -3730,6 +3732,7 @@ class JobStore:
                         "blik_payment_url": custom_url,
                         "short_link": custom_url,
                         "checkout_url": custom_url,
+                        **qr_images,
                         "checkout_amount": custom_amount,
                         "amount_currency": custom_currency,
                         "amount_verification": "verified_zero" if custom_amount == 0 else "nonzero",
