@@ -9,6 +9,7 @@ import pytest
 from sunny_core.browser_traffic import ProxyTrafficMeter
 from sunny_core.mailbox import MailAccount
 from sunny_core.protocol_auth import (
+    AUTHORIZE_CONTINUE_URL,
     ProtocolChallengeRequired,
     ProtocolLoginSecretRejected,
     ProtocolRegistrationError,
@@ -454,6 +455,29 @@ def test_sentinel_protocol_strategy_uses_narrow_runtime_headers() -> None:
     assert headers["openai-sentinel-so-token"] == "observer-token"
     request_body = json.loads(flow.session.requests[0][2]["data"])
     assert request_body["p"] == "sdk-requirements"
+
+
+def test_sentinel_endpoint_challenge_refreshes_proof_in_same_cookie_session() -> None:
+    flow = ProtocolRegistrationFlow(
+        MailAccount("user@outlook.com", "password", "client-id", "refresh-token", "raw"),
+        session=FakeSession([FakeResponse(status_code=403), FakeResponse(payload={"page": {"type": "login_password"}})]),
+        challenge_strategy="sentinel_protocol",
+    )
+    sentinel = Mock(side_effect=[{"openai-sentinel-token": "stale"}, {"openai-sentinel-token": "fresh"}])
+    flow._sentinel_headers = sentinel
+
+    response = flow._request_with_sentinel_retry(
+        "authorize_continue",
+        AUTHORIZE_CONTINUE_URL,
+        step="Submit registration email",
+        base_headers={"accept": "application/json"},
+        data="{}",
+    )
+
+    assert response.status_code == 200
+    assert sentinel.call_args_list == [call("authorize_continue"), call("authorize_continue")]
+    assert flow.session.requests[0][2]["headers"]["openai-sentinel-token"] == "stale"
+    assert flow.session.requests[1][2]["headers"]["openai-sentinel-token"] == "fresh"
 
 
 def test_verify_email_can_reuse_page_loaded_by_auth_redirect() -> None:

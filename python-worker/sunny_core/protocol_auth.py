@@ -425,7 +425,39 @@ class ProtocolRegistrationFlow:
             "protocol_traffic": self.traffic.snapshot(),
         }
 
+    def _reset_sentinel_runtime(self) -> None:
+        runtime = self._sentinel_runtime
+        self._sentinel_runtime = None
+        if runtime is not None:
+            try:
+                runtime.close()
+            except Exception:
+                pass
+
     def _sentinel_headers(self, flow: str) -> dict[str, str]:
+        """Build Sentinel headers, refreshing the narrow browser runtime once."""
+        attempts = 2 if self.challenge_strategy == "sentinel_protocol" else 1
+        last_error: BaseException | None = None
+        for attempt in range(attempts):
+            try:
+                return self._sentinel_headers_once(flow)
+            except ProtocolChallengeRequired as exc:
+                last_error = exc
+                if attempt + 1 >= attempts or self.should_cancel():
+                    raise
+                self.log(f"[认证] Sentinel {flow} 证明生成/校验失败，刷新窄范围 Camoufox 运行时重试 ({attempt + 1}/{attempts - 1})")
+                self._reset_sentinel_runtime()
+            except Exception as exc:
+                last_error = exc
+                if attempt + 1 >= attempts or self.should_cancel():
+                    raise
+                self.log(f"[认证] Sentinel {flow} 运行时异常，刷新窄范围 Camoufox 运行时重试 ({attempt + 1}/{attempts - 1})")
+                self._reset_sentinel_runtime()
+        if last_error is not None:
+            raise last_error
+        raise ProtocolChallengeRequired(f"Sentinel {flow} 未能生成有效证明")
+
+    def _sentinel_headers_once(self, flow: str) -> dict[str, str]:
         self._check_cancelled()
         generator = SentinelTokenGenerator(self.device_id, USER_AGENT)
         requirements_proof = generator.requirements_token()
@@ -522,6 +554,42 @@ class ProtocolRegistrationFlow:
             }, separators=(",", ":"))
         }
 
+    @staticmethod
+    def _is_challenge_response(response: Any) -> bool:
+        status = int(getattr(response, "status_code", 0) or 0)
+        body = str(getattr(response, "text", "") or "").lower()
+        if _is_account_deactivated_payload(body):
+            return False
+        return status in {403, 429} or any(
+            marker in body for marker in ("challenge", "turnstile", "captcha", "sentinel")
+        )
+
+    def _request_with_sentinel_retry(
+        self,
+        flow: str,
+        url: str,
+        *,
+        step: str,
+        base_headers: dict[str, str],
+        data: str,
+    ) -> Any:
+        """Retry a rejected Sentinel header without rebuilding auth cookies."""
+        attempts = 2 if self.challenge_strategy == "sentinel_protocol" else 1
+        for attempt in range(attempts):
+            headers = dict(base_headers)
+            headers.update(self._sentinel_headers(flow))
+            response = self._request("POST", url, step=step, headers=headers, data=data)
+            if (
+                attempt + 1 < attempts
+                and self.challenge_strategy == "sentinel_protocol"
+                and self._is_challenge_response(response)
+            ):
+                self.log(f"[认证] {step} 拒绝当前 Sentinel 证明，保留协议 Cookie 刷新证明重试 ({attempt + 1}/{attempts - 1})")
+                self._reset_sentinel_runtime()
+                continue
+            return response
+        raise ProtocolChallengeRequired(f"{step} 未能通过 Sentinel 证明")
+
     def _start_next_auth(self) -> None:
         try:
             landing = self._request(
@@ -617,18 +685,16 @@ class ProtocolRegistrationFlow:
 
     def _authorize_email(self, *, allow_retry: bool = True) -> dict[str, Any]:
         self.browser_resume_url = f"{AUTH_BASE_URL}/{'log-in' if self.existing_account else 'create-account'}"
-        sentinel_headers = self._sentinel_headers("authorize_continue")
-        response = self._request(
-            "POST",
+        response = self._request_with_sentinel_retry(
+            "authorize_continue",
             AUTHORIZE_CONTINUE_URL,
             step="Submit registration email",
-            headers={
+            base_headers={
                 "accept": "application/json",
                 "content-type": "application/json",
                 "origin": AUTH_BASE_URL,
                 "referer": f"{AUTH_BASE_URL}/{'log-in' if self.existing_account else 'create-account'}",
                 "oai-device-id": self.device_id,
-                **sentinel_headers,
                 **generate_datadog_trace_headers(),
             },
             data=json.dumps(
@@ -670,18 +736,16 @@ class ProtocolRegistrationFlow:
             step="Load password stage",
             headers={"accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
         )
-        sentinel_headers = self._sentinel_headers("username_password_create")
-        response = self._request(
-            "POST",
+        response = self._request_with_sentinel_retry(
+            "username_password_create",
             REGISTER_PASSWORD_URL,
             step="Submit account password",
-            headers={
+            base_headers={
                 "accept": "application/json",
                 "content-type": "application/json",
                 "origin": AUTH_BASE_URL,
                 "referer": f"{AUTH_BASE_URL}/create-account/password",
                 "oai-device-id": self.device_id,
-                **sentinel_headers,
                 **generate_datadog_trace_headers(),
             },
             data=json.dumps(
@@ -718,17 +782,16 @@ class ProtocolRegistrationFlow:
         password = str(self.account.chatgpt_password or "")
         if not password:
             raise ProtocolRegistrationError("ChatGPT password login is required, but no ChatGPT password is configured")
-        response = self._request(
-            "POST",
+        response = self._request_with_sentinel_retry(
+            "password_verify",
             f"{AUTH_BASE_URL}/api/accounts/password/verify",
             step="Verify ChatGPT password",
-            headers={
+            base_headers={
                 "accept": "application/json",
                 "content-type": "application/json",
                 "origin": AUTH_BASE_URL,
                 "referer": referer or self.auth_page_url or AUTH_BASE_URL,
                 "oai-device-id": self.device_id,
-                **self._sentinel_headers("password_verify"),
                 **generate_datadog_trace_headers(),
             },
             data=json.dumps({"password": password}, separators=(",", ":")),
@@ -958,18 +1021,16 @@ class ProtocolRegistrationFlow:
         # long backoff only for that provider; keep legacy mailbox timing intact.
         retry_delays = [8, 20, 45] if str(self.account.mailbox_type or "").lower() == "remail" else [2, 2]
         for attempt in range(len(retry_delays) + 1):
-            sentinel_headers = self._sentinel_headers("oauth_create_account")
-            response = self._request(
-                "POST",
+            response = self._request_with_sentinel_retry(
+                "oauth_create_account",
                 CREATE_ACCOUNT_URL,
                 step="Create ChatGPT account",
-                headers={
+                base_headers={
                     "accept": "application/json",
                     "content-type": "application/json",
                     "origin": AUTH_BASE_URL,
                     "referer": f"{AUTH_BASE_URL}/about-you",
                     "oai-device-id": self.device_id,
-                    **sentinel_headers,
                     **generate_datadog_trace_headers(),
                 },
                 data=json.dumps({"name": name, "birthdate": birthdate}, separators=(",", ":")),
