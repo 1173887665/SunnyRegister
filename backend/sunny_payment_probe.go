@@ -122,6 +122,17 @@ func normalizeSunnyPaymentMethodFilter(value string) []string {
 	}))
 }
 
+func normalizeSunnyLoginSecretFilter(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "present", "has", "1", "true", "有", "有ls":
+		return "present"
+	case "missing", "none", "0", "false", "无", "无ls":
+		return "missing"
+	default:
+		return ""
+	}
+}
+
 func sunnyHasAllPaymentMethods(value any, required []string) bool {
 	if len(required) == 0 {
 		return true

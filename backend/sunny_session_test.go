@@ -247,6 +247,47 @@ func TestSunnySessionListSearchesRebindEmail(t *testing.T) {
 	}
 }
 
+func TestSunnySessionListFiltersLoginSecretPresence(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	mailbox := SunnyMailbox{
+		Email: "with-ls@example.com", ChatGPTPassword: "chatgpt-password", TOTPSecret: "totp-secret",
+		Status: "已注册", AccountType: "free", Enabled: true, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := s.db.Create(&mailbox).Error; err != nil {
+		t.Fatalf("create LS mailbox: %v", err)
+	}
+	account := SunnyAccount{MailboxID: mailbox.ID, Email: mailbox.Email, Status: "registered", AccountType: "free", AccessToken: "with-ls-at", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := s.db.Create(&account).Error; err != nil {
+		t.Fatalf("create LS account: %v", err)
+	}
+	if err := s.db.Create(&SunnySession{AccountID: account.ID, Email: mailbox.Email, AccessToken: account.AccessToken, CreatedAt: time.Now(), UpdatedAt: time.Now()}).Error; err != nil {
+		t.Fatalf("create LS session: %v", err)
+	}
+	request := func(filter string) []map[string]any {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/sunny/sessions?page=1&page_size=10&login_secret="+filter, nil)
+		s.sunnySessions(rec, req, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("login secret filter status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode login secret filter: %v", err)
+		}
+		return payload.Items
+	}
+	withLS := request("present")
+	if len(withLS) != 1 || withLS[0]["email"] != "with-ls@example.com" || withLS[0]["has_login_secret"] != true {
+		t.Fatalf("present filter result=%#v", withLS)
+	}
+	withoutLS := request("missing")
+	if len(withoutLS) != 1 || withoutLS[0]["email"] != "session@example.com" || withoutLS[0]["has_login_secret"] != false {
+		t.Fatalf("missing filter result=%#v", withoutLS)
+	}
+}
+
 func TestSunnyMailboxListSortsRebindEmailBeforePagination(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	if err := s.db.Model(&SunnyMailbox{}).Where("email = ?", "session@example.com").Update("rebind_email", "m-replacement@example.com").Error; err != nil {

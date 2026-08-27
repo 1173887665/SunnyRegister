@@ -1001,6 +1001,13 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   cursor:pointer;
 }
 .sr-sort-th:hover { color:var(--accent); }
+.sr-login-secret-header { display:inline-flex; align-items:center; justify-content:center; gap:5px; min-width:0; }
+.sr-login-secret-filter { display:inline-flex; align-items:center; gap:3px; border:1px solid rgba(148,163,184,.35); border-radius:999px; padding:2px 6px; background:transparent; color:#64748b; font-size:10px; font-weight:700; line-height:1.2; cursor:pointer; }
+.sr-login-secret-filter:hover,
+.sr-login-secret-filter.active { border-color:rgba(20,184,166,.45); background:rgba(20,184,166,.12); color:#0f766e; }
+.dark .sr-login-secret-filter { border-color:rgba(148,163,184,.35); color:#94a3b8; }
+.dark .sr-login-secret-filter:hover,
+.dark .sr-login-secret-filter.active { border-color:rgba(45,212,191,.45); background:rgba(20,184,166,.16); color:#99f6e4; }
 .sr-sort-icon {
   display:inline-flex;
   align-items:center;
