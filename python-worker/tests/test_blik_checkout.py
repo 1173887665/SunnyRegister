@@ -15,6 +15,7 @@ from provider_checkout import (  # noqa: E402
     default_billing,
     generate_payment_qr_images,
     is_valid_blik_hosted_payment_url,
+    select_blik_hosted_payment_url,
 )
 
 
@@ -49,6 +50,14 @@ def test_blik_hosted_url_rejects_generic_or_wrong_session_pages() -> None:
 
 def test_blik_hosted_url_does_not_fabricate_missing_provider_url() -> None:
     assert blik_hosted_payment_url("", "cs_live_123") == ""
+
+
+def test_blik_hosted_url_prefers_complete_creation_url() -> None:
+    session_id = "cs_live_123"
+    creation_url = f"https://checkout.stripe.com/c/pay/{session_id}#fid-creation"
+    incomplete = f"https://checkout.stripe.com/c/pay/{session_id}"
+    assert select_blik_hosted_payment_url(session_id, creation_url, incomplete) == creation_url
+    assert not is_valid_blik_hosted_payment_url(incomplete, session_id)
 
 
 def test_blik_hosted_url_rejects_legacy_synthetic_query_parameters() -> None:

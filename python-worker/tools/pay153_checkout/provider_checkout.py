@@ -1136,6 +1136,15 @@ def blik_hosted_payment_url(value: str, session_id: str = "") -> str:
     return raw if is_valid_blik_hosted_payment_url(raw, session_id) else ""
 
 
+def select_blik_hosted_payment_url(session_id: str, *values: str) -> str:
+    """Choose the first complete, signed Stripe Hosted URL from responses."""
+    for value in values:
+        candidate = blik_hosted_payment_url(value, session_id)
+        if candidate:
+            return candidate
+    return ""
+
+
 def is_valid_blik_hosted_payment_url(value: str, session_id: str = "") -> bool:
     parsed = urlsplit(str(value or "").strip())
     host = parsed.netloc.lower().rstrip(".")
@@ -1148,6 +1157,7 @@ def is_valid_blik_hosted_payment_url(value: str, session_id: str = "") -> bool:
         and host in {"pay.openai.com", "checkout.stripe.com"}
         and path.startswith("/c/pay/cs_")
         and (not expected_session or session_path == expected_session)
+        and parsed.fragment.lower().startswith("fid")
         and not any(key in query for key in ("redirect_pm_type", "lid", "ui_mode"))
     )
 
@@ -1305,6 +1315,13 @@ def stripe_to_provider(
                 f"BLIK_METHOD_UNAVAILABLE: PL Checkout 在 taxes 后未开放 BLIK，可用方式：{', '.join(methods) or 'card'}"
             )
         sc.fetch_elements_session(http, pk, session_id, ctx, version, profile, log)
+        billing_country = str((billing.get("address") or {}).get("country") or "").upper()
+        billing_currency = str(ctx.get("currency") or "").upper()
+        log(f"[blik] billing={billing_country or '?'} currency={billing_currency or '?'} processor={processor}")
+        if billing_country != "PL" or billing_currency != "PLN":
+            raise RuntimeError(
+                f"BLIK_BILLING_REGION_INVALID: BLIK 必须使用 PL/PLN 账单，当前为 {billing_country or '?'} / {billing_currency or '?'}"
+            )
     checkout_amount = ctx.get("checkout_amount")
     if ctx.get("original_checkout_amount") in (None, "", 0, "0"):
         ctx["original_checkout_amount"] = checkout_amount
@@ -1348,9 +1365,11 @@ def stripe_to_provider(
     sc.snapshot_billing(chatgpt_http, access_token, session_id, processor, billing, log)
 
     if provider == "blik":
-        payment_url = blik_hosted_payment_url(
-            str(ctx.get("stripe_hosted_url") or init_data.get("stripe_hosted_url") or ""),
+        payment_url = select_blik_hosted_payment_url(
             session_id,
+            str(stage1.get("checkout_url") or ""),
+            str(ctx.get("stripe_hosted_url") or ""),
+            str(init_data.get("stripe_hosted_url") or ""),
         )
         if not is_valid_blik_hosted_payment_url(payment_url, session_id):
             raise RuntimeError(
