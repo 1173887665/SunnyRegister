@@ -4673,6 +4673,78 @@ func sunnyTrialCountryResults(accountJSON, mailboxJSON string) map[string]string
 	return result
 }
 
+func normalizeSunnyTrialCountryFilter(value string) []string {
+	countries := make([]string, 0)
+	seen := map[string]bool{}
+	for _, part := range strings.FieldsFunc(value, func(char rune) bool {
+		return char == ',' || char == ';' || char == '|'
+	}) {
+		country, err := normalizeSunnyProxyCountry(part)
+		if err == nil && !seen[country] {
+			seen[country] = true
+			countries = append(countries, country)
+		}
+	}
+	sort.Strings(countries)
+	return countries
+}
+
+func normalizeSunnyRebindEmailFilter(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "present", "has", "1", "true", "已换绑":
+		return "present"
+	case "missing", "none", "0", "false", "未换绑":
+		return "missing"
+	default:
+		return ""
+	}
+}
+
+func sunnyHasAllEligibleTrialCountries(value any, required []string) bool {
+	if len(required) == 0 {
+		return true
+	}
+	results, ok := value.(map[string]string)
+	if !ok {
+		return false
+	}
+	for _, country := range required {
+		if normalizeSunnyTrialEligibility(results[country]) != sunnyTrialEligible {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) sunnyTrialCountryOptions() []string {
+	type row struct {
+		TrialCountryResultsJSON string `gorm:"column:trial_country_results_json"`
+	}
+	rows := make([]row, 0)
+	var accountRows []row
+	if s.db.Model(&SunnyAccount{}).Select("trial_country_results_json").Find(&accountRows).Error == nil {
+		rows = append(rows, accountRows...)
+	}
+	var mailboxRows []row
+	if s.db.Model(&SunnyMailbox{}).Select("trial_country_results_json").Find(&mailboxRows).Error == nil {
+		rows = append(rows, mailboxRows...)
+	}
+	seen := map[string]bool{}
+	for _, item := range rows {
+		for country := range sunnyTrialCountryResults(item.TrialCountryResultsJSON, "{}") {
+			if normalized, err := normalizeSunnyProxyCountry(country); err == nil {
+				seen[normalized] = true
+			}
+		}
+	}
+	options := make([]string, 0, len(seen))
+	for country := range seen {
+		options = append(options, country)
+	}
+	sort.Strings(options)
+	return options
+}
+
 // sunnyPaymentMethodOptions aggregates every normalized method already saved
 // by payment/checkout probes. It intentionally does not use a fixed allowlist:
 // new country-specific methods should become filterable as soon as they are
@@ -4905,6 +4977,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 	if len(parts) == 0 && r.Method == http.MethodGet {
 		q := r.URL.Query()
 		paymentMethodOptions := s.sunnyPaymentMethodOptions()
+		trialCountryOptions := s.sunnyTrialCountryOptions()
 		page := intValue(q.Get("page"), 1)
 		if page < 1 {
 			page = 1
@@ -4923,9 +4996,11 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		checkoutFilter := normalizeSunnyCheckoutFilter(q.Get("checkout_kind"))
 		paymentMethodFilter := normalizeSunnyPaymentMethodFilter(q.Get("payment_methods"))
 		loginSecretFilter := normalizeSunnyLoginSecretFilter(q.Get("login_secret"))
+		rebindEmailFilter := normalizeSunnyRebindEmailFilter(q.Get("rebind_email"))
+		trialCountryFilter := normalizeSunnyTrialCountryFilter(q.Get("trial_countries"))
 		groupFilter := uint(intValue(q.Get("group_id"), 0))
 		sortBy := strings.ToLower(strings.TrimSpace(q.Get("sort_by")))
-		if statusFilter == "" && planFilter == "" && trialFilter == "" && checkoutFilter == "" && len(paymentMethodFilter) == 0 && loginSecretFilter == "" && sortBy != "rebind_email" {
+		if statusFilter == "" && planFilter == "" && trialFilter == "" && checkoutFilter == "" && len(paymentMethodFilter) == 0 && loginSecretFilter == "" && rebindEmailFilter == "" && len(trialCountryFilter) == 0 && sortBy != "rebind_email" {
 			query := s.db.Model(&SunnySession{})
 			query = sunnyUniqueSessionIdentityScope(query)
 			if kw != "" {
@@ -4940,7 +5015,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			if strings.EqualFold(strings.TrimSpace(q.Get("selection")), "all") {
 				var ids []uint
 				query.Order("id desc").Pluck("id", &ids)
-				writeJSON(w, 200, map[string]any{"ids": ids, "total": len(ids), "payment_method_options": paymentMethodOptions})
+				writeJSON(w, 200, map[string]any{"ids": ids, "total": len(ids), "payment_method_options": paymentMethodOptions, "trial_country_options": trialCountryOptions})
 				return
 			}
 			var total int64
@@ -4963,7 +5038,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			for _, row := range rows {
 				items = append(items, serializeSunnySessionList(row, accounts, mailboxes))
 			}
-			writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": pageSize, "payment_method_options": paymentMethodOptions})
+			writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": pageSize, "payment_method_options": paymentMethodOptions, "trial_country_options": trialCountryOptions})
 			return
 		}
 		var rows []sunnySessionListRow
@@ -4993,6 +5068,12 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			if loginSecretFilter != "" && (loginSecretFilter == "present") != boolValue(item["has_login_secret"], false) {
 				continue
 			}
+			if rebindEmailFilter != "" && (rebindEmailFilter == "present") != (strings.TrimSpace(text(item["rebind_email"])) != "") {
+				continue
+			}
+			if !sunnyHasAllEligibleTrialCountries(item["trial_country_results"], trialCountryFilter) {
+				continue
+			}
 			if !sunnyHasAllPaymentMethods(item["payment_methods"], paymentMethodFilter) {
 				continue
 			}
@@ -5008,7 +5089,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 					ids = append(ids, id)
 				}
 			}
-			writeJSON(w, 200, map[string]any{"ids": ids, "total": len(ids), "payment_method_options": paymentMethodOptions})
+			writeJSON(w, 200, map[string]any{"ids": ids, "total": len(ids), "payment_method_options": paymentMethodOptions, "trial_country_options": trialCountryOptions})
 			return
 		}
 		if sortBy == "" {
@@ -5049,7 +5130,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		if end > total {
 			end = total
 		}
-		writeJSON(w, 200, map[string]any{"items": itemsAll[start:end], "total": total, "page": page, "page_size": pageSize, "payment_method_options": paymentMethodOptions})
+		writeJSON(w, 200, map[string]any{"items": itemsAll[start:end], "total": total, "page": page, "page_size": pageSize, "payment_method_options": paymentMethodOptions, "trial_country_options": trialCountryOptions})
 		return
 	}
 	if len(parts) == 1 && parts[0] == "health-check" && r.Method == http.MethodPost {

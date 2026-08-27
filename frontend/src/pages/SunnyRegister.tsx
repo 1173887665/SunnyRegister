@@ -827,6 +827,8 @@ Object.assign(zh, {
   checkoutProbeSummary: "Checkout 探测完成：检测成功 {detected} 个，重试 {retried} 个，跳过 {skipped} 个，失败 {failed} 个",
   allPaymentMethods: "全部支付方式", paymentMethodFilter: "支付方式筛选（同时满足）", clearPaymentMethods: "清除支付方式筛选",
   loginSecretFilterTitle: "筛选登录密钥", loginSecretFilterAll: "全部", loginSecretFilterPresent: "有 LS", loginSecretFilterMissing: "无 LS",
+  rebindEmailFilterTitle: "筛选换绑邮箱", rebindEmailFilterAll: "全部", rebindEmailFilterPresent: "已换绑", rebindEmailFilterMissing: "未换绑",
+  trialCountryFilterTitle: "筛选有试用资格的国家", trialCountryFilterAll: "全部", trialCountryFilterClear: "清除", trialCountryFilterEmpty: "暂无已检测国家", trialCountryFilterAndHint: "多选时需同时具有所选国家的试用资格",
   terminateTask: "终止", terminatingTask: "终止中...", terminateTaskRequested: "已请求终止当前日志对应的任务", terminateTaskFailed: "终止任务失败",
 });
 (zh as AnyObj).domainMailboxRetainFailed = "保留失败域名邮箱";
@@ -835,6 +837,8 @@ Object.assign(zh, {
 (en as AnyObj).domainMailboxRetainFailedTip = "When disabled, failed registration or rebinding mailboxes are deleted from CloudMail and this project";
 Object.assign(en, {
   loginSecretFilterTitle: "Filter Login Secret", loginSecretFilterAll: "All", loginSecretFilterPresent: "Has LS", loginSecretFilterMissing: "No LS",
+  rebindEmailFilterTitle: "Filter Rebound Email", rebindEmailFilterAll: "All", rebindEmailFilterPresent: "Rebound", rebindEmailFilterMissing: "Not Rebound",
+  trialCountryFilterTitle: "Filter Eligible Trial Countries", trialCountryFilterAll: "All", trialCountryFilterClear: "Clear", trialCountryFilterEmpty: "No checked countries", trialCountryFilterAndHint: "Accounts must be eligible in every selected country",
   terminateTask: "Terminate", terminatingTask: "Terminating...", terminateTaskRequested: "Termination requested for the selected log task", terminateTaskFailed: "Failed to terminate task",
   rebindEmail: "Rebound Email",
   searchAccount: "Search email or rebound email...",
@@ -1135,6 +1139,33 @@ type LoginSecretFilterValue = "" | "present" | "missing";
 function LoginSecretFilterHeader({ t, value, onToggle }: { t: AnyObj; value: LoginSecretFilterValue; onToggle: () => void }) {
   const label = value === "present" ? t.loginSecretFilterPresent : value === "missing" ? t.loginSecretFilterMissing : t.loginSecretFilterAll;
   return <div className="sr-login-secret-header"><span>{t.loginSecret}</span><button type="button" className={cn("sr-login-secret-filter", value && "active")} onClick={onToggle} title={t.loginSecretFilterTitle} aria-label={`${t.loginSecretFilterTitle}: ${label}`}><Filter className="h-3.5 w-3.5"/><span>{label}</span></button></div>;
+}
+type RebindEmailFilterValue = "" | "present" | "missing";
+function RebindEmailFilterHeader({ t, value, onToggle }: { t: AnyObj; value: RebindEmailFilterValue; onToggle: () => void }) {
+  const label = value === "present" ? t.rebindEmailFilterPresent : value === "missing" ? t.rebindEmailFilterMissing : t.rebindEmailFilterAll;
+  return <div className="sr-login-secret-header"><span>{t.rebindEmail}</span><button type="button" className={cn("sr-login-secret-filter", value && "active")} onClick={onToggle} title={t.rebindEmailFilterTitle} aria-label={`${t.rebindEmailFilterTitle}: ${label}`}><Filter className="h-3.5 w-3.5"/><span>{label}</span></button></div>;
+}
+function TrialCountryFilterHeader({ t, value, options, onChange }: { t: AnyObj; value: string[]; options: string[]; onChange: (value: string[]) => void }) {
+  const [open,setOpen]=useState(false);
+  const rootRef=useRef<HTMLDivElement|null>(null);
+  const countries=Array.from(new Set([...options,...value].map((item)=>String(item).trim().toUpperCase()).filter(Boolean))).sort();
+  const label=value.length===0?t.trialCountryFilterAll:value.length<=2?value.join(","):`${value.length}`;
+  useEffect(()=>{
+    if (!open) return;
+    const close=(event: MouseEvent)=>{if(rootRef.current&&!rootRef.current.contains(event.target as Node))setOpen(false)};
+    document.addEventListener("mousedown",close);
+    return ()=>document.removeEventListener("mousedown",close);
+  },[open]);
+  const toggle=(country:string)=>onChange(value.includes(country)?value.filter((item)=>item!==country):[...value,country].sort());
+  return <div ref={rootRef} className="sr-trial-country-header">
+    <span>{t.trialEligibility}</span>
+    <button type="button" className={cn("sr-login-secret-filter",value.length>0&&"active")} onClick={()=>setOpen((current)=>!current)} title={t.trialCountryFilterTitle} aria-expanded={open} aria-label={`${t.trialCountryFilterTitle}: ${label}`}><Filter className="h-3.5 w-3.5"/><span>{label}</span></button>
+    {open&&<div className="sr-trial-country-filter-menu">
+      <div className="sr-trial-country-filter-head"><strong>{t.trialCountryFilterTitle}</strong>{value.length>0&&<button type="button" onClick={()=>onChange([])}>{t.trialCountryFilterClear}</button>}</div>
+      <div className="sr-trial-country-filter-options">{countries.length?countries.map((country)=><label key={country} className={cn("sr-trial-country-filter-option",value.includes(country)&&"is-selected")}><input type="checkbox" checked={value.includes(country)} onChange={()=>toggle(country)}/><span>{country}</span></label>):<span className="sr-trial-country-filter-empty">{t.trialCountryFilterEmpty}</span>}</div>
+      <p>{t.trialCountryFilterAndHint}</p>
+    </div>}
+  </div>;
 }
 function SelectionSummary({ t, count, total, selectingAll, onSelectAll, onClear }: { t: typeof zh; count: number; total: number; selectingAll: boolean; onSelectAll: () => void; onClear: () => void }) {
   return <div className="sr-selection-summary" aria-live="polite">
@@ -3747,8 +3778,11 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const debouncedQuery = useDebouncedValue(query);
   const [status,setStatus]=useCachedState("session.status","");
   const [loginSecretFilter,setLoginSecretFilter]=useCachedState<LoginSecretFilterValue>("session.loginSecretFilter","");
+  const [rebindEmailFilter,setRebindEmailFilter]=useCachedState<RebindEmailFilterValue>("session.rebindEmailFilter","");
   const [plan,setPlan]=useCachedState("session.plan","");
   const [trialEligibility,setTrialEligibility]=useCachedState("session.trialEligibility","");
+  const [trialCountryFilters,setTrialCountryFilters]=useCachedState<string[]>("session.trialCountryFilters",[]);
+  const [availableTrialCountries,setAvailableTrialCountries]=useState<string[]>([]);
   const [checkoutKind,setCheckoutKind]=useCachedState("session.checkoutKind","");
   const [paymentMethods,setPaymentMethods]=useCachedState<string[]>("session.paymentMethods",[]);
   const [availablePaymentMethods,setAvailablePaymentMethods]=useState<string[]>([]);
@@ -3848,12 +3882,15 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     if (trialEligibility) qs.set("trial_eligibility", trialEligibility);
     if (checkoutKind) qs.set("checkout_kind", checkoutKind);
     if (loginSecretFilter) qs.set("login_secret", loginSecretFilter);
+    if (rebindEmailFilter) qs.set("rebind_email", rebindEmailFilter);
+    if (trialCountryFilters.length) qs.set("trial_countries", trialCountryFilters.join(","));
     if (paymentMethods.length) qs.set("payment_methods", paymentMethods.join(","));
     if (group) qs.set("group_id", group);
     const res = await apiFetch(`/sunny/sessions?${qs.toString()}`);
     setItems(res.items||[]);
     setTotal(Number(res.total || 0));
     setAvailablePaymentMethods(Array.isArray(res.payment_method_options) ? res.payment_method_options.map(String) : []);
+    setAvailableTrialCountries(Array.isArray(res.trial_country_options) ? res.trial_country_options.map((item:any)=>String(item).toUpperCase()) : []);
   });
   useEffect(()=>{
     let completed=false;
@@ -3874,6 +3911,8 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       if(trialEligibility) qs.set("trial_eligibility",trialEligibility);
       if(checkoutKind) qs.set("checkout_kind",checkoutKind);
       if(loginSecretFilter) qs.set("login_secret",loginSecretFilter);
+      if(rebindEmailFilter) qs.set("rebind_email",rebindEmailFilter);
+      if(trialCountryFilters.length) qs.set("trial_countries",trialCountryFilters.join(","));
       if(paymentMethods.length) qs.set("payment_methods",paymentMethods.join(","));
       if(group) qs.set("group_id",group);
       const result=await apiFetch(`/sunny/sessions?${allSelectionParams(qs).toString()}`);
@@ -3883,8 +3922,9 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     } catch(e:any) { notify("fail",e.message||String(e)); }
     finally { setSelectingAll(false); }
   };
-  useEffect(()=>{void load()},[sortBy, timeSort, page, pageSize, debouncedQuery, status, loginSecretFilter, plan, trialEligibility, checkoutKind, paymentMethods, group]);
-  useEffect(()=>{setPage(1)},[sortBy, timeSort, pageSize, query, status, loginSecretFilter, plan, trialEligibility, checkoutKind, paymentMethods, group]);
+  useEffect(()=>{void load()},[sortBy, timeSort, page, pageSize, debouncedQuery, status, loginSecretFilter, rebindEmailFilter, plan, trialEligibility, trialCountryFilters, checkoutKind, paymentMethods, group]);
+  useEffect(()=>{setPage(1)},[sortBy, timeSort, pageSize, query, status, loginSecretFilter, rebindEmailFilter, plan, trialEligibility, trialCountryFilters, checkoutKind, paymentMethods, group]);
+  useEffect(()=>{if(sortBy==="rebind_email")setSortBy("last_health_checked_at")},[sortBy,setSortBy]);
   useEffect(()=>{apiFetch("/sunny/mailbox-groups").then((res)=>setGroups(sortMailboxGroups(res.items||[]))).catch(()=>setGroups([]));},[]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
   const exportFormat = ["at", "ls", "sk", "sub"].includes(fmt) ? fmt : "at";
@@ -4287,7 +4327,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       </div>
     </div>
     <div className="sr-table-scroll">
-      <ResizableDataTable tableKey="sessions-v2" columns={DATA_TABLE_COLUMNS.sessions} className="sr-session-table" headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/>,t.email,<SortTimeHeader label={t.rebindEmail} order={sortBy==="rebind_email"?timeSort:"desc"} onToggle={()=>toggleTimeSort("rebind_email")}/>,t.groupFilter,t.status,t.planType,<LoginSecretFilterHeader t={t} value={loginSecretFilter} onToggle={()=>setLoginSecretFilter((old)=>old===""?"present":old==="present"?"missing":"")}/>,"SK","AT","RT",t.trialEligibility,t.checkoutKind,t.paymentMethods,<SortTimeHeader label={t.atExpiresAt} order={sortBy==="access_token_expires_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("access_token_expires_at")}/>,<SortTimeHeader label={t.lastHealthCheckedAt} order={sortBy==="last_health_checked_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("last_health_checked_at")}/>,t.operation]}>
+      <ResizableDataTable tableKey="sessions-v2" columns={DATA_TABLE_COLUMNS.sessions} className="sr-session-table" headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected, ...items.map((x)=>x.id)])) : selected.filter((id)=>!items.some((x)=>x.id===id)))}/>,t.email,<RebindEmailFilterHeader t={t} value={rebindEmailFilter} onToggle={()=>setRebindEmailFilter((old)=>old===""?"present":old==="present"?"missing":"")}/>,t.groupFilter,t.status,t.planType,<LoginSecretFilterHeader t={t} value={loginSecretFilter} onToggle={()=>setLoginSecretFilter((old)=>old===""?"present":old==="present"?"missing":"")}/>,"SK","AT","RT",<TrialCountryFilterHeader t={t} value={trialCountryFilters} options={availableTrialCountries} onChange={setTrialCountryFilters}/>,t.checkoutKind,t.paymentMethods,<SortTimeHeader label={t.atExpiresAt} order={sortBy==="access_token_expires_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("access_token_expires_at")}/>,<SortTimeHeader label={t.lastHealthCheckedAt} order={sortBy==="last_health_checked_at"?timeSort:"desc"} onToggle={()=>toggleTimeSort("last_health_checked_at")}/>,t.operation]}>
         <tbody>{items.length ? items.map((s)=>{
           const refreshing=refreshingSessionIds.includes(s.id);
           const checkingAT=atCheckingSessionIds.includes(s.id);

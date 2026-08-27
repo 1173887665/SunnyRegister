@@ -288,6 +288,107 @@ func TestSunnySessionListFiltersLoginSecretPresence(t *testing.T) {
 	}
 }
 
+func TestSunnySessionListFiltersRebindEmailPresence(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	if err := s.db.Model(&SunnyAccount{}).Where("email = ?", "session@example.com").Update("rebind_email", "rebound@example.com").Error; err != nil {
+		t.Fatalf("set rebind email: %v", err)
+	}
+	now := time.Now()
+	mailbox := SunnyMailbox{Email: "not-rebound@example.com", Status: "已注册", AccountType: "free", Enabled: true, CreatedAt: now, UpdatedAt: now}
+	if err := s.db.Create(&mailbox).Error; err != nil {
+		t.Fatalf("create mailbox: %v", err)
+	}
+	account := SunnyAccount{MailboxID: mailbox.ID, Email: mailbox.Email, Status: "registered", AccountType: "free", CreatedAt: now, UpdatedAt: now}
+	if err := s.db.Create(&account).Error; err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if err := s.db.Create(&SunnySession{AccountID: account.ID, Email: mailbox.Email, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	request := func(filter string) []map[string]any {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/sunny/sessions?page=1&page_size=10&rebind_email="+filter, nil)
+		s.sunnySessions(rec, req, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("rebind email filter status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode rebind email filter: %v", err)
+		}
+		return payload.Items
+	}
+	withRebind := request("present")
+	if len(withRebind) != 1 || withRebind[0]["email"] != "session@example.com" {
+		t.Fatalf("present rebind filter result=%#v", withRebind)
+	}
+	withoutRebind := request("missing")
+	if len(withoutRebind) != 1 || withoutRebind[0]["email"] != mailbox.Email {
+		t.Fatalf("missing rebind filter result=%#v", withoutRebind)
+	}
+}
+
+func TestSunnySessionListFiltersEligibleTrialCountriesWithAND(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	now := time.Now()
+	createSession := func(email string, results map[string]string) uint {
+		t.Helper()
+		raw := dumpJSON(results)
+		mailbox := SunnyMailbox{Email: email, Status: "已注册", AccountType: "free", TrialCountryResultsJSON: raw, Enabled: true, CreatedAt: now, UpdatedAt: now}
+		if err := s.db.Create(&mailbox).Error; err != nil {
+			t.Fatalf("create mailbox %s: %v", email, err)
+		}
+		account := SunnyAccount{MailboxID: mailbox.ID, Email: email, Status: "registered", AccountType: "free", TrialCountryResultsJSON: raw, CreatedAt: now, UpdatedAt: now}
+		if err := s.db.Create(&account).Error; err != nil {
+			t.Fatalf("create account %s: %v", email, err)
+		}
+		session := SunnySession{AccountID: account.ID, Email: email, CreatedAt: now, UpdatedAt: now}
+		if err := s.db.Create(&session).Error; err != nil {
+			t.Fatalf("create session %s: %v", email, err)
+		}
+		return session.ID
+	}
+	bothID := createSession("jp-br@example.com", map[string]string{"JP": "eligible", "BR": "eligible"})
+	createSession("jp-only@example.com", map[string]string{"JP": "eligible", "BR": "ineligible"})
+	createSession("jp-vn@example.com", map[string]string{"JP": "eligible", "VN": "ineligible"})
+
+	request := func(query string) (items []map[string]any, ids []uint, options []string) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/sunny/sessions?"+query, nil)
+		s.sunnySessions(rec, req, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("trial country filter status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Items               []map[string]any `json:"items"`
+			IDs                 []uint           `json:"ids"`
+			TrialCountryOptions []string         `json:"trial_country_options"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode trial country filter: %v", err)
+		}
+		return payload.Items, payload.IDs, payload.TrialCountryOptions
+	}
+	jpItems, _, options := request("page=1&page_size=10&trial_countries=JP")
+	if len(jpItems) != 3 {
+		t.Fatalf("JP filter returned %d items: %#v", len(jpItems), jpItems)
+	}
+	if strings.Join(options, ",") != "BR,JP,VN" {
+		t.Fatalf("trial country options=%v", options)
+	}
+	andItems, _, _ := request("page=1&page_size=10&trial_countries=JP,BR")
+	if len(andItems) != 1 || andItems[0]["email"] != "jp-br@example.com" {
+		t.Fatalf("JP+BR AND filter result=%#v", andItems)
+	}
+	_, selectedIDs, _ := request("selection=all&trial_countries=BR,JP")
+	if len(selectedIDs) != 1 || selectedIDs[0] != bothID {
+		t.Fatalf("JP+BR selection ids=%v want [%d]", selectedIDs, bothID)
+	}
+}
+
 func TestSunnyMailboxListSortsRebindEmailBeforePagination(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	if err := s.db.Model(&SunnyMailbox{}).Where("email = ?", "session@example.com").Update("rebind_email", "m-replacement@example.com").Error; err != nil {
