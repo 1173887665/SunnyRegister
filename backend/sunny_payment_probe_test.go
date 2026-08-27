@@ -31,6 +31,25 @@ func TestSunnyPaymentProbeSupportsIndonesiaCurrencyAndDynamicMethods(t *testing.
 	}
 }
 
+func TestSunnyPaymentProbeUsesPolishZloty(t *testing.T) {
+	previousProbe := sunnyProbePaymentMethods
+	var probedCountry, probedCurrency string
+	sunnyProbePaymentMethods = func(_ context.Context, _, country, currency, _ string) sunnyPaymentProbeResponse {
+		probedCountry, probedCurrency = country, currency
+		return sunnyPaymentProbeResponse{Methods: []string{"card"}, HTTP: http.StatusOK}
+	}
+	t.Cleanup(func() { sunnyProbePaymentMethods = previousProbe })
+
+	result := (&Server{}).probeSunnyPaymentCountry(
+		sunnyPaymentProbeCandidate{AccessToken: "token"},
+		"PL",
+		[]SunnyProxy{{ID: 1, Address: "http://pl.example:8080"}},
+	)
+	if result.Error != "" || probedCountry != "PL" || probedCurrency != "PLN" {
+		t.Fatalf("PL probe country=%q currency=%q result=%#v", probedCountry, probedCurrency, result)
+	}
+}
+
 func TestSunnyPaymentProbeTaskUnionsCountriesAndPersistsImmediately(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	var session SunnySession

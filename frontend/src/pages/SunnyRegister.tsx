@@ -3627,9 +3627,14 @@ function paymentMethodLabel(value: any) {
   const key=String(value||"").trim().toLowerCase();
   return PAYMENT_METHOD_LABELS[key] || key.replace(/_/g," ").replace(/\b\w/g,(char)=>char.toUpperCase());
 }
+function paymentProbeTitle(row: AnyObj) {
+  const summary=String(row.payment_probe_error || row.commerce_check_error || "").trim();
+  const countryDetails=Object.entries(row.payment_probe_results||{}).map(([country,detail]:[string,any])=>`${country}: ${(detail?.methods||[]).map(paymentMethodLabel).join(", ") || detail?.error || "-"}`);
+  return Array.from(new Set([summary,...countryDetails].filter(Boolean))).join("\n");
+}
 function PaymentMethodsBadge({ row }: { row: AnyObj }) {
   if (!Array.isArray(row.payment_methods) || row.payment_methods.length === 0) return <span className="text-slate-400">-</span>;
-  const title=[row.payment_probe_error || row.commerce_check_error,Object.entries(row.payment_probe_results||{}).map(([country,detail]:[string,any])=>`${country}: ${(detail?.methods||[]).map(paymentMethodLabel).join(", ") || detail?.error || "-"}`).join("\n")].filter(Boolean).join("\n");
+  const title=paymentProbeTitle(row);
   return <div className="flex flex-wrap gap-1" title={title}>{row.payment_methods.map((method:string)=><Badge key={method} variant="secondary" className="whitespace-nowrap">{paymentMethodLabel(method)}</Badge>)}</div>;
 }
 function PaymentMethodFilter({t,value,options,onChange}:{t:AnyObj;value:string[];options:string[];onChange:(value:string[])=>void}) {
