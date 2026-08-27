@@ -141,7 +141,7 @@ func TestExtractSunnyCheckoutResultPrefersGoPayMidtransURL(t *testing.T) {
 }
 
 func TestExtractSunnyCheckoutResultPrefersValidatedBlikURL(t *testing.T) {
-	blikURL := "https://pay.openai.com/c/pay/cs_live_123?redirect_pm_type=blik&ui_mode=custom"
+	blikURL := "https://checkout.stripe.com/c/pay/cs_live_123#fidnandhYHdWcXxpYCc%2FJ2FgY2RwaXEn"
 	result := extractSunnyCheckoutResult(map[string]any{
 		"blik_payment_url": blikURL,
 		"checkout_url":     "https://chatgpt.com/checkout/openai_ie/cs_live_123",
@@ -151,6 +151,9 @@ func TestExtractSunnyCheckoutResultPrefersValidatedBlikURL(t *testing.T) {
 	}
 	if isSunnyBlikPaymentURL("https://chatgpt.com/checkout/openai_ie/cs_live_123") {
 		t.Fatal("ordinary ChatGPT Checkout URL must not pass BLIK validation")
+	}
+	if isSunnyBlikPaymentURL("https://checkout.stripe.com/c/pay/cs_live_123?redirect_pm_type=blik&lid=generated&ui_mode=custom") {
+		t.Fatal("legacy synthetic BLIK query parameters must be rejected")
 	}
 }
 

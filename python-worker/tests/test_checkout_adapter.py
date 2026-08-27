@@ -245,7 +245,7 @@ class CheckoutAdapterTests(unittest.TestCase):
         self.assertEqual(result["result"]["gopay_midtrans_url"], midtrans_url)
 
     def test_checkout_status_preserves_blik_payment_url(self) -> None:
-        blik_url = "https://pay.openai.com/c/pay/cs_live_123?redirect_pm_type=blik"
+        blik_url = "https://checkout.stripe.com/c/pay/cs_live_123#fidnandhYHdWcXxpYCc%2FJ2FgY2RwaXEn"
         job = {
             "status": "done",
             "percent": 100,

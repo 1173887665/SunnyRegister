@@ -26,12 +26,12 @@ def test_blik_defaults_and_polish_billing() -> None:
     assert billing["address"]["postal_code"] == "00-001"
 
 
-def test_blik_hosted_url_selects_blik_and_preserves_fragment() -> None:
-    source = "https://pay.openai.com/c/pay/cs_live_123#checkout-state"
-    result = blik_hosted_payment_url(source, "cs_live_123")
-    assert is_valid_blik_hosted_payment_url(result, "cs_live_123")
-    assert "redirect_pm_type=blik" in result
-    assert result.endswith("#checkout-state")
+def test_blik_hosted_url_preserves_signed_stripe_url_exactly() -> None:
+    session_id = "cs_live_a1Dun8t2Mnbx5xOiuPgV114UYeOts1740P86fVFrQGWQw1CrjivvM88fH5"
+    source = f"https://checkout.stripe.com/c/pay/{session_id}#fidnandhYHdWcXxpYCc%2FJ2FgY2RwaXEn"
+    result = blik_hosted_payment_url(source, session_id)
+    assert is_valid_blik_hosted_payment_url(result, session_id)
+    assert result == source
 
 
 def test_blik_hosted_url_rejects_generic_or_wrong_session_pages() -> None:
@@ -39,11 +39,24 @@ def test_blik_hosted_url_rejects_generic_or_wrong_session_pages() -> None:
         "https://chatgpt.com/checkout/openai_ie/cs_live_123", "cs_live_123",
     )
     assert not is_valid_blik_hosted_payment_url(
-        "https://pay.openai.com/c/pay/cs_live_other?redirect_pm_type=blik", "cs_live_123",
+        "https://pay.openai.com/c/pay/cs_live_other", "cs_live_123",
     )
     assert not is_valid_blik_hosted_payment_url(
-        "https://pay.openai.com.evil.example/c/pay/cs_live_123?redirect_pm_type=blik", "cs_live_123",
+        "https://pay.openai.com.evil.example/c/pay/cs_live_123", "cs_live_123",
     )
+
+
+def test_blik_hosted_url_does_not_fabricate_missing_provider_url() -> None:
+    assert blik_hosted_payment_url("", "cs_live_123") == ""
+
+
+def test_blik_hosted_url_rejects_legacy_synthetic_query_parameters() -> None:
+    broken = (
+        "https://checkout.stripe.com/c/pay/cs_live_123"
+        "?redirect_pm_type=blik&lid=generated&ui_mode=custom#checkout-state"
+    )
+    assert not is_valid_blik_hosted_payment_url(broken, "cs_live_123")
+    assert blik_hosted_payment_url(broken, "cs_live_123") == ""
 
 
 def test_oaics_blik_url_requires_matching_session() -> None:

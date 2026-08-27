@@ -7,7 +7,7 @@ import random
 import re
 import time
 import uuid
-from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 from datetime import date, timedelta
 from typing import Any, Callable
 
@@ -1131,31 +1131,24 @@ def extract_provider_result(data: dict, provider: str) -> dict[str, Any]:
 
 
 def blik_hosted_payment_url(value: str, session_id: str = "") -> str:
-    """Build a public Hosted Checkout URL with BLIK selected."""
+    """Return Stripe's original signed Hosted Checkout URL unchanged."""
     raw = str(value or "").strip()
-    if not raw and str(session_id or "").startswith("cs_"):
-        raw = f"https://pay.openai.com/c/pay/{session_id}"
-    parsed = urlsplit(raw)
-    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    query.update({
-        "redirect_pm_type": "blik",
-        "lid": str(uuid.uuid4()),
-        "ui_mode": "custom",
-    })
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+    return raw if is_valid_blik_hosted_payment_url(raw, session_id) else ""
 
 
 def is_valid_blik_hosted_payment_url(value: str, session_id: str = "") -> bool:
     parsed = urlsplit(str(value or "").strip())
     host = parsed.netloc.lower().rstrip(".")
     path = parsed.path.lower()
+    query = parse_qs(parsed.query, keep_blank_values=True)
     expected_session = str(session_id or "").lower()
+    session_path = path.removeprefix("/c/pay/").rstrip("/")
     return (
         parsed.scheme.lower() == "https"
         and host in {"pay.openai.com", "checkout.stripe.com"}
         and path.startswith("/c/pay/cs_")
-        and (not expected_session or expected_session in path)
-        and parse_qs(parsed.query).get("redirect_pm_type", [""])[0].lower() == "blik"
+        and (not expected_session or session_path == expected_session)
+        and not any(key in query for key in ("redirect_pm_type", "lid", "ui_mode"))
     )
 
 

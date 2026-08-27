@@ -829,7 +829,12 @@ func isSunnyBlikPaymentURL(value string) bool {
 	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
 	path := strings.ToLower(parsed.EscapedPath())
 	if host == "pay.openai.com" || host == "checkout.stripe.com" {
-		return strings.HasPrefix(path, "/c/pay/cs_") && strings.EqualFold(parsed.Query().Get("redirect_pm_type"), "blik")
+		// Stripe Hosted Checkout URLs contain signed/session state.  The worker
+		// must preserve the provider URL exactly instead of appending synthetic
+		// redirect_pm_type, lid or ui_mode query parameters.
+		query := parsed.Query()
+		return strings.HasPrefix(path, "/c/pay/cs_") &&
+			!query.Has("redirect_pm_type") && !query.Has("lid") && !query.Has("ui_mode")
 	}
 	return (host == "chatgpt.com" || host == "chat.openai.com") &&
 		strings.Contains(path, "/checkout/") && strings.Contains(path, "/oaics_")
