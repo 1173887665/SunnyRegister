@@ -267,24 +267,68 @@ type AccountOperationLog = { id: string; kind: AccountLogKind; phase: "process" 
 type AccountLogSnapshot = Record<AccountLogKind, AccountOperationLog[]>;
 const ACCOUNT_LOG_KINDS: AccountLogKind[] = ["mail-query", "edit", "export", "delete", "reverse-proxy", "sub2-import", "trial-check", "checkout-probe", "payment-probe", "add-ls", "access-token-check", "refresh-at", "health-check", "subscription-check", "rebind"];
 const ACCOUNT_LOG_STORAGE_KEY = "sunnyregister.account-operation-logs";
+// Account task streams can emit thousands of lines. Keep only a bounded, recent window
+// and avoid retaining large API responses in the browser log state.
+const ACCOUNT_LOG_MAX_LINES = 120;
+const ACCOUNT_LOG_MAX_MESSAGE_LENGTH = 2400;
+const ACCOUNT_LOG_PERSIST_DELAY = 250;
+function compactAccountLogMessage(value: unknown): string {
+  const message = String(value || "");
+  return message.length > ACCOUNT_LOG_MAX_MESSAGE_LENGTH
+    ? `${message.slice(0, ACCOUNT_LOG_MAX_MESSAGE_LENGTH)}...`
+    : message;
+}
+function compactAccountLogDetail(detail?: AnyObj): AnyObj | undefined {
+  if (!detail || typeof detail !== "object") return undefined;
+  const compact: AnyObj = {};
+  Object.entries(detail).forEach(([key, value]) => {
+    if (["result", "items", "errors", "logs", "events", "response", "html", "body"].includes(key)) return;
+    if (typeof value === "string") compact[key] = value.slice(0, 240);
+    else if (typeof value === "number" || typeof value === "boolean" || value == null) compact[key] = value;
+    else if (key === "session_ids" && Array.isArray(value)) compact[key] = value.slice(0, 32);
+  });
+  return Object.keys(compact).length ? compact : undefined;
+}
+function retainAccountLogs(kind: AccountLogKind, entries: AccountOperationLog[]): AccountOperationLog[] {
+  return entries.slice(-ACCOUNT_LOG_MAX_LINES).map((entry) => ({
+    ...entry,
+    kind,
+    message: compactAccountLogMessage(entry.message),
+    email: entry.email ? String(entry.email).slice(0, 320) : undefined,
+    detail: compactAccountLogDetail(entry.detail),
+  }));
+}
 const emptyAccountLogSnapshot = (): AccountLogSnapshot => Object.fromEntries(ACCOUNT_LOG_KINDS.map((kind) => [kind, []])) as unknown as AccountLogSnapshot;
 let accountLogSnapshot: AccountLogSnapshot = (() => {
   if (typeof window === "undefined") return emptyAccountLogSnapshot();
   try {
     const parsed = JSON.parse(window.localStorage.getItem(ACCOUNT_LOG_STORAGE_KEY) || "{}");
-    return { ...emptyAccountLogSnapshot(), ...Object.fromEntries(ACCOUNT_LOG_KINDS.map((kind) => [kind, Array.isArray(parsed?.[kind]) ? parsed[kind].slice(-300) : []])) } as AccountLogSnapshot;
+    return { ...emptyAccountLogSnapshot(), ...Object.fromEntries(ACCOUNT_LOG_KINDS.map((kind) => [kind, Array.isArray(parsed?.[kind]) ? retainAccountLogs(kind, parsed[kind]) : []])) } as AccountLogSnapshot;
   } catch { return emptyAccountLogSnapshot(); }
 })();
 const accountLogListeners = new Set<() => void>();
+let accountLogPersistTimer: number | null = null;
+function persistAccountLogs() {
+  accountLogPersistTimer = null;
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(ACCOUNT_LOG_STORAGE_KEY, JSON.stringify(accountLogSnapshot)); } catch { /* log visibility remains available in memory */ }
+}
+if (typeof window !== "undefined") {
+  // Rewrite legacy/unbounded snapshots once after startup so a previous large
+  // log cache is not retained in localStorage indefinitely.
+  accountLogPersistTimer = window.setTimeout(persistAccountLogs, 0);
+}
 function publishAccountLogs(next: AccountLogSnapshot) {
-  accountLogSnapshot = next;
-  try { window.localStorage.setItem(ACCOUNT_LOG_STORAGE_KEY, JSON.stringify(next)); } catch { /* log visibility remains available in memory */ }
+  accountLogSnapshot = Object.fromEntries(ACCOUNT_LOG_KINDS.map((kind) => [kind, retainAccountLogs(kind, next[kind] || [])])) as AccountLogSnapshot;
+  if (typeof window !== "undefined" && accountLogPersistTimer === null) {
+    accountLogPersistTimer = window.setTimeout(persistAccountLogs, ACCOUNT_LOG_PERSIST_DELAY);
+  }
   accountLogListeners.forEach((listener) => listener());
 }
 function appendAccountOperationLog(kind: AccountLogKind, phase: "process" | "result", message: string, level = "info", email?: string, detail?: AnyObj) {
-  const entry: AccountOperationLog = { id: `${kind}:${Date.now()}:${Math.random()}`, kind, phase, createdAt: new Date().toISOString(), level, message, email, detail };
+  const entry: AccountOperationLog = { id: `${kind}:${Date.now()}:${Math.random()}`, kind, phase, createdAt: new Date().toISOString(), level, message: compactAccountLogMessage(message), email, detail: compactAccountLogDetail(detail) };
   const current = accountLogSnapshot[kind] || [];
-  publishAccountLogs({ ...accountLogSnapshot, [kind]: [...current, entry].slice(-300) });
+  publishAccountLogs({ ...accountLogSnapshot, [kind]: [...current, entry] });
 }
 function appendAccountTaskEvents(kind: PersistentSessionTaskKind, events: AnyObj[]) {
   if (!events.length) return;
@@ -296,11 +340,13 @@ function appendAccountTaskEvents(kind: PersistentSessionTaskKind, events: AnyObj
     phase: "process" as const,
     createdAt: String(event.created_at || new Date().toISOString()),
     level: String(event.level || "info"),
-    message: String(event.message || event.detail?.current_log || event.line || ""),
+    message: compactAccountLogMessage(event.message || event.detail?.current_log || event.line || ""),
     email: String(event.email || event.detail?.email || "") || undefined,
-    detail: { ...(event.detail || {}), eventId: event.id },
+    // The rendered log only needs the event id for de-duplication. Do not retain
+    // potentially large task result/detail payloads for every event.
+    detail: { eventId: event.id || `${kind}:${Date.now()}:${Math.random()}` },
   })).filter((entry) => entry.message && !known.has(String(entry.detail?.eventId || "")));
-  if (entries.length) publishAccountLogs({ ...accountLogSnapshot, [kind]: [...current, ...entries].slice(-300) });
+  if (entries.length) publishAccountLogs({ ...accountLogSnapshot, [kind]: [...current, ...entries] });
 }
 function appendAccountTaskResult(kind: PersistentSessionTaskKind, task: AnyObj) {
   const result = task?.result || {};
@@ -313,7 +359,7 @@ function appendAccountTaskResult(kind: PersistentSessionTaskKind, task: AnyObj) 
   const messages = [summary ? `任务完成：${summary}` : `任务${task?.status === "succeeded" ? "完成" : "结束"}`];
   if (kind === "rebind") items.forEach((item: AnyObj) => { if (item.new_email) messages.push(`${item.email || "未知账户"} -> ${item.new_email}（${item.status || "完成"}）`); });
   if (Array.isArray(result.errors)) result.errors.slice(0, 20).forEach((error: unknown) => messages.push(String(error)));
-  messages.forEach((message, index) => appendAccountOperationLog(kind, "result", message, task?.status === "failed" || (index > 0 && /失败|error|failed/i.test(message)) ? "error" : "info", undefined, { task_id: task?.id, result }));
+  messages.forEach((message, index) => appendAccountOperationLog(kind, "result", message, task?.status === "failed" || (index > 0 && /失败|error|failed/i.test(message)) ? "error" : "info", undefined, { task_id: task?.id }));
 }
 function subscribeAccountLogs(listener: () => void) { accountLogListeners.add(listener); return () => accountLogListeners.delete(listener); }
 function useAccountLogs() { return useSyncExternalStore(subscribeAccountLogs, () => accountLogSnapshot, () => accountLogSnapshot); }
