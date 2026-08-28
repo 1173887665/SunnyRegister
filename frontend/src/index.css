@@ -543,6 +543,27 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .sr-column-resizer.is-last { right:auto; left:-5px; }
 .sr-column-resizing,
 .sr-column-resizing * { cursor:col-resize !important; user-select:none !important; }
+.checkout-account-table-scroll {
+  width:100%;
+  overflow-x:auto;
+  overscroll-behavior-inline:contain;
+  scrollbar-width:thin;
+  scrollbar-color:rgba(148,163,184,.48) rgba(148,163,184,.10);
+}
+.checkout-account-table-scroll::-webkit-scrollbar { height:8px; }
+.checkout-account-table-scroll::-webkit-scrollbar-track { background:rgba(148,163,184,.10); }
+.checkout-account-table-scroll::-webkit-scrollbar-thumb { border:2px solid transparent; border-radius:999px; background:rgba(148,163,184,.52); background-clip:padding-box; }
+.checkout-account-table .checkout-sticky { position:sticky; }
+.checkout-account-table th.checkout-sticky { z-index:20; background:#fafafa; }
+.checkout-account-table td.checkout-sticky { z-index:10; background:#fff; }
+.checkout-account-table .checkout-sticky-left { box-shadow:1px 0 0 rgba(15,23,42,.08); }
+.checkout-account-table .checkout-sticky-right { box-shadow:-1px 0 0 rgba(15,23,42,.08); }
+.checkout-account-table .checkout-sticky-left:first-child { z-index:21; }
+.checkout-account-table th.checkout-sticky-right { z-index:21; }
+.checkout-account-table tbody tr:hover > td.checkout-sticky { background:#fafafa; }
+.dark .checkout-account-table th.checkout-sticky { background:rgba(255,255,255,.04); }
+.dark .checkout-account-table td.checkout-sticky { background:rgba(14,35,44,.82); }
+.dark .checkout-account-table tbody tr:hover > td.checkout-sticky { background:rgba(255,255,255,.035); }
 .sr-resizable-table td {
   overflow:hidden;
   text-overflow:ellipsis;
@@ -3245,6 +3266,40 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .paypal-active-count { display:inline-flex; align-items:center; border:1px solid var(--accent-edge); background:var(--accent-soft); color:var(--text-primary); padding:6px 10px; font-size:12px; font-weight:750; }
 .paypal-config-layout { align-items:start; }
 .paypal-view .gopay-warning { margin-top:4px; }
+.direct-card-method-mark { display:flex; width:30px; height:30px; flex:0 0 auto; align-items:center; justify-content:center; border-radius:7px; background:#252b34; color:#f5c764; }
+.direct-card-method-mark svg { width:17px; height:17px; }
+.direct-card-view { --direct-gold:#c99b32; }
+.direct-card-setup { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(300px,.8fr); gap:12px; }
+.direct-card-health,.direct-card-count { display:inline-flex; align-items:center; gap:5px; color:var(--text-muted); font-size:11px; font-weight:750; }
+.direct-card-health svg { width:14px; height:14px; }
+.direct-card-health.is-ready { color:#10b981; }
+.direct-card-fields { display:grid; grid-template-columns:minmax(0,1.5fr) minmax(120px,.65fr) minmax(100px,.5fr); gap:10px; padding:13px; }
+.direct-card-fields label,.direct-card-proxies label { display:flex; min-width:0; flex-direction:column; gap:6px; color:var(--text-secondary); font-size:11px; font-weight:700; }
+.direct-card-element { min-height:40px; border:1px solid var(--border); border-radius:6px; background:var(--bg-input); padding:11px 10px; }
+.direct-card-element:focus-within { border-color:var(--accent-edge); box-shadow:0 0 0 2px var(--accent-soft); }
+.direct-card-import { width:calc(100% - 26px); margin:13px 13px 10px; resize:vertical; }
+.direct-card-file { display:inline-flex; height:32px; align-items:center; gap:6px; border:1px solid var(--border); border-radius:6px; padding:0 10px; color:var(--text-secondary); cursor:pointer; font-size:12px; font-weight:700; }
+.direct-card-file:hover { background:var(--bg-hover); color:var(--text-primary); }
+.direct-card-file svg { width:14px; height:14px; }
+.direct-card-file input { display:none; }
+.direct-card-proxies { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; padding:13px; }
+.direct-card-proxies textarea { resize:vertical; }
+.direct-card-toolbar { display:flex; min-width:0; flex-wrap:wrap; align-items:center; gap:8px; border:1px solid var(--border); background:var(--bg-card); padding:10px; }
+.direct-card-toolbar label { display:flex; height:40px; align-items:center; gap:7px; color:var(--text-secondary); font-size:12px; font-weight:750; }
+.direct-card-toolbar label input { width:64px; height:36px; }
+.direct-card-message { display:flex; min-height:42px; align-items:center; gap:8px; border-left:3px solid var(--border-strong); background:var(--bg-card); padding:9px 12px; color:var(--text-secondary); font-size:12px; }
+.direct-card-message.is-running { border-left-color:var(--direct-gold); color:var(--text-primary); }
+.direct-card-message svg { width:16px; height:16px; color:var(--direct-gold); }
+.direct-card-subtext { display:block; max-width:220px; overflow:hidden; color:var(--text-muted); font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:10px; text-overflow:ellipsis; }
+.direct-card-fingerprint,.direct-card-link { display:inline-flex; align-items:center; gap:5px; color:var(--text-secondary); font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:10px; }
+.direct-card-fingerprint svg,.direct-card-link svg { width:13px; height:13px; }
+.direct-card-link { border:0; background:transparent; color:var(--text-accent); cursor:pointer; font-family:inherit; font-size:11px; font-weight:750; }
+.direct-card-runtime { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+.direct-card-runtime > div { display:flex; align-items:center; gap:9px; border:1px solid var(--border); background:var(--bg-card); padding:10px 12px; }
+.direct-card-runtime svg { width:17px; height:17px; color:var(--text-muted); }
+.direct-card-runtime span { display:flex; flex-direction:column; }
+.direct-card-runtime strong { color:var(--text-primary); font-size:11px; }
+.direct-card-runtime small { color:var(--text-muted); font-size:10px; }
 .gopay-method-mark { display:flex; width:30px; height:30px; flex:0 0 auto; align-items:center; justify-content:center; border-radius:8px; background:#00aa13; color:white; font-size:12px; font-weight:950; }
 .gopay-workspace { display:grid; min-width:0; grid-template-columns:180px minmax(0,1fr); overflow:hidden; border:1px solid var(--border); border-radius:8px; background:var(--bg-card); box-shadow:var(--surface-glow); }
 .gopay-workspace.paypal-workspace { grid-template-columns:minmax(0,1fr); }
@@ -3369,6 +3424,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   .gopay-payment-layout { grid-template-columns:1fr; }
   .gopay-payment-detail { position:static; }
   .gopay-form-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .direct-card-setup { grid-template-columns:1fr; }
 }
 @media (max-width:760px) {
   .payment-heading { align-items:flex-start; flex-direction:column; }
@@ -3389,4 +3445,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   .gopay-panel-actions select { flex:1; }
   .gopay-flow small { display:none; }
   .gopay-logs li { grid-template-columns:1fr; gap:2px; }
+  .direct-card-proxies,.direct-card-runtime { grid-template-columns:1fr; }
+  .direct-card-fields { grid-template-columns:1fr 1fr; }
+  .direct-card-fields .wide { grid-column:1/-1; }
 }
