@@ -3323,6 +3323,9 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .direct-card-element { min-height:40px; border:1px solid var(--border); border-radius:6px; background:var(--bg-input); padding:11px 10px; }
 .direct-card-element:focus-within { border-color:var(--accent-edge); box-shadow:0 0 0 2px var(--accent-soft); }
 .direct-card-import { width:calc(100% - 26px); margin:13px 13px 10px; resize:vertical; }
+.direct-card-import,.direct-card-proxies textarea,.direct-card-toolbar input { border:1px solid var(--border); border-radius:7px; background:var(--bg-input); color:var(--text-primary); outline:none; }
+.direct-card-import,.direct-card-proxies textarea { padding:9px 10px; font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace; }
+.direct-card-import:focus,.direct-card-proxies textarea:focus,.direct-card-toolbar input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
 .direct-card-file { display:inline-flex; height:32px; align-items:center; gap:6px; border:1px solid var(--border); border-radius:6px; padding:0 10px; color:var(--text-secondary); cursor:pointer; font-size:12px; font-weight:700; }
 .direct-card-file:hover { background:var(--bg-hover); color:var(--text-primary); }
 .direct-card-file svg { width:14px; height:14px; }
@@ -3495,4 +3498,5 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   .direct-card-proxies,.direct-card-runtime { grid-template-columns:1fr; }
   .direct-card-fields { grid-template-columns:1fr 1fr; }
   .direct-card-fields .wide { grid-column:1/-1; }
+  .direct-card-view .gopay-panel > header .gopay-row-actions { width:100%; flex-wrap:wrap; }
 }

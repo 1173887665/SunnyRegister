@@ -54,6 +54,12 @@ def _paypal_manager():
     return manager
 
 
+def _direct_card_manager():
+    """Load the isolated direct-card protocol module only when requested."""
+    from direct_card_runtime import manager
+    return manager
+
+
 def _parse_proxy_list(value):
     raw_items = value if isinstance(value, list) else str(value or "").splitlines()
     proxies = []
@@ -269,6 +275,17 @@ class Handler(BaseHTTPRequestHandler):
             job = _paypal_manager().get(job_id)
             self.send(200, job) if job else self.send(404, {"error": "paypal_job_not_found"})
             return
+        if path == "/api/direct-card/info":
+            self.send(200, _direct_card_manager().info())
+            return
+        if path == "/api/direct-card/jobs":
+            self.send(200, {"jobs": _direct_card_manager().list_tasks()})
+            return
+        if path.startswith("/api/direct-card/jobs/"):
+            job_id = unquote(path[len("/api/direct-card/jobs/"):].strip("/"))
+            job = _direct_card_manager().get(job_id)
+            self.send(200, {"ok": True, "task": job}) if job else self.send(404, {"error": "direct_card_job_not_found"})
+            return
         if path.startswith("/api/accounts/") and path.endswith("/sms-code"):
             phone = unquote(path[len("/api/accounts/"):-len("/sms-code")].strip("/"))
             self.send(200, {"phone": phone, "code": _poll_imported_sms_code(phone)})
@@ -371,6 +388,27 @@ class Handler(BaseHTTPRequestHandler):
                 if not job:
                     raise ValueError("PayPal 任务不存在")
                 self.send(200, job)
+                return
+            if path == "/api/direct-card/preflight":
+                self.send(200, _direct_card_manager().preflight(data))
+                return
+            if path == "/api/direct-card/fingerprint":
+                self.send(200, _direct_card_manager().allocate_fingerprint(data))
+                return
+            if path == "/api/direct-card/fingerprints":
+                self.send(200, _direct_card_manager().allocate_fingerprints(data))
+                return
+            if path == "/api/direct-card/address":
+                self.send(200, _direct_card_manager().address(data))
+                return
+            if path == "/api/direct-card/jobs":
+                self.send(202, _direct_card_manager().start(data))
+                return
+            if path == "/api/direct-card/jobs/batch":
+                self.send(202, _direct_card_manager().start_batch(data))
+                return
+            if path == "/api/direct-card/jobs/clear":
+                self.send(200, _direct_card_manager().clear())
                 return
             if path == "/api/proxies/check":
                 proxies = _parse_proxy_list(data.get("proxies"))

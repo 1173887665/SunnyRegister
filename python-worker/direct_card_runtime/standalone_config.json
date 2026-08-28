@@ -1,0 +1,24 @@
+﻿{
+  "country": "PH",
+  "currency": "PHP",
+  "fingerprint_region": "US",
+  "bind_country": "US",
+  "bind_currency": "USD",
+  "promo_campaign": "plus-1-month-free",
+  "reject_nonzero": true,
+  "timeout": 90,
+  "preflight_cache_ttl": 600,
+  "coupon_diagnostic": false,
+  "fast_verify": true,
+  "address_generator": "https://addressgen.top/api/v1/address?country_code=us&area_code=DE",
+  "billing": {
+    "name": "",
+    "line1": "",
+    "line2": "",
+    "city": "",
+    "state": "",
+    "postal_code": "",
+    "country": "",
+    "phone": ""
+  }
+}

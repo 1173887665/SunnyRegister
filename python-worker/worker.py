@@ -45,6 +45,7 @@ def _configure_gopay_runtime() -> None:
     os.environ.setdefault("OPAI_MIDTRANS_SNAP_STATE_FILE", str(gopay_data / "midtrans_snap_state.json"))
     os.environ.setdefault("OPAI_GOPAY_SUPPORT_BODY_CORPUS", str(runtime_dir / "config" / "support_sdk_body_corpus.json"))
     os.environ.setdefault("PAYPAL_AGREEMENT_CONFIG_PATH", str(gopay_data / "paypal_agreement.json"))
+    os.environ.setdefault("DIRECT_CARD_FINGERPRINT_STORE_PATH", str(gopay_data / "direct_card_fingerprints.json"))
 
 
 _configure_gopay_runtime()
@@ -77,7 +78,7 @@ def on_startup() -> None:
     from gopay_runtime.gopay.server import start_embedded
 
     _gopay_server = start_embedded()
-    print("[worker] SunnyRegister automation worker ready (browser lazy loading enabled, GoPay enabled)", flush=True)
+    print("[worker] SunnyRegister automation worker ready (browser lazy loading enabled, payment runtimes enabled)", flush=True)
 
 
 @app.api_route("/gopay/{path:path}", methods=["GET", "POST"])
