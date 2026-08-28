@@ -97,20 +97,26 @@ async function fetchBillingBatch(items: DirectAccount[]) {
 
 let stripePromise: Promise<(key: string) => StripeClient> | null = null;
 function ensureStripe() {
-  if (window.Stripe) return Promise.resolve(window.Stripe);
+  const existingStripe = window.Stripe;
+  if (typeof existingStripe === "function") return Promise.resolve(existingStripe);
   if (stripePromise) return stripePromise;
   stripePromise = new Promise<(key: string) => StripeClient>((resolve, reject) => {
+    document.querySelectorAll("script[data-direct-stripe-loader], script[data-direct-card-stripe]").forEach((node) => node.remove());
     const script = document.createElement("script");
     script.src = "https://js.stripe.com/v3/";
     script.async = true;
-    script.dataset.directCardStripe = "1";
-    const timer = window.setTimeout(() => { script.remove(); reject(new Error("Stripe 安全组件加载超时")); }, 20000);
-    script.onload = () => {
+    script.dataset.directStripeLoader = "1";
+    const timer = window.setTimeout(() => { script.remove(); reject(new Error("Stripe 安全组件加载超时，请检查浏览器网络或拦截扩展后重试")); }, 20000);
+    script.addEventListener("load", () => {
       window.clearTimeout(timer);
-      if (window.Stripe) resolve(window.Stripe);
-      else reject(new Error("Stripe 安全组件初始化失败"));
-    };
-    script.onerror = () => { window.clearTimeout(timer); reject(new Error("Stripe 安全组件加载失败")); };
+      const loadedStripe = window.Stripe;
+      if (typeof loadedStripe === "function") resolve(loadedStripe);
+      else reject(new Error("Stripe 安全组件脚本已返回，但组件没有初始化"));
+    }, { once: true });
+    script.addEventListener("error", () => {
+      window.clearTimeout(timer);
+      reject(new Error("Stripe 安全组件加载失败，请检查浏览器网络或拦截扩展后重试"));
+    }, { once: true });
     document.head.appendChild(script);
   }).catch((error) => { stripePromise = null; throw error; });
   return stripePromise;
