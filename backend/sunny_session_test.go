@@ -331,6 +331,53 @@ func TestSunnySessionListFiltersRebindEmailPresence(t *testing.T) {
 	}
 }
 
+func TestSunnyMailboxListFiltersCredentialPresence(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	now := time.Now()
+	createMailbox := func(email string, password, totp, rebind string) uint {
+		t.Helper()
+		mailbox := SunnyMailbox{Email: email, Password: "mail-password", ClientID: "client", RefreshToken: "refresh", ChatGPTPassword: password, TOTPSecret: totp, RebindEmail: rebind, Status: "已注册", AccountType: "free", Enabled: true, CreatedAt: now, UpdatedAt: now}
+		if err := s.db.Create(&mailbox).Error; err != nil {
+			t.Fatalf("create mailbox %s: %v", email, err)
+		}
+		return mailbox.ID
+	}
+	createMailbox("password-only@example.com", "chat-password", "", "")
+	createMailbox("password-2fa-rebound@example.com", "chat-password", "totp-secret", "rebound@example.com")
+	createMailbox("empty@example.com", "", "", "")
+
+	request := func(query string) []map[string]any {
+		rec := httptest.NewRecorder()
+		s.sunnyMailboxes(rec, httptest.NewRequest(http.MethodGet, "/api/sunny/mailboxes?summary=true&page=1&page_size=20&"+query, nil), nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("mailbox filter status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode mailbox filter: %v", err)
+		}
+		return payload.Items
+	}
+	withPassword := request("password=present")
+	if len(withPassword) != 2 {
+		t.Fatalf("password present result=%#v", withPassword)
+	}
+	withTwoFactor := request("totp=present")
+	if len(withTwoFactor) != 1 || withTwoFactor[0]["email"] != "password-2fa-rebound@example.com" {
+		t.Fatalf("2FA present result=%#v", withTwoFactor)
+	}
+	withRebind := request("rebind_email=present")
+	if len(withRebind) != 1 || withRebind[0]["email"] != "password-2fa-rebound@example.com" {
+		t.Fatalf("rebind present result=%#v", withRebind)
+	}
+	withoutPassword := request("password=missing")
+	if len(withoutPassword) != 2 {
+		t.Fatalf("password missing result=%#v", withoutPassword)
+	}
+}
+
 func TestSunnySessionListFiltersEligibleTrialCountriesWithAND(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	now := time.Now()

@@ -735,7 +735,10 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		}
 		planFilter := normalizeSunnyPlanType(q.Get("plan_type"))
 		trialFilter := normalizeSunnyTrialFilter(q.Get("trial_eligibility"))
-		if planFilter != "" || trialFilter != "" {
+		rebindEmailFilter := normalizeSunnyRebindEmailFilter(q.Get("rebind_email"))
+		passwordFilter := normalizeSunnyLoginSecretFilter(q.Get("password"))
+		twoFactorFilter := normalizeSunnyLoginSecretFilter(q.Get("totp"))
+		if planFilter != "" || trialFilter != "" || rebindEmailFilter != "" || passwordFilter != "" || twoFactorFilter != "" {
 			var allRows []SunnyMailbox
 			allQuery := query
 			if summary {
@@ -766,6 +769,15 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 					trialEligibility = m.TrialEligibility
 				}
 				if trialFilter != "" && (!sunnyTrialApplies(m.Status, plan) || normalizeSunnyTrialEligibility(trialEligibility) != trialFilter) {
+					continue
+				}
+				if rebindEmailFilter != "" && (rebindEmailFilter == "present") != (strings.TrimSpace(m.RebindEmail) != "") {
+					continue
+				}
+				if passwordFilter != "" && (passwordFilter == "present") != (strings.TrimSpace(m.ChatGPTPassword) != "") {
+					continue
+				}
+				if twoFactorFilter != "" && (twoFactorFilter == "present") != (strings.TrimSpace(m.TOTPSecret) != "") {
 					continue
 				}
 				item := serializeSunnyMailboxList(m, gm, plan, sunnyMailboxAccessTokenFromLinked(m, linked), linked.accountIDs[key], linked.trialEligibility[key], summary)

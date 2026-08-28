@@ -828,6 +828,7 @@ Object.assign(zh, {
   allPaymentMethods: "全部支付方式", paymentMethodFilter: "支付方式筛选（同时满足）", clearPaymentMethods: "清除支付方式筛选",
   loginSecretFilterTitle: "筛选登录密钥", loginSecretFilterAll: "全部", loginSecretFilterPresent: "有 LS", loginSecretFilterMissing: "无 LS",
   rebindEmailFilterTitle: "筛选换绑邮箱", rebindEmailFilterAll: "全部", rebindEmailFilterPresent: "已换绑", rebindEmailFilterMissing: "未换绑",
+  passwordFilterTitle: "筛选密码", passwordFilterAll: "全部", passwordFilterPresent: "有密码", passwordFilterMissing: "无密码", twoFactorFilterTitle: "筛选2FA", twoFactorFilterAll: "全部", twoFactorFilterPresent: "有2FA", twoFactorFilterMissing: "无2FA",
   trialCountryFilterTitle: "筛选有试用资格的国家", trialCountryFilterAll: "全部", trialCountryFilterClear: "清除", trialCountryFilterEmpty: "暂无已检测国家", trialCountryFilterAndHint: "多选时需同时具有所选国家的试用资格",
   terminateTask: "终止", terminatingTask: "终止中...", terminateTaskRequested: "已请求终止当前日志对应的任务", terminateTaskFailed: "终止任务失败",
 });
@@ -838,6 +839,7 @@ Object.assign(zh, {
 Object.assign(en, {
   loginSecretFilterTitle: "Filter Login Secret", loginSecretFilterAll: "All", loginSecretFilterPresent: "Has LS", loginSecretFilterMissing: "No LS",
   rebindEmailFilterTitle: "Filter Rebound Email", rebindEmailFilterAll: "All", rebindEmailFilterPresent: "Rebound", rebindEmailFilterMissing: "Not Rebound",
+  passwordFilterTitle: "Filter Password", passwordFilterAll: "All", passwordFilterPresent: "Has Password", passwordFilterMissing: "No Password", twoFactorFilterTitle: "Filter 2FA", twoFactorFilterAll: "All", twoFactorFilterPresent: "Has 2FA", twoFactorFilterMissing: "No 2FA",
   trialCountryFilterTitle: "Filter Eligible Trial Countries", trialCountryFilterAll: "All", trialCountryFilterClear: "Clear", trialCountryFilterEmpty: "No checked countries", trialCountryFilterAndHint: "Accounts must be eligible in every selected country",
   terminateTask: "Terminate", terminatingTask: "Terminating...", terminateTaskRequested: "Termination requested for the selected log task", terminateTaskFailed: "Failed to terminate task",
   rebindEmail: "Rebound Email",
@@ -1144,6 +1146,10 @@ type RebindEmailFilterValue = "" | "present" | "missing";
 function RebindEmailFilterHeader({ t, value, onToggle }: { t: AnyObj; value: RebindEmailFilterValue; onToggle: () => void }) {
   const label = value === "present" ? t.rebindEmailFilterPresent : value === "missing" ? t.rebindEmailFilterMissing : t.rebindEmailFilterAll;
   return <div className="sr-login-secret-header"><span>{t.rebindEmail}</span><button type="button" className={cn("sr-login-secret-filter", value && "active")} onClick={onToggle} title={t.rebindEmailFilterTitle} aria-label={`${t.rebindEmailFilterTitle}: ${label}`}><Filter className="h-3.5 w-3.5"/><span>{label}</span></button></div>;
+}
+function CredentialPresenceFilterHeader({ label, value, onToggle, title, allLabel, presentLabel, missingLabel }: { label: string; value: LoginSecretFilterValue; onToggle: () => void; title: string; allLabel: string; presentLabel: string; missingLabel: string }) {
+  const filterLabel = value === "present" ? presentLabel : value === "missing" ? missingLabel : allLabel;
+  return <div className="sr-login-secret-header"><span>{label}</span><button type="button" className={cn("sr-login-secret-filter", value && "active")} onClick={onToggle} title={title} aria-label={`${title}: ${filterLabel}`}><Filter className="h-3.5 w-3.5"/><span>{filterLabel}</span></button></div>;
 }
 function TrialCountryFilterHeader({ t, value, options, onChange }: { t: AnyObj; value: string[]; options: string[]; onChange: (value: string[]) => void }) {
   const [open,setOpen]=useState(false);
@@ -1918,6 +1924,9 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   const [groupFilter,setGroupFilter]=useCachedState("mailbox.groupFilter", 0);
   const [statusFilter,setStatusFilter]=useCachedState("mailbox.statusFilter", "");
   const [planFilter,setPlanFilter]=useCachedState("mailbox.planFilter", "");
+  const [rebindEmailFilter,setRebindEmailFilter]=useCachedState<RebindEmailFilterValue>("mailbox.rebindEmailFilter", "");
+  const [passwordFilter,setPasswordFilter]=useCachedState<LoginSecretFilterValue>("mailbox.passwordFilter", "");
+  const [twoFactorFilter,setTwoFactorFilter]=useCachedState<LoginSecretFilterValue>("mailbox.twoFactorFilter", "");
   const [sortBy,setSortBy]=useCachedState("mailbox.sortBy", "updated_at");
   const [timeSort,setTimeSort]=useCachedState<SortOrder>("mailbox.timeSort", "desc");
   const [selected,setSelected]=useCachedState<number[]>("mailbox.selected", []);
@@ -1940,6 +1949,9 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
     if (groupFilter) params.set("group_id", String(groupFilter));
     if (statusFilter) params.set("status", statusFilter);
     if (planFilter) params.set("plan_type", planFilter);
+    if (rebindEmailFilter) params.set("rebind_email", rebindEmailFilter);
+    if (passwordFilter) params.set("password", passwordFilter);
+    if (twoFactorFilter) params.set("totp", twoFactorFilter);
     params.set("sort_by", sortBy);
     params.set("sort_order", timeSort);
     const m=await apiFetch(`/sunny/mailboxes?${params.toString()}`);
@@ -1956,6 +1968,9 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
       if(groupFilter) params.set("group_id",String(groupFilter));
       if(statusFilter) params.set("status",statusFilter);
       if(planFilter) params.set("plan_type",planFilter);
+      if(rebindEmailFilter) params.set("rebind_email",rebindEmailFilter);
+      if(passwordFilter) params.set("password",passwordFilter);
+      if(twoFactorFilter) params.set("totp",twoFactorFilter);
       const result=await apiFetch(`/sunny/mailboxes?${allSelectionParams(params).toString()}`);
       const ids=selectionIDs(result);
       setSelected(ids);
@@ -1963,13 +1978,13 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
     } catch(e:any) { notify("fail",e.message||String(e)); }
     finally { setSelectingAll(false); }
   };
-  useEffect(()=>{void load()},[page, debouncedQuery, groupFilter, statusFilter, planFilter, sortBy, timeSort, pageSize]);
+  useEffect(()=>{void load()},[page, debouncedQuery, groupFilter, statusFilter, planFilter, rebindEmailFilter, passwordFilter, twoFactorFilter, sortBy, timeSort, pageSize]);
   const loadGroups=()=>apiFetch("/sunny/mailbox-groups").then((g)=>{const next=sortMailboxGroups(g.items||[]);setGroups(next);return next});
   useEffect(()=>{void loadGroups().catch(()=>{})},[]);
   useEffect(()=>{apiFetch("/sunny/mailboxes/config").then((cfg)=>setMailboxCfg(cfg || {pool_enabled:true})).catch(()=>{})},[]);
   useEffect(()=>{apiFetch("/sunny/remail/config").then((cfg)=>setRemailCfg(cfg || {})).catch(()=>{})},[]);
   useEffect(()=>{apiFetch("/sunny/domain-mail/config").then((cfg)=>setDomainCfg(cfg || {enabled:true})).catch(()=>{})},[]);
-  useEffect(()=>{setPage(1)},[query, groupFilter, statusFilter, planFilter, sortBy, timeSort, pageSize]);
+  useEffect(()=>{setPage(1)},[query, groupFilter, statusFilter, planFilter, rebindEmailFilter, passwordFilter, twoFactorFilter, sortBy, timeSort, pageSize]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
   async function run(label:string, fn:()=>Promise<any>){try{await fn();notify("ok",label);void load();void loadGroups().catch(()=>{})}catch(e:any){notify("fail",e.message||String(e))}}
   async function toggleMailboxCredential(m: AnyObj, field: "chatgpt_password" | "totp_secret") {
@@ -2089,7 +2104,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
         </div>
         <div className="sr-table-card sr-mailbox-table-panel overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
           <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
-          <div className="sr-table-scroll"><ResizableDataTable tableKey="mailboxes" columns={DATA_TABLE_COLUMNS.mailboxes} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/>,t.mailbox,<SortTimeHeader label={t.rebindEmail} order={sortBy==="rebind_email"?timeSort:"desc"} onToggle={()=>toggleSort("rebind_email")}/>,t.mailboxGroup,t.status,t.planType,"AT","SK",t.chatgptPasswordColumn,t.twoFactorColumn,t.enabled,t.trafficUsage,<SortTimeHeader label={t.updatedAt} order={sortBy==="updated_at"?timeSort:"desc"} onToggle={()=>toggleSort("updated_at")}/>,t.actions]}>
+           <div className="sr-table-scroll"><ResizableDataTable tableKey="mailboxes" columns={DATA_TABLE_COLUMNS.mailboxes} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/>,t.mailbox,<RebindEmailFilterHeader t={t} value={rebindEmailFilter} onToggle={()=>setRebindEmailFilter((old)=>old===""?"present":old==="present"?"missing":"")}/>,t.mailboxGroup,t.status,t.planType,"AT","SK",<CredentialPresenceFilterHeader label={t.chatgptPasswordColumn} value={passwordFilter} onToggle={()=>setPasswordFilter((old)=>old===""?"present":old==="present"?"missing":"")} title={t.passwordFilterTitle} allLabel={t.passwordFilterAll} presentLabel={t.passwordFilterPresent} missingLabel={t.passwordFilterMissing}/>,<CredentialPresenceFilterHeader label={t.twoFactorColumn} value={twoFactorFilter} onToggle={()=>setTwoFactorFilter((old)=>old===""?"present":old==="present"?"missing":"")} title={t.twoFactorFilterTitle} allLabel={t.twoFactorFilterAll} presentLabel={t.twoFactorFilterPresent} missingLabel={t.twoFactorFilterMissing}/>,t.enabled,t.trafficUsage,<SortTimeHeader label={t.updatedAt} order={sortBy==="updated_at"?timeSort:"desc"} onToggle={()=>toggleSort("updated_at")}/>,t.actions]}>
             <tbody>{items.length ? items.map((m)=><tr key={m.id}>
               <td><input type="checkbox" checked={selected.includes(m.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,m.id])) : selected.filter((id)=>id!==m.id))}/></td>
               <td title={m.email}><div className="font-semibold">{m.email}</div></td>
