@@ -65,7 +65,7 @@ function fillDataTableViewport(widths: number[], columns: DataTableColumn[], vie
 
 function resizeDataTableColumn(widths: number[], columns: DataTableColumn[], index: number, targetWidth: number, viewportWidth: number) {
   const actionIndex = columns.length - 1;
-  if (index < 0 || index >= columns.length) return widths;
+  if (index <= 0 || index >= columns.length) return widths;
   const startWidth = widths[index];
   const leftWidth = clampDataTableWidth(columns[index], targetWidth);
   if (leftWidth === startWidth) return widths;
@@ -90,7 +90,7 @@ function initialDataTableWidths(tableKey: string, columns: DataTableColumn[]) {
   try {
     const stored = JSON.parse(window.localStorage.getItem(`sunnyregister.table-widths.${tableKey}`) || "[]");
     if (!Array.isArray(stored) || stored.length !== columns.length) return defaults;
-    return stored.map((value,index)=>Math.max(columns[index].minWidth,Math.min(columns[index].maxWidth||800,Number(value)||defaults[index])));
+    return stored.map((value,index)=>index===0?defaults[0]:Math.max(columns[index].minWidth,Math.min(columns[index].maxWidth||800,Number(value)||defaults[index])));
   } catch { return defaults; }
 }
 
@@ -144,7 +144,7 @@ function ResizableDataTable({ tableKey, columns, headers, className="", children
   const actionIndex=columns.length-1;
   return <table ref={tableRef} className={cn("sr-account-table sr-resizable-table",className)} style={{width:tableWidth,minWidth:tableWidth,maxWidth:"none",["--sr-selection-column-width" as string]:`${widths[0] || 0}px`}}>
     <colgroup>{widths.map((width,index)=><col key={index} style={{width}}/>)}</colgroup>
-    <thead><tr>{headers.map((header,index)=><th key={index}><span className="sr-table-header-content">{header}</span><span className={cn("sr-column-resizer",index===actionIndex&&"is-last")} role="separator" aria-orientation="vertical" tabIndex={0} title={resizeTitle} onPointerDown={(event)=>startResize(event,index,index===actionIndex?-1:1)} onDoubleClick={()=>setColumnWidth(index,columns[index].width)} onKeyDown={(event)=>{if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();const delta=event.key==="ArrowRight"?12:-12;setColumnWidth(index,widths[index]+(index===actionIndex?-delta:delta));}else if(event.key==="Home"){event.preventDefault();setColumnWidth(index,columns[index].width);}}}/></th>)}</tr></thead>
+    <thead><tr>{headers.map((header,index)=><th key={index}><span className="sr-table-header-content">{header}</span>{index>0&&<span className={cn("sr-column-resizer",index===actionIndex&&"is-last")} role="separator" aria-orientation="vertical" tabIndex={0} title={resizeTitle} onPointerDown={(event)=>startResize(event,index,index===actionIndex?-1:1)} onDoubleClick={()=>setColumnWidth(index,columns[index].width)} onKeyDown={(event)=>{if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();const delta=event.key==="ArrowRight"?12:-12;setColumnWidth(index,widths[index]+(index===actionIndex?-delta:delta));}else if(event.key==="Home"){event.preventDefault();setColumnWidth(index,columns[index].width);}}}/>}</th>)}</tr></thead>
     {children}
   </table>;
 }

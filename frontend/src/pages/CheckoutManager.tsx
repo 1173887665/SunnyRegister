@@ -51,7 +51,7 @@ function readCheckoutAccountTableWidths() {
   try {
     const stored = JSON.parse(window.localStorage.getItem(checkoutAccountTableWidthsStorageKey) || "[]");
     if (!Array.isArray(stored) || stored.length !== defaults.length) return defaults;
-    return stored.map((value, index) => Math.max(checkoutAccountTableColumns[index].minWidth, Math.min(checkoutAccountTableColumns[index].maxWidth || 900, Number(value) || defaults[index])));
+    return stored.map((value, index) => index === 0 ? defaults[0] : Math.max(checkoutAccountTableColumns[index].minWidth, Math.min(checkoutAccountTableColumns[index].maxWidth || 900, Number(value) || defaults[index])));
   } catch { return defaults; }
 }
 
@@ -64,7 +64,7 @@ function ResizableCheckoutAccountTable({ headers, children }: { headers: React.R
   useEffect(() => () => cleanupRef.current?.(), []);
   const setColumnWidth = (index: number, targetWidth: number) => setWidths((current) => {
     const column = checkoutAccountTableColumns[index];
-    if (!column) return current;
+    if (!column || index === 0) return current;
     const next = [...current];
     next[index] = Math.max(column.minWidth, Math.min(column.maxWidth || 900, Math.round(targetWidth)));
     return next;
@@ -95,7 +95,7 @@ function ResizableCheckoutAccountTable({ headers, children }: { headers: React.R
     <colgroup>{widths.map((width, index) => <col key={index} style={{ width }} />)}</colgroup>
     <thead><tr>{headers.map((header, index) => <th key={index} className={index === 0 || index === 1 ? "checkout-sticky checkout-sticky-left" : index === headers.length - 1 ? "checkout-sticky checkout-sticky-right" : undefined} style={index === 0 ? { left: 0 } : index === 1 ? { left: widths[0] } : undefined}>
       <span className="sr-table-header-content">{header}</span>
-      <span className={`sr-column-resizer ${index === headers.length - 1 ? "is-last" : ""}`} role="separator" aria-orientation="vertical" tabIndex={0} title={resizeTitle} onPointerDown={(event) => startResize(event, index, index === headers.length - 1 ? -1 : 1)} onDoubleClick={() => setColumnWidth(index, checkoutAccountTableColumns[index].width)} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); const delta = event.key === "ArrowRight" ? 12 : -12; setColumnWidth(index, widths[index] + (index === headers.length - 1 ? -delta : delta)); } else if (event.key === "Home") { event.preventDefault(); setColumnWidth(index, checkoutAccountTableColumns[index].width); } }} />
+      {index > 0 && <span className={`sr-column-resizer ${index === headers.length - 1 ? "is-last" : ""}`} role="separator" aria-orientation="vertical" tabIndex={0} title={resizeTitle} onPointerDown={(event) => startResize(event, index, index === headers.length - 1 ? -1 : 1)} onDoubleClick={() => setColumnWidth(index, checkoutAccountTableColumns[index].width)} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); const delta = event.key === "ArrowRight" ? 12 : -12; setColumnWidth(index, widths[index] + (index === headers.length - 1 ? -delta : delta)); } else if (event.key === "Home") { event.preventDefault(); setColumnWidth(index, checkoutAccountTableColumns[index].width); } }} />}
     </th>)}</tr></thead>
     {children}
   </table>;

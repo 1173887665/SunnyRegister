@@ -560,7 +560,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .checkout-account-table .checkout-sticky-right { box-shadow:-1px 0 0 rgba(15,23,42,.08); }
 .checkout-account-table .checkout-sticky-left:first-child { left:0; }
 .checkout-account-table .checkout-sticky-left:first-child { z-index:21; }
-.checkout-account-table th.checkout-sticky-right { z-index:21; }
+.checkout-account-table th.checkout-sticky-right { z-index:24; isolation:isolate; }
 .checkout-account-table tbody tr:hover > td.checkout-sticky { background:#fafafa; }
 .dark .checkout-account-table th.checkout-sticky { background:rgba(255,255,255,.04); }
 .dark .checkout-account-table td.checkout-sticky { background:rgba(14,35,44,.82); }
@@ -608,7 +608,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   box-shadow:-12px 0 20px -18px rgba(15,23,42,.62);
 }
 .sr-resizable-table tbody tr:not(.sr-renewal-progress-row):hover > td:last-child:not([colspan]) { background:#fafafa; }
-.sr-resizable-table thead th:last-child { z-index:7; background:#fafafa; }
+.sr-resizable-table thead th:last-child { z-index:12; isolation:isolate; background:#fafafa; background-clip:padding-box; }
 .dark .sr-resizable-table thead th:last-child,
 .dark .sr-resizable-table tbody tr:not(.sr-renewal-progress-row) > td:last-child:not([colspan]) {
   border-left-color:var(--border-soft);
@@ -1075,8 +1075,10 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .dark .sr-login-secret-filter:hover,
 .dark .sr-login-secret-filter.active { border-color:rgba(45,212,191,.45); background:rgba(20,184,166,.16); color:#99f6e4; }
 .sr-trial-country-header { position:relative; display:inline-flex; align-items:center; justify-content:center; gap:5px; min-width:0; }
-.sr-table-header-content:has(.sr-trial-country-header) { position:relative; z-index:20; overflow:visible; }
-.sr-resizable-table th:has(.sr-trial-country-header) { z-index:20; }
+.sr-table-header-content:has(.sr-trial-country-header) { position:relative; z-index:1; overflow:visible; }
+.sr-resizable-table th:has(.sr-trial-country-header) { z-index:6; }
+.sr-table-header-content:has(.sr-trial-country-filter-menu),
+.sr-resizable-table th:has(.sr-trial-country-filter-menu) { z-index:22; }
 .sr-trial-country-filter-menu {
   position:absolute;
   z-index:80;
@@ -2000,7 +2002,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .sr-payment-filter[open] { z-index: 120; }
 .checkout-filter-toolbar,
 .checkout-filter-controls { overflow: visible !important; }
-.checkout-filter-toolbar { position: relative; }
+.checkout-filter-toolbar { position: relative; z-index: 40; }
 .checkout-filter-controls { align-content: flex-start; }
 .sr-payment-filter-trigger {
   display: flex;
