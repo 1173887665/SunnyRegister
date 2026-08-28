@@ -1292,9 +1292,9 @@ def stripe_to_paypal_redirect(
     if "paypal" not in init_types:
         # Some Checkout revisions publish only card/link in /init while the
         # Elements session exposes PayPal a moment later. Probe that session
-        # before consuming an outer proxy retry.
+        # without requesting PayPal ourselves; injecting it makes Stripe echo
+        # a generic spec that the Checkout still rejects at confirm time.
         probe_ctx = dict(ctx)
-        probe_ctx["payment_method_types"] = list(dict.fromkeys([*init_types, "paypal"]))
         fetch_elements_session(http, pk, session_id, probe_ctx, version, profile, log)
         element_types = [
             str(item).lower() for item in (probe_ctx.get("elements_payment_method_types") or [])
@@ -1304,7 +1304,11 @@ def stripe_to_paypal_redirect(
             log("[paypal] /init 未列出 PayPal，但 Elements session 已确认 PayPal 可用")
         else:
             available = probe_ctx.get("elements_payment_method_types") or ctx.get("payment_method_types") or []
-            raise RuntimeError(f"当前支付线路未开放 PayPal，可用方式：{', '.join(map(str, available)) or 'card'}")
+            raise RuntimeError(
+                "PAYPAL_METHOD_UNAVAILABLE: 当前优惠 Checkout 未开放 PayPal；"
+                f"可用方式：{', '.join(map(str, available)) or 'card'}。"
+                "账户支付探测使用普通非优惠 Checkout，结果可能与 0 元试用 Checkout 不同"
+            )
     else:
         fetch_elements_session(http, pk, session_id, ctx, version, profile, log)
     processor_entity = processor_entity or _entity_from_return_url(ctx.get("return_url") or init_data.get("return_url") or "") or "openai_llc"

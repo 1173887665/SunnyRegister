@@ -336,7 +336,8 @@ PAYPAL_CHECKOUT_REGIONS = {
 
 
 def normalize_paypal_checkout_region(country: str, detected_currency: str = "") -> tuple[str, str, str]:
-    # Prefer the proxy country native PayPal Checkout; otherwise use DE/EUR.
+    # Unsupported requested countries use DE/EUR; supported countries retain
+    # their own billing pair across every retry.
     country = str(country or "US").strip().upper()
     detected = str(detected_currency or "").strip().upper()
     direct_countries = {str(item).upper() for item in getattr(sc, "PAYPAL_ORDER_COUNTRIES", [])}
@@ -344,6 +345,23 @@ def normalize_paypal_checkout_region(country: str, detected_currency: str = "") 
         currency, source = normalize_checkout_currency(country, detected)
         return country, currency, f"\u5f53\u524d\u56fd\u5bb6\u652f\u6301 PayPal\uff08{source}\uff09"
     return "DE", "EUR", f"\u5f53\u524d\u56fd\u5bb6 {country} \u672a\u5217\u5165 PayPal \u8d26\u5355\u5730\u533a\uff0c\u56de\u9000 DE/EUR"
+
+
+def resolve_paypal_checkout_region(
+    requested_country: str,
+    proxy_country: str = "",
+    detected_currency: str = "",
+    force_de_fallback: bool = False,
+) -> tuple[str, str, str]:
+    requested = str(requested_country or "US").strip().upper()
+    detected_country = str(proxy_country or "").strip().upper()
+    if force_de_fallback:
+        return "DE", "EUR", f"用户选择的 {requested} 不支持 PayPal 账单，使用 DE/EUR 兼容账单"
+    currency_hint = detected_currency if detected_country == requested else ""
+    country, currency, source = normalize_paypal_checkout_region(requested, currency_hint)
+    if detected_country and detected_country != requested:
+        source = f"用户选择 {requested} 优先；代理实测 {detected_country} 不改变账单国家"
+    return country, currency, source
 
 
 class ProxySentinel(BaseSentinel):
@@ -1136,8 +1154,13 @@ def proxy_geo_cached(proxy: str, ttl: int = 900) -> dict[str, str]:
     return data
 
 
-def select_paypal_exit_proxy(preferred: str, pool: list[str], scan_limit: int = 24) -> tuple[str, dict[str, str], list[str]]:
-    """Pick a proxy whose detected country has an exact OpenAI billing pair."""
+def select_paypal_exit_proxy(
+    preferred: str,
+    pool: list[str],
+    scan_limit: int = 24,
+    expected_country: str = "",
+) -> tuple[str, dict[str, str], list[str]]:
+    """Prefer a proxy matching the user-selected PayPal billing country."""
     rest = [proxy for proxy in dict.fromkeys(pool) if proxy and proxy != preferred]
     random.SystemRandom().shuffle(rest)
     candidates = ([preferred] if preferred else []) + rest
@@ -1146,6 +1169,8 @@ def select_paypal_exit_proxy(preferred: str, pool: list[str], scan_limit: int = 
         raise RuntimeError("Checkout 代理池为空")
 
     rejected: list[str] = []
+    expected = str(expected_country or "").strip().upper()
+    fallback: tuple[str, dict[str, str]] | None = None
     executor = ThreadPoolExecutor(max_workers=min(6, len(candidates)), thread_name_prefix="paypal-geo")
     future_map = {executor.submit(proxy_geo_cached, proxy): proxy for proxy in candidates}
     try:
@@ -1156,15 +1181,19 @@ def select_paypal_exit_proxy(preferred: str, pool: list[str], scan_limit: int = 
             except Exception:
                 continue
             country = str(geo.get("country") or "").upper()
-            if re.fullmatch(r"[A-Z]{2}", country):
+            if re.fullmatch(r"[A-Z]{2}", country) and (not expected or country == expected):
                 for pending in future_map:
                     if pending is not future:
                         pending.cancel()
                 return proxy, geo, rejected
+            if re.fullmatch(r"[A-Z]{2}", country) and fallback is None:
+                fallback = (proxy, geo)
             if country and country not in rejected:
                 rejected.append(country)
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
+    if fallback is not None:
+        return fallback[0], fallback[1], rejected
     summary = "/".join(rejected[:12]) or "未识别"
     raise RuntimeError(
         f"Checkout 代理池本轮未找到 OpenAI 支持的 PayPal 账单地区；已检测：{summary}。"
@@ -2790,6 +2819,7 @@ class JobStore:
             logical_attempt = max(1, attempt - proxy_transport_retries)
             if current.get("link_type") == "paypal":
                 current["force_paypal_de_fallback"] = paypal_force_de_fallback
+                current["requested_paypal_country"] = requested_paypal_country
                 # Strategy A creates the Checkout with the campaign already
                 # attached.  This preserves the merchant's native zero-due
                 # PayPal SetupIntent configuration.  Strategy B keeps the
@@ -2901,20 +2931,6 @@ class JobStore:
             if non_retryable or attempt >= max_attempts:
                 self.update(job_id, status="error", percent=100, text="任务失败", error=last_error[:1200])
                 return
-            if (
-                current.get("link_type") == "paypal"
-                and not paypal_force_de_fallback
-                and (
-                    "\u672a\u5f00\u653e paypal" in lowered
-                    or "\u672a\u5f00\u653epaypal" in lowered
-                    or "does not expose paypal" in lowered
-                    or "paypal is not available" in lowered
-                    or "paypal unavailable" in lowered
-                )
-                and str(current.get("checkout_country") or current.get("country") or "").upper() != "DE"
-            ):
-                paypal_force_de_fallback = True
-                self.log(job_id, "\u5f53\u524d\u56fd\u5bb6 Checkout \u672a\u8fd4\u56de PayPal\uff1b\u540e\u7eed\u5c1d\u8bd5\u81ea\u52a8\u5207\u6362\u5fb7\u56fd DE/EUR \u8d26\u5355")
             self.log(job_id, f"第 {attempt}/{max_attempts} 轮未命中：{last_error[:260] or '上游未返回可用链接'}")
             if options.get("link_type") == "pix":
                 self.log(job_id, "正在更换代理与 PIX 资料后重新尝试")
@@ -3003,12 +3019,18 @@ class JobStore:
                         }
                 payment_country = str(payment_geo.get("country") or country).upper()
                 detected_currency = str(payment_geo.get("currency") or "").upper()
-                if options.get("force_paypal_de_fallback"):
-                    country, currency = "DE", "EUR"
-                else:
-                    country, currency, _source = normalize_paypal_checkout_region(
-                        payment_country, detected_currency,
-                    )
+                requested_country = str(options.get("requested_paypal_country") or country).upper()
+                country, currency, source = resolve_paypal_checkout_region(
+                    requested_country,
+                    payment_country,
+                    detected_currency,
+                    bool(options.get("force_paypal_de_fallback")),
+                )
+                self.log(
+                    job_id,
+                    f"PayPal Checkout代理实测={payment_country or '?'}；"
+                    f"账单={country}/{currency}（{source}）",
+                )
                 options["checkout_country"] = country
                 options["checkout_currency"] = currency
                 options["country"] = country
@@ -3483,6 +3505,7 @@ class JobStore:
                     exit_proxy,
                     exit_pool,
                     scan_limit=int(os.getenv("PAYPAL_PROXY_SCAN_LIMIT", "24") or 24),
+                    expected_country=str(options.get("requested_paypal_country") or country),
                 )
                 payment_country = payment_geo.get("country") or ""
                 payment_region = payment_geo.get("region") or ""
@@ -3491,14 +3514,13 @@ class JobStore:
                 if rejected_countries:
                     self.log(job_id, f"PayPal 已跳过不兼容地区：{'/'.join(rejected_countries[:8])}")
                 detected_currency = str(payment_geo.get("currency") or "").upper()
-                if options.get("force_paypal_de_fallback"):
-                    checkout_country, checkout_currency, currency_source = (
-                        "DE", "EUR", f"\u5f53\u524d\u56fd\u5bb6 {payment_country} \u5b9e\u6d4b\u672a\u5f00\u653e PayPal\uff0c\u4f7f\u7528 DE/EUR \u56de\u9000",
-                    )
-                else:
-                    checkout_country, checkout_currency, currency_source = normalize_paypal_checkout_region(
-                        payment_country, detected_currency,
-                    )
+                requested_country = str(options.get("requested_paypal_country") or country).upper()
+                checkout_country, checkout_currency, currency_source = resolve_paypal_checkout_region(
+                    requested_country,
+                    payment_country,
+                    detected_currency,
+                    bool(options.get("force_paypal_de_fallback")),
+                )
                 country = checkout_country
                 options["country"] = checkout_country
                 options["currency"] = checkout_currency
@@ -4807,15 +4829,23 @@ class JobStore:
                             str(options.get("currency") or "?").upper(),
                         ),
                     )
-                response = update_checkout_promo(
-                    promo_chatgpt_http,
-                    token,
-                    session_id,
-                    processor,
-                    campaign,
-                    provider_log,
-                    device_id=device_id,
-                )
+                try:
+                    response = update_checkout_promo(
+                        promo_chatgpt_http,
+                        token,
+                        session_id,
+                        processor,
+                        campaign,
+                        provider_log,
+                        device_id=device_id,
+                    )
+                except RuntimeError as exc:
+                    if provider == "paypal" and "promotion is not compatible with the checkout's payment methods" in str(exc).lower():
+                        raise RuntimeError(
+                            "PAYPAL_PROMOTION_INCOMPATIBLE: 当前地区的普通 Checkout 支持 PayPal，"
+                            "但 plus-1-month-free 优惠不兼容该 Checkout 的 PayPal 支付方式"
+                        ) from exc
+                    raise
                 self.ensure_not_cancelled(job_id)
                 return response
 

@@ -37,6 +37,40 @@ def test_non_transport_error_is_not_classified_as_proxy_ssl_error() -> None:
     assert checkout_app._is_proxy_ssl_error("OAICS_PAYPAL_METHOD_UNAVAILABLE") is False
 
 
+def test_requested_gb_paypal_billing_ignores_mismatched_proxy_geo() -> None:
+    country, currency, source = checkout_app.resolve_paypal_checkout_region(
+        "GB", "SY", "SYP",
+    )
+
+    assert (country, currency) == ("GB", "GBP")
+    assert "GB" in source and "SY" in source
+
+
+def test_unsupported_paypal_country_uses_explicit_de_fallback() -> None:
+    country, currency, source = checkout_app.resolve_paypal_checkout_region(
+        "SY", "SY", "SYP", force_de_fallback=True,
+    )
+
+    assert (country, currency) == ("DE", "EUR")
+    assert "DE/EUR" in source
+
+
+def test_paypal_proxy_selection_prefers_requested_country() -> None:
+    proxies = ["http://sy-proxy:9001", "http://gb-proxy:9002"]
+
+    def geo(proxy: str) -> dict[str, str]:
+        country = "GB" if "gb-proxy" in proxy else "SY"
+        return {"country": country, "currency": "GBP" if country == "GB" else "SYP"}
+
+    with patch.object(checkout_app, "proxy_geo_cached", side_effect=geo):
+        selected, selected_geo, _rejected = checkout_app.select_paypal_exit_proxy(
+            proxies[0], proxies, expected_country="GB",
+        )
+
+    assert selected == proxies[1]
+    assert selected_geo["country"] == "GB"
+
+
 def test_proxy_route_label_redacts_credentials() -> None:
     label = checkout_app.proxy_route_label("http://user:secret@example.test:8080")
     assert label.startswith("http://example.test:8080#route=")
@@ -226,6 +260,37 @@ def test_paypal_transport_retry_preserves_strategy_and_business_attempts() -> No
 
     assert strategies == [True, True, False]
     assert any("沿用相同 PayPal 优惠策略" in message for message in logs)
+
+
+def test_supported_paypal_country_never_switches_to_de_after_method_miss() -> None:
+    store = object.__new__(checkout_app.JobStore)
+    state = {"status": "running", "error": "", "result": None}
+    attempts: list[tuple[str, bool]] = []
+
+    store.cancelled = lambda _job_id: False
+    store.get = lambda _job_id: dict(state)
+    store.update = lambda _job_id, **fields: state.update(fields)
+    store.log = lambda _job_id, _message: None
+    store._record_success = lambda _job_id, _result: None
+
+    def run_single(_job_id: str, attempt_options: dict):
+        attempts.append((attempt_options["requested_paypal_country"], bool(attempt_options["force_paypal_de_fallback"])))
+        state.update(status="running", error="PAYPAL_METHOD_UNAVAILABLE: checkout does not expose paypal")
+
+    store._run_single = run_single
+    options = {
+        "retry_count": 1,
+        "link_type": "paypal",
+        "country": "GB",
+        "entry_proxies": ["http://promo-1:8001", "http://promo-2:8002"],
+        "exit_proxies": ["http://checkout-1:9001", "http://checkout-2:9002"],
+        "paired_proxy_rotation": True,
+    }
+
+    with patch.object(checkout_app.time, "sleep"):
+        store._run_locked("job-paypal-gb", options)
+
+    assert attempts == [("GB", False), ("GB", False)]
 
 
 def test_retry_count_is_failures_after_initial_attempt() -> None:
@@ -419,6 +484,48 @@ def test_elements_session_records_paypal_types_for_init_probe() -> None:
 
     assert ctx["elements_payment_method_types"] == ["card", "paypal"]
     assert ctx["payment_method_types"] == ["card", "paypal"]
+
+
+def test_paypal_probe_does_not_inject_unsupported_method_into_elements() -> None:
+    billing = {
+        "name": "Test User",
+        "email": "test@example.com",
+        "address": {"country": "GB", "line1": "1 High Street", "city": "London", "postal_code": "SW1A 1AA"},
+    }
+    observed_types: list[str] = []
+    init_ctx = {
+        "checkout_amount": 0,
+        "currency": "gbp",
+        "payment_method_types": ["card", "link"],
+    }
+
+    def fetch_elements(_http, _pk, _session_id, context, _version, _profile, _log):
+        observed_types.extend(context.get("payment_method_types") or [])
+        context["elements_payment_method_types"] = ["card", "link"]
+        return {"payment_method_specs": [{"type": "card"}, {"type": "link"}]}
+
+    with (
+        patch.object(
+            stripe_checkout,
+            "init_checkout",
+            return_value=({"total_summary": {"due": 0}}, stripe_checkout.STRIPE_VERSION_BASE, init_ctx),
+        ),
+        patch.object(stripe_checkout, "fetch_elements_session", side_effect=fetch_elements),
+        patch.object(stripe_checkout, "create_paypal_payment_method") as create_pm,
+        pytest.raises(RuntimeError, match="PAYPAL_METHOD_UNAVAILABLE"),
+    ):
+        stripe_checkout.stripe_to_paypal_redirect(
+            object(),
+            "cs_live_test",
+            billing=billing,
+            country="GB",
+            publishable_key="pk_test",
+            require_zero_due=True,
+            log=lambda _message: None,
+        )
+
+    assert observed_types == ["card", "link"]
+    create_pm.assert_not_called()
 
 
 def test_paypal_redirect_poll_retries_transient_empty_state() -> None:
