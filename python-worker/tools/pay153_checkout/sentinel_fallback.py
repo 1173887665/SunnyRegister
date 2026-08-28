@@ -29,7 +29,7 @@ def resolve_payment_sentinel_headers(
         if not allow_fallback or not fallbackable:
             raise
         log(
-            "PayPal Sentinel 完整证明未生成，按参考流程降级为不携带 Sentinel 头继续请求："
+            "Sentinel 完整证明因传输/运行时异常未生成，降级为不携带 Sentinel 头继续请求："
             + message.split(":", 1)[-1].strip()[:180]
         )
         return {}

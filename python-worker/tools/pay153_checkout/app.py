@@ -796,6 +796,89 @@ def create_checkout(
     return {"data": data, "http": http}
 
 
+def create_local_method_cs_live_checkout(
+    token: str,
+    payload: dict,
+    proxy: str,
+    device_id: str,
+    did: str,
+    log,
+    *,
+    attempts: int = 10,
+    use_sen: bool = True,
+    use_so: bool = True,
+    method_name: str,
+    error_prefix: str,
+) -> tuple[dict, str, str]:
+    """Rebuild redirect Checkouts until a local method receives CS Live."""
+    max_attempts = max(1, min(int(attempts or 10), 10))
+    current_device_id = device_id
+    current_did = did
+    last_kind = "unknown"
+    for attempt in range(1, max_attempts + 1):
+        try:
+            created = create_checkout(
+                token,
+                payload,
+                proxy,
+                current_device_id,
+                current_did,
+                log,
+                use_sen=use_sen,
+                use_so=use_so,
+                # Local-payment discovery should survive transient Sentinel
+                # transport failures; payment API errors still propagate.
+                allow_sentinel_fallback=True,
+            )
+        except Exception as exc:
+            message = str(exc)
+            retryable = bool(_proxy_transport_error_kind(message)) or bool(
+                re.search(r"OpenAI Checkout HTTP (?:429|5\d\d)\b", message)
+            )
+            if not retryable:
+                raise
+            log(
+                f"{method_name} CS Live 创建尝试 {attempt}/{max_attempts}："
+                f"临时失败 {type(exc).__name__}: {message[:180]}"
+            )
+            if attempt >= max_attempts:
+                raise RuntimeError(
+                    f"{error_prefix}_CS_LIVE_CREATE_RETRY_EXHAUSTED: 连续 {max_attempts} 次创建均未完成；"
+                    f"最后错误={message[:240]}"
+                ) from exc
+            current_device_id, current_did = str(uuid.uuid4()), str(uuid.uuid4())
+            continue
+        checkout_data = created.get("data") or {}
+        session_id = str(checkout_data.get("checkout_session_id") or "")
+        last_kind = session_checkout_kind(session_id)
+        kind_label = {
+            "oaics": "OAICS",
+            "cs_live": "CS Live",
+            "cs_test": "CS Test",
+        }.get(last_kind, "unknown")
+        log(f"{method_name} CS Live 创建尝试 {attempt}/{max_attempts}：{kind_label}")
+        if last_kind == "cs_live":
+            return created, current_device_id, current_did
+
+        http = created.get("http")
+        close = getattr(http, "close", None)
+        if callable(close):
+            close()
+        if last_kind != "oaics":
+            raise RuntimeError(
+                f"{error_prefix}_CHECKOUT_TYPE_UNKNOWN: {method_name} redirect Checkout "
+                "未返回可识别的 cs_live/oaics 会话"
+            )
+        if attempt < max_attempts:
+            log(f"{method_name} 当前返回 OAICS；丢弃该会话并刷新设备标识，继续强制重建 CS Live")
+            current_device_id, current_did = str(uuid.uuid4()), str(uuid.uuid4())
+
+    raise RuntimeError(
+        f"{error_prefix}_CS_LIVE_REBUILD_EXHAUSTED: 同一 Checkout 代理连续 {max_attempts} 次返回 "
+        f"{last_kind.upper()}，将切换代理后继续重建"
+    )
+
+
 def create_gopay_cs_live_checkout(
     token: str,
     payload: dict,
@@ -808,52 +891,29 @@ def create_gopay_cs_live_checkout(
     use_sen: bool = True,
     use_so: bool = True,
 ) -> tuple[dict, str, str]:
-    """Rebuild redirect Checkouts until GoPay receives a Stripe CS Live session."""
-    max_attempts = max(1, min(int(attempts or 10), 10))
-    current_device_id = device_id
-    current_did = did
-    last_kind = "unknown"
-    for attempt in range(1, max_attempts + 1):
-        created = create_checkout(
-            token,
-            payload,
-            proxy,
-            current_device_id,
-            current_did,
-            log,
-            use_sen=use_sen,
-            use_so=use_so,
-            # This is the same fallback policy used by the account-management
-            # payment probe that discovers GoPay on ID/IDR Checkouts.
-            allow_sentinel_fallback=True,
-        )
-        checkout_data = created.get("data") or {}
-        session_id = str(checkout_data.get("checkout_session_id") or "")
-        last_kind = session_checkout_kind(session_id)
-        kind_label = {
-            "oaics": "OAICS",
-            "cs_live": "CS Live",
-            "cs_test": "CS Test",
-        }.get(last_kind, "unknown")
-        log(f"GoPay CS Live 创建尝试 {attempt}/{max_attempts}：{kind_label}")
-        if last_kind == "cs_live":
-            return created, current_device_id, current_did
+    return create_local_method_cs_live_checkout(
+        token, payload, proxy, device_id, did, log,
+        attempts=attempts, use_sen=use_sen, use_so=use_so,
+        method_name="GoPay", error_prefix="GOPAY",
+    )
 
-        http = created.get("http")
-        close = getattr(http, "close", None)
-        if callable(close):
-            close()
-        if last_kind != "oaics":
-            raise RuntimeError(
-                "GOPAY_CHECKOUT_TYPE_UNKNOWN: GoPay redirect Checkout 未返回可识别的 cs_live/oaics 会话"
-            )
-        if attempt < max_attempts:
-            log("GoPay 当前返回 OAICS；丢弃该会话并刷新设备标识，继续强制重建 CS Live")
-            current_device_id, current_did = str(uuid.uuid4()), str(uuid.uuid4())
 
-    raise RuntimeError(
-        f"GOPAY_CS_LIVE_REBUILD_EXHAUSTED: 同一 Checkout 代理连续 {max_attempts} 次返回 "
-        f"{last_kind.upper()}，将切换代理后继续重建"
+def create_momo_cs_live_checkout(
+    token: str,
+    payload: dict,
+    proxy: str,
+    device_id: str,
+    did: str,
+    log,
+    *,
+    attempts: int = 10,
+    use_sen: bool = True,
+    use_so: bool = True,
+) -> tuple[dict, str, str]:
+    return create_local_method_cs_live_checkout(
+        token, payload, proxy, device_id, did, log,
+        attempts=attempts, use_sen=use_sen, use_so=use_so,
+        method_name="MoMo", error_prefix="MOMO",
     )
 
 
@@ -2744,7 +2804,13 @@ class JobStore:
                 if current.get("link_type") == "pix":
                     strategy_cycle = ("standalone", "late_promo", "inline")
                 elif current.get("link_type") == "momo":
-                    strategy_cycle = ("late_promo", "inline", "standalone")
+                    # MoMo's zero-due campaign is accepted only after its
+                    # PaymentMethod is attached to the CS Live submission.
+                    strategy_cycle = (
+                        ("late_promo",)
+                        if current.get("use_promo", False)
+                        else ("standalone", "inline")
+                    )
                 elif current.get("link_type") == "upi" and current.get("named_proxy_pools"):
                     strategy_cycle = ("inline", "late_promo", "standalone")
                 elif current.get("use_promo", False):
@@ -2753,16 +2819,18 @@ class JobStore:
                     strategy_cycle = ("standalone", "inline")
                 current["local_method_strategy"] = strategy_cycle[(attempt - 1) % len(strategy_cycle)]
                 # PIX/UPI need a non-zero Stage1 to publish their Stripe
-                # mandate configuration.  MoMo follows the same rule for its
-                # OAICS intermediate session: creating it at zero due causes
-                # OpenAI to omit the country-specific custom method.  Create
-                # the VN/VND session first, then apply the campaign through
-                # checkout/update so the same inspectable OAICS link contains
-                # both MoMo and the zero-due Plus offer.
+                # mandate configuration.  MoMo also starts non-zero, attaches
+                # its PaymentMethod on CS Live, and applies the campaign late.
                 current["promo_on_create"] = (
                     current.get("link_type") == "gcash"
                     and bool(current.get("use_promo"))
                 )
+            if current.get("link_type") == "momo":
+                # OAICS does not reliably publish MoMo and rejects the Plus
+                # campaign when the method is absent.  The final provider
+                # flow already requires Stripe, so keep every retry on CS Live.
+                current["checkout_ui_mode"] = "redirect"
+                current["promo_on_create"] = False
             if current.get("link_type") == "gopay":
                 # Midtrans GoPay is exposed by the CS Live/Stripe Checkout.
                 # Keep every retry aligned with the account-management ID
@@ -3619,6 +3687,18 @@ class JobStore:
                     use_sen=bool(options.get("use_sen", True)),
                     use_so=bool(options.get("use_so", True)),
                 )
+            elif provider == "momo":
+                created, device_id, did = create_momo_cs_live_checkout(
+                    token,
+                    payload,
+                    checkout_proxy,
+                    device_id,
+                    did,
+                    lambda message: self.log(job_id, message),
+                    attempts=int(options.get("momo_cs_live_attempts") or 10),
+                    use_sen=bool(options.get("use_sen", True)),
+                    use_so=bool(options.get("use_so", True)),
+                )
             else:
                 created = create_checkout(
                     token,
@@ -3678,8 +3758,15 @@ class JobStore:
             if not session_id and provider != "hosted":
                 raise RuntimeError("Checkout 未返回 Stripe Session ID")
             actual_checkout_kind = ""
-            if provider in {"paypal", "gopay"}:
+            if provider in {"paypal", "gopay", "momo"}:
                 actual_checkout_kind = session_checkout_kind(session_id)
+            if provider == "momo":
+                actual_label = {
+                    "oaics": "OAICS",
+                    "cs_live": "CS Live",
+                    "cs_test": "CS Test",
+                }.get(actual_checkout_kind, "未知")
+                self.log(job_id, f"MoMo 实际 Checkout 类型：{actual_label}")
             if provider == "gopay":
                 actual_label = {
                     "oaics": "OAICS",
@@ -3737,7 +3824,7 @@ class JobStore:
                 "promo_country": str(options.get("promo_country") or "").upper(),
                 "payment_proxy_country": str(options.get("payment_proxy_country") or locals().get("payment_country") or "").upper(),
             }
-            if provider in {"paypal", "gopay"}:
+            if provider in {"paypal", "gopay", "momo"}:
                 result["checkout_kind"] = actual_checkout_kind
             if promo_requested:
                 checkout_trial = checkout_data.get("one_click_trial_eligible")
@@ -4370,80 +4457,9 @@ class JobStore:
                     self.update(job_id, percent=100, text="OAICS iDEAL 签名支付链接生成完成", status="done", result=result)
                     return
                 if provider == "momo":
-                    # MoMo may be published through the custom OAICS
-                    # Checkout even though the final payment flow requires a
-                    # Stripe cs_* session.  Treat this OAICS session as an
-                    # intermediate eligibility check: apply the account's
-                    # campaign here, verify that MoMo is still offered, and
-                    # only then rebuild the Stripe Checkout.  Previously we
-                    # rebuilt immediately, leaving the inspectable oaics_ link
-                    # at the regular Plus price.
-                    self.update(job_id, percent=58, text="正在校验 OAICS MoMo 试用 Checkout")
-                    custom_state = fetch_custom_checkout_session_with_retry(
-                        chatgpt_http,
-                        token,
-                        session_id,
-                        custom_processor,
-                        device_id,
-                        log=lambda message: self.log(job_id, message),
-                        attempts=4,
-                    )
-                    custom_amount = custom_checkout_amount_minor(custom_state)
-                    custom_currency = custom_checkout_currency(custom_state) or options["currency"]
-                    momo_methods = custom_payment_methods_for(custom_state, "momo")
-                    if promo_requested and custom_amount != 0:
-                        self.update(job_id, percent=66, text="正在为 OAICS MoMo Checkout 应用优惠")
-                        custom_update = update_checkout_promo(
-                            promo_chatgpt_http,
-                            token,
-                            session_id,
-                            custom_processor,
-                            options.get("promo_campaign") or "plus-1-month-free",
-                            lambda m: self.log(job_id, m),
-                            device_id=device_id,
-                        )
-                        updated_amount = custom_checkout_amount_minor(custom_update)
-                        if updated_amount is not None:
-                            custom_amount = updated_amount
-                        custom_currency = custom_checkout_currency(custom_update) or custom_currency
-                        custom_state = fetch_custom_checkout_session_with_retry(
-                            chatgpt_http,
-                            token,
-                            session_id,
-                            custom_processor,
-                            device_id,
-                            log=lambda message: self.log(job_id, message),
-                            attempts=4,
-                        )
-                        refreshed_amount = custom_checkout_amount_minor(custom_state)
-                        if refreshed_amount is not None:
-                            custom_amount = refreshed_amount
-                        custom_currency = custom_checkout_currency(custom_state) or custom_currency
-                        momo_methods = custom_payment_methods_for(custom_state, "momo")
-                    custom_url = (
-                        str(checkout_data.get("checkout_url") or "").strip()
-                        or f"https://chatgpt.com/checkout/{custom_processor}/{session_id}"
-                    )
-                    if not momo_methods:
-                        raise RuntimeError(
-                            "CUSTOM_CHECKOUT_REBUILD_REQUIRED: received {} but OAICS 未返回 MoMo 支付方式；"
-                            "将更换代理重建 Checkout".format(session_id)
-                        )
-                    if promo_requested and custom_amount != 0:
-                        raise RuntimeError(
-                            "CUSTOM_CHECKOUT_REBUILD_REQUIRED: received {}; OAICS MoMo 试用金额未归零 "
-                            "(amount={} {}); checkout_url={}；将更换代理重建 Checkout".format(
-                                session_id, custom_amount, custom_currency, custom_url,
-                            )
-                        )
-                    self.log(
-                        job_id,
-                        "OAICS MoMo 中间 Checkout 已确认：支付方式=MOMO，Plus 今日应付 amount=0，"
-                        f"checkout_url={custom_url}；继续重建 Stripe cs_* Checkout",
-                    )
                     raise RuntimeError(
-                        "CUSTOM_CHECKOUT_REBUILD_REQUIRED: received {}; OAICS MoMo 0 元资格已确认，"
-                        "需要 Stripe cs_* Checkout 继续生成最终 MOMO 链接".format(session_id)
+                        "MOMO_CS_LIVE_REQUIRED: MoMo 最终支付流程要求 Stripe cs_live_*；"
+                        f"已丢弃意外返回的 {session_id}，将更换代理强制重建"
                     )
                 if provider != "hosted":
                     raise RuntimeError(
