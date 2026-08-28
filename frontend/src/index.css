@@ -558,6 +558,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .checkout-account-table td.checkout-sticky { z-index:10; background:#fff; }
 .checkout-account-table .checkout-sticky-left { box-shadow:1px 0 0 rgba(15,23,42,.08); }
 .checkout-account-table .checkout-sticky-right { box-shadow:-1px 0 0 rgba(15,23,42,.08); }
+.checkout-account-table .checkout-sticky-left:first-child { left:0; }
 .checkout-account-table .checkout-sticky-left:first-child { z-index:21; }
 .checkout-account-table th.checkout-sticky-right { z-index:21; }
 .checkout-account-table tbody tr:hover > td.checkout-sticky { background:#fafafa; }
@@ -3364,6 +3365,8 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .gopay-status.is-failed,.gopay-status.is-error { background:rgba(239,68,68,.10); color:#ef4444; }
 .gopay-status.is-waiting_otp,.gopay-status.is-unknown,.gopay-status.is-missing { background:rgba(245,158,11,.12); color:#d97706; }
 .gopay-status.is-running { background:rgba(59,130,246,.12); color:#3b82f6; }
+.gopay-status.is-success { background:rgba(16,185,129,.11); color:#059669; }
+.gopay-status.is-idle { background:rgba(100,116,139,.10); color:var(--text-secondary); }
 .gopay-status.is-done { background:rgba(100,116,139,.12); color:var(--text-secondary); }
 .gopay-empty { display:flex; min-height:150px; align-items:center; justify-content:center; flex-direction:column; gap:5px; padding:22px; color:var(--text-muted); text-align:center; }
 .gopay-empty svg { width:25px; height:25px; margin-bottom:4px; color:var(--accent); }
