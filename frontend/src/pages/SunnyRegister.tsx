@@ -1339,7 +1339,7 @@ export default function SunnyRegister() {
   const [toast, setToast] = useState<ToastState>(null);
   const notify = (type: "ok" | "fail", text: string) => { setToast({ type, text }); };
   return <div ref={rootRef} className="sunny-page"><Toast toast={toast} clear={() => setToast(null)} />
-    <CachedPage active={page === "workbench"} className="space-y-6">{visitedPages.has("workbench") && <><Hero t={t} /><Workbench t={t} notify={notify} /></>}</CachedPage>
+    <CachedPage active={page === "workbench"} className="space-y-6">{visitedPages.has("workbench") && <Workbench t={t} notify={notify} />}</CachedPage>
     <CachedPage active={page === "mailbox"} className="space-y-6">{visitedPages.has("mailbox") && <MailboxConfig t={t} notify={notify} />}</CachedPage>
     <CachedPage active={page === "phone"} className="space-y-6">{visitedPages.has("phone") && <PhoneConfig t={t} notify={notify} />}</CachedPage>
     <CachedPage active={page === "sub2api"} className="space-y-6">{visitedPages.has("sub2api") && <Sub2APIConfig t={t} notify={notify} />}</CachedPage>
@@ -1347,8 +1347,6 @@ export default function SunnyRegister() {
     <CachedPage active={page === "session"} className="space-y-6">{visitedPages.has("session") && <SessionManager t={t} notify={notify} />}</CachedPage>
   </div>;
 }
-
-function Hero({ t }: { t: typeof zh }) { return <section className="hero-card rounded-[34px] border border-[var(--border)] p-6 md:p-8"><Badge className="rounded-full px-3 py-1">SunnyRegister</Badge><h1 className="mt-4 text-4xl font-black tracking-[-0.05em] md:text-5xl">{t.title}</h1><p className="mt-3 max-w-4xl leading-7 text-[var(--text-secondary)]">{t.desc}</p></section>; }
 
 function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", text: string) => void }) {
   const [mailboxes, setMailboxes] = useCachedState<AnyObj[]>("workbench.mailboxes", []);
