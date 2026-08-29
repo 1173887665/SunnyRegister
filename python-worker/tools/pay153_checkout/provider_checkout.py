@@ -7,6 +7,7 @@ import random
 import re
 import time
 import uuid
+from decimal import Decimal, InvalidOperation
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from datetime import date, timedelta
 from typing import Any, Callable
@@ -26,6 +27,19 @@ PROVIDER_DEFAULTS = {
     "blik": {"country": "PL", "currency": "PLN"},
     "twint": {"country": "CH", "currency": "CHF"},
 }
+
+GOPAY_PROMO_AMOUNT_LIMIT_IDR = 50
+
+
+def is_gopay_promo_amount(amount: Any, currency: str) -> bool:
+    """Accept GoPay's discounted IDR amount, including the observed 1 IDR authorization."""
+    if str(currency or "").strip().upper() != "IDR" or amount is None or isinstance(amount, bool):
+        return False
+    try:
+        parsed = Decimal(str(amount).strip())
+    except (InvalidOperation, ValueError):
+        return False
+    return parsed.is_finite() and Decimal(0) <= parsed < Decimal(GOPAY_PROMO_AMOUNT_LIMIT_IDR)
 
 
 def _provider_method_aliases(provider: str) -> set[str]:
@@ -1275,12 +1289,21 @@ def stripe_to_provider(
     processor = str(stage1.get("processor_entity") or "") or sc._entity_from_return_url(ctx.get("return_url") or init_data.get("return_url") or "") or "openai_llc"
     if apply_promo_callback and not late_promo:
         original_checkout_amount = ctx.get("checkout_amount")
-        try:
-            already_zero = int(str(original_checkout_amount or 0)) == 0
-        except (TypeError, ValueError):
-            already_zero = str(original_checkout_amount).strip() in {"0", "0.0", "0.00"}
-        if already_zero:
-            log("[promo] Checkout 创建时金额已为 0，保留 Stage1 原生 mandate 配置")
+        if provider == "gopay":
+            already_discounted = is_gopay_promo_amount(original_checkout_amount, ctx.get("currency") or "")
+        else:
+            try:
+                already_discounted = int(str(original_checkout_amount or 0)) == 0
+            except (TypeError, ValueError):
+                already_discounted = str(original_checkout_amount).strip() in {"0", "0.0", "0.00"}
+        if already_discounted:
+            if provider == "gopay":
+                log(
+                    "[promo] GoPay Checkout 创建时金额已小于 50 IDR，"
+                    "保留 Stage1 原生 mandate 配置"
+                )
+            else:
+                log("[promo] Checkout 创建时金额已为 0，保留 Stage1 原生 mandate 配置")
             ctx["original_checkout_amount"] = original_checkout_amount
         else:
             apply_promo_callback(processor)
@@ -1341,11 +1364,19 @@ def stripe_to_provider(
         else:
             if checkout_amount is None:
                 raise RuntimeError("优惠金额校验失败：Stripe 未返回今日应付金额")
-            try:
-                promo_applied = int(str(checkout_amount)) == 0
-            except ValueError:
-                promo_applied = str(checkout_amount).strip() in {"0", "0.0", "0.00"}
+            if provider == "gopay":
+                promo_applied = is_gopay_promo_amount(checkout_amount, ctx.get("currency") or "")
+            else:
+                try:
+                    promo_applied = int(str(checkout_amount)) == 0
+                except ValueError:
+                    promo_applied = str(checkout_amount).strip() in {"0", "0.0", "0.00"}
             if not promo_applied:
+                if provider == "gopay":
+                    raise RuntimeError(
+                        "GOPAY_PROMO_AMOUNT_REQUIRED: GoPay 优惠金额必须小于 50 IDR："
+                        f"amount={checkout_amount} currency={str(ctx.get('currency') or '').upper() or '?'}"
+                    )
                 raise RuntimeError(f"Plus 首月免费优惠未生效：Stripe 今日应付 amount={checkout_amount}")
             if provider == "upi":
                 upi_options = (
@@ -1358,7 +1389,9 @@ def stripe_to_provider(
                         "当前 Checkout 未开放 UPI 0 元 mandate；已停止提交无效 SetupIntent。"
                         "UPI 仅在 Stripe 返回 mandate_options 时继续生成。"
                     )
-            if provider == "pix":
+            if provider == "gopay":
+                log(f"[promo] GoPay 优惠金额校验通过：Stripe 今日应付 amount={checkout_amount} IDR（<50）")
+            elif provider == "pix":
                 log("[promo] 第 5/7 步：返回 BR 主链路并校验通过，Stripe 今日应付 amount=0")
             else:
                 log("[promo] Plus 首月免费校验通过：Stripe 今日应付 amount=0")

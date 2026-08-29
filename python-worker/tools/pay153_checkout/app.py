@@ -30,6 +30,7 @@ from provider_checkout import (
     default_billing,
     enrich_ideal_redirect,
     generate_payment_qr_images,
+    is_gopay_promo_amount,
     is_valid_ideal_payment_url,
     stripe_to_provider,
 )
@@ -3992,7 +3993,11 @@ class JobStore:
                         )
                     custom_amount = custom_checkout_amount_minor(custom_state)
                     custom_currency = custom_checkout_currency(custom_state) or "IDR"
-                    if promo_requested and custom_amount not in {None, 0}:
+                    if (
+                        promo_requested
+                        and custom_amount is not None
+                        and not is_gopay_promo_amount(custom_amount, custom_currency)
+                    ):
                         self.update(job_id, percent=66, text="正在应用优惠并刷新 GoPay Checkout")
                         update_checkout_promo(
                             promo_chatgpt_http, token, session_id, custom_processor,
@@ -4043,9 +4048,11 @@ class JobStore:
                         job_id,
                         f"GoPay taxes 后 Checkout 应付金额：{custom_amount if custom_amount is not None else '?'} {custom_currency}",
                     )
-                    if promo_requested and custom_amount != 0:
+                    gopay_promo_applied = is_gopay_promo_amount(custom_amount, custom_currency)
+                    if promo_requested and not gopay_promo_applied:
                         raise RuntimeError(
-                            f"GOPAY_ZERO_DUE_REQUIRED: GoPay 优惠未生效或金额未知：amount={custom_amount} {custom_currency}"
+                            "GOPAY_PROMO_AMOUNT_REQUIRED: GoPay 优惠未生效或金额未知；"
+                            f"要求 0 <= amount < 50 IDR，实际 amount={custom_amount} {custom_currency}"
                         )
 
                     custom_method_id = custom_payment_method_id_for(custom_state, "gopay") or custom_method_id
@@ -4092,10 +4099,10 @@ class JobStore:
                         "checkout_amount": custom_amount,
                         "amount_currency": custom_currency,
                         "amount_verification": (
-                            "verified_zero" if custom_amount == 0
+                            "verified_discount_range" if gopay_promo_applied
                             else ("pending" if custom_amount is None else "nonzero")
                         ),
-                        "promo_applied": (custom_amount == 0) if promo_requested else None,
+                        "promo_applied": gopay_promo_applied if promo_requested else None,
                         "expires_at": int(time.time()) + 1800,
                     })
                     self.update(job_id, percent=100, text="GoPay Midtrans 跳转链接生成完成", status="done", result=result)

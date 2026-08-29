@@ -5,6 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import quote
 
+import pytest
+
 
 PAY153_DIR = Path(__file__).parents[1] / "tools" / "pay153_checkout"
 if str(PAY153_DIR) not in sys.path:
@@ -15,6 +17,8 @@ from provider_checkout import (  # noqa: E402
     PROVIDER_DEFAULTS,
     default_billing,
     extract_provider_result,
+    is_gopay_promo_amount,
+    stripe_to_provider,
 )
 
 
@@ -385,3 +389,88 @@ def test_gopay_defaults_use_indonesia_billing() -> None:
     assert billing["address"]["country"] == "ID"
     assert billing["address"]["city"] == "Jakarta"
     assert billing["address"]["postal_code"] == "10310"
+
+
+@pytest.mark.parametrize("amount", [0, 1, 49, "1", "49.0"])
+def test_gopay_promo_amount_accepts_idr_below_fifty(amount) -> None:
+    assert is_gopay_promo_amount(amount, "IDR")
+
+
+@pytest.mark.parametrize("amount", [50, 51, -1, None, "", "unknown", True])
+def test_gopay_promo_amount_rejects_invalid_or_out_of_range_values(amount) -> None:
+    assert not is_gopay_promo_amount(amount, "IDR")
+
+
+def test_gopay_promo_amount_rejects_non_idr_currency() -> None:
+    assert not is_gopay_promo_amount(1, "USD")
+
+
+def test_gopay_cs_live_accepts_one_idr_without_reapplying_promo() -> None:
+    logs: list[str] = []
+    promo_calls: list[str] = []
+    ctx = {
+        "checkout_amount": 1,
+        "currency": "idr",
+        "payment_method_types": ["card", "gopay"],
+    }
+    confirmation = {
+        "next_action": {
+            "type": "redirect_to_url",
+            "redirect_to_url": {"url": MIDTRANS_V4_LINKING},
+        },
+    }
+    billing = default_billing("ID", "user@example.com")
+
+    with (
+        patch.object(checkout_app.sc, "init_checkout", return_value=({}, "2026-test", ctx)),
+        patch.object(checkout_app.sc, "fetch_elements_session"),
+        patch.object(checkout_app.sc, "update_tax_region"),
+        patch.object(checkout_app.sc, "snapshot_billing"),
+        patch("provider_checkout.confirm_provider_payment", return_value=confirmation),
+    ):
+        result = stripe_to_provider(
+            object(),
+            "cs_live_test",
+            "gopay",
+            billing=billing,
+            country="ID",
+            stage1={"publishable_key": "pk_live_test", "processor_entity": "openai_llc"},
+            apply_promo_callback=promo_calls.append,
+            require_zero_due=True,
+            log=logs.append,
+        )
+
+    assert promo_calls == []
+    assert result["provider_redirect_url"] == MIDTRANS_V4_LINKING
+    assert result["checkout_amount"] == 1
+    assert result["checkout_currency"] == "IDR"
+    assert result["promo_applied"] is True
+    assert any("小于 50 IDR" in message for message in logs)
+
+
+def test_gopay_cs_live_rejects_fifty_idr_after_promo_refresh() -> None:
+    ctx = {
+        "checkout_amount": 50,
+        "currency": "idr",
+        "payment_method_types": ["card", "gopay"],
+    }
+    billing = default_billing("ID", "user@example.com")
+
+    with (
+        patch.object(checkout_app.sc, "init_checkout", return_value=({}, "2026-test", ctx)),
+        patch.object(checkout_app.sc, "fetch_elements_session"),
+        patch.object(checkout_app.sc, "update_tax_region"),
+        patch.object(checkout_app.sc, "snapshot_billing"),
+        pytest.raises(RuntimeError, match="GOPAY_PROMO_AMOUNT_REQUIRED"),
+    ):
+        stripe_to_provider(
+            object(),
+            "cs_live_test",
+            "gopay",
+            billing=billing,
+            country="ID",
+            stage1={"publishable_key": "pk_live_test", "processor_entity": "openai_llc"},
+            apply_promo_callback=lambda _processor: None,
+            require_zero_due=True,
+            log=lambda _message: None,
+        )
