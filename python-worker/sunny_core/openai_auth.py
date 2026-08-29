@@ -3078,14 +3078,12 @@ class OpenAIEmailRegisterFlow:
             "client_id": DEFAULT_CLIENT_ID,
             "response_type": "code",
             "redirect_uri": DEFAULT_REDIRECT_URI,
-            "scope": "openid email profile offline_access",
+            "scope": "openid profile email offline_access",
             "state": state,
             "code_challenge": pkce_code_challenge(code_verifier),
             "code_challenge_method": "S256",
-            "prompt": "login",
             "id_token_add_organizations": "true",
             "codex_cli_simplified_flow": "true",
-            "login_hint": self.account.email,
         })
         return f"{AUTH_BASE_URL}/oauth/authorize?{query}", code_verifier, state
 
@@ -3181,6 +3179,43 @@ class OpenAIEmailRegisterFlow:
         self._codex_consent_submit_count += 1
         self._codex_consent_last_submit_at = now
         return True
+
+    def _select_codex_account_if_visible(self, page) -> bool:
+        """Select the current account on the Codex OAuth account chooser."""
+        try:
+            path = urlparse(str(page.url or "")).path.rstrip("/").lower()
+            if path != "/choose-an-account":
+                return False
+            return bool(page.evaluate(
+                r"""({email}) => {
+                    const visible = el => {
+                        if (!el) return false;
+                        const r = el.getBoundingClientRect();
+                        const s = getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+                    };
+                    const enabled = el => el && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+                    const candidates = Array.from(document.querySelectorAll(
+                        'button[name="session_id"], button[data-dd-action-name="Select existing session"], form[action*="choose-an-account"] button[value]'
+                    )).filter(el => visible(el) && enabled(el));
+                    if (!candidates.length) return false;
+                    const wanted = String(email || '').trim().toLowerCase();
+                    const identity = el => `${el.textContent || ''} ${el.value || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''}`.toLowerCase();
+                    const target = (wanted && candidates.find(el => identity(el).includes(wanted))) || candidates[0];
+                    const form = target.form || target.closest('form');
+                    if (target.dataset.sunnyRegisterAccountSelected === 'true' || form?.dataset.sunnyRegisterAccountSelected === 'true') return false;
+                    target.dataset.sunnyRegisterAccountSelected = 'true';
+                    if (form) form.dataset.sunnyRegisterAccountSelected = 'true';
+                    target.scrollIntoView({block:'center', inline:'center'});
+                    target.focus?.();
+                    if (form && typeof form.requestSubmit === 'function') form.requestSubmit(target);
+                    else target.click();
+                    return true;
+                }""",
+                {"email": self.account.email},
+            ))
+        except Exception:
+            return False
 
     def _select_codex_consent_workspace_if_visible(self, page) -> bool:
         """Select the workspace introduced by the Codex consent flow.
@@ -3309,6 +3344,19 @@ class OpenAIEmailRegisterFlow:
         def capture_callback_navigation(frame) -> None:
             remember_callback_url(getattr(frame, "url", ""))
 
+        def capture_callback_response(response) -> None:
+            try:
+                response_url = str(getattr(response, "url", "") or "")
+                if urlparse(response_url).path.rstrip("/").lower() != "/api/accounts/workspace/select":
+                    return
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    return
+                continue_url = str(payload.get("continue_url") or payload.get("continueUrl") or "")
+                remember_callback_url(continue_url)
+            except Exception:
+                return
+
         def fulfill_callback(route) -> None:
             remember_callback_url(getattr(route.request, "url", ""))
             route.fulfill(
@@ -3324,6 +3372,7 @@ class OpenAIEmailRegisterFlow:
 
         page.on("request", capture_callback_request)
         page.on("framenavigated", capture_callback_navigation)
+        page.on("response", capture_callback_response)
         page.route(callback_pattern, fulfill_callback)
         self.log("[Session] 在当前登录态发起 OAuth 授权获取 Refresh Token")
         try:
@@ -3353,6 +3402,10 @@ class OpenAIEmailRegisterFlow:
                     raise RuntimeError("OAuth phone verification required, but no usable SMS provider is configured")
                 if self._has_totp_challenge(page):
                     self._submit_totp_challenge(page)
+                    self._sleep_checked(1)
+                    continue
+                if self._select_codex_account_if_visible(page):
+                    self.log("[Session] 已选择当前 Codex OAuth 登录账户")
                     self._sleep_checked(1)
                     continue
                 consent_path = urlparse(current_url).path.rstrip("/").lower()
@@ -3407,6 +3460,7 @@ class OpenAIEmailRegisterFlow:
             try:
                 page.remove_listener("request", capture_callback_request)
                 page.remove_listener("framenavigated", capture_callback_navigation)
+                page.remove_listener("response", capture_callback_response)
             except Exception:
                 pass
 

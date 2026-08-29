@@ -1306,6 +1306,39 @@ class BrowserOAuthCallbackTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "state mismatch"):
             flow._extract_oauth_callback_from_url(callback_url, "other-state")
 
+    def test_oauth_url_matches_current_codex_cli_authorize_shape(self):
+        flow = self.make_flow()
+
+        oauth_url, verifier, state = flow._prepare_browser_oauth_url()
+
+        query = parse_qs(urlparse(oauth_url).query)
+        self.assertTrue(verifier)
+        self.assertEqual(query["state"], [state])
+        self.assertEqual(query["redirect_uri"], [DEFAULT_REDIRECT_URI])
+        self.assertEqual(query["scope"], ["openid profile email offline_access"])
+        self.assertEqual(query["codex_cli_simplified_flow"], ["true"])
+        self.assertEqual(query["id_token_add_organizations"], ["true"])
+        self.assertNotIn("prompt", query)
+        self.assertNotIn("login_hint", query)
+
+    def test_codex_account_chooser_selects_current_session(self):
+        flow = self.make_flow()
+
+        class Page:
+            url = "https://auth.openai.com/choose-an-account"
+
+            def evaluate(self, script, payload):
+                self.script = script
+                self.payload = payload
+                return True
+
+        page = Page()
+
+        self.assertTrue(flow._select_codex_account_if_visible(page))
+        self.assertEqual(page.payload, {"email": "user@example.com"})
+        self.assertIn('button[name="session_id"]', page.script)
+        self.assertIn("form.requestSubmit(target)", page.script)
+
     def test_token_exchange_uses_independent_proxied_form_request(self):
         flow = self.make_flow()
         flow.proxy_url = "http://user:pass@proxy.example:8080"
@@ -1483,6 +1516,61 @@ class BrowserOAuthCallbackTests(unittest.TestCase):
         self.assertEqual(result["refresh_token"], "rt_test")
         exchange.assert_called_once_with(ANY, "workspace-auth-code", ANY)
         self.assertTrue(any("已选择 Codex 授权 workspace" in item for item in logs))
+
+    def test_workspace_select_response_captures_callback_before_navigation(self):
+        logs: list[str] = []
+        flow = self.make_flow(logs)
+
+        class Response:
+            url = "https://auth.openai.com/api/accounts/workspace/select"
+
+            def __init__(self, callback_url: str):
+                self.callback_url = callback_url
+
+            def json(self):
+                return {"continue_url": self.callback_url}
+
+        class Page:
+            def __init__(self):
+                self.url = "about:blank"
+                self.listeners = {}
+
+            def on(self, event, handler):
+                self.listeners[event] = handler
+
+            def route(self, *_args):
+                return None
+
+            def goto(self, oauth_url, **_kwargs):
+                self.url = "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
+                self.oauth_state = parse_qs(urlparse(oauth_url).query)["state"][0]
+
+            def evaluate(self, script, *_args):
+                if "sunnyRegisterWorkspaceSelected" in script and not getattr(self, "selected", False):
+                    self.selected = True
+                    return True
+                if "sunnyRegisterSubmitted" in script and self.selected:
+                    callback = f"{DEFAULT_REDIRECT_URI}?code=response-auth-code&state={self.oauth_state}"
+                    self.listeners["response"](Response(callback))
+                    return True
+                return False
+
+            def unroute(self, *_args):
+                return None
+
+            def remove_listener(self, *_args):
+                return None
+
+        with (
+            patch.object(flow, "_has_phone_form", return_value=False),
+            patch.object(flow, "_has_totp_challenge", return_value=False),
+            patch.object(flow, "_sleep_checked", return_value=None),
+            patch.object(flow, "_exchange_browser_code_for_token", return_value={"refresh_token": "rt_test"}) as exchange,
+        ):
+            result = flow._authorize_rt_from_browser(Mock(), Page())
+
+        self.assertEqual(result["refresh_token"], "rt_test")
+        exchange.assert_called_once_with(ANY, "response-auth-code", ANY)
 
     def test_codex_consent_submit_allows_one_delayed_retry(self):
         flow = self.make_flow()
