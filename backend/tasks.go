@@ -267,7 +267,33 @@ func (s *Server) appendTaskEventWithContext(taskID, message, typ, level string, 
 		OperationID: ctx.OperationID, DetailJSON: dumpJSON(sanitizedDetail),
 	}
 	s.db.Create(&ev)
+	// Automatic maintenance tasks (for example AT renewal started by a
+	// subscription check) carry the originating task ID in their payload. Mirror
+	// their events to that parent so a single account-management log view keeps
+	// showing the complete workflow instead of stopping at task creation.
+	if parentID := s.parentTaskID(taskID); parentID != "" && parentID != taskID {
+		parentEvent := ev
+		parentEvent.ID = 0
+		parentEvent.TaskID = parentID
+		s.db.Create(&parentEvent)
+	}
 	return ev
+}
+
+func (s *Server) parentTaskID(taskID string) string {
+	var task Task
+	if err := s.db.Select("payload_json").Where("id = ?", taskID).First(&task).Error; err != nil {
+		return ""
+	}
+	parentID := strings.TrimSpace(text(jsonMap(task.PayloadJSON)["source_task_id"]))
+	if parentID == "" || parentID == taskID {
+		return ""
+	}
+	var parent Task
+	if s.db.Select("id").Where("id = ?", parentID).First(&parent).Error != nil {
+		return ""
+	}
+	return parentID
 }
 
 func serializeEvent(ev TaskEvent) map[string]any {

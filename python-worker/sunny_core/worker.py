@@ -2676,8 +2676,22 @@ def _refresh_sessions_sequential(db: SunnyDB, payload: dict[str, Any]) -> tuple[
                 if result_text.startswith(email_prefix):
                     result_text = result_text[len(email_prefix):].strip()
                 raise RuntimeError(result_text)
-            refreshed_session = db.fetch_session_by_email(email) or {}
+            fetch_session_by_account = getattr(db, "fetch_session_by_account_id", None)
+            refreshed_session = (
+                fetch_session_by_account(int(acc.get("id") or 0))
+                if callable(fetch_session_by_account)
+                else None
+            ) or db.fetch_session_by_email(email) or {}
             refreshed_token = str(refreshed_session.get("access_token") or "").strip()
+            if not refreshed_token:
+                raw_session_json = refreshed_session.get("session_json")
+                if isinstance(raw_session_json, str):
+                    try:
+                        raw_session_json = json.loads(raw_session_json)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        raw_session_json = {}
+                if isinstance(raw_session_json, dict):
+                    refreshed_token = str(raw_session_json.get("accessToken") or raw_session_json.get("access_token") or "").strip()
             renewal_current = 8
             _emit_renewal_progress(db, email, renewal_current, renewal_total, "secondary_probe")
             probe = _verify_persisted_access_token(db, email, refreshed_token, _proxy_snapshot(payload, idx - 1)["register"])

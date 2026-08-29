@@ -811,6 +811,15 @@ class SunnyDB:
         ).fetchone()
         return dict(row) if row else None
 
+    def fetch_session_by_account_id(self, account_id: int) -> dict[str, Any] | None:
+        if int(account_id or 0) <= 0:
+            return None
+        row = self.conn.execute(
+            "select * from sunny_sessions where account_id=? order by updated_at desc,id desc limit 1",
+            (int(account_id),),
+        ).fetchone()
+        return dict(row) if row else None
+
     def persist_rebind(self, old_email: str, new_email: str, new_mailbox_api: str, pickup_token_hash: str, session: dict[str, Any]) -> None:
         """Persist rebind metadata while keeping the original mailbox identity."""
         old_email = str(old_email or '').strip()

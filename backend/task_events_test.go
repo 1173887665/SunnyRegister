@@ -14,10 +14,30 @@ func newTaskEventTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := db.AutoMigrate(&TaskEvent{}); err != nil {
+	if err := db.AutoMigrate(&Task{}, &TaskEvent{}); err != nil {
 		t.Fatalf("migrate database: %v", err)
 	}
 	return &Server{db: db}
+}
+
+func TestAppendTaskEventMirrorsAutomaticRenewalEventsToParentTask(t *testing.T) {
+	s := newTaskEventTestServer(t)
+	parent := Task{ID: "subscription-task", Type: sunnySubscriptionTaskType, PayloadJSON: "{}"}
+	child := Task{ID: "renewal-task", Type: "sunny_refresh_session", PayloadJSON: dumpJSON(map[string]any{"source_task_id": parent.ID})}
+	if err := s.db.Create(&parent).Error; err != nil {
+		t.Fatalf("create parent task: %v", err)
+	}
+	if err := s.db.Create(&child).Error; err != nil {
+		t.Fatalf("create child task: %v", err)
+	}
+	ev := s.appendAccountTaskEvent(child.ID, "account@example.com", "session", "access_token.renewed", "AT 续期完成", "info", nil)
+	var parentEvents []TaskEvent
+	if err := s.db.Where("task_id = ?", parent.ID).Find(&parentEvents).Error; err != nil {
+		t.Fatalf("load mirrored events: %v", err)
+	}
+	if len(parentEvents) != 1 || parentEvents[0].Message != ev.Message || parentEvents[0].TaskID != parent.ID {
+		t.Fatalf("renewal event was not mirrored: %#v", parentEvents)
+	}
 }
 
 func TestAppendTaskEventInfersStructuredAccountContext(t *testing.T) {
