@@ -837,6 +837,10 @@ const en = Object.assign({
 }, accountDetectionSummaryCopy.en);
 
 Object.assign(zh, {
+  loginExisting: "登录已有账号",
+  loginExistingTitle: "登录已有 ChatGPT 账号",
+  loginExistingDesc: "使用已导入的邮箱、GPT 登录密码和 2FA 密钥登录，并将 Session 与 Token 保存到账户管理。",
+  loginTaskSubmitted: "登录任务已提交，正在开始执行",
   rebindEmail: "换绑邮箱",
   searchAccount: "搜索邮箱或换绑邮箱...",
   addPassword2FA: "添加密码2FA",
@@ -883,6 +887,10 @@ Object.assign(zh, {
 (en as AnyObj).domainMailboxRetainFailed = "Retain failed domain mailboxes";
 (en as AnyObj).domainMailboxRetainFailedTip = "When disabled, failed registration or rebinding mailboxes are deleted from CloudMail and this project";
 Object.assign(en, {
+  loginExisting: "Login Existing",
+  loginExistingTitle: "Log in Existing ChatGPT Accounts",
+  loginExistingDesc: "Use the imported email, GPT password and 2FA secret, then save the Session and Tokens to Account Management.",
+  loginTaskSubmitted: "Login task submitted and starting",
   loginSecretFilterTitle: "Filter Login Secret", loginSecretFilterAll: "All", loginSecretFilterPresent: "Has LS", loginSecretFilterMissing: "No LS",
   rebindEmailFilterTitle: "Filter Rebound Email", rebindEmailFilterAll: "All", rebindEmailFilterPresent: "Rebound", rebindEmailFilterMissing: "Not Rebound",
   passwordFilterTitle: "Filter Password", passwordFilterAll: "All", passwordFilterPresent: "Has Password", passwordFilterMissing: "No Password", twoFactorFilterTitle: "Filter 2FA", twoFactorFilterAll: "All", twoFactorFilterPresent: "Has 2FA", twoFactorFilterMissing: "No 2FA",
@@ -1365,6 +1373,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const [activeTaskMailboxIds, setActiveTaskMailboxIds] = useCachedState<number[]>("workbench.activeTaskMailboxIds", []);
   const [stopRequested, setStopRequested] = useCachedState("workbench.stopRequested", false);
   const [autoOpen, setAutoOpen] = useCachedState("workbench.autoOpen", false);
+  const [loginOpen, setLoginOpen] = useCachedState("workbench.loginOpen", false);
   const [modalConcurrency, setModalConcurrency] = useCachedState("workbench.concurrency", 1);
   const [identity, setIdentity] = useCachedState<"system" | "domain" | "remail" | "google" | "microsoft">("workbench.identity", "system");
   const [modalRegisterCount, setModalRegisterCount] = useCachedState("workbench.registerCount", 1);
@@ -1495,6 +1504,49 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       setBusy(false);
       setStopRequested(false);
       stopAfterSubmitRef.current = false;
+      setActiveTaskId("");
+      setActiveTaskMailboxIds([]);
+    }
+  }
+  async function createLoginTask() {
+    if (busy || activeTaskId) { notify("fail", t.registerTaskRunning); return; }
+    const ids = selected;
+    if (!ids.length) { notify("fail", t.chooseMailbox); return; }
+    const requestedCount = ids.length;
+    const availableRows = [...rows, ...Object.values(selectedRowCache)];
+    const taskEmails = ids.map((mailboxId) => String(availableRows.find((row) => Number(row.id) === mailboxId)?.email || "")).filter(Boolean);
+    setBusy(true);
+    setSubmittingTask(true);
+    setStopRequested(false);
+    stopAfterSubmitRef.current = false;
+    setLoginOpen(false);
+    setRegistrationProgress(createRegistrationTaskProgress("", REGISTER_ONLY, taskEmails, false));
+    const sep = batchSeparatorLog(`========= SunnyRegister ${t.loginExistingTitle} · ${formatDateTime(new Date())} =========`);
+    setGlobalLogs((old) => [localLog(`${t.loginExistingTitle} ${requestedCount}`), sep, ...old]);
+    setSelectedLogs((old) => [sep, ...old]);
+    try {
+      const res = await apiFetch("/sunny/tasks/login", { method: "POST", body: JSON.stringify({ mailbox_ids: ids, count: requestedCount, concurrency: Math.max(1, Math.min(Number(modalConcurrency) || 1, requestedCount)), execution_mode: mode, protocol_challenge_strategy: protocolChallengeStrategy, registration_stage: REGISTER_ONLY, setup_login_secret: false }) });
+      notify("ok", t.loginTaskSubmitted);
+      setGlobalLogs((old) => [localLog(t.loginTaskSubmitted), ...old].slice(0, 160));
+      const taskId = String(res.id || res.task_id || "");
+      if (!taskId) throw new Error(t.taskFailed);
+      setRegistrationProgress((old) => old ? { ...old, taskId } : createRegistrationTaskProgress(taskId, REGISTER_ONLY, taskEmails, false));
+      taskEventCursorRef.current = { taskId, last: 0 };
+      setTaskEventCursor(taskEventCursorRef.current);
+      setActiveTaskId(taskId);
+      setActiveTaskMailboxIds(ids);
+      setSubmittingTask(false);
+      void poll(taskId, ids);
+      if (stopAfterSubmitRef.current) {
+        stopAfterSubmitRef.current = false;
+        await requestTaskCancellation(taskId);
+      }
+    } catch (e: any) {
+      setRegistrationProgress((old) => old ? { ...old, accounts: Object.fromEntries(Object.entries(old.accounts).map(([key, value]) => [key, { ...value, state: "abnormal", checkpoint: "failed", error: e.message || String(e), updatedAt: Date.now() }])) } : old);
+      notify("fail", e.message || String(e));
+      setSubmittingTask(false);
+      setBusy(false);
+      setStopRequested(false);
       setActiveTaskId("");
       setActiveTaskMailboxIds([]);
     }
@@ -1794,6 +1846,9 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
           <span title={busy ? t.registerTaskRunning : !selected.length ? t.chooseMailbox : ""}>
             <Button className="rounded-xl bg-blue-600 px-4 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => setAutoOpen(true)} disabled={busy}><Plus className="mr-2 h-4 w-4"/>{t.autoRegister}</Button>
           </span>
+          <span title={busy ? t.registerTaskRunning : !selected.length ? t.chooseMailbox : ""}>
+            <Button className="rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => setLoginOpen(true)} disabled={busy || !selected.length}><KeyRound className="mr-2 h-4 w-4"/>{t.loginExisting}</Button>
+          </span>
           <label className="sr-btn"><Download className="h-4 w-4"/>{t.import}<input type="file" className="hidden" onChange={(e)=>importFile(e.target.files?.[0])}/></label>
           <button className="sr-btn" onClick={exportAccounts} disabled={!rows.length}><Upload className="h-4 w-4"/>{t.export}</button>
         </div>
@@ -1817,7 +1872,30 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       <PaginationBar t={t} total={total} page={safePageNo} pageSize={pageSize} setPage={setPageNo} setPageSize={setPageSize} />
     </Card>
     {autoOpen && <AutoRegisterModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} selectedNeedPhone={selectedRows.some((m)=>m.has_openai_rt !== true)} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} registerCount={modalRegisterCount} setRegisterCount={setModalRegisterCount} identity={identity} setIdentity={setIdentity} mode={mode} setMode={setMode} protocolChallengeStrategy={protocolChallengeStrategy} setProtocolChallengeStrategy={setProtocolChallengeStrategy} stage={stage} setStage={setStage} allTrafficProxyPool={allTrafficProxyPool} setAllTrafficProxyPool={setAllTrafficProxyPool} setupLoginSecret={setupLoginSecret} setSetupLoginSecret={setSetupLoginSecret} onClose={()=>setAutoOpen(false)} onStart={()=>createRegisterTask()} notify={notify} />}
+    {loginOpen && <ExistingLoginModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} mode={mode} setMode={setMode} protocolChallengeStrategy={protocolChallengeStrategy} setProtocolChallengeStrategy={setProtocolChallengeStrategy} onClose={()=>setLoginOpen(false)} onStart={()=>createLoginTask()} />}
   </div>;
+}
+
+function ExistingLoginModal({ t, busy, selectedEmails, concurrency, setConcurrency, mode, setMode, protocolChallengeStrategy, setProtocolChallengeStrategy, onClose, onStart }: { t: typeof zh; busy: boolean; selectedEmails: string[]; concurrency: number; setConcurrency: (v:number)=>void; mode: "protocol"|"background"|"visible"; setMode:(v:"protocol"|"background"|"visible")=>void; protocolChallengeStrategy: ProtocolChallengeStrategy; setProtocolChallengeStrategy:(v:ProtocolChallengeStrategy)=>void; onClose:()=>void; onStart:()=>void }) {
+  const safeConcurrency = Math.max(1, Math.min(Number(concurrency) || 1, Math.max(1, selectedEmails.length)));
+  return <div className="sr-modal-mask"><div className="sr-modal sr-register-modal">
+    <div className="sr-modal-head"><h3>{t.loginExistingTitle}</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div>
+    <div className="sr-modal-body">
+      <p className="text-sm text-[var(--text-secondary)]">{t.loginExistingDesc}</p>
+      <div className="sr-choice-grid three mt-5">
+        <Choice active={mode === "protocol"} title={t.protocolMode} desc={t.protocolDesc} onClick={()=>setMode("protocol")} />
+        <Choice active={mode === "background"} title={t.backgroundMode} desc={t.backgroundDesc} onClick={()=>setMode("background")} />
+        <Choice active={mode === "visible"} title={t.visibleMode} desc={t.visibleDesc} onClick={()=>setMode("visible")} />
+      </div>
+      {mode === "protocol" ? <div className="sr-protocol-strategy mt-4" role="group" aria-label={t.protocolChallengeStrategy}>
+        <span>{t.protocolChallengeStrategy}</span>
+        <button type="button" className={cn(protocolChallengeStrategy === "native_headless" && "active")} onClick={()=>setProtocolChallengeStrategy("native_headless")}>{t.protocolNativeChallenge}</button>
+        <button type="button" className={cn(protocolChallengeStrategy === "sentinel_protocol" && "active")} onClick={()=>setProtocolChallengeStrategy("sentinel_protocol")}>{t.protocolSentinelChallenge}</button>
+      </div> : null}
+      <div className="sr-summary sr-register-summary mt-5"><div><b>{t.registerAccounts}</b><span>{selectedEmails.length}</span></div><div><b>{t.concurrency}</b><input className="sr-concurrency-input" type="number" min={1} max={Math.max(1, selectedEmails.length)} value={safeConcurrency} onChange={(e)=>setConcurrency(Math.max(1, Math.min(Number(e.target.value || 1), Math.max(1, selectedEmails.length))))}/></div><div className="sr-register-account-list">{selectedEmails.map((email)=><div key={email}>{email}</div>)}</div></div>
+      <div className="sr-register-actions mt-5"><button className="sr-register-cancel" onClick={onClose}>{t.cancel}</button><Button className="h-12 flex-1 rounded-xl bg-emerald-600 text-lg text-white hover:bg-emerald-700" disabled={busy || !selectedEmails.length} onClick={onStart}><KeyRound className="mr-2 h-5 w-5"/>{t.loginExisting}</Button></div>
+    </div>
+  </div></div>;
 }
 
 function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurrency, setConcurrency, registerCount, setRegisterCount, identity, setIdentity, mode, setMode, protocolChallengeStrategy, setProtocolChallengeStrategy, stage, setStage, allTrafficProxyPool, setAllTrafficProxyPool, setupLoginSecret, setSetupLoginSecret, onClose, onStart, notify }: { t: typeof zh; busy: boolean; selectedEmails: string[]; selectedNeedPhone: boolean; concurrency: number; setConcurrency: (v:number)=>void; registerCount: number; setRegisterCount: (v:number)=>void; identity: "system"|"domain"|"remail"|"google"|"microsoft"; setIdentity: (v:"system"|"domain"|"remail"|"google"|"microsoft")=>void; mode: "protocol"|"background"|"visible"; setMode:(v:"protocol"|"background"|"visible")=>void; protocolChallengeStrategy: ProtocolChallengeStrategy; setProtocolChallengeStrategy:(v:ProtocolChallengeStrategy)=>void; stage: RegisterStage; setStage:(v:RegisterStage)=>void; allTrafficProxyPool: boolean; setAllTrafficProxyPool: (v:boolean)=>void; setupLoginSecret: boolean; setSetupLoginSecret: (v:boolean)=>void; onClose:()=>void; onStart:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
