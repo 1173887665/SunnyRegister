@@ -1954,6 +1954,15 @@ function mailboxLineErrors(lines: string, mailboxType: "microsoft" | "apple" | "
   return errors;
 }
 
+function mailboxInvalidLineIndexes(lines: string, mailboxType: "microsoft" | "apple" | "remail" | "domain", mailboxChannel = "xbovo") {
+  const invalid = new Set<number>();
+  mailboxLineErrors(lines, mailboxType, mailboxChannel).forEach((message) => {
+    const match = /^Line (\d+)/.exec(message);
+    if (match) invalid.add(Number(match[1]) - 1);
+  });
+  return invalid;
+}
+
 function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", text: string) => void }) {
 	const emptyMailboxDescription = t === zh
 		? "请点击右上角“导入邮箱”添加微软邮箱或 Apple iCloud 邮箱。"
@@ -2672,9 +2681,12 @@ function MailboxImportModal({ t, groups, onGroupsChanged, onClose, onImported, n
   async function submit() {
     const trimmed = lines.trim();
     if (!trimmed) { notify("fail", t.fillOrChooseMailboxFile); return; }
-    if (errors.length) { notify("fail", `${t.validationFailed}: ${errors[0]}`); return; }
+    const sourceLines = lines.split(/\r?\n/);
+    const invalidIndexes = mailboxInvalidLineIndexes(lines, mailboxType, mailboxChannel);
+    const validLines = sourceLines.filter((line, index) => line.trim() && !invalidIndexes.has(index));
+    if (!validLines.length) { notify("fail", `${t.validationFailed}: ${errors[0] || t.fillOrChooseMailboxFile}`); return; }
     try {
-      await apiFetch("/sunny/mailboxes/import",{method:"POST",body:JSON.stringify({lines:trimmed,group_id:groupId,import_mode:mode,mailbox_type:mailboxType,mailbox_channel:mailboxType==="apple"?mailboxChannel:mailboxType==="domain"?"domain_api":mailboxType==="remail"?"remail_api":"outlook"})});
+      await apiFetch("/sunny/mailboxes/import",{method:"POST",body:JSON.stringify({lines:validLines.join("\n"),group_id:groupId,import_mode:mode,mailbox_type:mailboxType,mailbox_channel:mailboxType==="apple"?mailboxChannel:mailboxType==="domain"?"domain_api":mailboxType==="remail"?"remail_api":"outlook"})});
       onImported();
     } catch(e:any) { notify("fail", e.message || String(e)); }
   }
@@ -2698,7 +2710,7 @@ function MailboxImportModal({ t, groups, onGroupsChanged, onClose, onImported, n
       </label> : <Textarea className="min-h-56 rounded-2xl" value={lines} onChange={(e)=>setLines(e.target.value)} placeholder={mailboxType==="domain" ? 'email----{"base_url":"https://mail.example.com","auth_token":"..."}' : mailboxType==="remail" ? "email----serviceToken / 凭证" : mailboxType==="apple" ? (mailboxChannel==="url_api" ? "email----ChatGPT密码----https://收码URL----2FA密钥（后3段均可选）" : "icloud_email----key") : "email----password----client_id----refresh_token"} />}
       {lines ? <div className={cn("sr-validation", errors.length ? "bad" : "ok")}><b>{errors.length ? t.validationFailed : t.validationOk}</b><span>{validCount} valid / {errors.length} error</span>{errors.slice(0,4).map((e)=><div key={e}>{e}</div>)}</div> : null}
     </div>
-    <div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={!lines.trim() || errors.length>0 || !groupId} onClick={submit}>{t.import}</Button></div>
+    <div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={!lines.trim() || !groupId} onClick={submit}>{t.import}</Button></div>
   </div></div>;
 }
 
