@@ -2240,33 +2240,26 @@ def approve_checkout(
     return payload
 
 
-def approve_checkout_with_retry(
+def approve_gopay_checkout_or_rebuild(
     *args,
-    max_retries: int = 9,
     log=lambda _message: None,
     **kwargs,
 ) -> dict:
-    """Retry transient approval blocks without creating a second Checkout.
-
-    The approval endpoint occasionally returns ``blocked`` while the Stripe
-    submission is already in ``requires_approval``.  Reusing the same CS Live
-    session and payment method is safe here; rebuilding the Checkout would
-    lose the attached GoPay submission.  Keep the retry budget bounded so a
-    malformed request cannot create an unbounded approval loop.
-    """
-    attempts = max(1, min(10, int(max_retries or 0) + 1))
-    last_error: RuntimeError | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            return approve_checkout(*args, log=log, **kwargs)
-        except RuntimeError as exc:
-            last_error = exc
-            if "blocked" not in str(exc).lower() or attempt >= attempts:
-                raise
-            log(f"GoPay approval 返回 blocked，将复用当前 CS Live 重试 ({attempt + 1}/{attempts})")
-            time.sleep(min(1.5, 0.35 * attempt))
-    assert last_error is not None
-    raise last_error
+    """Submit one GoPay approval and invalidate this Checkout when blocked."""
+    session_id = str(args[1] if len(args) > 1 else kwargs.get("session_id") or "")
+    try:
+        return approve_checkout(*args, log=log, **kwargs)
+    except RuntimeError as exc:
+        if "blocked" not in str(exc).lower():
+            raise
+        log(
+            f"GoPay approval 返回 blocked；当前 {session_id or 'CS Live'} 已失效，"
+            "停止复用并重建完整支付提链"
+        )
+        raise RuntimeError(
+            "GOPAY_APPROVAL_BLOCKED_REBUILD_REQUIRED: 当前 GoPay CS Live approval 被 blocked；"
+            "必须重新创建 Checkout、应用优惠并生成新的 cs_live_*"
+        ) from exc
 
 
 def _proxy_transport_error_kind(message: str) -> str:
@@ -2963,6 +2956,14 @@ class JobStore:
             if non_retryable or attempt >= max_attempts:
                 self.update(job_id, status="error", percent=100, text="任务失败", error=last_error[:1200])
                 return
+            if (
+                options.get("link_type") == "gopay"
+                and "gopay_approval_blocked_rebuild_required" in lowered
+            ):
+                self.log(
+                    job_id,
+                    "GoPay 当前 CS Live 已因 blocked 作废；下一轮将从创建 Checkout 开始生成新的 cs_live_*",
+                )
             self.log(job_id, f"第 {attempt}/{max_attempts} 轮未命中：{last_error[:260] or '上游未返回可用链接'}")
             if options.get("link_type") == "pix":
                 self.log(job_id, "正在更换代理与 PIX 资料后重新尝试")
@@ -4935,7 +4936,7 @@ class JobStore:
                 self.ensure_not_cancelled(job_id)
                 advance_progress(90, "正在确认支付请求")
                 self.log(job_id, "提交 Checkout approval")
-                approval_fn = approve_checkout_with_retry if provider == "gopay" else approve_checkout
+                approval_fn = approve_gopay_checkout_or_rebuild if provider == "gopay" else approve_checkout
                 approval_kwargs = {
                     "http": provider_chatgpt_http,
                     "log": provider_log,
@@ -4946,17 +4947,31 @@ class JobStore:
                     # confirmed successfully.
                     "allow_sentinel_fallback": provider in {"paypal", "gopay"},
                 }
-                if provider == "gopay":
-                    approval_kwargs["max_retries"] = int(options.get("gopay_approval_retries") or 9)
-                approval_fn(
-                    token,
-                    session_id,
-                    processor,
-                    checkout_proxy,
-                    device_id,
-                    did,
-                    **approval_kwargs,
-                )
+                try:
+                    approval_fn(
+                        token,
+                        session_id,
+                        processor,
+                        checkout_proxy,
+                        device_id,
+                        did,
+                        **approval_kwargs,
+                    )
+                except RuntimeError as exc:
+                    if "GOPAY_APPROVAL_BLOCKED_REBUILD_REQUIRED" in str(exc):
+                        closed: set[int] = set()
+                        for client in (provider_chatgpt_http, promo_chatgpt_http, stripe_http):
+                            if client is None or id(client) in closed:
+                                continue
+                            closed.add(id(client))
+                            close = getattr(client, "close", None)
+                            if callable(close):
+                                try:
+                                    close()
+                                except Exception:
+                                    pass
+                        self.log(job_id, "已关闭本轮 GoPay HTTP 会话；该 CS Live 不会再次复用")
+                    raise
                 self.ensure_not_cancelled(job_id)
 
             def apply_promo_cb(processor: str):

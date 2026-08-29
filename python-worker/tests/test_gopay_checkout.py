@@ -146,31 +146,22 @@ def test_gopay_confirm_does_not_retry_non_blocked_errors() -> None:
     assert confirm.call_count == 1
 
 
-def test_gopay_approval_retries_blocked_results_on_same_checkout() -> None:
-    responses = [
-        RuntimeError("manual_approval approve blocked: result=blocked"),
-        RuntimeError("manual_approval approve blocked: result=blocked"),
-        {"result": "approved"},
-    ]
-    calls: list[tuple[tuple, dict]] = []
+def test_gopay_approval_blocked_invalidates_current_checkout() -> None:
+    logs: list[str] = []
+    with patch.object(
+        checkout_app,
+        "approve_checkout",
+        side_effect=RuntimeError("manual_approval approve blocked: result=blocked"),
+    ) as approve:
+        with pytest.raises(RuntimeError, match="GOPAY_APPROVAL_BLOCKED_REBUILD_REQUIRED"):
+            checkout_app.approve_gopay_checkout_or_rebuild(
+                "token", "cs_live_test", "openai_ie", "http://proxy", "device", "did",
+                log=logs.append, allow_sentinel_fallback=True,
+            )
 
-    def fake_approve(*args, **kwargs):
-        calls.append((args, kwargs))
-        response = responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
-
-    with patch.object(checkout_app, "approve_checkout", side_effect=fake_approve):
-        result = checkout_app.approve_checkout_with_retry(
-            "token", "cs_live_test", "openai_ie", "http://proxy", "device", "did",
-            max_retries=2, log=lambda _message: None, allow_sentinel_fallback=True,
-        )
-
-    assert result == {"result": "approved"}
-    assert len(calls) == 3
-    assert all(call[0][1] == "cs_live_test" for call in calls)
-    assert all(call[1]["allow_sentinel_fallback"] is True for call in calls)
+    approve.assert_called_once()
+    assert approve.call_args.kwargs["allow_sentinel_fallback"] is True
+    assert any("停止复用并重建完整支付提链" in message for message in logs)
 
 
 def test_gopay_approval_does_not_retry_non_blocked_errors() -> None:
@@ -180,9 +171,9 @@ def test_gopay_approval_does_not_retry_non_blocked_errors() -> None:
         side_effect=RuntimeError("Checkout approve HTTP 400"),
     ) as approve:
         try:
-            checkout_app.approve_checkout_with_retry(
+            checkout_app.approve_gopay_checkout_or_rebuild(
                 "token", "cs_live_test", "openai_ie", "http://proxy", "device", "did",
-                max_retries=5, log=lambda _message: None,
+                log=lambda _message: None,
             )
         except RuntimeError as exc:
             assert "HTTP 400" in str(exc)
@@ -191,18 +182,15 @@ def test_gopay_approval_does_not_retry_non_blocked_errors() -> None:
     assert approve.call_count == 1
 
 
-def test_gopay_approval_default_budget_is_ten_total_attempts() -> None:
-    responses = [RuntimeError("manual_approval approve blocked: result=blocked") for _ in range(9)]
-    responses.append({"result": "approved"})
-
-    with patch.object(checkout_app, "approve_checkout", side_effect=responses) as approve:
-        result = checkout_app.approve_checkout_with_retry(
+def test_gopay_approval_success_returns_after_one_submission() -> None:
+    with patch.object(checkout_app, "approve_checkout", return_value={"result": "approved"}) as approve:
+        result = checkout_app.approve_gopay_checkout_or_rebuild(
             "token", "cs_live_test", "openai_ie", "http://proxy", "device", "did",
             log=lambda _message: None,
         )
 
     assert result == {"result": "approved"}
-    assert approve.call_count == 10
+    approve.assert_called_once()
 
 
 def test_gopay_checkout_preserves_method_from_creation_response() -> None:
@@ -344,15 +332,17 @@ def test_gopay_cs_live_creation_defaults_to_ten_rebuilds() -> None:
     assert create.call_count == 10
 
 
-def test_gopay_attempts_keep_redirect_mode_before_applying_promo() -> None:
+def test_gopay_blocked_approval_rebuilds_full_attempt_with_new_route() -> None:
     store = object.__new__(checkout_app.JobStore)
     state = {"status": "running", "error": "", "result": None}
     calls = 0
     strategies: list[tuple[bool, str]] = []
+    routes: list[tuple[str, str]] = []
+    logs: list[str] = []
     store.cancelled = lambda _job_id: False
     store.get = lambda _job_id: dict(state)
     store.update = lambda _job_id, **fields: state.update(fields)
-    store.log = lambda _job_id, _message: None
+    store.log = lambda _job_id, message: logs.append(message)
     store._record_success = lambda _job_id, _result: None
 
     def run_single(_job_id: str, attempt_options: dict) -> None:
@@ -362,10 +352,17 @@ def test_gopay_attempts_keep_redirect_mode_before_applying_promo() -> None:
             bool(attempt_options["promo_on_create"]),
             str(attempt_options["checkout_ui_mode"]),
         ))
+        routes.append((
+            str(attempt_options["fixed_entry_proxy"]),
+            str(attempt_options["fixed_exit_proxy"]),
+        ))
         if calls >= 2:
             state.update(status="done", result={})
         else:
-            state.update(status="error", error="GOPAY_METHOD_UNAVAILABLE")
+            state.update(
+                status="error",
+                error="GOPAY_APPROVAL_BLOCKED_REBUILD_REQUIRED: rebuild current checkout",
+            )
 
     store._run_single = run_single
     store._run_locked("job-gopay", {
@@ -374,12 +371,18 @@ def test_gopay_attempts_keep_redirect_mode_before_applying_promo() -> None:
         "use_promo": True,
         "country": "ID",
         "checkout_country": "ID",
-        "entry_proxies": ["http://promotion:8001"],
-        "exit_proxies": ["http://checkout:9001"],
+        "entry_proxies": ["http://promotion-1:8001", "http://promotion-2:8002"],
+        "exit_proxies": ["http://checkout-1:9001", "http://checkout-2:9002"],
         "paired_proxy_rotation": True,
     })
 
     assert strategies == [(False, "redirect"), (False, "redirect")]
+    assert routes == [
+        ("http://promotion-1:8001", "http://checkout-1:9001"),
+        ("http://promotion-2:8002", "http://checkout-2:9002"),
+    ]
+    assert any("下一轮将从创建 Checkout 开始" in message for message in logs)
+    assert any("正在更换代理后重新尝试" in message for message in logs)
 
 
 def test_gopay_defaults_use_indonesia_billing() -> None:
