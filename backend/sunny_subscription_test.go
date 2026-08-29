@@ -85,6 +85,89 @@ func TestSunnySubscriptionTaskUpdatesMailboxAndAccountPlan(t *testing.T) {
 	}
 }
 
+func TestUpdateSunnySubscriptionPlanUsesStableRecordIDs(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	var account SunnyAccount
+	if err := s.db.First(&account, session.AccountID).Error; err != nil {
+		t.Fatalf("load account: %v", err)
+	}
+	duplicate := SunnyAccount{MailboxID: account.MailboxID, Email: "rebound@example.com", AccountType: "free", Status: "registered"}
+	if err := s.db.Create(&duplicate).Error; err != nil {
+		t.Fatalf("create duplicate-shaped account: %v", err)
+	}
+	candidate := sunnySubscriptionCandidate{
+		SessionID: session.ID, AccountID: account.ID, MailboxID: account.MailboxID, Email: "rebound@example.com",
+	}
+	if err := s.updateSunnySubscriptionPlan(candidate, "plus"); err != nil {
+		t.Fatalf("update subscription plan: %v", err)
+	}
+	var updated, untouched SunnyAccount
+	s.db.First(&updated, account.ID)
+	s.db.First(&untouched, duplicate.ID)
+	if updated.AccountType != "plus" || untouched.AccountType != "free" {
+		t.Fatalf("stable account mapping not respected: updated=%q duplicate=%q", updated.AccountType, untouched.AccountType)
+	}
+	var mailbox SunnyMailbox
+	s.db.First(&mailbox, account.MailboxID)
+	if mailbox.AccountType != "plus" {
+		t.Fatalf("stable mailbox plan=%q, want plus", mailbox.AccountType)
+	}
+}
+
+func TestReconcileSunnyRebindIdentityDuplicatesKeepsOriginalAndFreshToken(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	encode := func(value string) string { return base64.RawURLEncoding.EncodeToString([]byte(value)) }
+	oldToken := encode(`{"alg":"none"}`) + "." + encode(`{"exp":100,"https://api.openai.com/auth":{"chatgpt_plan_type":"free"}}`) + ".signature"
+	freshToken := encode(`{"alg":"none"}`) + "." + encode(`{"exp":4102444800,"https://api.openai.com/auth":{"chatgpt_plan_type":"plus"}}`) + ".signature"
+	var mailbox SunnyMailbox
+	if err := s.db.Where("email = ?", "session@example.com").First(&mailbox).Error; err != nil {
+		t.Fatalf("load mailbox: %v", err)
+	}
+	if err := s.db.Model(&mailbox).Updates(map[string]any{"rebind_email": "rebound@example.com", "account_type": "free"}).Error; err != nil {
+		t.Fatalf("prepare mailbox: %v", err)
+	}
+	var original SunnyAccount
+	if err := s.db.Where("email = ?", mailbox.Email).First(&original).Error; err != nil {
+		t.Fatalf("load original account: %v", err)
+	}
+	if err := s.db.Model(&original).Updates(map[string]any{"access_token": oldToken, "account_type": "free"}).Error; err != nil {
+		t.Fatalf("prepare original account: %v", err)
+	}
+	if err := s.db.Model(&SunnySession{}).Where("account_id = ?", original.ID).Updates(map[string]any{"access_token": oldToken, "session_json": dumpJSON(map[string]any{"accessToken": oldToken})}).Error; err != nil {
+		t.Fatalf("prepare original session: %v", err)
+	}
+	duplicate := SunnyAccount{MailboxID: mailbox.ID, Email: mailbox.RebindEmail, AccountType: "free", AccessToken: freshToken, Status: "registered"}
+	if err := s.db.Create(&duplicate).Error; err != nil {
+		t.Fatalf("create duplicate account: %v", err)
+	}
+	duplicateSession := SunnySession{AccountID: duplicate.ID, Email: mailbox.RebindEmail, AccessToken: freshToken, SessionJSON: dumpJSON(map[string]any{"accessToken": freshToken})}
+	if err := s.db.Create(&duplicateSession).Error; err != nil {
+		t.Fatalf("create duplicate session: %v", err)
+	}
+
+	reconcileSunnyRebindIdentityDuplicates(s.db)
+
+	var accounts []SunnyAccount
+	var sessions []SunnySession
+	s.db.Order("id asc").Find(&accounts)
+	s.db.Order("id asc").Find(&sessions)
+	if len(accounts) != 1 || accounts[0].ID != original.ID || accounts[0].AccessToken != freshToken || accounts[0].AccountType != "plus" {
+		t.Fatalf("unexpected reconciled accounts: %#v", accounts)
+	}
+	if len(sessions) != 1 || sessions[0].AccountID != original.ID || sessions[0].Email != mailbox.Email || sessions[0].AccessToken != freshToken {
+		t.Fatalf("unexpected reconciled sessions: %#v", sessions)
+	}
+	var updatedMailbox SunnyMailbox
+	s.db.First(&updatedMailbox, mailbox.ID)
+	if updatedMailbox.AccountType != "plus" {
+		t.Fatalf("mailbox plan=%q, want plus", updatedMailbox.AccountType)
+	}
+}
+
 func TestSunnySubscriptionTaskPersistsCompletedAccountBeforeBatchFinishes(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	if err := s.db.Model(&SunnyMailbox{}).Where("email = ?", "session@example.com").Update("account_type", "free").Error; err != nil {

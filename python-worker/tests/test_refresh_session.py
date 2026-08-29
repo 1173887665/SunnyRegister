@@ -356,6 +356,67 @@ class AccountDeactivatedPersistenceTests(unittest.TestCase):
         db.close()
 
 
+class AuthenticatedSessionPersistenceTests(unittest.TestCase):
+    def test_rebound_login_updates_stable_rows_with_api_session_token(self):
+        db = SunnyDB.__new__(SunnyDB)
+        db.task_id = "test"
+        db.postgres = False
+        db.conn = sqlite3.connect(":memory:")
+        db.conn.row_factory = sqlite3.Row
+        db.conn.execute(
+            """create table sunny_mailboxes(
+                id integer primary key,email text,rebind_email text
+            )"""
+        )
+        db.conn.execute(
+            """create table sunny_accounts(
+                id integer primary key,mailbox_id integer,email text,status text,access_token text,
+                openai_rt text,last_error text,status_changed_at text,created_at text,updated_at text
+            )"""
+        )
+        db.conn.execute(
+            """create table sunny_sessions(
+                id integer primary key,account_id integer,email text,access_token text,refresh_token text,
+                id_token text,session_json text,storage_state_json text,raw_mailbox_line text,
+                access_token_status text,access_token_error text,access_token_checked_at text,
+                expires_at text,last_refresh_at text,created_at text,updated_at text
+            )"""
+        )
+        db.conn.execute("insert into sunny_mailboxes values(11,'original@example.com','rebound@example.com')")
+        db.conn.execute(
+            "insert into sunny_accounts values(7,11,'original@example.com','registered','old-free-at','','',null,null,null)"
+        )
+        db.conn.execute(
+            "insert into sunny_sessions values(17,7,'original@example.com','old-free-at','','','','','',"
+            "'invalid','',null,null,null,null,null)"
+        )
+        db.conn.execute(
+            "insert into sunny_accounts values(8,11,'rebound@example.com','registered','duplicate-at','','',null,null,null)"
+        )
+        db.conn.execute(
+            "insert into sunny_sessions values(18,8,'rebound@example.com','duplicate-at','','','','','',"
+            "'valid','',null,null,null,null,null)"
+        )
+        db.conn.commit()
+
+        session = {
+            "access_token": "stale-carried-at",
+            "session_json": {"accessToken": "fresh-plus-at"},
+            "storage_state_json": {},
+        }
+        account_id = db.persist_authenticated_session("original@example.com", 11, session)
+
+        self.assertEqual(account_id, 7)
+        self.assertEqual(session["access_token"], "fresh-plus-at")
+        account = db.conn.execute("select * from sunny_accounts where id=7").fetchone()
+        saved_session = db.conn.execute("select * from sunny_sessions where id=17").fetchone()
+        self.assertEqual(account["access_token"], "fresh-plus-at")
+        self.assertEqual(saved_session["access_token"], "fresh-plus-at")
+        self.assertEqual(db.conn.execute("select count(*) from sunny_accounts").fetchone()[0], 1)
+        self.assertEqual(db.conn.execute("select count(*) from sunny_sessions").fetchone()[0], 1)
+        db.close()
+
+
 class AcquireRefreshTokenTests(unittest.TestCase):
     def test_existing_refresh_token_returns_without_login(self):
         db = FakeRefreshDB(refresh_token="rt_existing")

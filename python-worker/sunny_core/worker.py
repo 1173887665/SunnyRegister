@@ -1536,7 +1536,7 @@ def _persist_registration_checkpoint(
     original_status: str,
 ) -> None:
     mailbox_id = max(0, int(mailbox.get("id") or 0))
-    email = str(mailbox.get("email") or account.email or "")
+    email = str(mailbox.get("_original_email_for_auth") or mailbox.get("email") or account.email or "")
     if mailbox_id <= 0 or not email:
         return
     candidate = "已接码" if checkpoint == "phone_bound" else "已注册"
@@ -1609,6 +1609,7 @@ def _run_one_impl(
 ) -> tuple[bool, dict[str, Any] | str]:
     db.ensure_not_cancelled()
     email = mailbox.get("email") or f"mailbox-{index}"
+    identity_email = str(mailbox.get("_original_email_for_auth") or email)
     mailbox_id = max(0, int(mailbox.get("id") or 0))
     current_mailbox_status = db.mailbox_status(mailbox_id) if mailbox_id else str(mailbox.get("status") or "")
     if not mailbox_id and email:
@@ -1635,10 +1636,10 @@ def _run_one_impl(
         completed_status = mailbox_status if _MAILBOX_PROGRESS_RANK.get(mailbox_status, -1) > 0 else ""
         if completed_status:
             db.mark_mailbox(mailbox_id, completed_status, err_text)
-            db.upsert_account(str(email), mailbox_id=mailbox_id, status=_account_status_for_mailbox(completed_status), last_error=err_text)
+            db.upsert_account(identity_email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(completed_status), last_error=err_text)
         else:
             db.mark_mailbox(mailbox_id, "失败", err_text)
-            db.upsert_account(str(email), mailbox_id=mailbox_id, status="failed", last_error=err_text)
+            db.upsert_account(identity_email, mailbox_id=mailbox_id, status="failed", last_error=err_text)
             if str(payload.get("identity") or "").strip().lower() in {"domain", "domain_mailbox", "自建域名邮箱"}:
                 try:
                     cleanup_failed_mailbox(db, db.get_config("domain_mailbox"), str(email), str(mailbox.get("pickup_token_hash") or ""), db.event)
@@ -1716,7 +1717,7 @@ def _run_one_impl(
     original_mailbox_status = str(mailbox.get("status") or ("已注册" if is_registered_mailbox else "未注册"))
     original_completed_status = original_mailbox_status if _MAILBOX_PROGRESS_RANK.get(original_mailbox_status, -1) > 0 else ""
     db.upsert_account(
-        str(email),
+        identity_email,
         mailbox_id=mailbox_id,
         status=_account_status_for_mailbox(original_completed_status) if original_completed_status else "pending",
         metadata_json=json.dumps(
@@ -2053,7 +2054,7 @@ def _run_one_impl(
                 post_registration_callback=setup_login_secret_in_browser if setup_login_secret_enabled else None,
             )
         db.ensure_not_cancelled()
-        _persist_authenticated_login(db, str(email), mailbox_id, session, account.raw)
+        _persist_authenticated_login(db, identity_email, mailbox_id, session, account.raw)
         persisted_access_token = str(session.get("access_token") or "").strip()
         persisted_refresh_token = str(session.get("refresh_token") or session.get("openai_rt") or "").strip()
         persisted_id_token = str(session.get("id_token") or "").strip()
@@ -2214,7 +2215,7 @@ def _run_one_impl(
         candidate_status = "已接码" if phone_bound else "已注册"
         mailbox_status = _highest_mailbox_progress(original_mailbox_status, candidate_status)
         account_id = db.upsert_account(
-            email,
+            identity_email,
             mailbox_id=mailbox_id,
             status=_account_status_for_mailbox(mailbox_status),
             account_type=session.get("plan_type") or account.account_type,
@@ -2239,8 +2240,8 @@ def _run_one_impl(
             }
             if current_refresh_token:
                 account_fields["openai_rt"] = current_refresh_token
-            account_id = db.upsert_account(email, **account_fields)
-            db.upsert_session(email, account_id, session, account.raw)
+            account_id = db.upsert_account(identity_email, **account_fields)
+            db.upsert_session(identity_email, account_id, session, account.raw)
         action = str(session.get("auth_action") or "login")
         action_label = "注册" if action == "register" else "登录"
         db.mark_mailbox(mailbox_id, mailbox_status, openai_rt=rt_value)
@@ -2279,7 +2280,7 @@ def _run_one_impl(
                 result["sub2api_skipped_reason"] = "没有 Refresh Token，已停止导入反代平台"
                 result["stage_complete"] = False
                 result.setdefault("stage_error", post_registration_error or result["sub2api_skipped_reason"])
-                db.upsert_account(email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(mailbox_status), last_error=result["stage_error"])
+                db.upsert_account(identity_email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(mailbox_status), last_error=result["stage_error"])
                 db.mark_mailbox(mailbox_id, mailbox_status, result["stage_error"], openai_rt=rt_value)
                 db.event(
                     f"[{email}] [反代] 没有 Refresh Token，已停止导入 sub2api；OAuth 原因：{result['stage_error']}",
@@ -2292,7 +2293,7 @@ def _run_one_impl(
                     result["sub2api"] = _import_sub2api(db, email, account_id, session, proxy_url=auxiliary_proxy)
                     mailbox_status = _highest_mailbox_progress(mailbox_status, "已反代")
                     db.mark_mailbox(mailbox_id, mailbox_status, openai_rt=rt_value)
-                    db.upsert_account(email, mailbox_id=mailbox_id, status="reverse_proxied", last_error="")
+                    db.upsert_account(identity_email, mailbox_id=mailbox_id, status="reverse_proxied", last_error="")
                     result["completed_status"] = mailbox_status
                     result["stage_complete"] = True
                     _emit_registration_progress(db, str(email), stage, "reverse_imported", setup_login_secret=setup_login_secret_enabled)
@@ -2318,7 +2319,7 @@ def _run_one_impl(
                 result["sub2api"] = import_result
                 mailbox_status = _highest_mailbox_progress(mailbox_status, "已反代")
                 db.mark_mailbox(mailbox_id, mailbox_status, openai_rt=rt_value)
-                db.upsert_account(email, mailbox_id=mailbox_id, status="reverse_proxied", last_error="")
+                db.upsert_account(identity_email, mailbox_id=mailbox_id, status="reverse_proxied", last_error="")
                 result["completed_status"] = mailbox_status
                 result["stage_complete"] = True
                 result["agent_identity"] = import_mode == "agent_identity"
@@ -2333,7 +2334,7 @@ def _run_one_impl(
                 result["sub2api_error"] = stage_error
                 db.set_account_sub2api_status(email, "failed", error=stage_error)
                 db.mark_mailbox(mailbox_id, mailbox_status, stage_error, openai_rt=rt_value)
-                db.upsert_account(email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(mailbox_status), last_error=stage_error)
+                db.upsert_account(identity_email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(mailbox_status), last_error=stage_error)
                 db.event(
                     f"[{email}] [反代] 绕过接码导入反代平台未完成，账号保留为{mailbox_status}: {stage_error}",
                     "error",
@@ -2342,7 +2343,7 @@ def _run_one_impl(
         elif wants_rt and not result["stage_complete"]:
             stage_error = post_registration_error or phone_skipped_reason or "接码/Refresh Token 阶段未完成"
             result["stage_error"] = stage_error
-            db.upsert_account(email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(mailbox_status), last_error=stage_error)
+            db.upsert_account(identity_email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(mailbox_status), last_error=stage_error)
             db.mark_mailbox(mailbox_id, mailbox_status, stage_error, openai_rt=rt_value)
             db.event(f"[{email}] [接码] 后续接码阶段未完成，账号保留为{mailbox_status}: {stage_error}", "warning", detail={"email": email, "scope": "selected", "completed_status": mailbox_status})
         if login_secret_result is not None:
@@ -2419,11 +2420,11 @@ def _run_one_impl(
             db.event(f"[{email}] [接码] 账号需要手机号二次验证，但当前没有可用接码配置，本账号流程已停止", "warning", detail={"email": email, "scope": "selected"})
         elif original_completed_status:
             db.mark_mailbox(mailbox_id, original_completed_status, err_text)
-            db.upsert_account(email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(original_completed_status), last_error=err_text)
+            db.upsert_account(identity_email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(original_completed_status), last_error=err_text)
             db.event(f"[{email}] [系统] 后续操作失败，账号保留在已完成状态：{original_completed_status}", "warning", detail={"email": email, "scope": "selected", "completed_status": original_completed_status})
         else:
             db.mark_mailbox(mailbox_id, "失败", err_text)
-            db.upsert_account(email, mailbox_id=mailbox_id, status="failed", last_error=err_text)
+            db.upsert_account(identity_email, mailbox_id=mailbox_id, status="failed", last_error=err_text)
             if str(payload.get("identity") or "").strip().lower() in {"domain", "domain_mailbox", "自建域名邮箱"}:
                 try:
                     cleanup_failed_mailbox(db, db.get_config("domain_mailbox"), str(email), str(mailbox.get("pickup_token_hash") or ""), db.event)

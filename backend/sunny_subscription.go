@@ -41,6 +41,7 @@ var sunnySubscriptionBodyMarkers = []string{
 type sunnySubscriptionCandidate struct {
 	SessionID    uint
 	AccountID    uint
+	MailboxID    uint
 	Email        string
 	MailEmail    string
 	MailboxType  string
@@ -83,17 +84,29 @@ func sunnySubscriptionPlanTypeFromAccessToken(accessToken string) string {
 	))
 }
 
-func (s *Server) updateSunnySubscriptionPlan(email, planType string) error {
+func (s *Server) updateSunnySubscriptionPlan(candidate sunnySubscriptionCandidate, planType string) error {
 	plan := normalizeSunnyPlanType(planType)
 	if plan == "" {
 		plan = "free"
 	}
 	now := time.Now()
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&SunnyMailbox{}).Where("email = ?", email).Updates(map[string]any{"account_type": plan, "updated_at": now}).Error; err != nil {
+		mailboxQuery := tx.Model(&SunnyMailbox{})
+		if candidate.MailboxID != 0 {
+			mailboxQuery = mailboxQuery.Where("id = ?", candidate.MailboxID)
+		} else {
+			mailboxQuery = mailboxQuery.Where("email = ? OR rebind_email = ?", candidate.Email, candidate.Email)
+		}
+		if err := mailboxQuery.Updates(map[string]any{"account_type": plan, "updated_at": now}).Error; err != nil {
 			return err
 		}
-		return tx.Model(&SunnyAccount{}).Where("email = ?", email).Updates(map[string]any{"account_type": plan, "updated_at": now}).Error
+		accountQuery := tx.Model(&SunnyAccount{})
+		if candidate.AccountID != 0 {
+			accountQuery = accountQuery.Where("id = ?", candidate.AccountID)
+		} else {
+			accountQuery = accountQuery.Where("email = ? OR rebind_email = ?", candidate.Email, candidate.Email)
+		}
+		return accountQuery.Updates(map[string]any{"account_type": plan, "updated_at": now}).Error
 	})
 }
 
@@ -223,39 +236,68 @@ func (s *Server) sunnySubscriptionCandidates(ids []uint) ([]sunnySubscriptionCan
 		return nil, err
 	}
 	emails := make([]string, 0, len(sessions))
+	accountIDs := make([]uint, 0, len(sessions))
 	for _, session := range sessions {
 		emails = append(emails, session.Email)
+		if session.AccountID != 0 {
+			accountIDs = append(accountIDs, session.AccountID)
+		}
+	}
+	var accounts []SunnyAccount
+	accountQuery := s.db.Select("id", "mailbox_id", "email", "access_token")
+	if len(accountIDs) > 0 {
+		accountQuery = accountQuery.Where("id IN ? OR email IN ?", accountIDs, emails)
+	} else {
+		accountQuery = accountQuery.Where("email IN ?", emails)
+	}
+	if err := accountQuery.Find(&accounts).Error; err != nil {
+		return nil, err
+	}
+	accountByID := map[uint]SunnyAccount{}
+	accountByEmail := map[string]SunnyAccount{}
+	mailboxIDs := make([]uint, 0, len(accounts))
+	for _, account := range accounts {
+		accountByID[account.ID] = account
+		accountByEmail[sunnyEmailKey(account.Email)] = account
+		if account.MailboxID != 0 {
+			mailboxIDs = append(mailboxIDs, account.MailboxID)
+		}
 	}
 	var mailboxes []SunnyMailbox
-	if len(emails) > 0 {
-		if err := s.db.Where("email IN ?", emails).Find(&mailboxes).Error; err != nil {
-			return nil, err
-		}
+	mailboxQuery := s.db.Model(&SunnyMailbox{})
+	if len(mailboxIDs) > 0 {
+		mailboxQuery = mailboxQuery.Where("id IN ? OR email IN ?", mailboxIDs, emails)
+	} else {
+		mailboxQuery = mailboxQuery.Where("email IN ?", emails)
 	}
+	if err := mailboxQuery.Find(&mailboxes).Error; err != nil {
+		return nil, err
+	}
+	mailboxByID := map[uint]SunnyMailbox{}
 	mailboxByEmail := map[string]SunnyMailbox{}
-	accountByEmail := map[string]SunnyAccount{}
 	for _, mailbox := range mailboxes {
+		mailboxByID[mailbox.ID] = mailbox
 		mailboxByEmail[sunnyEmailKey(mailbox.Email)] = mailbox
-	}
-	if len(emails) > 0 {
-		var accounts []SunnyAccount
-		if err := s.db.Select("id", "email", "access_token").Where("email IN ?", emails).Find(&accounts).Error; err != nil {
-			return nil, err
-		}
-		for _, account := range accounts {
-			accountByEmail[sunnyEmailKey(account.Email)] = account
+		if key := sunnyEmailKey(mailbox.RebindEmail); key != "" {
+			mailboxByEmail[key] = mailbox
 		}
 	}
 	candidates := make([]sunnySubscriptionCandidate, 0, len(sessions))
 	for _, session := range sessions {
-		mailbox, ok := mailboxByEmail[sunnyEmailKey(session.Email)]
-		account := accountByEmail[sunnyEmailKey(session.Email)]
+		account := accountByID[session.AccountID]
+		if account.ID == 0 {
+			account = accountByEmail[sunnyEmailKey(session.Email)]
+		}
+		mailbox, ok := mailboxByID[account.MailboxID]
+		if !ok {
+			mailbox, ok = mailboxByEmail[sunnyEmailKey(session.Email)]
+		}
 		accountID := session.AccountID
 		if accountID == 0 {
 			accountID = account.ID
 		}
 		candidate := sunnySubscriptionCandidate{
-			SessionID: session.ID, AccountID: accountID, Email: session.Email, MailEmail: session.Email,
+			SessionID: session.ID, AccountID: accountID, MailboxID: mailbox.ID, Email: session.Email, MailEmail: session.Email,
 			AccessToken: sunnyPreferredAccessToken(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON), account.AccessToken),
 		}
 		if !ok {
@@ -413,13 +455,14 @@ func (s *Server) executeSunnySubscriptionTask(task *Task, payload map[string]any
 		task.ProgressCurrent++
 		s.db.Model(&Task{}).Where("id = ?", task.ID).Updates(map[string]any{"progress_current": task.ProgressCurrent, "updated_at": time.Now()})
 	}
-	confirmPlan := func(email, planType string, item map[string]any, detail map[string]any) {
+	confirmPlan := func(candidate sunnySubscriptionCandidate, planType string, item map[string]any, detail map[string]any) {
+		email := candidate.Email
 		plan := normalizeSunnyPlanType(planType)
 		if plan == "" {
 			plan = "free"
 		}
 		item["plan_type"] = plan
-		if updateErr := s.updateSunnySubscriptionPlan(email, plan); updateErr != nil {
+		if updateErr := s.updateSunnySubscriptionPlan(candidate, plan); updateErr != nil {
 			result["failed"] = result["failed"].(int) + 1
 			item["status"] = "failed"
 			item["error"] = updateErr.Error()
@@ -474,7 +517,7 @@ func (s *Server) executeSunnySubscriptionTask(task *Task, payload map[string]any
 			}
 			if outcome.Subscribed {
 				item["subject"] = outcome.Subject
-				confirmPlan(outcome.Email, "plus", item, map[string]any{"subject": outcome.Subject, "source": "mail"})
+				confirmPlan(candidateBySession[outcome.SessionID], "plus", item, map[string]any{"subject": outcome.Subject, "source": "mail"})
 				record(item)
 				continue
 			}
@@ -501,7 +544,7 @@ func (s *Server) executeSunnySubscriptionTask(task *Task, payload map[string]any
 			item := map[string]any{"email": outcome.Email, "source": "access_token"}
 			switch outcome.Status {
 			case "valid":
-				confirmPlan(outcome.Email, outcome.PlanType, item, map[string]any{"source": "access_token"})
+				confirmPlan(candidateBySession[outcome.SessionID], outcome.PlanType, item, map[string]any{"source": "access_token"})
 				record(item)
 			case "invalid":
 				invalidForRenewal = append(invalidForRenewal, outcome)
@@ -545,18 +588,38 @@ func (s *Server) executeSunnySubscriptionTask(task *Task, payload map[string]any
 
 		for _, outcome := range invalidForRenewal {
 			item := map[string]any{"email": outcome.Email, "source": "access_token_renewal"}
-			previousToken := strings.TrimSpace(candidateBySession[outcome.SessionID].AccessToken)
+			candidate := candidateBySession[outcome.SessionID]
+			previousToken := strings.TrimSpace(candidate.AccessToken)
 			var session SunnySession
 			loadErr := s.db.Where("id = ?", outcome.SessionID).First(&session).Error
 			token := ""
 			if loadErr == nil {
-				token = sunnyPreferredAccessToken(session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON))
+				// The Worker stores the accessToken returned by /api/auth/session in
+				// this stable session row. Treat it as authoritative after renewal.
+				token = strings.TrimSpace(session.AccessToken)
+				if token == "" {
+					token = strings.TrimSpace(sunnyAccessTokenFromSessionJSON(session.SessionJSON))
+				}
 			}
 			var account SunnyAccount
 			var mailbox SunnyMailbox
-			s.db.Where("email = ?", outcome.Email).First(&account)
-			token = sunnyPreferredAccessToken(token, account.AccessToken)
-			s.db.Where("email = ?", outcome.Email).First(&mailbox)
+			if candidate.AccountID != 0 {
+				s.db.Where("id = ?", candidate.AccountID).First(&account)
+			} else {
+				s.db.Where("email = ? OR rebind_email = ?", outcome.Email, outcome.Email).First(&account)
+			}
+			if token == "" {
+				token = strings.TrimSpace(account.AccessToken)
+			}
+			mailboxID := candidate.MailboxID
+			if mailboxID == 0 {
+				mailboxID = account.MailboxID
+			}
+			if mailboxID != 0 {
+				s.db.Where("id = ?", mailboxID).First(&mailbox)
+			} else {
+				s.db.Where("email = ? OR rebind_email = ?", outcome.Email, outcome.Email).First(&mailbox)
+			}
 			if sunnyHealthBannedStatus(account.Status) || sunnyHealthBannedStatus(mailbox.Status) {
 				result["failed"] = result["failed"].(int) + 1
 				item["status"] = "failed"
@@ -565,7 +628,7 @@ func (s *Server) executeSunnySubscriptionTask(task *Task, payload map[string]any
 				record(item)
 				continue
 			}
-			if loadErr != nil || strings.TrimSpace(token) == "" || (renewalTaskError != "" && strings.TrimSpace(token) == previousToken) {
+			if loadErr != nil || strings.TrimSpace(token) == "" || strings.TrimSpace(token) == previousToken {
 				result["failed"] = result["failed"].(int) + 1
 				item["status"] = "failed"
 				item["error"] = fallback(renewalTaskError, "AT 续期后未获取到新的 Access Token")
@@ -573,7 +636,7 @@ func (s *Server) executeSunnySubscriptionTask(task *Task, payload map[string]any
 				record(item)
 				continue
 			}
-			confirmPlan(outcome.Email, sunnySubscriptionPlanTypeFromAccessToken(token), item, map[string]any{"source": "access_token_renewal", "renewal_task_id": renewalTask.ID})
+			confirmPlan(candidate, sunnySubscriptionPlanTypeFromAccessToken(token), item, map[string]any{"source": "access_token_renewal", "renewal_task_id": renewalTask.ID})
 			record(item)
 		}
 	}

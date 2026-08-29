@@ -1219,10 +1219,17 @@ class SunnyDB:
         email = str(email or "").strip()
         if not email:
             raise ValueError("session email is required")
-        row = self.conn.execute(
-            "select * from sunny_sessions where lower(trim(email))=lower(trim(?)) order by updated_at desc,id desc limit 1",
-            (email,),
-        ).fetchone()
+        row = None
+        if account_id > 0:
+            row = self.conn.execute(
+                "select * from sunny_sessions where account_id=? order by updated_at desc,id desc limit 1",
+                (account_id,),
+            ).fetchone()
+        if not row:
+            row = self.conn.execute(
+                "select * from sunny_sessions where lower(trim(email))=lower(trim(?)) order by updated_at desc,id desc limit 1",
+                (email,),
+            ).fetchone()
         expires_at = session.get("expires_at")
         if not expires_at:
             token = str(session.get("access_token") or "")
@@ -1272,12 +1279,23 @@ class SunnyDB:
 
     def persist_authenticated_session(self, email: str, mailbox_id: int, session: dict[str, Any], raw_line: str = "") -> int:
         """Immediately synchronize a successful login's AT to account and session rows."""
-        access_token = str(session.get("access_token") or "").strip()
         session_json = session.get("session_json")
-        if not access_token and isinstance(session_json, dict):
-            access_token = str(session_json.get("accessToken") or session_json.get("access_token") or "").strip()
+        parsed_session_json = session_json
+        if isinstance(session_json, str):
+            try:
+                parsed_session_json = json.loads(session_json)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_session_json = {}
+        access_token = ""
+        if isinstance(parsed_session_json, dict):
+            # /api/auth/session is authoritative after login. Do not let a
+            # stale token carried by an earlier authentication step win.
+            access_token = str(parsed_session_json.get("accessToken") or parsed_session_json.get("access_token") or "").strip()
+        if not access_token:
+            access_token = str(session.get("access_token") or "").strip()
         if not access_token:
             raise ValueError("successful login did not return an access token")
+        session["access_token"] = access_token
         refresh_token = str(session.get("refresh_token") or session.get("openai_rt") or "").strip()
         account_fields: dict[str, Any] = {"access_token": access_token, "last_error": ""}
         if mailbox_id > 0:
@@ -1288,6 +1306,23 @@ class SunnyDB:
         normalized = dict(session)
         normalized["access_token"] = access_token
         self.upsert_session(email, account_id, normalized, raw_line)
+        if mailbox_id > 0:
+            mailbox = self.conn.execute(
+                "select rebind_email from sunny_mailboxes where id=? limit 1",
+                (mailbox_id,),
+            ).fetchone()
+            rebind_email = str(mailbox["rebind_email"] or "").strip() if mailbox else ""
+            if rebind_email and rebind_email.lower() != email.lower():
+                duplicates = self.conn.execute(
+                    "select id from sunny_accounts where mailbox_id=? and id<>? and lower(trim(email))=lower(trim(?))",
+                    (mailbox_id, account_id, rebind_email),
+                ).fetchall()
+                duplicate_ids = [int(row["id"]) for row in duplicates]
+                if duplicate_ids:
+                    marks = ",".join("?" for _ in duplicate_ids)
+                    self.conn.execute(f"delete from sunny_sessions where account_id in ({marks})", duplicate_ids)
+                    self.conn.execute(f"delete from sunny_accounts where id in ({marks})", duplicate_ids)
+                    self.conn.commit()
         return account_id
 
     def mark_access_token_renewal_failed(self, email: str, error: str = "") -> None:

@@ -216,6 +216,7 @@ func ensureSunnyIndexes(db *gorm.DB) {
 }
 
 func reconcileSunnyDuplicateIdentities(db *gorm.DB) {
+	reconcileSunnyRebindIdentityDuplicates(db)
 	var accounts []SunnyAccount
 	var sessions []SunnySession
 	if db.Order("updated_at desc, id desc").Find(&accounts).Error != nil || db.Order("updated_at desc, id desc").Find(&sessions).Error != nil {
@@ -324,6 +325,114 @@ func reconcileSunnyDuplicateIdentities(db *gorm.DB) {
 	}
 	if removedAccounts > 0 || removedSessions > 0 {
 		log.Printf("reconciled duplicate Sunny identities: accounts=%d sessions=%d", removedAccounts, removedSessions)
+	}
+}
+
+func reconcileSunnyRebindIdentityDuplicates(db *gorm.DB) {
+	var mailboxes []SunnyMailbox
+	if db.Where("TRIM(COALESCE(rebind_email, '')) <> ''").Find(&mailboxes).Error != nil {
+		return
+	}
+	removedAccounts := 0
+	removedSessions := 0
+	for _, mailbox := range mailboxes {
+		originalEmail := sunnyEmailKey(mailbox.Email)
+		rebindEmail := sunnyEmailKey(mailbox.RebindEmail)
+		if originalEmail == "" || rebindEmail == "" || originalEmail == rebindEmail {
+			continue
+		}
+		var original SunnyAccount
+		if db.Where("LOWER(TRIM(email)) = ?", originalEmail).First(&original).Error != nil {
+			continue
+		}
+		var duplicates []SunnyAccount
+		if db.Where("id <> ? AND mailbox_id = ? AND LOWER(TRIM(email)) = ?", original.ID, mailbox.ID, rebindEmail).Find(&duplicates).Error != nil {
+			continue
+		}
+		for _, duplicate := range duplicates {
+			_ = db.Transaction(func(tx *gorm.DB) error {
+				var originalSession SunnySession
+				originalSessionErr := tx.Where("account_id = ?", original.ID).Order("updated_at desc, id desc").First(&originalSession).Error
+				var duplicateSessions []SunnySession
+				if err := tx.Where("account_id = ?", duplicate.ID).Order("updated_at desc, id desc").Find(&duplicateSessions).Error; err != nil {
+					return err
+				}
+				tokens := []string{duplicate.AccessToken}
+				refreshToken := strings.TrimSpace(duplicate.OpenAIRT)
+				var sourceSession SunnySession
+				for _, session := range duplicateSessions {
+					tokens = append(tokens, session.AccessToken, sunnyAccessTokenFromSessionJSON(session.SessionJSON))
+					if sourceSession.ID == 0 {
+						sourceSession = session
+					}
+					if refreshToken == "" && strings.TrimSpace(session.RefreshToken) != "" {
+						refreshToken = session.RefreshToken
+					}
+				}
+				tokens = append(tokens, original.AccessToken)
+				if originalSessionErr == nil {
+					tokens = append(tokens, originalSession.AccessToken, sunnyAccessTokenFromSessionJSON(originalSession.SessionJSON))
+					if refreshToken == "" {
+						refreshToken = originalSession.RefreshToken
+					}
+				}
+				accessToken := sunnyPreferredAccessToken(tokens...)
+				accountUpdates := map[string]any{"access_token": accessToken, "last_error": ""}
+				if refreshToken != "" {
+					accountUpdates["openai_rt"] = refreshToken
+				}
+				if plan := sunnySubscriptionPlanTypeFromAccessToken(accessToken); plan != "" {
+					accountUpdates["account_type"] = plan
+					if err := tx.Model(&SunnyMailbox{}).Where("id = ?", mailbox.ID).Update("account_type", plan).Error; err != nil {
+						return err
+					}
+				}
+				if err := tx.Model(&SunnyAccount{}).Where("id = ?", original.ID).Updates(accountUpdates).Error; err != nil {
+					return err
+				}
+				if originalSessionErr == nil {
+					sessionUpdates := map[string]any{"account_id": original.ID, "email": mailbox.Email, "access_token": accessToken, "access_token_error": ""}
+					if sourceSession.ID != 0 {
+						sessionUpdates["refresh_token"] = firstText(sourceSession.RefreshToken, refreshToken)
+						sessionUpdates["id_token"] = sourceSession.IDToken
+						sessionUpdates["session_json"] = sourceSession.SessionJSON
+						sessionUpdates["storage_state_json"] = sourceSession.StorageStateJSON
+						sessionUpdates["expires_at"] = sourceSession.ExpiresAt
+						sessionUpdates["last_refresh_at"] = sourceSession.LastRefreshAt
+					}
+					if err := tx.Model(&SunnySession{}).Where("id = ?", originalSession.ID).Updates(sessionUpdates).Error; err != nil {
+						return err
+					}
+				} else if sourceSession.ID != 0 {
+					if err := tx.Model(&SunnySession{}).Where("id = ?", sourceSession.ID).Updates(map[string]any{
+						"account_id": original.ID, "email": mailbox.Email, "access_token": accessToken,
+					}).Error; err != nil {
+						return err
+					}
+				}
+				keepSessionID := originalSession.ID
+				if keepSessionID == 0 {
+					keepSessionID = sourceSession.ID
+				}
+				deleteQuery := tx.Where("account_id = ?", duplicate.ID)
+				if keepSessionID != 0 {
+					deleteQuery = deleteQuery.Where("id <> ?", keepSessionID)
+				}
+				result := deleteQuery.Delete(&SunnySession{})
+				if result.Error != nil {
+					return result.Error
+				}
+				removedSessions += int(result.RowsAffected)
+				if err := tx.Delete(&SunnyAccount{}, duplicate.ID).Error; err != nil {
+					return err
+				}
+				removedAccounts++
+				return nil
+			})
+		}
+	}
+	if removedAccounts > 0 || removedSessions > 0 {
+		log.Printf("reconciled rebound Sunny identity duplicates: accounts=%d sessions=%d", removedAccounts, removedSessions)
 	}
 }
 

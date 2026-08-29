@@ -225,6 +225,36 @@ class StageStatusTests(unittest.TestCase):
         self.assertEqual(db.mailbox_updates[-1]["status"], "已注册")
         self.assertEqual(db.account_updates[-1]["status"], "registered")
 
+    def test_rebound_login_keeps_original_database_identity(self):
+        db = FakeDB()
+        rebound = mailbox(status="已注册")
+        rebound["_original_email_for_auth"] = rebound["email"]
+        rebound["email"] = "rebound@example.com"
+        pickup_url = "https://mail-api.example/pickup?email=rebound%40example.com&token=test-token"
+        rebound["raw"] = f"rebound@example.com----{pickup_url}"
+        rebound["mailbox_type"] = "domain"
+        rebound["mailbox_channel"] = "domain_api"
+        rebound["access_key"] = pickup_url
+        session = {
+            "access_token": "fresh-access-token",
+            "session_json": {"accessToken": "fresh-access-token"},
+            "auth_action": "login",
+            "plan_type": "plus",
+        }
+        payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "background"}
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
+            patch.object(worker, "login_or_register", return_value=session),
+        ):
+            ok, result = worker._run_one(db, "sunny_login", payload, rebound, 1, 1)
+
+        self.assertTrue(ok)
+        self.assertEqual(result["email"], "rebound@example.com")
+        self.assertTrue(db.account_updates)
+        self.assertTrue(all(item["email"] == "user@example.com" for item in db.account_updates))
+        self.assertTrue(db.sessions)
+        self.assertTrue(all(item["email"] == "user@example.com" for item in db.sessions))
+
     def test_protocol_mode_dispatches_without_browser_executor(self):
         db = FakeDB()
         payload = {"registration_stage": worker.REGISTER_ONLY, "execution_mode": "protocol"}
