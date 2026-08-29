@@ -70,6 +70,7 @@ DYNAMIC_PROXY_API_LAST_AT = 0.0
 DYNAMIC_PROXY_API_MIN_INTERVAL = max(
     0.1, float(os.getenv("PAY153_DYNAMIC_PROXY_MIN_INTERVAL") or 0.35)
 )
+GOPAY_BLOCKED_REBUILD_ATTEMPTS = 10
 
 
 def _ascii_key(value: Any) -> str:
@@ -2908,7 +2909,52 @@ class JobStore:
                 if retry_same_strategy:
                     self.log(job_id, "上一轮为代理传输失败；本轮仅更换代理并沿用相同 PayPal 优惠策略")
             retry_same_strategy = False
-            self._run_single(job_id, current)
+            gopay_chain_attempt = 0
+            while True:
+                if current.get("link_type") == "gopay":
+                    gopay_chain_attempt += 1
+                    self.log(
+                        job_id,
+                        f"GoPay 本轮 CS Live 顺序尝试 {gopay_chain_attempt}/{GOPAY_BLOCKED_REBUILD_ATTEMPTS}",
+                    )
+                    # _run_single pops token_raw and refreshes device ids. A
+                    # copy keeps the selected outer proxy pair reusable while
+                    # every inner pass creates a brand-new Checkout identity.
+                    single_options = dict(current)
+                else:
+                    single_options = current
+                self._run_single(job_id, single_options)
+                state = self.get(job_id) or {}
+                if state.get("status") in {"done", "cancelled"}:
+                    break
+                inner_error = str(state.get("error") or "")
+                gopay_blocked = (
+                    current.get("link_type") == "gopay"
+                    and "gopay_approval_blocked_rebuild_required" in inner_error.lower()
+                )
+                if not gopay_blocked:
+                    break
+                if gopay_chain_attempt >= GOPAY_BLOCKED_REBUILD_ATTEMPTS:
+                    self.log(
+                        job_id,
+                        "GoPay 本轮顺序创建并尝试的 10 个 CS Live 均被 blocked；本次账户完整任务尝试结束",
+                    )
+                    break
+                self.log(
+                    job_id,
+                    f"GoPay 本轮 CS Live {gopay_chain_attempt}/10 已 blocked；"
+                    f"保持当前外层代理并重建完整链路 {gopay_chain_attempt + 1}/10",
+                )
+                self.update(
+                    job_id,
+                    status="running",
+                    percent=4,
+                    text=(
+                        f"第 {attempt}/{max_attempts} 次账户任务："
+                        f"正在重建 GoPay CS Live {gopay_chain_attempt + 1}/10"
+                    ),
+                    error="",
+                )
             state = self.get(job_id) or {}
             if state.get("status") in {"done", "cancelled"}:
                 if state.get("status") == "done" and isinstance(state.get("result"), dict):
@@ -2962,7 +3008,7 @@ class JobStore:
             ):
                 self.log(
                     job_id,
-                    "GoPay 当前 CS Live 已因 blocked 作废；下一轮将从创建 Checkout 开始生成新的 cs_live_*",
+                    "GoPay 本轮 10 次 CS Live 重建预算已耗尽；下一次账户任务将更换代理后重新开始",
                 )
             self.log(job_id, f"第 {attempt}/{max_attempts} 轮未命中：{last_error[:260] or '上游未返回可用链接'}")
             if options.get("link_type") == "pix":

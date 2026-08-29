@@ -332,7 +332,7 @@ def test_gopay_cs_live_creation_defaults_to_ten_rebuilds() -> None:
     assert create.call_count == 10
 
 
-def test_gopay_blocked_approval_rebuilds_full_attempt_with_new_route() -> None:
+def test_gopay_blocked_approval_rebuilds_inside_one_outer_attempt() -> None:
     store = object.__new__(checkout_app.JobStore)
     state = {"status": "running", "error": "", "result": None}
     calls = 0
@@ -365,24 +365,66 @@ def test_gopay_blocked_approval_rebuilds_full_attempt_with_new_route() -> None:
             )
 
     store._run_single = run_single
-    store._run_locked("job-gopay", {
-        "retry_count": 1,
-        "link_type": "gopay",
-        "use_promo": True,
-        "country": "ID",
-        "checkout_country": "ID",
-        "entry_proxies": ["http://promotion-1:8001", "http://promotion-2:8002"],
-        "exit_proxies": ["http://checkout-1:9001", "http://checkout-2:9002"],
-        "paired_proxy_rotation": True,
-    })
+    with patch.object(checkout_app.time, "sleep"):
+        store._run_locked("job-gopay", {
+            "retry_count": 0,
+            "link_type": "gopay",
+            "use_promo": True,
+            "country": "ID",
+            "checkout_country": "ID",
+            "entry_proxies": ["http://promotion-1:8001"],
+            "exit_proxies": ["http://checkout-1:9001"],
+            "paired_proxy_rotation": True,
+        })
 
-    assert strategies == [(False, "redirect"), (False, "redirect")]
-    assert routes == [
-        ("http://promotion-1:8001", "http://checkout-1:9001"),
-        ("http://promotion-2:8002", "http://checkout-2:9002"),
-    ]
-    assert any("下一轮将从创建 Checkout 开始" in message for message in logs)
-    assert any("正在更换代理后重新尝试" in message for message in logs)
+    assert strategies == [(False, "redirect")] * 2
+    assert routes == [("http://promotion-1:8001", "http://checkout-1:9001")] * 2
+    assert state["result"] == {"attempt": 1, "max_attempts": 1}
+    assert any("重建完整链路 2/10" in message for message in logs)
+
+
+def test_gopay_ten_blocked_chains_consume_one_outer_attempt() -> None:
+    store = object.__new__(checkout_app.JobStore)
+    state = {"status": "running", "error": "", "result": None}
+    routes: list[tuple[str, str]] = []
+    logs: list[str] = []
+    store.cancelled = lambda _job_id: False
+    store.get = lambda _job_id: dict(state)
+    store.update = lambda _job_id, **fields: state.update(fields)
+    store.log = lambda _job_id, message: logs.append(message)
+    store._record_success = lambda _job_id, _result: None
+
+    def run_single(_job_id: str, attempt_options: dict) -> None:
+        routes.append((
+            str(attempt_options["fixed_entry_proxy"]),
+            str(attempt_options["fixed_exit_proxy"]),
+        ))
+        if len(routes) >= 11:
+            state.update(status="done", result={})
+        else:
+            state.update(
+                status="error",
+                error="GOPAY_APPROVAL_BLOCKED_REBUILD_REQUIRED: rebuild current checkout",
+            )
+
+    store._run_single = run_single
+    with patch.object(checkout_app.time, "sleep"):
+        store._run_locked("job-gopay", {
+            "retry_count": 1,
+            "link_type": "gopay",
+            "use_promo": True,
+            "country": "ID",
+            "checkout_country": "ID",
+            "entry_proxies": ["http://promotion-1:8001", "http://promotion-2:8002"],
+            "exit_proxies": ["http://checkout-1:9001", "http://checkout-2:9002"],
+            "paired_proxy_rotation": True,
+        })
+
+    assert routes[:10] == [("http://promotion-1:8001", "http://checkout-1:9001")] * 10
+    assert routes[10:] == [("http://promotion-2:8002", "http://checkout-2:9002")]
+    assert state["result"] == {"attempt": 2, "max_attempts": 2}
+    assert any("顺序创建并尝试的 10 个 CS Live 均被 blocked" in message for message in logs)
+    assert any("下一次账户任务将更换代理" in message for message in logs)
 
 
 def test_gopay_defaults_use_indonesia_billing() -> None:
