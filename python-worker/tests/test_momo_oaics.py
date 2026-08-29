@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 
 PAY153_DIR = Path(__file__).parents[1] / "tools" / "pay153_checkout"
@@ -12,7 +11,7 @@ if str(PAY153_DIR) not in sys.path:
 import app as checkout_app  # noqa: E402
 
 
-def test_momo_stage1_defers_trial_campaign_on_redirect_checkout() -> None:
+def test_momo_stage1_requests_redirect_capability_and_defers_trial_campaign() -> None:
     payload = checkout_app.checkout_payload(
         {
             "plan": "plus",
@@ -34,99 +33,26 @@ def test_momo_stage1_defers_trial_campaign_on_redirect_checkout() -> None:
     assert "promo_campaign" not in payload
 
 
-def test_momo_cs_live_creation_rebuilds_oaics_with_sentinel_fallback() -> None:
-    closed: list[str] = []
+def test_momo_authorization_url_accepts_expected_stripe_handoff() -> None:
+    url = (
+        "https://pm-redirects.stripe.com/authorize/"
+        "acct_1HOrSwC6h1nxGoI3/sa_nonce_V9sheJQ8YBaT9uRLR4gw2ilYZiC8pWl"
+    )
 
-    class FakeHttp:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def close(self) -> None:
-            closed.append(self.name)
-
-    responses = [
-        {"data": {"checkout_session_id": "oaics_first"}, "http": FakeHttp("first")},
-        {"data": {"checkout_session_id": "cs_live_success"}, "http": FakeHttp("success")},
-    ]
-    calls: list[tuple[str, str, bool]] = []
-
-    def fake_create(_token, _payload, _proxy, device_id, did, _log, **kwargs):
-        calls.append((device_id, did, bool(kwargs.get("allow_sentinel_fallback"))))
-        return responses.pop(0)
-
-    generated_ids = iter(["device-2", "did-2"])
-    with (
-        patch.object(checkout_app, "create_checkout", side_effect=fake_create),
-        patch.object(checkout_app.uuid, "uuid4", side_effect=lambda: next(generated_ids)),
-    ):
-        created, device_id, did = checkout_app.create_momo_cs_live_checkout(
-            "token", {"checkout_ui_mode": "redirect"}, "http://proxy",
-            "device-1", "did-1", lambda _message: None, attempts=2,
-        )
-
-    assert created["data"]["checkout_session_id"] == "cs_live_success"
-    assert (device_id, did) == ("device-2", "did-2")
-    assert calls == [
-        ("device-1", "did-1", True),
-        ("device-2", "did-2", True),
-    ]
-    assert closed == ["first"]
+    assert checkout_app.is_valid_momo_authorization_url(url)
+    assert checkout_app.momo_authorization_url({"next_action": {"url": url}}) == url
 
 
-def test_momo_cs_live_creation_keeps_budget_after_temporary_http_500() -> None:
-    class FakeHttp:
-        def close(self) -> None:
-            pass
-
-    calls = 0
-
-    def fake_create(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise RuntimeError('OpenAI Checkout HTTP 500: {"detail":"Internal Server Error"}')
-        return {"data": {"checkout_session_id": "cs_live_success"}, "http": FakeHttp()}
-
-    generated_ids = iter(["device-2", "did-2"])
-    with (
-        patch.object(checkout_app, "create_checkout", side_effect=fake_create),
-        patch.object(checkout_app.uuid, "uuid4", side_effect=lambda: next(generated_ids)),
-    ):
-        created, device_id, did = checkout_app.create_momo_cs_live_checkout(
-            "token", {"checkout_ui_mode": "redirect"}, "http://proxy",
-            "device-1", "did-1", lambda _message: None, attempts=2,
-        )
-
-    assert created["data"]["checkout_session_id"] == "cs_live_success"
-    assert (device_id, did) == ("device-2", "did-2")
-    assert calls == 2
+def test_momo_authorization_url_rejects_checkout_and_other_provider_urls() -> None:
+    assert not checkout_app.is_valid_momo_authorization_url(
+        "https://chatgpt.com/checkout/openai_ie/oaics_example"
+    )
+    assert not checkout_app.is_valid_momo_authorization_url(
+        "https://pm-redirects.stripe.com/authorize/acct_test/not_a_nonce"
+    )
 
 
-def test_momo_cs_live_creation_does_not_retry_business_http_400() -> None:
-    calls = 0
-
-    def fake_create(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        raise RuntimeError(
-            'OpenAI Checkout HTTP 400: {"detail":"Billing country must match request country."}'
-        )
-
-    with patch.object(checkout_app, "create_checkout", side_effect=fake_create):
-        try:
-            checkout_app.create_momo_cs_live_checkout(
-                "token", {"checkout_ui_mode": "redirect"}, "http://proxy",
-                "device-1", "did-1", lambda _message: None, attempts=10,
-            )
-        except RuntimeError as exc:
-            assert "Billing country must match request country" in str(exc)
-        else:
-            raise AssertionError("expected the non-retryable HTTP 400 error")
-
-    assert calls == 1
-
-
-def test_momo_attempts_force_redirect_and_late_promo() -> None:
+def test_momo_attempts_request_redirect_and_accept_oaics_fallback() -> None:
     store = object.__new__(checkout_app.JobStore)
     state = {"status": "running", "error": "", "result": None}
     strategies: list[tuple[str, str, bool]] = []
@@ -142,14 +68,14 @@ def test_momo_attempts_force_redirect_and_late_promo() -> None:
             str(attempt_options["local_method_strategy"]),
             bool(attempt_options["promo_on_create"]),
         ))
-        if len(strategies) >= 2:
+        if len(strategies) >= 4:
             state.update(status="done", result={})
         else:
-            state.update(status="error", error="MOMO_CS_LIVE_REBUILD_EXHAUSTED")
+            state.update(status="error", error="MOMO_METHOD_UNAVAILABLE: oaics_test")
 
     store._run_single = run_single
     store._run_locked("job-momo", {
-        "retry_count": 1,
+        "retry_count": 3,
         "link_type": "momo",
         "use_promo": True,
         "country": "VN",
@@ -160,6 +86,8 @@ def test_momo_attempts_force_redirect_and_late_promo() -> None:
     })
 
     assert strategies == [
+        ("redirect", "late_promo", False),
+        ("redirect", "late_promo", False),
         ("redirect", "late_promo", False),
         ("redirect", "late_promo", False),
     ]
