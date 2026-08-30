@@ -75,6 +75,35 @@ def test_auth_navigation_does_not_accept_unchanged_chatgpt_page() -> None:
     assert page.goto.call_count == 2
 
 
+def test_auth_navigation_accepts_second_abort_on_unchanged_trusted_page() -> None:
+    page = Mock()
+    page.url = "https://chatgpt.com/"
+    page.goto.side_effect = [
+        RuntimeError("Page.goto: NS_BINDING_ABORTED"),
+        RuntimeError("Page.goto: NS_ERROR_ABORT"),
+    ]
+    logs: list[str] = []
+
+    assert _goto_auth_page(page, "https://auth.openai.com/api/accounts/authorize", logs.append) is None
+    assert page.goto.call_count == 2
+    assert page.goto.call_args_list[1].kwargs["wait_until"] == "commit"
+    assert any("认证导航重试已进入目标站点" in message for message in logs)
+
+
+def test_auth_navigation_rejects_second_abort_on_untrusted_page() -> None:
+    page = Mock()
+    page.url = "https://example.invalid/"
+    page.goto.side_effect = [
+        RuntimeError("Page.goto: NS_BINDING_ABORTED"),
+        RuntimeError("Page.goto: NS_ERROR_ABORT"),
+    ]
+
+    with pytest.raises(RuntimeError, match="NS_ERROR_ABORT"):
+        _goto_auth_page(page, "https://auth.openai.com/api/accounts/authorize")
+
+    assert page.goto.call_count == 2
+
+
 def test_auth_navigation_accepts_playwright_takeover_on_unchanged_chatgpt_page() -> None:
     page = Mock()
     page.url = "https://chatgpt.com/"

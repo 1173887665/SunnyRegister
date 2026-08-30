@@ -3535,6 +3535,23 @@ def _rebind_one_isolated(
         worker_db.close()
 
 
+def _rebind_payload_for_account(payload: dict[str, Any], account: dict[str, Any]) -> dict[str, Any]:
+    """Carry an imported mailbox assignment into an isolated rebind worker."""
+    account_payload = dict(payload)
+    if str(payload.get("rebind_source") or "").strip().lower() != "imported":
+        return account_payload
+    for payload_key, account_key in (
+        ("target_email", "_rebind_target_email"),
+        ("target_mailbox_api", "_rebind_target_api"),
+        ("target_mailbox_type", "_rebind_target_type"),
+        ("target_mailbox_channel", "_rebind_target_channel"),
+    ):
+        value = str(account.get(account_key) or "").strip()
+        if value:
+            account_payload[payload_key] = value
+    return account_payload
+
+
 def _rebind_with_proxy_rotation(
     db: SunnyDB,
     payload: dict[str, Any],
@@ -3557,8 +3574,15 @@ def _rebind_with_proxy_rotation(
         try:
             account_for_rebind = dict(account)
             if str(current_payload.get("rebind_source") or "").strip().lower() == "imported":
-                account_for_rebind["_rebind_target_email"] = current_payload.get("target_email")
-                account_for_rebind["_rebind_target_api"] = current_payload.get("target_mailbox_api")
+                for account_key, payload_key in (
+                    ("_rebind_target_email", "target_email"),
+                    ("_rebind_target_api", "target_mailbox_api"),
+                    ("_rebind_target_type", "target_mailbox_type"),
+                    ("_rebind_target_channel", "target_mailbox_channel"),
+                ):
+                    account_for_rebind[account_key] = str(
+                        account_for_rebind.get(account_key) or current_payload.get(payload_key) or ""
+                    ).strip()
             return rebind_one(db, account_for_rebind, proxy, log)
         except Exception as exc:
             failure = classify_auth_failure(exc)
@@ -3657,7 +3681,7 @@ def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[st
                 pool.submit(
                     _rebind_one_isolated,
                     db.task_id,
-                    payload,
+                    _rebind_payload_for_account(payload, account),
                     int(account.get("id") or 0),
                     batch_start + offset,
                     len(accounts),

@@ -2005,6 +2005,33 @@ class AddLoginSecretTaskTests(unittest.TestCase):
 
 
 class RebindProxyRotationTests(unittest.TestCase):
+    def test_imported_rebind_restores_target_mailbox_metadata_in_isolated_worker(self):
+        db = MagicMock()
+        captured = {}
+        payload = {
+            "rebind_source": "imported",
+            "target_email": "target@example.com",
+            "target_mailbox_api": "https://mail.example/inbox",
+            "target_mailbox_type": "apple",
+            "target_mailbox_channel": "url_api",
+        }
+
+        def execute(_db, account, _proxy, _log):
+            captured.update(account)
+            return {"email": account["email"], "status": "success"}
+
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": ""}),
+            patch.object(worker, "rebind_one", side_effect=execute),
+        ):
+            result = worker._rebind_with_proxy_rotation(db, payload, {"id": 1, "email": "old@example.com"}, 0)
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(captured["_rebind_target_email"], "target@example.com")
+        self.assertEqual(captured["_rebind_target_api"], "https://mail.example/inbox")
+        self.assertEqual(captured["_rebind_target_type"], "apple")
+        self.assertEqual(captured["_rebind_target_channel"], "url_api")
+
     def test_rebind_rotates_proxy_after_login_transport_timeout(self):
         db = MagicMock()
         first_error = ProtocolRegistrationError(
@@ -2066,6 +2093,40 @@ class RebindProxyRotationTests(unittest.TestCase):
 
 
 class RebindTaskTests(unittest.TestCase):
+    def test_parallel_imported_rebind_preserves_each_target_mailbox(self):
+        db = MagicMock()
+        db.task_id = "task-rebind-imported"
+        db.cancel_requested.return_value = False
+        db.fetch_accounts.return_value = [
+            {"id": 1, "email": "first@example.com"},
+            {"id": 2, "email": "second@example.com"},
+        ]
+        received: dict[int, dict] = {}
+
+        def isolated(_task_id, task_payload, account_id, index, _total):
+            received[account_id] = task_payload
+            return index, {"email": f"user-{account_id}@example.com", "status": "success"}
+
+        payload = {
+            "rebind_source": "imported",
+            "concurrency": 2,
+            "target_mailboxes": [
+                {"email": "target-one@example.com", "mailbox_api": "https://mail.example/one", "mailbox_type": "domain", "mailbox_channel": "domain_api"},
+                {"email": "target-two@example.com", "mailbox_api": "https://mail.example/two", "mailbox_type": "apple", "mailbox_channel": "url_api"},
+            ],
+        }
+
+        with patch.object(worker, "_rebind_one_isolated", side_effect=isolated):
+            success, errors, items = worker._rebind_sessions(db, payload)
+
+        self.assertEqual((success, errors, len(items)), (2, [], 2))
+        self.assertEqual(received[1]["target_email"], "target-one@example.com")
+        self.assertEqual(received[1]["target_mailbox_api"], "https://mail.example/one")
+        self.assertEqual(received[1]["target_mailbox_type"], "domain")
+        self.assertEqual(received[2]["target_email"], "target-two@example.com")
+        self.assertEqual(received[2]["target_mailbox_api"], "https://mail.example/two")
+        self.assertEqual(received[2]["target_mailbox_channel"], "url_api")
+
     def test_serial_rebind_selects_proxy_by_account_slot(self):
         db = MagicMock()
         db.task_id = "task-rebind-proxy"

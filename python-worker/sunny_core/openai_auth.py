@@ -184,6 +184,31 @@ def _auth_navigation_landed(page: Any, previous_url: str = "") -> bool:
     return current.scheme in {"http", "https"} and (allowed_host or oauth_callback)
 
 
+def _auth_navigation_on_trusted_origin(page: Any) -> bool:
+    """Return true when the current page can safely resume the auth state machine."""
+    try:
+        current = urlparse(str(page.url or ""))
+    except Exception:
+        return False
+    allowed_host = current.hostname in {"auth.openai.com", "chatgpt.com"}
+    oauth_callback = current.hostname in {"localhost", "127.0.0.1"} and current.port == 1455
+    return current.scheme in {"http", "https"} and (allowed_host or oauth_callback)
+
+
+def _navigation_abort_can_resume_current(page: Any, error: Any) -> bool:
+    """Allow a repeated engine abort only when it does not name an unsafe takeover URL."""
+    if not _is_navigation_aborted(error) or not _auth_navigation_on_trusted_origin(page):
+        return False
+    match = re.search(r'interrupted by another navigation to\s+["\']([^"\']+)["\']', str(error or ""), re.I)
+    if not match:
+        return True
+    try:
+        target = urlparse(match.group(1))
+    except Exception:
+        return False
+    return target.scheme in {"http", "https"} and target.hostname in {"auth.openai.com", "chatgpt.com"}
+
+
 def _navigation_abort_landed(page: Any, error: Any, previous_url: str = "") -> bool:
     """Confirm that an aborted goto was replaced by a valid auth navigation."""
     if not _is_navigation_aborted(error):
@@ -264,7 +289,9 @@ def _goto_auth_page(page: Any, url: str, log: Callable[[str], None] | None = Non
             try:
                 return page.goto(url, wait_until="commit", timeout=min(timeout, 30000))
             except Exception as retry_exc:
-                if _navigation_abort_landed(page, retry_exc, previous_url):
+                if _navigation_abort_landed(page, retry_exc, previous_url) or _navigation_abort_can_resume_current(
+                    page, retry_exc
+                ):
                     if log:
                         log(f"[认证] 认证导航重试已进入目标站点，继续处理当前页面：{page.url}")
                     return None
