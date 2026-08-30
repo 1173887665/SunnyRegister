@@ -219,10 +219,30 @@ def account_from_row(row: dict[str, Any]) -> MailAccount:
         if not email or "@" not in email or not access_key:
             raise ValueError("Invalid domain mailbox row; expected email and CloudMail credential")
         if access_key.startswith(("http://", "https://")):
+            try:
+                _validate_url_api_address(access_key)
+            except MailboxAccessError as exc:
+                raise ValueError(str(exc)) from exc
             parsed = urlparse(access_key)
-            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc or not query.get("token") or str(query.get("email") or "").strip().lower() != email.lower():
-                raise ValueError("Invalid domain mailbox pickup URL")
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            pickup_email = str((query.get("email") or [""])[0]).strip().lower()
+            if query.get("token") and pickup_email:
+                if pickup_email != email.lower():
+                    raise ValueError("Domain mailbox pickup URL does not match the mailbox email")
+            else:
+                url_email_values = _url_api_mailbox_emails(access_key)
+                if url_email_values and email.lower() not in url_email_values:
+                    raise ValueError("Mailbox pickup URL does not match the mailbox email")
+                # A provider inbox URL may identify the mailbox with a UUID or a
+                # provider-specific query parameter instead of local email+token.
+                # Keep the domain type, but route it through the URL API reader.
+                return MailAccount(
+                    email=email, password="", client_id="", refresh_token="", raw=raw or f"{email}----{access_key}",
+                    account_type=str(row.get("account_type") or "free"), openai_rt=str(row.get("openai_rt") or ""),
+                    mailbox_type="domain", mailbox_channel="url_api", access_key=access_key,
+                    chatgpt_password=str(row.get("chat_gpt_password") or row.get("chatgpt_password") or ""),
+                    totp_secret=str(row.get("totp_secret") or "").strip(),
+                )
         else:
             try:
                 metadata = json.loads(access_key)
@@ -347,6 +367,67 @@ def _url_api_strategy(value: str) -> str:
     if hostname == "mail.ai1998.xyz" or hostname.endswith(".mail.ai1998.xyz"):
         return "ai1998"
     return "generic"
+
+
+def _url_api_mailbox_emails(value: str) -> set[str]:
+    """Return decoded mailbox-address query values used by known URL inbox providers."""
+    keys = {"email", "toemail", "mailbox", "impersonate_email"}
+    emails: set[str] = set()
+    for key, candidate in parse_qsl(urlparse(str(value or "")).query, keep_blank_values=True):
+        normalized = str(candidate or "").strip().lower()
+        if key.strip().lower() in keys and "@" in normalized:
+            emails.add(normalized)
+    return emails
+
+
+def _response_text_limited(response: Any, maximum: int = URL_API_MAX_RESPONSE_BYTES) -> str:
+    """Read a bounded response body without relying on requests-specific helpers."""
+    chunks: list[bytes] = []
+    size = 0
+    try:
+        iterator = response.iter_content(chunk_size=16 * 1024)
+    except (AttributeError, TypeError):
+        raw = getattr(response, "content", None)
+        if raw is None:
+            raw = getattr(response, "text", "")
+        if isinstance(raw, bytes):
+            data = raw
+        else:
+            data = str(raw or "").encode("utf-8", errors="replace")
+        return data[:maximum].decode(getattr(response, "encoding", None) or "utf-8", errors="replace")
+    for chunk in iterator:
+        if not chunk:
+            continue
+        size += len(chunk)
+        if size > maximum:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks).decode(getattr(response, "encoding", None) or "utf-8", errors="replace")
+
+
+def _url_api_response_indicates_missing_mailbox(value: str) -> bool:
+    """Detect provider 404 payloads that mean the referenced inbox no longer exists."""
+    normalized = str(value or "").strip().lower()
+    if any(marker in normalized for marker in (
+        "mailbox not found", "mailbox doesn't exist", "user not found", "email not found",
+        "inbox not found", "邮箱不存在", "用户不存在", "邮箱未找到",
+    )):
+        return True
+    try:
+        payload = json.loads(normalized)
+    except (TypeError, ValueError):
+        return False
+
+    def has_missing_marker(item: Any) -> bool:
+        if isinstance(item, dict):
+            if item.get("found") is False:
+                return True
+            return any(has_missing_marker(child) for child in item.values())
+        if isinstance(item, list):
+            return any(has_missing_marker(child) for child in item)
+        return False
+
+    return has_missing_marker(payload)
 
 
 def _html_to_text(value: str) -> str:
@@ -1517,7 +1598,7 @@ class URLAPIICloudReader:
             target = urljoin(target, location)
         if response is None:
             raise MailboxAccessError("mailbox_network_error", "url_api 邮箱渠道未返回响应")
-        if response.status_code in {401, 403, 404, 410}:
+        if response.status_code in {401, 403, 410}:
             response.close()
             raise MailboxAccessError(
                 "mailbox_credential_invalid",
@@ -1526,7 +1607,15 @@ class URLAPIICloudReader:
                 terminal=True,
             )
         if not response.ok:
+            body = _response_text_limited(response)
             response.close()
+            if response.status_code == 404 and _url_api_response_indicates_missing_mailbox(body):
+                raise MailboxAccessError(
+                    "mailbox_not_found",
+                    "url_api 邮箱不存在或取件链接已失效",
+                    "HTTP 404 provider response confirms mailbox not found",
+                    terminal=True,
+                )
             raise MailboxAccessError("mailbox_provider_failed", "url_api 邮箱渠道请求失败，请稍后重试", f"HTTP {response.status_code}")
         try:
             content_length = int(response.headers.get("Content-Length") or 0)
@@ -1604,7 +1693,7 @@ class URLAPIICloudReader:
         list_url = f"{base}/api/email-box/{quote(mailbox_uuid, safe='')}/emails"
         response = self._request_url(list_url, headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"}, timeout=timeout, allow_redirects=True)
         try:
-            if response.status_code in {401, 403, 404, 410}:
+            if response.status_code in {401, 403, 410}:
                 raise MailboxAccessError("mailbox_credential_invalid", "a-mail 邮箱链接无效或已过期", f"HTTP {response.status_code}", terminal=True)
             if not response.ok:
                 raise MailboxAccessError("mailbox_provider_failed", "a-mail 邮箱接口请求失败", f"HTTP {response.status_code}")
@@ -1669,7 +1758,7 @@ class URLAPIICloudReader:
             response.close()
             raise MailboxAccessError("mailbox_url_forbidden", "url_api 取码地址跳转超出当前邮箱渠道域名", terminal=True)
         try:
-            if response.status_code in {401, 403, 404, 410}:
+            if response.status_code in {401, 403, 410}:
                 raise MailboxAccessError(
                     "mailbox_credential_invalid",
                     "url_api 取码 URL 无效、已过期或无权访问",
@@ -1765,6 +1854,25 @@ class URLAPIICloudReader:
                     if attempt >= 2:
                         break
                     time.sleep(0.4 * (attempt + 1) + random.uniform(0, 0.4))
+            # The registration proxy is useful for the authentication flow,
+            # but mailbox URL hosts can reject or time out through a rotating
+            # residential route. Retry the mailbox fetch directly once so a
+            # transient proxy failure does not prevent password/2FA setup.
+            if self.proxies:
+                self.log(
+                    f"[{self.account.email}] url_api 取件代理连接失败，正在直连重试一次"
+                )
+                try:
+                    return requests.get(
+                        target,
+                        headers=headers,
+                        timeout=timeout,
+                        proxies=None,
+                        allow_redirects=allow_redirects,
+                        stream=stream,
+                    )
+                except requests.RequestException as exc:
+                    last_error = exc
             raise MailboxAccessError(
                 "mailbox_network_error",
                 "url_api 邮箱渠道连接超时或网络不可达，请检查取码 URL、服务器出网与代理配置",
@@ -1780,12 +1888,19 @@ class URLAPIICloudReader:
         try:
             message = self._latest()
         except MailboxAccessError as exc:
-            if getattr(self, "strategy", "generic") != "mczero" or exc.terminal:
+            if exc.terminal:
                 raise
-            self.log(f"[{self.account.email}] url_api 专用域名接口暂时不可用，将在等待验证码期间保留通用解析兜底")
-            try:
-                message = self._latest(strategy="generic")
-            except MailboxAccessError:
+            if getattr(self, "strategy", "generic") == "mczero":
+                self.log(f"[{self.account.email}] url_api 专用域名接口暂时不可用，将在等待验证码期间保留通用解析兜底")
+                try:
+                    message = self._latest(strategy="generic")
+                except MailboxAccessError as fallback_exc:
+                    if fallback_exc.terminal:
+                        raise
+                    self.log(f"[{self.account.email}] url_api 取件基线暂时不可用，将在等待验证码阶段继续重试：{fallback_exc}")
+                    message = {"otp_candidates": []}
+            else:
+                self.log(f"[{self.account.email}] url_api 取件基线暂时不可用，将在等待验证码阶段继续重试：{exc}")
                 message = {"otp_candidates": []}
         self.seen_candidate_keys.update(str(item.get("key") or "") for item in message.get("otp_candidates") or [] if item.get("key"))
         self.log(f"[{self.account.email}] url_api iCloud mailbox URL connected")
@@ -1849,6 +1964,8 @@ class URLAPIICloudReader:
 
 
 def create_mailbox_reader(account: MailAccount, log: Callable[[str], None] | None, proxy_url: str = ""):
+    if account.mailbox_channel == "url_api":
+        return URLAPIICloudReader(account, log, proxy_url)
     if account.mailbox_type == "domain" or account.mailbox_channel == "domain_api":
         return DomainMailReader(account, log, proxy_url)
     if account.mailbox_type == "remail" or account.mailbox_channel == "remail_api":
@@ -1856,8 +1973,6 @@ def create_mailbox_reader(account: MailAccount, log: Callable[[str], None] | Non
     if account.mailbox_type == "apple":
         if account.mailbox_channel == "xbovo":
             return XbovoICloudReader(account, log, proxy_url)
-        if account.mailbox_channel == "url_api":
-            return URLAPIICloudReader(account, log, proxy_url)
         raise MailboxAccessError("mailbox_channel_unsupported", "暂不支持该 iCloud 邮箱渠道", account.mailbox_channel, terminal=True)
     return HotmailReader(account, log, proxy_url)
 

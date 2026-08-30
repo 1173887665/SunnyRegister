@@ -1379,6 +1379,7 @@ def custom_payment_methods_for(payload: dict[str, Any], provider: str) -> list[d
                 result.extend(values(item, depth + 1))
             return result
         text = str(value or "").strip().lower().replace("-", "_")
+        text = text.removeprefix("cpmt_").removeprefix("payment_method_")
         return [text] if text else []
 
     matched: list[dict[str, Any]] = []

@@ -95,6 +95,66 @@ func TestSunnyURLAPIReimportUpdatesCredentialsAndPreservesLifecycle(t *testing.T
 	}
 }
 
+func TestSunnyURLAPIMissingMailboxBlocksRegistrationUntilCredentialRefresh(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var mailbox SunnyMailbox
+	if err := s.db.Where("email = ?", "session@example.com").First(&mailbox).Error; err != nil {
+		t.Fatalf("load mailbox: %v", err)
+	}
+	if err := s.db.Model(&mailbox).Updates(map[string]any{
+		"mailbox_type": "apple", "mailbox_channel": "url_api", "access_key": "https://mail.example.test/expired",
+		"raw": "session@example.com----https://mail.example.test/expired", "status": "失败", "enabled": false,
+		"last_error": "url_api 邮箱不存在或取件链接已失效: HTTP 404 provider response confirms mailbox not found",
+	}).Error; err != nil {
+		t.Fatalf("seed expired mailbox: %v", err)
+	}
+
+	if _, err := s.sunnyMailboxesForRegisterTask(map[string]any{"mailbox_ids": []any{mailbox.ID}}); err == nil || !strings.Contains(err.Error(), "pickup URL has expired") {
+		t.Fatalf("expired URL mailbox should be rejected before creating a task, err=%v", err)
+	}
+	mailbox.LastError = "temporary upstream HTTP 502"
+	mailbox.Enabled = true
+	if err := sunnyValidateMailboxForRegistration(mailbox); err != nil {
+		t.Fatalf("a retryable provider failure must not invalidate the mailbox: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"mailbox_type": "apple", "mailbox_channel": "url_api",
+		"lines": "session@example.com----https://mail.example.test/fresh",
+	})
+	recorder := httptest.NewRecorder()
+	s.sunnyImportMailboxes(recorder, httptest.NewRequest(http.MethodPost, "/sunny/mailboxes/import", bytes.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("refresh import status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if err := s.db.First(&mailbox, mailbox.ID).Error; err != nil {
+		t.Fatalf("reload refreshed mailbox: %v", err)
+	}
+	if mailbox.AccessKey != "https://mail.example.test/fresh" || mailbox.LastError != "" || !mailbox.Enabled || mailbox.Status != "未注册" {
+		t.Fatalf("credential refresh did not reactivate mailbox: %#v", mailbox)
+	}
+	if rows, err := s.sunnyMailboxesForRegisterTask(map[string]any{"mailbox_ids": []any{mailbox.ID}}); err != nil || len(rows) != 1 {
+		t.Fatalf("refreshed URL mailbox should be selectable: rows=%d err=%v", len(rows), err)
+	}
+}
+
+func TestSunnyURLAPIHistoricalHTTP404IsExcludedFromAutomaticSelection(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var mailbox SunnyMailbox
+	if err := s.db.Where("email = ?", "session@example.com").First(&mailbox).Error; err != nil {
+		t.Fatalf("load mailbox: %v", err)
+	}
+	if err := s.db.Model(&mailbox).Updates(map[string]any{
+		"mailbox_type": "apple", "mailbox_channel": "url_api", "access_key": "https://mail.example.test/legacy",
+		"status": "失败", "enabled": true, "last_error": "url_api 邮箱渠道请求失败，请稍后重试: HTTP 404",
+	}).Error; err != nil {
+		t.Fatalf("seed historical 404 mailbox: %v", err)
+	}
+	if _, err := s.sunnyMailboxesForRegisterTask(map[string]any{"mailbox_ids": []any{mailbox.ID}}); err == nil || !strings.Contains(err.Error(), "pickup URL has expired") {
+		t.Fatalf("historical HTTP 404 mailbox should be rejected, err=%v", err)
+	}
+}
+
 func TestSunnyMailboxCredentialEditRequiresExplicitClear(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	var mailbox SunnyMailbox
