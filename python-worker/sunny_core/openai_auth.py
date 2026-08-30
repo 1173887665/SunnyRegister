@@ -1515,6 +1515,13 @@ class OpenAIEmailRegisterFlow:
                 return
 
             if not self._wait_for_email_otp_input(page):
+                if self.browser_backend == "camoufox":
+                    self.log("[邮箱] 页面未挂载验证码输入框，改用当前 Camoufox 会话提交验证码")
+                    continue_url = self._validate_email_code_api(page, code)
+                    if continue_url:
+                        page.goto(continue_url, wait_until="domcontentloaded", timeout=90000)
+                    self._wait_after_otp_submit(page)
+                    return
                 raise RuntimeError("Email OTP input was not found")
             if not self._fill_email_code_inputs(page, code):
                 raise RuntimeError("Email OTP input was not found")

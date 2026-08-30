@@ -1228,6 +1228,7 @@ class BrowserBackendTests(unittest.TestCase):
             no_viewport=True,
             locale="ja-JP",
             timezone_id="Asia/Tokyo",
+            ignore_https_errors=True,
         )
         context.close.assert_called_once()
         manager.__exit__.assert_called_once()
@@ -1264,6 +1265,7 @@ class BrowserBackendTests(unittest.TestCase):
             no_viewport=True,
             locale="ja-JP",
             timezone_id="Asia/Tokyo",
+            ignore_https_errors=True,
             storage_state=storage_state,
         )
 

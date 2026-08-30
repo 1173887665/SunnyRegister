@@ -110,6 +110,11 @@ def open_registration_browser(
                 "no_viewport": True,
                 "locale": fingerprint.locale,
                 "timezone_id": fingerprint.timezone,
+                # Registration traffic can traverse rotating HTTPS proxies
+                # that terminate TLS with their own certificate. Keep the
+                # browser session usable while the proxy scheduler handles
+                # endpoint health and rotation.
+                "ignore_https_errors": True,
             }
             if storage_state:
                 context_options["storage_state"] = storage_state
@@ -161,6 +166,7 @@ def open_registration_browser(
             "user_agent": fingerprint.user_agent,
             "locale": fingerprint.locale,
             "timezone_id": fingerprint.timezone,
+            "ignore_https_errors": True,
             "viewport": {"width": fingerprint.viewport_width, "height": fingerprint.viewport_height},
             "screen": {"width": fingerprint.screen_width, "height": fingerprint.screen_height},
             "device_scale_factor": fingerprint.device_scale_factor,
