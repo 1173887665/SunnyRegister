@@ -8,7 +8,7 @@ from sunny_core import mailbox as mailbox_module
 from sunny_core import domain_mail_cleanup as cleanup_module
 from sunny_core import rebind as rebind_module
 from sunny_core.db import SunnyDB
-from sunny_core.mailbox import DomainMailReader, MailboxAccessError, URLAPIICloudReader, account_from_row, create_mailbox_reader
+from sunny_core.mailbox import DomainMailReader, account_from_row
 from sunny_core.protocol_auth import ProtocolChallengeRequired
 
 
@@ -65,105 +65,6 @@ def test_account_from_row_supports_domain_credentials():
     assert account.mailbox_type == "domain"
     assert account.mailbox_channel == "domain_api"
     assert json.loads(account.access_key)["auth_token"] == "token-1"
-
-
-def test_domain_provider_url_routes_to_url_api_with_decoded_mailbox_parameter():
-    account = account_from_row({
-        "email": "User@example.com",
-        "mailbox_type": "domain",
-        "mailbox_channel": "domain_api",
-        "access_key": "https://mail.example/inbox?toEmail=User%40example.com&key=inbox-key",
-    })
-
-    assert account.mailbox_type == "domain"
-    assert account.mailbox_channel == "url_api"
-    assert isinstance(create_mailbox_reader(account, None), URLAPIICloudReader)
-
-
-def test_domain_provider_url_rejects_a_different_mailbox_address():
-    try:
-        account_from_row({
-            "email": "user@example.com",
-            "mailbox_type": "domain",
-            "access_key": "https://mail.example/inbox?mailbox=other%40example.com",
-        })
-    except ValueError as exc:
-        assert "does not match" in str(exc)
-    else:
-        raise AssertionError("expected URL mailbox mismatch to be rejected")
-
-
-def test_url_api_404_is_retryable_not_a_credential_failure(monkeypatch):
-    account = account_from_row({
-        "email": "user@example.com",
-        "mailbox_type": "domain",
-        "access_key": "https://mail.example/inbox?impersonate_email=user%40example.com",
-    })
-    reader = URLAPIICloudReader(account, None)
-
-    class Response:
-        status_code = 404
-        ok = False
-        headers = {}
-
-        @staticmethod
-        def close():
-            return None
-
-    monkeypatch.setattr(reader, "_request_url", lambda *args, **kwargs: Response())
-    try:
-        reader._latest_generic()
-    except MailboxAccessError as exc:
-        assert exc.code == "mailbox_provider_failed"
-        assert exc.terminal is False
-    else:
-        raise AssertionError("expected retryable URL API failure")
-
-
-def test_url_api_404_with_missing_mailbox_payload_is_terminal(monkeypatch):
-    account = account_from_row({
-        "email": "user@example.com",
-        "mailbox_type": "domain",
-        "access_key": "https://mail.example/inbox?impersonate_email=user%40example.com",
-    })
-    reader = URLAPIICloudReader(account, None)
-
-    class Response:
-        status_code = 404
-        ok = False
-        headers = {}
-        text = '{"ok":false,"found":false}'
-
-        @staticmethod
-        def close():
-            return None
-
-    monkeypatch.setattr(reader, "_request_url", lambda *args, **kwargs: Response())
-    try:
-        reader._latest_generic()
-    except MailboxAccessError as exc:
-        assert exc.code == "mailbox_not_found"
-        assert exc.terminal is True
-    else:
-        raise AssertionError("expected missing mailbox response to be terminal")
-
-
-def test_url_api_connect_defers_retryable_preflight_failure(monkeypatch):
-    account = account_from_row({
-        "email": "user@example.com",
-        "mailbox_type": "domain",
-        "access_key": "https://mail.example/inbox?impersonate_email=user%40example.com",
-    })
-    logs: list[str] = []
-    reader = URLAPIICloudReader(account, logs.append)
-
-    def temporary_failure(*args, **kwargs):
-        raise MailboxAccessError("mailbox_provider_failed", "temporary upstream failure", "HTTP 502")
-
-    monkeypatch.setattr(reader, "_latest", temporary_failure)
-    reader.connect()
-
-    assert any("等待验证码阶段继续重试" in log for log in logs)
 
 
 def test_domain_reader_uses_latest_message_and_extracts_code(monkeypatch):

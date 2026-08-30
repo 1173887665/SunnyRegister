@@ -7,8 +7,6 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 
-import requests
-
 from sunny_core.browser_backend import camoufox_runtime_error
 from sunny_core import mailbox as mailbox_module
 from sunny_core.mailbox import HotmailReader, MailAccount, MailboxAccessError, URLAPIICloudReader, XbovoICloudReader, _request_outlook_access_token, account_from_row, create_mailbox_reader, parse_account_line
@@ -218,28 +216,6 @@ class XbovoICloudReaderTests(unittest.TestCase):
 
 
 class URLAPIICloudReaderTests(unittest.TestCase):
-    def test_url_api_retries_directly_after_proxy_transport_failure(self) -> None:
-        account = MailAccount(
-            "user@icloud.com", "", "", "", "raw",
-            mailbox_type="apple", mailbox_channel="url_api", access_key="https://mail.example.test/latest",
-        )
-        reader = URLAPIICloudReader(account, None, "http://proxy.example.test:9000")
-        response = Mock()
-        response.ok = True
-        with patch.object(mailbox_module.requests, "get", side_effect=[
-            requests.RequestException("proxy timed out"),
-            requests.RequestException("proxy timed out"),
-            requests.RequestException("proxy timed out"),
-            response,
-        ]) as request, patch.object(mailbox_module.time, "sleep", return_value=None):
-            actual = reader._request_url(
-                "https://mail.example.test/latest", headers={}, timeout=5, allow_redirects=False,
-            )
-
-        self.assertIs(actual, response)
-        self.assertEqual(request.call_count, 4)
-        self.assertIsNone(request.call_args_list[-1].kwargs["proxies"])
-
     def test_account_from_row_routes_url_api_channel(self) -> None:
         parsed = account_from_row({
             "email": "alias@icloud.com",

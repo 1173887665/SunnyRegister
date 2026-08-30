@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 
 PAY153_DIR = Path(__file__).parents[1] / "tools" / "pay153_checkout"
@@ -10,61 +9,6 @@ if str(PAY153_DIR) not in sys.path:
     sys.path.insert(0, str(PAY153_DIR))
 
 import app as checkout_app  # noqa: E402
-import provider_checkout  # noqa: E402
-
-
-def test_momo_custom_payment_method_matching_strips_cpmt_prefix() -> None:
-    payload = {
-        "custom_payment_methods": [
-            {"id": "cpmt_card", "name": "Card"},
-            {"id": "cpmt_momo", "name": "MoMo"},
-        ],
-    }
-
-    assert checkout_app.custom_payment_methods_for(payload, "momo") == [payload["custom_payment_methods"][1]]
-    assert provider_checkout._has_provider_method(["cpmt_momo"], "momo")
-
-
-def test_momo_cs_live_rechecks_after_vn_tax_refresh() -> None:
-    initial_ctx = {
-        "checkout_amount": 1,
-        "currency": "vnd",
-        "payment_method_types": ["card"],
-    }
-    refreshed_ctx = {
-        "checkout_amount": 1,
-        "currency": "vnd",
-        "payment_method_types": ["card", "momo"],
-    }
-    billing = provider_checkout.default_billing("VN", "user@example.com")
-
-    with (
-        patch.object(
-            provider_checkout.sc,
-            "init_checkout",
-            side_effect=[({}, "2026-test", initial_ctx), ({}, "2026-test", refreshed_ctx)],
-        ) as init_checkout,
-        patch.object(provider_checkout.sc, "fetch_elements_session"),
-        patch.object(provider_checkout.sc, "update_tax_region"),
-        patch.object(provider_checkout.sc, "snapshot_billing"),
-        patch("provider_checkout.create_provider_payment_method", return_value="pm_momo") as create_method,
-        patch("provider_checkout.confirm_provider_payment", return_value={}) as confirm,
-        patch("provider_checkout.extract_provider_result", return_value={"provider_redirect_url": "https://momo.example/pay"}),
-    ):
-        result = provider_checkout.stripe_to_provider(
-            object(),
-            "cs_live_test",
-            "momo",
-            billing=billing,
-            country="VN",
-            stage1={"publishable_key": "pk_live_test", "processor_entity": "openai_llc"},
-            log=lambda _message: None,
-        )
-
-    assert init_checkout.call_count == 2
-    create_method.assert_called_once()
-    assert confirm.call_args.args[6] is refreshed_ctx
-    assert result["provider_redirect_url"] == "https://momo.example/pay"
 
 
 def test_momo_stage1_requests_redirect_capability_and_defers_trial_campaign() -> None:

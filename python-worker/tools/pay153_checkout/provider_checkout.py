@@ -54,7 +54,6 @@ def _has_provider_method(methods: list[Any], provider: str) -> bool:
     aliases = _provider_method_aliases(provider)
     for method in methods:
         token = str(method or "").strip().lower().replace("-", "_")
-        token = token.removeprefix("cpmt_").removeprefix("payment_method_")
         if token in aliases:
             return True
     return False
@@ -1285,12 +1284,7 @@ def stripe_to_provider(
     init_data, version, ctx = sc.init_checkout(http, session_id, pk, profile, log)
     methods = ctx.get("payment_method_types") or []
     if not _has_provider_method(methods, provider):
-        if provider != "momo":
-            raise RuntimeError(f"当前 checkout 未开放 {provider}，可用方式：{', '.join(methods) or 'card'}")
-        log(
-            "[momo] 初始 Checkout 尚未发布 MoMo，"
-            "继续提交 VN 税务地区并以刷新后的会话为准"
-        )
+        raise RuntimeError(f"当前 checkout 未开放 {provider}，可用方式：{', '.join(methods) or 'card'}")
     sc.fetch_elements_session(http, pk, session_id, ctx, version, profile, log)
     processor = str(stage1.get("processor_entity") or "") or sc._entity_from_return_url(ctx.get("return_url") or init_data.get("return_url") or "") or "openai_llc"
     if apply_promo_callback and not late_promo:
@@ -1318,12 +1312,7 @@ def stripe_to_provider(
             ctx["original_checkout_amount"] = original_checkout_amount
             methods = ctx.get("payment_method_types") or []
             if not _has_provider_method(methods, provider):
-                if provider != "momo":
-                    raise RuntimeError(f"应用优惠后 checkout 未开放 {provider}，可用方式：{', '.join(methods) or 'card'}")
-                log(
-                    "[momo] 优惠刷新后仍未发布 MoMo，"
-                    "继续提交 VN 税务地区并再次刷新"
-                )
+                raise RuntimeError(f"应用优惠后 checkout 未开放 {provider}，可用方式：{', '.join(methods) or 'card'}")
             sc.fetch_elements_session(http, pk, session_id, ctx, version, profile, log)
     if provider == "pix" and require_zero_due and not late_promo:
         original_checkout_amount = ctx.get("original_checkout_amount")
@@ -1338,19 +1327,6 @@ def stripe_to_provider(
             )
     ctx["billing"] = billing
     sc.update_tax_region(http, session_id, pk, version, ctx, billing, profile, log)
-    if provider == "momo":
-        original_checkout_amount = ctx.get("original_checkout_amount")
-        init_data, version, ctx = sc.init_checkout(http, session_id, pk, profile, log)
-        ctx["billing"] = billing
-        ctx["original_checkout_amount"] = original_checkout_amount
-        methods = ctx.get("payment_method_types") or []
-        if not _has_provider_method(methods, provider):
-            raise RuntimeError(
-                "MOMO_METHOD_UNAVAILABLE: VN Checkout 在 taxes 后未开放 MoMo，"
-                f"可用方式：{', '.join(map(str, methods)) or 'card'}"
-            )
-        sc.fetch_elements_session(http, pk, session_id, ctx, version, profile, log)
-        log("[momo] VN taxes 后的 Checkout 已确认开放 MoMo")
     if provider == "blik":
         original_checkout_amount = ctx.get("original_checkout_amount")
         init_data, version, ctx = sc.init_checkout(http, session_id, pk, profile, log)

@@ -240,29 +240,6 @@ func (s *Server) sunnyPaymentProbeCandidates(ids []uint) ([]sunnyPaymentProbeCan
 	if err := s.db.Where("id IN ?", ids).Order("id asc").Find(&sessions).Error; err != nil {
 		return nil, err
 	}
-	// A cached selection can outlive a deleted/rebound session. Reject the
-	// request before creating a task instead of starting a 0-progress task.
-	found := make(map[uint]struct{}, len(sessions))
-	for _, session := range sessions {
-		found[session.ID] = struct{}{}
-	}
-	missing := make([]string, 0)
-	seen := make(map[uint]struct{}, len(ids))
-	for _, id := range ids {
-		if id == 0 {
-			continue
-		}
-		if _, duplicate := seen[id]; duplicate {
-			continue
-		}
-		seen[id] = struct{}{}
-		if _, ok := found[id]; !ok {
-			missing = append(missing, fmt.Sprintf("%d", id))
-		}
-	}
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("所选账户已被删除或换绑，请刷新列表后重试（缺失 Session ID: %s）", strings.Join(missing, ", "))
-	}
 	accounts, _ := s.sunnySessionSidecars(sessions)
 	candidates := make([]sunnyPaymentProbeCandidate, 0, len(sessions))
 	for _, session := range sessions {

@@ -43,40 +43,6 @@ var checkoutProviderSet = func() map[string]bool {
 	return out
 }()
 
-// Provider paths below depend on a provider-specific method being published
-// by Checkout. An empty probe remains unknown and is allowed through.
-var checkoutProbeProviders = map[string]string{
-	"paypal": "paypal", "ideal": "ideal", "twint": "twint", "upi": "upi",
-	"pix": "pix", "momo": "momo", "gcash": "gcash", "gopay": "gopay",
-	"blik": "blik", "kakao": "kakao_pay",
-}
-
-func sunnyCheckoutProbeMethods(account SunnyAccount) ([]string, bool) {
-	for _, raw := range []string{account.PaymentProbeMethodsJSON, account.PaymentMethodsJSON} {
-		var values []string
-		if strings.TrimSpace(raw) == "" || json.Unmarshal([]byte(raw), &values) != nil {
-			continue
-		}
-		methods := normalizeSunnyPaymentMethods(values)
-		if len(methods) > 0 {
-			return methods, true
-		}
-	}
-	return nil, false
-}
-
-func sunnyCheckoutPreSkipReason(linkType string, account SunnyAccount) (string, bool) {
-	required, filterable := checkoutProbeProviders[linkType]
-	if !filterable {
-		return "", false
-	}
-	methods, known := sunnyCheckoutProbeMethods(account)
-	if !known || sunnyHasAllPaymentMethods(methods, []string{required}) {
-		return "", false
-	}
-	return fmt.Sprintf("已跳过：最近支付方式探测未发现 %s（可用方式：%s）", linkType, strings.Join(methods, ", ")), true
-}
-
 var checkoutCountryCurrency = map[string]string{
 	"US": "USD", "DE": "EUR", "FR": "EUR", "NL": "EUR", "PT": "EUR",
 	"IN": "INR", "ID": "IDR", "BR": "BRL", "VN": "VND", "GB": "GBP",
@@ -125,7 +91,6 @@ type sunnyCheckoutCredential struct {
 	CheckoutKind string
 	SessionID    uint
 	External     bool
-	SkipReason   string
 }
 
 type checkoutSecret struct {
@@ -386,7 +351,7 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 				emails = append(emails, sess.Email)
 			}
 			if len(emails) > 0 {
-				s.db.Select("email", "access_token", "checkout_kind", "payment_methods_json", "payment_probe_methods_json").Where("email IN ?", emails).Find(&accountRows)
+				s.db.Select("email", "access_token", "checkout_kind").Where("email IN ?", emails).Find(&accountRows)
 				for _, account := range accountRows {
 					accounts[sunnyEmailKey(account.Email)] = account
 				}
@@ -395,8 +360,7 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 				account := accounts[sunnyEmailKey(sess.Email)]
 				token := sunnyPreferredAccessToken(sess.AccessToken, sunnyAccessTokenFromSessionJSON(sess.SessionJSON), account.AccessToken)
 				if token != "" {
-					skipReason, _ := sunnyCheckoutPreSkipReason(body.LinkType, account)
-					creds = append(creds, sunnyCheckoutCredential{Token: token, Email: sess.Email, CheckoutKind: normalizeSunnyCheckoutKind(account.CheckoutKind), SessionID: sess.ID, SkipReason: skipReason})
+					creds = append(creds, sunnyCheckoutCredential{Token: token, Email: sess.Email, CheckoutKind: normalizeSunnyCheckoutKind(account.CheckoutKind), SessionID: sess.ID})
 				}
 			}
 		} else {
@@ -430,7 +394,7 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 		payload := map[string]any{"credential_id": id, "credentials": make([]map[string]any, len(creds)), "plan": body.Plan, "link_type": body.LinkType, "country": body.Country, "currency": body.Currency, "retry_count": body.RetryCount, "concurrency": body.Concurrency, "use_promo": body.UsePromo, "promo_campaign": body.PromoCampaign, "promo_country": body.PromoCountry, "promo_code": body.PromoCode, "workspace_name": body.WorkspaceName, "workspace_id": body.WorkspaceID, "seat_quantity": body.SeatQuantity, "price_interval": body.PriceInterval, "credit_quantity": body.CreditQuantity, "pix_tax_id": body.PixTaxID, "pix_auto_kind": body.PixAutoKind, "ideal_bank": body.IdealBank}
 		items := payload["credentials"].([]map[string]any)
 		for i, c := range creds {
-			items[i] = map[string]any{"index": i, "email": c.Email, "checkout_kind": c.CheckoutKind, "session_id": c.SessionID, "external": c.External, "skip_reason": c.SkipReason}
+			items[i] = map[string]any{"index": i, "email": c.Email, "checkout_kind": c.CheckoutKind, "session_id": c.SessionID, "external": c.External}
 		}
 		task := s.createTask(sunnyCheckoutTaskType, "chatgpt", payload, len(creds))
 		writeJSON(w, http.StatusAccepted, serializeTask(task))
@@ -570,28 +534,12 @@ func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
 		s.finishTask(task, TaskFailed, "临时提链凭据已不存在；服务重启后的临时任务不能恢复，请重新提交", map[string]any{"requested": len(rows), "success": 0, "failed": len(rows), "items": []any{}})
 		return
 	}
-	result := map[string]any{"requested": len(rows), "success": 0, "failed": 0, "skipped": 0, "items": []any{}, "errors": []any{}}
+	result := map[string]any{"requested": len(rows), "success": 0, "failed": 0, "items": []any{}, "errors": []any{}}
 	var mu sync.Mutex
 	sem := make(chan struct{}, intValue(payload["concurrency"], 3))
 	var wg sync.WaitGroup
 	for idx, row := range rows {
 		idx, row := idx, row
-		if skipReason := strings.TrimSpace(text(row["skip_reason"])); skipReason != "" {
-			rowIndex := intValue(row["index"], idx)
-			email := text(row["email"])
-			accountID := uint(intValue(row["session_id"], 0))
-			item := map[string]any{"index": rowIndex, "email": email, "status": "skipped", "message": skipReason, "error": skipReason, "link_type": text(payload["link_type"]), "checkout_kind": text(row["checkout_kind"])}
-			if accountID > 0 {
-				item["account_id"] = accountID
-			}
-			mu.Lock()
-			recordSunnyCheckoutResult(task, result, item)
-			s.db.Save(task)
-			mu.Unlock()
-			s.appendCheckoutProgress(task, email, accountID, rowIndex, 100, skipReason)
-			s.appendTaskEventWithContext(task.ID, fmt.Sprintf("账户 %s 已跳过", fallback(email, fmt.Sprintf("#%d", rowIndex))), "checkout_result", "info", map[string]any{"email": email, "account_id": accountID, "index": rowIndex, "progress": 100, "result": item}, TaskEventContext{Email: email, AccountID: accountID, Module: "checkout", Action: "checkout.result", Scope: "account", SubjectType: "account"})
-			continue
-		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -644,7 +592,7 @@ func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
 	}
 	task.ResultJSON = dumpJSON(result)
 	task.Status = TaskSucceeded
-	if intValue(result["success"], 0)+intValue(result["skipped"], 0) < intValue(result["requested"], 0) {
+	if intValue(result["success"], 0) == 0 {
 		task.Status = TaskFailed
 	}
 	task.FinishedAt.Valid = true
@@ -655,12 +603,9 @@ func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
 func recordSunnyCheckoutResult(task *Task, result map[string]any, item map[string]any) {
 	items, _ := result["items"].([]any)
 	result["items"] = append(items, item)
-	switch text(item["status"]) {
-	case "succeeded":
+	if text(item["status"]) == "succeeded" {
 		result["success"] = intValue(result["success"], 0) + 1
-	case "skipped":
-		result["skipped"] = intValue(result["skipped"], 0) + 1
-	default:
+	} else {
 		result["failed"] = intValue(result["failed"], 0) + 1
 	}
 	task.ProgressCurrent++

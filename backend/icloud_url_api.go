@@ -302,7 +302,7 @@ func fetchURLAPIGenericLatestMail(email, accessURL string, limit int, proxyURL s
 	if _, err = validateURLAPIMailAddress(resp.Request.URL.String()); err != nil {
 		return nil, err
 	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone {
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 		return nil, &outlookMailError{Code: "mailbox_credential_invalid", Category: "credential", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: "url_api 取码 URL 无效、已过期或无权访问", Detail: fmt.Sprintf("HTTP %d", resp.StatusCode), Terminal: true}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -365,7 +365,7 @@ func fetchAMailURLAPILatestMail(email, accessURL string, proxyURL string) (map[s
 			return &outlookMailError{Code: "mailbox_network_error", Category: "network", HTTPStatus: http.StatusServiceUnavailable, UserMessage: "a-mail 邮箱接口连接失败", Detail: requestErr.Error()}
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 			return &outlookMailError{Code: "mailbox_credential_invalid", Category: "credential", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: "a-mail 邮箱链接无效或已过期", Detail: fmt.Sprintf("HTTP %d", resp.StatusCode), Terminal: true}
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -434,7 +434,7 @@ func fetchMCZeroURLAPILatestMail(email, accessURL string, proxyURL string) (map[
 	if _, err = validateURLAPIMailAddress(resp.Request.URL.String()); err != nil {
 		return nil, err
 	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone {
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 		return nil, &outlookMailError{Code: "mailbox_credential_invalid", Category: "credential", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: "url_api 取码 URL 无效、已过期或无权访问", Detail: fmt.Sprintf("HTTP %d", resp.StatusCode), Terminal: true}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

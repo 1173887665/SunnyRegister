@@ -189,18 +189,6 @@ func TestSunnyPaymentProbeTasksSkipOverlappingSessions(t *testing.T) {
 	}
 }
 
-func TestSunnyPaymentProbeRejectsMissingSessionIDs(t *testing.T) {
-	s := newSunnySessionTestServer(t)
-	var session SunnySession
-	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
-		t.Fatal(err)
-	}
-	_, err := s.sunnyPaymentProbeCandidates([]uint{session.ID, session.ID + 99999})
-	if err == nil || !strings.Contains(err.Error(), "缺失 Session ID") {
-		t.Fatalf("missing session error = %v", err)
-	}
-}
-
 func TestSunnyPaymentProbeTaskUsesSelectedCountries(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	var session SunnySession

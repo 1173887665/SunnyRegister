@@ -66,21 +66,6 @@ func TestFetchURLAPILatestMailNormalizesHTML(t *testing.T) {
 	}
 }
 
-func TestFetchURLAPI404IsRetryableProviderFailure(t *testing.T) {
-	urlAPIAllowPrivateForTests = true
-	defer func() { urlAPIAllowPrivateForTests = false }()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.NotFound(w, nil)
-	}))
-	defer server.Close()
-
-	_, err := fetchURLAPILatestMail("alias@icloud.com", server.URL, 1, "")
-	mailErr, ok := err.(*outlookMailError)
-	if !ok || mailErr.Code != "mailbox_provider_failed" || mailErr.Terminal {
-		t.Fatalf("expected retryable provider failure for 404, got %#v", err)
-	}
-}
-
 func TestFetchMCZeroURLAPILatestMailParsesJSONCodes(t *testing.T) {
 	urlAPIAllowPrivateForTests = true
 	defer func() { urlAPIAllowPrivateForTests = false }()

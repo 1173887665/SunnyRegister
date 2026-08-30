@@ -1042,7 +1042,6 @@ class OpenAIEmailRegisterFlow:
         about_you_first_seen_at = 0.0
         about_you_validation_retries = 0
         existing_account_recovery_attempted = False
-        email_login_recovery_attempted = False
         route_error_retries = 0
         password_step_submitted = False
         password_step_submitted_at = 0.0
@@ -1199,22 +1198,7 @@ class OpenAIEmailRegisterFlow:
                         )
                     password_step_submitted = False
                 if ("/log-in/password" in url or self.existing_account) and not self._uses_login_secret():
-                    if self._switch_password_to_email_code(page):
-                        if self.account.chatgpt_password or self.account.totp_secret:
-                            self.log("[认证] 登录密钥不完整或已切换回退，本次使用邮箱凭证登录")
-                        email_code_submitted = False
-                        about_you_submitted = False
-                        continue
-                    if not str(self.account.chatgpt_password or "").strip():
-                        if not email_login_recovery_attempted:
-                            email_login_recovery_attempted = True
-                            self.log("[认证] 密码页未提供邮箱验证码入口，正在重新打开邮箱登录流程")
-                            signin_url = self._create_openai_signin_url(page.context, page)
-                            _goto_auth_page(page, signin_url, self.log, timeout=90000)
-                            otp_min_timestamp = time.time() - 10
-                            email_code_submitted = False
-                            about_you_submitted = False
-                            continue
+                    if not self._switch_password_to_email_code(page):
                         page_summary = self._page_text_summary(page, 300)
                         if any(marker in page_summary.lower() for marker in _ACCOUNT_DEACTIVATED_MARKERS):
                             raise LoginSecretAuthenticationError(
@@ -1224,7 +1208,11 @@ class OpenAIEmailRegisterFlow:
                             "OpenAI 未提供邮箱验证码切换入口，且当前 LS 登录未完成；"
                             f"当前页面：{page_summary[:240]}"
                         )
-                    self.log("[认证] 当前登录页未提供邮箱验证码入口，已使用保存的 ChatGPT 密码继续登录")
+                    if self.account.chatgpt_password or self.account.totp_secret:
+                        self.log("[认证] 登录密钥不完整或已切换回退，本次使用邮箱凭证登录")
+                    email_code_submitted = False
+                    about_you_submitted = False
+                    continue
                 try:
                     password_filled = self._fill_password_step(page)
                 except (TaskCancelledError, BrowserDriverDisconnectedError):
@@ -2242,8 +2230,8 @@ class OpenAIEmailRegisterFlow:
     def _fill_password_step(self, page) -> bool:
         login_page = "/log-in/password" in str(page.url or "") or self.existing_account
         password = self.account.chatgpt_password
-        if login_page and not str(password or "").strip():
-            raise RuntimeError("ChatGPT 密码登录页未提供邮箱验证码入口，且未保存 ChatGPT 密码")
+        if login_page and not self._uses_login_secret():
+            raise RuntimeError("ChatGPT LS login is unavailable; mailbox OTP must be used")
         if not password:
             password = self._generate_password()
             self.generated_password = password

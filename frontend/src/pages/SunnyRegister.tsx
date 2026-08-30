@@ -1834,18 +1834,6 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     });
   };
   const clearWorkbenchSelection = () => { setSelected([]); setSelectedRowCache({}); };
-  async function batchDeleteWorkbenchAccounts() {
-    const ids = Array.from(new Set(selected.map(Number).filter(Boolean)));
-    if (!ids.length) return;
-    try {
-      await apiFetch("/sunny/mailboxes/batch-delete", { method: "POST", body: JSON.stringify({ ids }) });
-      clearWorkbenchSelection();
-      notify("ok", t.done);
-      await load();
-    } catch (e: any) {
-      notify("fail", e.message || String(e));
-    }
-  }
   return <div className="space-y-5">
     <div className="grid gap-4 lg:grid-cols-2">
       <LogCard t={t} title={t.globalLogs} progressTitle={t.registrationTaskProgress} view={globalCardView} onView={setGlobalCardView} logs={globalLogs} busy={busy} onClear={()=>{ setGlobalLogs([]); if (!busy && !activeTaskId) { setRegistrationProgress(null); taskEventCursorRef.current = { taskId: "", last: 0 }; setTaskEventCursor(taskEventCursorRef.current); } }} progressContent={<TaskRegistrationProgress t={t} progress={registrationProgress}/>}/>
@@ -1856,7 +1844,6 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
         <div className="flex items-center gap-4"><h2 className="text-2xl font-bold text-slate-950 dark:text-white">ChatGPT</h2><SelectionSummary t={t} count={selected.length} total={total} selectingAll={selectingAll} onSelectAll={selectAllFiltered} onClear={clearWorkbenchSelection}/></div>
         <div className="flex flex-wrap gap-2">
           <button className="sr-btn sr-danger-btn disabled:cursor-not-allowed disabled:opacity-50" title={activeTaskId || submittingTask ? t.interruptTaskTip : ""} onClick={cancelActiveTask} disabled={(!activeTaskId && !submittingTask) || stopRequested}><X className="h-4 w-4"/>{stopRequested ? t.interruptingTask : t.interruptTask}</button>
-          {selected.length > 0 && <ConfirmBubble message={t.confirmBatchDeleteMailbox} detail={String(selected.length) + " " + t.selected} onConfirm={batchDeleteWorkbenchAccounts}><button className="sr-btn sr-danger-btn disabled:cursor-not-allowed disabled:opacity-50" disabled={busy || submittingTask}>{t.batchDelete} ({selected.length})</button></ConfirmBubble>}
           <span title={busy ? t.registerTaskRunning : !selected.length ? t.chooseMailbox : ""}>
             <Button className="rounded-xl bg-blue-600 px-4 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => setAutoOpen(true)} disabled={busy}><Plus className="mr-2 h-4 w-4"/>{t.autoRegister}</Button>
           </span>
@@ -4116,17 +4103,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     if (paymentMethods.length) qs.set("payment_methods", paymentMethods.join(","));
     if (group) qs.set("group_id", group);
     const res = await apiFetch(`/sunny/sessions?${qs.toString()}`);
-    const nextItems = Array.isArray(res.items) ? res.items : [];
-    setItems(nextItems);
-    // Validate persisted selections against the complete list, not just the
-    // current page, so deleted/rebound sessions are removed without dropping
-    // valid selections that live on another page.
-    if (selected.length) {
-      void apiFetch("/sunny/sessions?selection=all").then((all) => {
-        const validIds = new Set(selectionIDs(all));
-        setSelected((old)=>old.filter((id)=>validIds.has(Number(id))));
-      }).catch(() => undefined);
-    }
+    setItems(res.items||[]);
     setTotal(Number(res.total || 0));
     setAvailablePaymentMethods(Array.isArray(res.payment_method_options) ? res.payment_method_options.map(String) : []);
     setAvailableTrialCountries(Array.isArray(res.trial_country_options) ? res.trial_country_options.map((item:any)=>String(item).toUpperCase()) : []);
@@ -4169,13 +4146,6 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const exportFormat = ["at", "ls", "sk", "sub"].includes(fmt) ? fmt : "at";
   const allChecked = items.length > 0 && items.every((x)=>selected.includes(x.id));
   const paymentMethodOptions=Array.from(new Set([...availablePaymentMethods,...paymentMethods,...items.flatMap((item)=>Array.isArray(item.payment_methods)?item.payment_methods:[])])).map(String);
-  const resolveExistingSessionIds = async (ids: number[]) => {
-    const requested = Array.from(new Set(ids.map(Number).filter((id)=>id > 0)));
-    if (!requested.length) return [];
-    const all = await apiFetch("/sunny/sessions?selection=all");
-    const validIds = new Set(selectionIDs(all));
-    return requested.filter((id)=>validIds.has(id));
-  };
   async function exp(ids?: number[], format = exportFormat){
     const sessionIds = ids?.length ? ids : selected;
     if (!sessionIds.length) { notify("fail", t.selectExportRows); return; }
@@ -4188,21 +4158,6 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     appendAccountOperationLog("delete", "process", `开始删除账户：${row.email || row.id}`, "info", row.email);
     try { await apiFetch(`/sunny/sessions/${row.id}`, { method:"DELETE" }); appendAccountOperationLog("delete", "result", `删除完成：${row.email || row.id}`, "info", row.email); notify("ok", t.done); setSelected((old)=>old.filter((id)=>id!==row.id)); void load(); }
     catch(e:any){ appendAccountOperationLog("delete", "result", `删除失败：${e.message || String(e)}`, "error", row.email); notify("fail", e.message || String(e)); }
-  }
-  async function batchDeleteSessions() {
-    const ids = Array.from(new Set(selected.map(Number).filter(Boolean)));
-    if (!ids.length) return;
-    appendAccountOperationLog("delete", "process", "开始批量删除 " + ids.length + " 个账户", "info");
-    try {
-      await apiFetch("/sunny/sessions/batch-delete", { method:"POST", body:JSON.stringify({ ids }) });
-      appendAccountOperationLog("delete", "result", "批量删除完成：" + ids.length + " 个账户", "info");
-      setSelected([]);
-      notify("ok", t.done);
-      await load();
-    } catch (e:any) {
-      appendAccountOperationLog("delete", "result", "批量删除失败：" + (e.message || String(e)), "error");
-      notify("fail", e.message || String(e));
-    }
   }
   async function refreshSessionList() {
     try { await load(); notify("ok", t.refreshDone); }
@@ -4362,9 +4317,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   }
   async function runPaymentProbe(ids: number[], countries: string[], row?: AnyObj) {
     try {
-      const targetIds = await resolveExistingSessionIds(ids);
-      if (!targetIds.length) { notify("fail", "所选账户已不存在，请刷新列表后重试"); return; }
-      const task=await runPersistentSessionTask("payment-probe", targetIds, row?.email, () => apiFetch("/sunny/sessions/payment-probe",{method:"POST",body:JSON.stringify({session_ids:targetIds,countries})}));
+      const task=await runPersistentSessionTask("payment-probe", ids, row?.email, () => apiFetch("/sunny/sessions/payment-probe",{method:"POST",body:JSON.stringify({session_ids:ids,countries})}));
       const result=task.result||{};
       if (row) {
         const item=(result.items||[]).find((entry:AnyObj)=>Number(entry.session_id)===Number(row.id));
@@ -4641,7 +4594,6 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
         {batchProgressItems.map(([label, value], index)=><BatchTaskProgress key={index} t={t} label={label} value={value}/>)}
       </div>
       <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
-        {selected.length > 0 && <ConfirmBubble message={t.confirmBatchDeleteMailbox} detail={String(selected.length) + " " + t.selected} onConfirm={batchDeleteSessions}><button className="sr-text-btn sr-action-danger">{t.batchDelete} ({selected.length})</button></ConfirmBubble>}
         {activeRenewalTasks.length > 0 && <button className={cn("sr-text-btn sr-action-danger",stoppingRenewal&&"is-running")} aria-busy={stoppingRenewal} disabled={stoppingRenewal} title={t.stopRenewalTip} onClick={()=>void stopRenewalTasks()}>{stoppingRenewal ? <Loader2 className="h-4 w-4 animate-spin"/> : <X className="h-4 w-4"/>}{stoppingRenewal ? t.stoppingRenewal : t.stopRenewal}</button>}
         <div className="sr-batch-action"><button className={cn("sr-text-btn sr-action-info",batchRebindBusy&&"is-running")} aria-busy={batchRebindBusy} disabled={batchRebindBusy || selected.length===0} title="选择换绑邮箱来源" onClick={()=>void openRebindDialog(selected)}>{batchRebindBusy?<Loader2 className="h-4 w-4 animate-spin"/>:<RotateCw className="h-4 w-4"/>}{batchRebindBusy?"换绑中":"换绑"}</button></div>
         <div className="sr-batch-action"><button className={cn("sr-text-btn sr-action-info",batchSub2Busy&&"is-running")} aria-busy={batchSub2Busy} disabled={batchSub2Busy || selected.length===0} title={selected.length===0?t.sub2NoSelection:t.importSub2API} onClick={()=>void importSub2API(selected)}>{batchSub2Busy?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>}{batchSub2Busy?t.importingSub2API:"反代"}</button></div>

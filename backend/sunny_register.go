@@ -685,220 +685,6 @@ func sunnyPlanTypeForMailbox(m SunnyMailbox, sessionPlans map[string]string, acc
 	return "-"
 }
 
-func sunnyUintIDs(value any) []uint {
-	values, ok := value.([]any)
-	if !ok {
-		return nil
-	}
-	seen := make(map[uint]struct{}, len(values))
-	ids := make([]uint, 0, len(values))
-	for _, value := range values {
-		id := uint(intValue(value, 0))
-		if id == 0 {
-			continue
-		}
-		if _, exists := seen[id]; exists {
-			continue
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-	}
-	return ids
-}
-
-// sunnyDeleteLinkedRecords removes an account identity as one unit so list views
-// cannot retain orphaned mailbox, account, session, or lease rows.
-func (s *Server) sunnyDeleteLinkedRecords(mailboxIDs, sessionIDs []uint) error {
-	if len(mailboxIDs) == 0 && len(sessionIDs) == 0 {
-		return fmt.Errorf("no records selected")
-	}
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		mailboxIDSet := map[uint]struct{}{}
-		sessionIDSet := map[uint]struct{}{}
-		accountIDSet := map[uint]struct{}{}
-		emailSet := map[string]struct{}{}
-		addMailboxID := func(id uint) {
-			if id != 0 {
-				mailboxIDSet[id] = struct{}{}
-			}
-		}
-		addSessionID := func(id uint) {
-			if id != 0 {
-				sessionIDSet[id] = struct{}{}
-			}
-		}
-		addAccountID := func(id uint) {
-			if id != 0 {
-				accountIDSet[id] = struct{}{}
-			}
-		}
-		addEmail := func(email string) {
-			if key := sunnyEmailKey(email); key != "" {
-				emailSet[key] = struct{}{}
-			}
-		}
-		for _, id := range mailboxIDs {
-			addMailboxID(id)
-		}
-		for _, id := range sessionIDs {
-			addSessionID(id)
-		}
-
-		var seedMailboxes []SunnyMailbox
-		if len(mailboxIDSet) > 0 {
-			if err := tx.Where("id IN ?", sunnyUintIDSet(mailboxIDSet)).Find(&seedMailboxes).Error; err != nil {
-				return err
-			}
-			for _, mailbox := range seedMailboxes {
-				addEmail(mailbox.Email)
-				addEmail(mailbox.RebindEmail)
-			}
-		}
-		var seedSessions []SunnySession
-		if len(sessionIDSet) > 0 {
-			if err := tx.Where("id IN ?", sunnyUintIDSet(sessionIDSet)).Find(&seedSessions).Error; err != nil {
-				return err
-			}
-			for _, session := range seedSessions {
-				addEmail(session.Email)
-				addAccountID(session.AccountID)
-			}
-		}
-
-		keys := sunnyStringSet(emailSet)
-		var accounts []SunnyAccount
-		accountQuery := tx
-		if len(accountIDSet) > 0 || len(mailboxIDSet) > 0 || len(keys) > 0 {
-			clauses := make([]string, 0, 3)
-			args := make([]any, 0, 3)
-			if ids := sunnyUintIDSet(accountIDSet); len(ids) > 0 {
-				clauses = append(clauses, "id IN ?")
-				args = append(args, ids)
-			}
-			if ids := sunnyUintIDSet(mailboxIDSet); len(ids) > 0 {
-				clauses = append(clauses, "mailbox_id IN ?")
-				args = append(args, ids)
-			}
-			if len(keys) > 0 {
-				clauses = append(clauses, "LOWER(email) IN ? OR LOWER(rebind_email) IN ?")
-				args = append(args, keys, keys)
-			}
-			if err := accountQuery.Where(strings.Join(clauses, " OR "), args...).Find(&accounts).Error; err != nil {
-				return err
-			}
-		}
-		for _, account := range accounts {
-			addAccountID(account.ID)
-			addMailboxID(account.MailboxID)
-			addEmail(account.Email)
-			addEmail(account.RebindEmail)
-		}
-
-		keys = sunnyStringSet(emailSet)
-		var linkedMailboxes []SunnyMailbox
-		mailboxQuery := tx
-		clauses := make([]string, 0, 2)
-		args := make([]any, 0, 2)
-		if ids := sunnyUintIDSet(mailboxIDSet); len(ids) > 0 {
-			clauses = append(clauses, "id IN ?")
-			args = append(args, ids)
-		}
-		if len(keys) > 0 {
-			clauses = append(clauses, "LOWER(email) IN ? OR LOWER(rebind_email) IN ?")
-			args = append(args, keys, keys)
-		}
-		if len(clauses) > 0 {
-			if err := mailboxQuery.Where(strings.Join(clauses, " OR "), args...).Find(&linkedMailboxes).Error; err != nil {
-				return err
-			}
-		}
-		for _, mailbox := range linkedMailboxes {
-			addMailboxID(mailbox.ID)
-			addEmail(mailbox.Email)
-			addEmail(mailbox.RebindEmail)
-		}
-
-		keys = sunnyStringSet(emailSet)
-		accountIDs := sunnyUintIDSet(accountIDSet)
-		sessionIDs := sunnyUintIDSet(sessionIDSet)
-		sessionClauses := make([]string, 0, 3)
-		sessionArgs := make([]any, 0, 3)
-		if len(sessionIDs) > 0 {
-			sessionClauses = append(sessionClauses, "id IN ?")
-			sessionArgs = append(sessionArgs, sessionIDs)
-		}
-		if len(accountIDs) > 0 {
-			sessionClauses = append(sessionClauses, "account_id IN ?")
-			sessionArgs = append(sessionArgs, accountIDs)
-		}
-		if len(keys) > 0 {
-			sessionClauses = append(sessionClauses, "LOWER(email) IN ?")
-			sessionArgs = append(sessionArgs, keys)
-		}
-		if len(sessionClauses) > 0 {
-			if err := tx.Where(strings.Join(sessionClauses, " OR "), sessionArgs...).Delete(&SunnySession{}).Error; err != nil {
-				return err
-			}
-		}
-		if ids := sunnyUintIDSet(mailboxIDSet); len(ids) > 0 {
-			if err := tx.Where("mailbox_id IN ?", ids).Delete(&SunnyMailboxLease{}).Error; err != nil {
-				return err
-			}
-		}
-		accountClauses := make([]string, 0, 3)
-		accountArgs := make([]any, 0, 3)
-		if len(accountIDs) > 0 {
-			accountClauses = append(accountClauses, "id IN ?")
-			accountArgs = append(accountArgs, accountIDs)
-		}
-		if ids := sunnyUintIDSet(mailboxIDSet); len(ids) > 0 {
-			accountClauses = append(accountClauses, "mailbox_id IN ?")
-			accountArgs = append(accountArgs, ids)
-		}
-		if len(keys) > 0 {
-			accountClauses = append(accountClauses, "LOWER(email) IN ? OR LOWER(rebind_email) IN ?")
-			accountArgs = append(accountArgs, keys, keys)
-		}
-		if len(accountClauses) > 0 {
-			if err := tx.Where(strings.Join(accountClauses, " OR "), accountArgs...).Delete(&SunnyAccount{}).Error; err != nil {
-				return err
-			}
-		}
-		mailboxClauses := make([]string, 0, 2)
-		mailboxArgs := make([]any, 0, 2)
-		if ids := sunnyUintIDSet(mailboxIDSet); len(ids) > 0 {
-			mailboxClauses = append(mailboxClauses, "id IN ?")
-			mailboxArgs = append(mailboxArgs, ids)
-		}
-		if len(keys) > 0 {
-			mailboxClauses = append(mailboxClauses, "LOWER(email) IN ? OR LOWER(rebind_email) IN ?")
-			mailboxArgs = append(mailboxArgs, keys, keys)
-		}
-		if len(mailboxClauses) > 0 {
-			if err := tx.Where(strings.Join(mailboxClauses, " OR "), mailboxArgs...).Delete(&SunnyMailbox{}).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-func sunnyUintIDSet(values map[uint]struct{}) []uint {
-	ids := make([]uint, 0, len(values))
-	for id := range values {
-		ids = append(ids, id)
-	}
-	return ids
-}
-
-func sunnyStringSet(values map[string]struct{}) []string {
-	items := make([]string, 0, len(values))
-	for value := range values {
-		items = append(items, value)
-	}
-	return items
-}
-
 func (s *Server) sunnyGroupMap() map[uint]string {
 	var groups []SunnyMailboxGroup
 	s.db.Find(&groups)
@@ -910,20 +696,6 @@ func (s *Server) sunnyGroupMap() map[uint]string {
 }
 
 func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []string) {
-	if len(parts) == 1 && parts[0] == "batch-delete" && r.Method == http.MethodPost {
-		body, _ := parseBody(r)
-		ids := sunnyUintIDs(body["ids"])
-		if len(ids) == 0 {
-			writeError(w, http.StatusBadRequest, "ids is required")
-			return
-		}
-		if err := s.sunnyDeleteLinkedRecords(ids, nil); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": len(ids)})
-		return
-	}
 	if len(parts) == 1 && parts[0] == "rebind-options" && r.Method == http.MethodGet {
 		var rows []SunnyMailbox
 		// Source choices mirror the mailbox configuration list. Keep disabled rows
@@ -1169,7 +941,6 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		if len(parts) == 1 && r.Method == http.MethodPut {
 			body, _ := parseBody(r)
 			originalEmail := m.Email
-			originalAccessKey := strings.TrimSpace(m.AccessKey)
 			requestedEmail := ""
 			emailProvided := false
 			trialUpdated := false
@@ -1349,16 +1120,6 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			if _, ok := body["last_error"]; ok {
 				m.LastError = text(body["last_error"])
 			}
-			urlAPICredentialRefreshed := normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel) == "url_api" && originalAccessKey != strings.TrimSpace(m.AccessKey)
-			if urlAPICredentialRefreshed {
-				m.LastError = ""
-				if _, enabledSpecified := body["enabled"]; !enabledSpecified || boolValue(body["enabled"], true) {
-					m.Enabled = true
-				}
-				if _, statusSpecified := body["status"]; !statusSpecified && normalizeSunnyMailboxStatus(m.Status) == "失败" {
-					m.Status = "未注册"
-				}
-			}
 			if _, ok := body["trial_eligibility"]; ok {
 				trialUpdated = true
 				m.TrialEligibility = normalizeSunnyTrialEligibility(text(body["trial_eligibility"]))
@@ -1426,10 +1187,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			return
 		}
 		if len(parts) == 1 && r.Method == http.MethodDelete {
-			if err := s.sunnyDeleteLinkedRecords([]uint{m.ID}, nil); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
+			s.db.Delete(&m)
 			writeJSON(w, 200, map[string]any{"ok": true})
 			return
 		}
@@ -2040,13 +1798,6 @@ func (s *Server) sunnyImportMailboxes(w http.ResponseWriter, r *http.Request) {
 			}
 			if p["openai_rt"] != "" {
 				updates["openai_rt"] = p["openai_rt"]
-			}
-			if lineChannel == "url_api" && strings.TrimSpace(old.AccessKey) != strings.TrimSpace(p["access_key"]) {
-				updates["last_error"] = ""
-				updates["enabled"] = true
-				if normalizeSunnyMailboxStatus(old.Status) == "失败" {
-					updates["status"] = "未注册"
-				}
 			}
 			if err := s.db.Model(&old).Updates(updates).Error; err != nil {
 				bad = append(bad, p["email"]+" => "+err.Error())
@@ -5521,20 +5272,6 @@ func (s *Server) sunnyMailboxForSession(sess SunnySession) (SunnyMailbox, error)
 }
 
 func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []string) {
-	if len(parts) == 1 && parts[0] == "batch-delete" && r.Method == http.MethodPost {
-		body, _ := parseBody(r)
-		ids := sunnyUintIDs(body["ids"])
-		if len(ids) == 0 {
-			writeError(w, http.StatusBadRequest, "ids is required")
-			return
-		}
-		if err := s.sunnyDeleteLinkedRecords(nil, ids); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": len(ids)})
-		return
-	}
 	if len(parts) == 0 && r.Method == http.MethodGet {
 		q := r.URL.Query()
 		paymentMethodOptions := s.sunnyPaymentMethodOptions()
@@ -6066,10 +5803,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 			return
 		}
 		if r.Method == http.MethodDelete {
-			if err := s.sunnyDeleteLinkedRecords(nil, []uint{sess.ID}); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
+			s.db.Delete(&sess)
 			writeJSON(w, 200, map[string]any{"ok": true})
 			return
 		}
@@ -6491,8 +6225,8 @@ func (s *Server) sunnyMailboxesForRegisterTask(body map[string]any) ([]SunnyMail
 		seen := map[uint]bool{}
 		for _, m := range rows {
 			seen[m.ID] = true
-			if err := sunnyValidateMailboxForRegistration(m); err != nil {
-				return nil, err
+			if !m.Enabled {
+				return nil, fmt.Errorf("mailbox config is unavailable: selected mailbox is disabled: %s", m.Email)
 			}
 		}
 		for _, id := range ids {
@@ -6503,42 +6237,11 @@ func (s *Server) sunnyMailboxesForRegisterTask(body map[string]any) ([]SunnyMail
 		return rows, nil
 	}
 	query := s.db.Where("enabled = ? AND status NOT IN ?", true, []string{"disabled", "禁用"})
+	if count := intValue(body["count"], 0); count > 0 {
+		query = query.Limit(count)
+	}
 	query.Order("id asc").Find(&rows)
-	eligible := make([]SunnyMailbox, 0, len(rows))
-	for _, mailbox := range rows {
-		if sunnyMailboxHasStaleURLAPICredential(mailbox) {
-			continue
-		}
-		eligible = append(eligible, mailbox)
-	}
-	if len(eligible) == 0 && len(rows) > 0 {
-		return nil, fmt.Errorf("mailbox config is unavailable: all enabled URL API mailboxes have expired pickup credentials; update their pickup URL before registering")
-	}
-	if count := intValue(body["count"], 0); count > 0 && len(eligible) > count {
-		eligible = eligible[:count]
-	}
-	return eligible, nil
-}
-
-func sunnyMailboxHasStaleURLAPICredential(mailbox SunnyMailbox) bool {
-	if normalizeSunnyMailboxChannel(mailbox.MailboxType, mailbox.MailboxChannel) != "url_api" {
-		return false
-	}
-	message := strings.ToLower(strings.TrimSpace(mailbox.LastError))
-	return strings.Contains(message, "mailbox_not_found") ||
-		strings.Contains(message, "url_api 邮箱不存在") ||
-		strings.Contains(message, "provider response confirms mailbox not found") ||
-		strings.Contains(message, "http 404")
-}
-
-func sunnyValidateMailboxForRegistration(mailbox SunnyMailbox) error {
-	if sunnyMailboxHasStaleURLAPICredential(mailbox) {
-		return fmt.Errorf("mailbox config is unavailable: selected mailbox pickup URL has expired or its inbox no longer exists: %s; update its access key before registering", mailbox.Email)
-	}
-	if !mailbox.Enabled {
-		return fmt.Errorf("mailbox config is unavailable: selected mailbox is disabled: %s", mailbox.Email)
-	}
-	return nil
+	return rows, nil
 }
 
 func (s *Server) sunnyMailboxesNeedPhone(rows []SunnyMailbox) bool {

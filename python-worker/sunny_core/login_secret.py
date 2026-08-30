@@ -510,17 +510,14 @@ class LoginSecretSetupFlow:
                     const sidebar = [...document.querySelectorAll('button,[role="button"],a')].find(el =>
                         visible(el) && /sidebar|サイドバー|侧边栏/.test(desc(el)) && /open|開く|打开/.test(desc(el)));
                     if (sidebar) sidebar.click();
-                    const settings = [...document.querySelectorAll('a,button,[role="button"],[role="link"],[role="tab"],[role="menuitem"]')].find(el =>
+                    const settings = [...document.querySelectorAll('a,button,[role="button"],[role="link"],[role="tab"]')].find(el =>
                         visible(el) && /settings|設定|设置|href=.*settings/.test(desc(el)));
                     if (settings) { settings.scrollIntoView({block:'center'}); settings.click(); return true; }
-                    const menu = [...document.querySelectorAll('[role="menu"],[role="menuitem"],[data-radix-menu-content],[data-radix-popper-content-wrapper]')]
+                    const menu = [...document.querySelectorAll('[role="menu"],[data-radix-menu-content],[data-radix-popper-content-wrapper]')]
                         .some(el => visible(el));
                     const profile = [...document.querySelectorAll('button,[role="button"],a')].find(el =>
                         visible(el) && /accounts-profile-button|profile menu|プロファイルメニュー|账户菜单|个人资料/.test(desc(el)));
-                    const profileExpanded = profile && (
-                        String(profile.getAttribute('aria-expanded') || '').toLowerCase() === 'true'
-                        || String(profile.getAttribute('data-state') || '').toLowerCase() === 'open'
-                    );
+                    const profileExpanded = profile && String(profile.getAttribute('aria-expanded') || '').toLowerCase() === 'true';
                     if (profile && !profileExpanded && !menu) profile.click();
                     return !!sidebar || !!menu || !!profileExpanded || !!profile;
                 }"""

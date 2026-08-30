@@ -177,34 +177,3 @@ func TestRecordSunnyCheckoutResultPersistsPartialTaskItems(t *testing.T) {
 		t.Fatalf("task progress=%d success=%d failed=%d", task.ProgressCurrent, task.SuccessCount, task.ErrorCount)
 	}
 }
-
-func TestSunnyCheckoutPreSkipReasonUsesLatestProbeMethods(t *testing.T) {
-	account := SunnyAccount{PaymentProbeMethodsJSON: `["card"]`, PaymentMethodsJSON: `["momo"]`}
-	if reason, ok := sunnyCheckoutPreSkipReason("momo", account); !ok || !strings.Contains(reason, "momo") {
-		t.Fatalf("expected MoMo pre-skip, reason=%q ok=%v", reason, ok)
-	}
-	account.PaymentProbeMethodsJSON = `["momo","card"]`
-	if reason, ok := sunnyCheckoutPreSkipReason("momo", account); ok || reason != "" {
-		t.Fatalf("supported MoMo should continue, reason=%q ok=%v", reason, ok)
-	}
-}
-
-func TestSunnyCheckoutPreSkipReasonLeavesUnknownAndHostedUnfiltered(t *testing.T) {
-	unknown := SunnyAccount{PaymentProbeMethodsJSON: "[]", PaymentMethodsJSON: "[]"}
-	if reason, ok := sunnyCheckoutPreSkipReason("momo", unknown); ok || reason != "" {
-		t.Fatalf("unknown methods should continue, reason=%q ok=%v", reason, ok)
-	}
-	known := SunnyAccount{PaymentProbeMethodsJSON: `["card"]`}
-	if reason, ok := sunnyCheckoutPreSkipReason("hosted", known); ok || reason != "" {
-		t.Fatalf("hosted should not be filtered, reason=%q ok=%v", reason, ok)
-	}
-}
-
-func TestRecordSunnyCheckoutResultCountsSkippedWithoutError(t *testing.T) {
-	task := Task{Status: TaskRunning, ProgressTotal: 1}
-	result := map[string]any{"requested": 1, "success": 0, "failed": 0, "skipped": 0, "items": []any{}}
-	recordSunnyCheckoutResult(&task, result, map[string]any{"email": "skip@example.com", "status": "skipped"})
-	if intValue(result["skipped"], 0) != 1 || intValue(result["failed"], 0) != 0 || task.ErrorCount != 0 {
-		t.Fatalf("unexpected skipped accounting: result=%#v task=%+v", result, task)
-	}
-}
