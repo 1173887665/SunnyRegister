@@ -99,6 +99,18 @@ def test_auth_navigation_continues_when_dom_timeout_landed_on_auth_page() -> Non
     assert any("DOM 加载等待超时" in message for message in logs)
 
 
+def test_auth_navigation_retries_unknown_issuer_at_commit() -> None:
+    page = Mock()
+    response = object()
+    page.goto.side_effect = [RuntimeError("Page.goto: SEC_ERROR_UNKNOWN_ISSUER"), response]
+    logs: list[str] = []
+
+    assert _goto_auth_page(page, "https://auth.openai.com/api/accounts/authorize", logs.append) is response
+    assert page.goto.call_count == 2
+    assert page.goto.call_args_list[1].kwargs["wait_until"] == "commit"
+    assert any("TLS/证书" in message for message in logs)
+
+
 def test_email_step_waits_when_prefilled_input_is_disabled() -> None:
     logs: list[str] = []
     account = MailAccount("user@icloud.com", "", "", "", "raw")

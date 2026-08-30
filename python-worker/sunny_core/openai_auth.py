@@ -114,6 +114,12 @@ _NAVIGATION_ABORT_MARKERS = (
 
 _TRANSIENT_BROWSER_NETWORK_MARKERS = (
     "ssl_error_unknown",
+    "sec_error_unknown_issuer",
+    "unknown issuer",
+    "net::err_cert_authority_invalid",
+    "certificate verify failed",
+    "unable to get local issuer certificate",
+    "self signed certificate",
     "client network socket disconnected before secure tls connection",
     "net::err_connection_reset",
     "socket hang up",
@@ -188,28 +194,54 @@ def _goto_auth_page(page: Any, url: str, log: Callable[[str], None] | None = Non
     try:
         return page.goto(url, wait_until="domcontentloaded", timeout=timeout)
     except Exception as exc:
-        if "timeout" in str(exc or "").lower() and _auth_navigation_landed(page, previous_url):
+        message = str(exc or "").lower()
+        if "timeout" in message and _auth_navigation_landed(page, previous_url):
             if log:
                 log(f"[认证] 认证页面已进入 OpenAI 域，但 DOM 加载等待超时；继续处理当前页面：{page.url}")
             return None
-        if not _is_navigation_aborted(exc):
-            raise
-        try:
-            page.wait_for_timeout(600)
-        except Exception:
-            pass
-        if _auth_navigation_landed(page, previous_url):
+
+        # A certificate-chain error or a stalled proxy can leave the browser
+        # on about:blank. Retry once at the commit milestone so the auth state
+        # machine gets a chance to observe the redirect without waiting for all
+        # page resources. The bounded retry also lets the caller classify the
+        # final error and rotate the proxy when a pool is configured.
+        retryable_transport = _is_transient_browser_network_error(exc) or "timeout" in message
+        if retryable_transport:
             if log:
-                log(f"[认证] 认证导航由上游重定向接管，继续处理当前页面：{page.url}")
-            return None
-        try:
-            return page.goto(url, wait_until="commit", timeout=min(timeout, 30000))
-        except Exception as retry_exc:
-            if _is_navigation_aborted(retry_exc) and _auth_navigation_landed(page, previous_url):
+                kind = "TLS/证书" if any(marker in message for marker in ("issuer", "certificate", "cert_", "ssl_error")) else "网络"
+                log(f"[认证] 授权页出现临时{kind}错误，改用 commit 阶段重试一次：{str(exc)[:180]}")
+            try:
+                page.wait_for_timeout(600)
+            except Exception:
+                pass
+            try:
+                return page.goto(url, wait_until="commit", timeout=min(timeout, 30000))
+            except Exception as retry_exc:
+                if _auth_navigation_landed(page, previous_url) and (
+                    _is_navigation_aborted(retry_exc) or "timeout" in str(retry_exc or "").lower()
+                ):
+                    if log:
+                        log(f"[认证] 授权页重试已进入 OpenAI 域，继续处理当前页面：{page.url}")
+                    return None
+                raise
+        if _is_navigation_aborted(exc):
+            try:
+                page.wait_for_timeout(600)
+            except Exception:
+                pass
+            if _auth_navigation_landed(page, previous_url):
                 if log:
-                    log(f"[认证] 认证导航重试已进入目标站点，继续处理当前页面：{page.url}")
+                    log(f"[认证] 认证导航由上游重定向接管，继续处理当前页面：{page.url}")
                 return None
-            raise
+            try:
+                return page.goto(url, wait_until="commit", timeout=min(timeout, 30000))
+            except Exception as retry_exc:
+                if _is_navigation_aborted(retry_exc) and _auth_navigation_landed(page, previous_url):
+                    if log:
+                        log(f"[认证] 认证导航重试已进入目标站点，继续处理当前页面：{page.url}")
+                    return None
+                raise
+        raise
 
 
 @dataclass
@@ -1467,7 +1499,7 @@ class OpenAIEmailRegisterFlow:
                 raise TimeoutError("重新发送 OpenAI 邮箱验证码后等待 60 秒仍未收到验证码") from resend_exc
         self.recent_email_code = str(code or "").strip()
         self.recent_email_code_at = time.time()
-        journal, detach_journal = self._attach_email_otp_network_journal(page)
+        journal, detach_journal, otp_network_state = self._attach_email_otp_network_journal(page)
         try:
             # Existing accounts only need a fresh authenticated session. Filling
             # the OTP UI first can make the React form auto-submit before the
@@ -1503,6 +1535,16 @@ class OpenAIEmailRegisterFlow:
                             self._retry_with_fresh_email_code(page, code)
                             return
                         if self._email_otp_validation_was_sent(journal):
+                            # The native Camoufox form can receive a valid
+                            # JSON response without React mounting the redirect
+                            # route. Reuse the server-provided continuation
+                            # URL instead of posting the same OTP again.
+                            continue_url = str(otp_network_state.get("continue_url") or "").strip()
+                            if self._is_valid_auth_continue_url(continue_url):
+                                self.log("[邮箱] 验证码接口已返回继续地址，恢复认证页面跳转")
+                                page.goto(continue_url, wait_until="domcontentloaded", timeout=90000)
+                                self._wait_after_otp_submit(page)
+                                return
                             raise RuntimeError(
                                 "邮箱验证码已由页面提交，但注册状态未推进；为避免触发验证码尝试次数限制，"
                                 f"已停止重复提交同一验证码。关键请求：{self._email_otp_network_summary(journal)}"
@@ -1674,8 +1716,14 @@ class OpenAIEmailRegisterFlow:
                 pass
         return False
 
+    @staticmethod
+    def _is_valid_auth_continue_url(value: str) -> bool:
+        parsed = urlparse(str(value or ""))
+        return parsed.scheme == "https" and parsed.hostname in {"auth.openai.com", "chatgpt.com"}
+
     def _attach_email_otp_network_journal(self, page):
         journal: list[str] = []
+        state: dict[str, str] = {"continue_url": ""}
 
         def interesting(url: str) -> bool:
             value = str(url or "")
@@ -1711,6 +1759,19 @@ class OpenAIEmailRegisterFlow:
                     except Exception:
                         pass
                     remember(f"RESP {response.status} {ctype[:60]} {url[:160]}")
+                    # A successful native form submission may leave the SPA on
+                    # /email-verification even though this endpoint returned
+                    # the continuation route. Keep the URL in memory for the
+                    # caller; do not write it into the diagnostic journal.
+                    if "email-otp/validate" in url and 200 <= int(response.status or 0) < 300:
+                        try:
+                            payload = response.json()
+                            if isinstance(payload, dict):
+                                candidate = str(payload.get("continue_url") or payload.get("continueUrl") or "").strip()
+                                if self._is_valid_auth_continue_url(candidate):
+                                    state["continue_url"] = candidate
+                        except Exception:
+                            pass
                     if int(response.status or 0) >= 400:
                         try:
                             body = str(response.text() or "")
@@ -1752,7 +1813,7 @@ class OpenAIEmailRegisterFlow:
             except Exception:
                 pass
 
-        return journal, detach
+        return journal, detach, state
 
     def _email_otp_network_summary(self, journal: list[str]) -> str:
         if not journal:

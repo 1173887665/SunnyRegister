@@ -47,6 +47,12 @@ def classify_auth_failure(error: Any, *, http_status: int = 0) -> AuthFailure:
         return AuthFailure("rate_limited", retryable=True, rotate_proxy=True, fresh_context=True, delay_seconds=20)
     if any(marker in text for marker in (
         "cloudflare", "upstream edge", "上游边缘", "proxy connect failed", "https 隧道",
+        # Browser TLS failures are commonly caused by a dead or intercepting
+        # proxy certificate. Treat them as an edge/proxy failure so the task
+        # scheduler can cool down this endpoint and select another one.
+        "sec_error_unknown_issuer", "unknown issuer", "net::err_cert_authority_invalid",
+        "certificate verify failed", "unable to get local issuer certificate",
+        "self signed certificate", "ssl_error_bad_cert", "ssl_error_untrusted_cert",
     )):
         return AuthFailure("edge_blocked", retryable=True, rotate_proxy=True, delay_seconds=2)
     if any(marker in text for marker in (

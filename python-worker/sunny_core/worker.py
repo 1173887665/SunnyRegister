@@ -1998,8 +1998,8 @@ def _run_one_impl(
                     )
                 else:
                     db.event(
-                        f"[{email}] [认证] 协议模式遇到{fallback_reason}，没有可恢复的认证断点，"
-                        "切换到后台无头浏览器重新建立会话",
+                        f"[{email}] [认证] 协议模式遇到{fallback_reason}，当前步骤未生成可接管断点；"
+                        "启动后台无头浏览器建立新会话",
                         "warning",
                         detail={
                             "email": email,
@@ -2013,7 +2013,12 @@ def _run_one_impl(
                 try:
                     session = run_protocol_headless_fallback(native_handoff)
                 except Exception as handoff_error:
-                    if native_handoff is None or _is_cancel_exception(handoff_error) or _is_account_deactivated(handoff_error):
+                    handoff_failure = classify_auth_failure(handoff_error)
+                    if (
+                        _is_cancel_exception(handoff_error)
+                        or _is_account_deactivated(handoff_error)
+                        or (native_handoff is None and not handoff_failure.retryable)
+                    ):
                         raise
                     handoff_failed = True
                     db.event(

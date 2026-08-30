@@ -220,6 +220,17 @@ class LoginSecretSetupFlow:
             self.reader.connect()
         return self.reader
 
+    def _reconnect_reader(self) -> None:
+        """Drop a stale mailbox connection before waiting for a resent code."""
+        reader, self.reader = self.reader, None
+        if reader is not None:
+            try:
+                close = getattr(reader, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
+
     @staticmethod
     def _wait_for_code(reader, min_timestamp: float, timeout: int) -> str:
         """Call mailbox readers with the bounded timeout while keeping old test/custom readers compatible."""
@@ -778,7 +789,22 @@ class LoginSecretSetupFlow:
                                     EMAIL_OTP_RESEND_WAIT_SECONDS,
                                 )
                             except TimeoutError as resend_exc:
-                                raise TimeoutError("重新发送重认证验证码后等待 60 秒仍未收到验证码") from resend_exc
+                                self._reconnect_reader()
+                                if resend_attempts < EMAIL_OTP_MAX_RESENDS and self._click_resend_email_code(page):
+                                    resend_attempts += 1
+                                    retry_at = time.time() - 2
+                                    self.log("[邮箱] 读取器未收到重认证验证码，已刷新邮箱连接并再次请求验证码")
+                                    try:
+                                        code = self._wait_for_code(self._reader_instance(), retry_at, EMAIL_OTP_RESEND_WAIT_SECONDS)
+                                    except TimeoutError:
+                                        code = ""
+                                    if str(code or "").strip():
+                                        # Continue below with the newly obtained code.
+                                        resend_exc = None
+                                    else:
+                                        raise TimeoutError("重新发送重认证验证码后等待 60 秒仍未收到验证码") from resend_exc
+                                else:
+                                    raise TimeoutError("重新发送重认证验证码后等待 60 秒仍未收到验证码") from resend_exc
                     if not self._fill_code(page, code):
                         raise RuntimeError("邮箱重认证验证码输入失败")
                     email_code_used = True
@@ -1481,6 +1507,16 @@ class ProtocolLoginSecretSetupFlow:
             self.reader.connect()
         return self.reader
 
+    def _reconnect_reader(self) -> None:
+        reader, self.reader = self.reader, None
+        if reader is not None:
+            try:
+                close = getattr(reader, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
+
     _recent_email_code_usable = staticmethod(LoginSecretSetupFlow._recent_email_code_usable)
 
     @staticmethod
@@ -1754,7 +1790,41 @@ class ProtocolLoginSecretSetupFlow:
                             reader, code_timestamp, EMAIL_OTP_RESEND_WAIT_SECONDS
                         )
                     except TimeoutError as resend_exc:
-                        raise TimeoutError("重新发送协议重认证验证码后等待 60 秒仍未收到验证码") from resend_exc
+                        self._reconnect_reader()
+                        if resend_attempts < EMAIL_OTP_MAX_RESENDS:
+                            # The first resend may have been lost upstream;
+                            # issue one final send request before reconnecting
+                            # the mailbox reader and waiting again.
+                            next_send_at = time.time() - 2
+                            send_status, _send_payload, send_text = self._request(
+                                "GET",
+                                f"{AUTH_BASE_URL}/api/accounts/email-otp/send",
+                                headers={
+                                    "accept": "application/json, text/plain, */*",
+                                    "origin": AUTH_BASE_URL,
+                                    "referer": auth_url,
+                                },
+                            )
+                            if send_status != 200:
+                                raise RuntimeError(
+                                    f"再次发送协议重认证验证码失败: HTTP {send_status} {send_text[:180]}"
+                                ) from resend_exc
+                            resend_attempts += 1
+                            self.log("[邮箱] 读取器未收到协议重认证验证码，已刷新连接并再次请求验证码")
+                            try:
+                                reader = self._reader_instance()
+                                code = self._wait_for_code(
+                                    reader, next_send_at, EMAIL_OTP_RESEND_WAIT_SECONDS
+                                )
+                            except TimeoutError:
+                                code = ""
+                            if str(code or "").strip():
+                                # Continue with the fresh code and validate it.
+                                resend_exc = None
+                            else:
+                                raise TimeoutError("重新发送协议重认证验证码后等待 60 秒仍未收到验证码") from resend_exc
+                        else:
+                            raise TimeoutError("重新发送协议重认证验证码后等待 60 秒仍未收到验证码") from resend_exc
             status, payload, text = self._request(
                 "POST",
                 EMAIL_OTP_VALIDATE_URL,

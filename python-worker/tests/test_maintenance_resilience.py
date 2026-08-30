@@ -26,6 +26,12 @@ class AuthResilienceTests(unittest.TestCase):
         self.assertEqual(failure.category, "token_invalid")
         self.assertFalse(failure.terminal)
 
+    def test_browser_unknown_issuer_rotates_proxy(self):
+        failure = classify_auth_failure("Page.goto: SEC_ERROR_UNKNOWN_ISSUER")
+        self.assertEqual(failure.category, "edge_blocked")
+        self.assertTrue(failure.retryable)
+        self.assertTrue(failure.rotate_proxy)
+
 
 class ProxySchedulerTests(unittest.TestCase):
     def test_sticky_lease_rotates_after_rate_limit_cooldown(self):
