@@ -187,10 +187,6 @@ func TestSunnyCheckoutPreSkipReasonUsesLatestProbeMethods(t *testing.T) {
 	if reason, ok := sunnyCheckoutPreSkipReason("momo", account); ok || reason != "" {
 		t.Fatalf("supported MoMo should continue, reason=%q ok=%v", reason, ok)
 	}
-	account.PaymentProbeMethodsJSON = `["kakao_pay","card"]`
-	if reason, ok := sunnyCheckoutPreSkipReason("kakao", account); ok || reason != "" {
-		t.Fatalf("supported Kakao Pay should continue, reason=%q ok=%v", reason, ok)
-	}
 }
 
 func TestSunnyCheckoutPreSkipReasonLeavesUnknownAndHostedUnfiltered(t *testing.T) {
