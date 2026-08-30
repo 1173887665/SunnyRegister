@@ -10,6 +10,7 @@ from sunny_core.auth_challenges import generate_totp, normalize_totp_secret
 from sunny_core.luban_sms import LubanSMSClient, LubanSMSError
 from sunny_core.mailbox import (
     URL_API_REQUEST_TIMEOUT,
+    MailboxAccessError,
     MailAccount,
     URLAPIICloudReader,
     _ai1998_latest_mail_html,
@@ -194,6 +195,62 @@ def test_url_api_reader_ignores_baseline_and_returns_new_code() -> None:
     reader.connect()
     with patch("sunny_core.mailbox.time.sleep", return_value=None):
         assert reader.wait_for_code(0, timeout=5) == "222222"
+
+
+def test_url_api_404_without_matching_mail_is_retryable() -> None:
+    account = MailAccount(
+        "user@icloud.com", "", "", "", "raw",
+        mailbox_type="apple", mailbox_channel="url_api",
+        access_key="https://mail.example.test/latest",
+    )
+    reader = URLAPIICloudReader(account, None)
+    response = Mock(
+        status_code=404, ok=False, headers={}, encoding="utf-8",
+        content='{"message":"最近5封邮件中没有找到该邮箱的邮件","found":false,"ok":false}'.encode("utf-8"),
+        url=account.access_key,
+    )
+    response.iter_content.side_effect = TypeError
+    with patch.object(mailbox_module.requests, "get", return_value=response):
+        with pytest.raises(MailboxAccessError) as raised:
+            reader._latest_generic()
+    assert raised.value.code == "mailbox_provider_failed"
+    assert raised.value.terminal is False
+
+
+def test_url_api_404_explicit_missing_mailbox_is_terminal() -> None:
+    account = MailAccount(
+        "user@icloud.com", "", "", "", "raw",
+        mailbox_type="apple", mailbox_channel="url_api",
+        access_key="https://mail.example.test/latest",
+    )
+    reader = URLAPIICloudReader(account, None)
+    response = Mock(
+        status_code=404, ok=False, headers={}, encoding="utf-8",
+        content='{"message":"邮箱不存在"}'.encode("utf-8"),
+        url=account.access_key,
+    )
+    response.iter_content.side_effect = TypeError
+    with patch.object(mailbox_module.requests, "get", return_value=response):
+        with pytest.raises(MailboxAccessError) as raised:
+            reader._latest_generic()
+    assert raised.value.code == "mailbox_not_found"
+    assert raised.value.terminal is True
+
+
+def test_url_api_connect_keeps_empty_baseline_after_retryable_404() -> None:
+    account = MailAccount(
+        "user@icloud.com", "", "", "", "raw",
+        mailbox_type="apple", mailbox_channel="url_api",
+        access_key="https://mail.example.test/latest",
+    )
+    reader = URLAPIICloudReader(account, None)
+    reader._latest = Mock(side_effect=[
+        MailboxAccessError("mailbox_provider_failed", "暂无匹配邮件"),
+        {"otp_candidates": extract_otp_candidates("ChatGPT verification code 482901")},
+    ])
+    reader.connect()
+    with patch("sunny_core.mailbox.time.sleep", return_value=None):
+        assert reader.wait_for_code(0, timeout=5) == "482901"
 
 
 def test_mczero_url_api_reader_parses_json_codes_and_preview() -> None:

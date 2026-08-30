@@ -66,6 +66,39 @@ func TestFetchURLAPILatestMailNormalizesHTML(t *testing.T) {
 	}
 }
 
+func TestFetchURLAPI404WithoutMatchingMailIsRetryable(t *testing.T) {
+	urlAPIAllowPrivateForTests = true
+	defer func() { urlAPIAllowPrivateForTests = false }()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"最近5封邮件中没有找到该邮箱的邮件","found":false,"ok":false}`))
+	}))
+	defer server.Close()
+
+	_, err := fetchURLAPILatestMail("alias@icloud.com", server.URL, 1, "")
+	mailErr, ok := err.(*outlookMailError)
+	if !ok || mailErr.Code != "mailbox_provider_failed" || mailErr.Terminal {
+		t.Fatalf("expected retryable empty-inbox response, got %#v", err)
+	}
+}
+
+func TestFetchURLAPI404ExplicitMissingMailboxIsTerminal(t *testing.T) {
+	urlAPIAllowPrivateForTests = true
+	defer func() { urlAPIAllowPrivateForTests = false }()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"邮箱不存在"}`))
+	}))
+	defer server.Close()
+
+	_, err := fetchURLAPILatestMail("alias@icloud.com", server.URL, 1, "")
+	mailErr, ok := err.(*outlookMailError)
+	if !ok || mailErr.Code != "mailbox_not_found" || !mailErr.Terminal {
+		t.Fatalf("expected terminal missing-mailbox response, got %#v", err)
+	}
+}
+
 func TestFetchMCZeroURLAPILatestMailParsesJSONCodes(t *testing.T) {
 	urlAPIAllowPrivateForTests = true
 	defer func() { urlAPIAllowPrivateForTests = false }()

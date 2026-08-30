@@ -349,6 +349,81 @@ def _url_api_strategy(value: str) -> str:
     return "generic"
 
 
+def _response_text_limited(response: Any, maximum: int = URL_API_MAX_RESPONSE_BYTES) -> str:
+    """Read at most maximum bytes from a URL API response."""
+    chunks: list[bytes] = []
+    size = 0
+    def fallback_text() -> str:
+        raw = getattr(response, "content", None)
+        if raw is None or not isinstance(raw, (bytes, bytearray, str)):
+            raw = getattr(response, "text", "")
+        data = bytes(raw) if isinstance(raw, (bytes, bytearray)) else str(raw or "").encode("utf-8", errors="replace")
+        return data[:maximum].decode(getattr(response, "encoding", None) or "utf-8", errors="replace")
+
+    try:
+        iterator = response.iter_content(chunk_size=16 * 1024)
+        for chunk in iterator:
+            if not chunk:
+                continue
+            remaining = maximum - size
+            if remaining <= 0:
+                break
+            chunks.append(chunk[:remaining])
+            size += min(len(chunk), remaining)
+            if len(chunk) > remaining:
+                break
+    except (AttributeError, TypeError):
+        return fallback_text()
+    return b"".join(chunks).decode(getattr(response, "encoding", None) or "utf-8", errors="replace")
+
+
+def _url_api_response_indicates_missing_mailbox(value: str) -> bool:
+    """Only classify a 404 as terminal when the provider says the inbox itself is gone."""
+    normalized = re.sub(r"\s+", " ", _html_to_text(str(value or ""))).strip().lower()
+    return any(marker in normalized for marker in (
+        "mailbox not found",
+        "mailbox does not exist",
+        "mailbox doesn't exist",
+        "inbox not found",
+        "inbox does not exist",
+        "inbox doesn't exist",
+        "邮箱不存在",
+        "收件箱不存在",
+        "邮箱已删除",
+        "收件箱已删除",
+    ))
+
+
+def _url_api_status_error(response: Any, provider_name: str = "url_api") -> MailboxAccessError | None:
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status in {401, 403, 410}:
+        return MailboxAccessError(
+            "mailbox_credential_invalid",
+            f"{provider_name} 取码 URL 无效、已过期或无权访问",
+            f"HTTP {status}",
+            terminal=True,
+        )
+    if 200 <= status < 300:
+        return None
+    body = _response_text_limited(response)
+    if status == 404 and _url_api_response_indicates_missing_mailbox(body):
+        return MailboxAccessError(
+            "mailbox_not_found",
+            f"{provider_name} 邮箱或收件箱不存在",
+            "HTTP 404 provider response confirms mailbox not found",
+            terminal=True,
+        )
+    detail = f"HTTP {status}"
+    body_text = re.sub(r"\s+", " ", _html_to_text(body)).strip()
+    if body_text:
+        detail += f": {body_text[:240]}"
+    return MailboxAccessError(
+        "mailbox_provider_failed",
+        f"{provider_name} 邮箱渠道请求失败，请稍后重试",
+        detail,
+    )
+
+
 def _html_to_text(value: str) -> str:
     raw = re.sub(r"(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)>", " ", str(value or ""))
     raw = re.sub(r"(?i)<br\s*/?>|</(?:p|div|li|tr|h[1-6])>", "\n", raw)
@@ -1517,17 +1592,10 @@ class URLAPIICloudReader:
             target = urljoin(target, location)
         if response is None:
             raise MailboxAccessError("mailbox_network_error", "url_api 邮箱渠道未返回响应")
-        if response.status_code in {401, 403, 404, 410}:
+        status_error = _url_api_status_error(response)
+        if status_error is not None:
             response.close()
-            raise MailboxAccessError(
-                "mailbox_credential_invalid",
-                "url_api 取码 URL 无效、已过期或无权访问",
-                f"HTTP {response.status_code}",
-                terminal=True,
-            )
-        if not response.ok:
-            response.close()
-            raise MailboxAccessError("mailbox_provider_failed", "url_api 邮箱渠道请求失败，请稍后重试", f"HTTP {response.status_code}")
+            raise status_error
         try:
             content_length = int(response.headers.get("Content-Length") or 0)
         except (TypeError, ValueError):
@@ -1604,10 +1672,9 @@ class URLAPIICloudReader:
         list_url = f"{base}/api/email-box/{quote(mailbox_uuid, safe='')}/emails"
         response = self._request_url(list_url, headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"}, timeout=timeout, allow_redirects=True)
         try:
-            if response.status_code in {401, 403, 404, 410}:
-                raise MailboxAccessError("mailbox_credential_invalid", "a-mail 邮箱链接无效或已过期", f"HTTP {response.status_code}", terminal=True)
-            if not response.ok:
-                raise MailboxAccessError("mailbox_provider_failed", "a-mail 邮箱接口请求失败", f"HTTP {response.status_code}")
+            status_error = _url_api_status_error(response, "a-mail")
+            if status_error is not None:
+                raise status_error
             payload = response.json()
         except ValueError as exc:
             raise MailboxAccessError("mailbox_service_response_invalid", "a-mail 邮箱接口返回格式无效", str(exc)) from exc
@@ -1669,15 +1736,9 @@ class URLAPIICloudReader:
             response.close()
             raise MailboxAccessError("mailbox_url_forbidden", "url_api 取码地址跳转超出当前邮箱渠道域名", terminal=True)
         try:
-            if response.status_code in {401, 403, 404, 410}:
-                raise MailboxAccessError(
-                    "mailbox_credential_invalid",
-                    "url_api 取码 URL 无效、已过期或无权访问",
-                    f"HTTP {response.status_code}",
-                    terminal=True,
-                )
-            if not response.ok:
-                raise MailboxAccessError("mailbox_provider_failed", "url_api 邮箱渠道请求失败，请稍后重试", f"HTTP {response.status_code}")
+            status_error = _url_api_status_error(response)
+            if status_error is not None:
+                raise status_error
             try:
                 raw_payload = getattr(response, "content", b"")
                 if isinstance(raw_payload, (bytes, bytearray)):
@@ -1780,12 +1841,18 @@ class URLAPIICloudReader:
         try:
             message = self._latest()
         except MailboxAccessError as exc:
-            if getattr(self, "strategy", "generic") != "mczero" or exc.terminal:
+            if exc.terminal:
                 raise
-            self.log(f"[{self.account.email}] url_api 专用域名接口暂时不可用，将在等待验证码期间保留通用解析兜底")
-            try:
-                message = self._latest(strategy="generic")
-            except MailboxAccessError:
+            if getattr(self, "strategy", "generic") == "mczero":
+                self.log(f"[{self.account.email}] url_api 专用域名接口暂时不可用，将在等待验证码期间保留通用解析兜底")
+                try:
+                    message = self._latest(strategy="generic")
+                except MailboxAccessError as fallback_exc:
+                    if fallback_exc.terminal:
+                        raise
+                    message = {"otp_candidates": []}
+            else:
+                self.log(f"[{self.account.email}] url_api 取件基线暂时不可用，将在等待验证码阶段继续重试：{str(exc)[:180]}")
                 message = {"otp_candidates": []}
         self.seen_candidate_keys.update(str(item.get("key") or "") for item in message.get("otp_candidates") or [] if item.get("key"))
         self.log(f"[{self.account.email}] url_api iCloud mailbox URL connected")
