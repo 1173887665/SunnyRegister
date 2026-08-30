@@ -182,6 +182,14 @@ def test_rebind_domain_mailbox_creates_individual_pickup_credential(monkeypatch)
     assert any(f"{email}----{credential}" in message for message in logs)
 
 
+def test_rebind_imported_pickup_credential_hashes_token():
+    token = "dmsk_imported-token"
+    credential = f"https://sunny.example/api/sunny/domain-mail/pickup?email=new%40example.com&token={token}"
+
+    assert rebind_module._pickup_token_hash(credential) == hashlib.sha256(token.encode("utf-8")).hexdigest()
+    assert rebind_module._pickup_token_hash("not-a-url") == ""
+
+
 def test_rebind_resends_twice_after_otp_delivery_timeouts():
     calls = []
     logs = []

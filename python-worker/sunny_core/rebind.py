@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import replace
 from typing import Any, Callable
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
 
@@ -68,6 +68,14 @@ def _cookie_header(session: Any) -> str:
             return "; ".join(f"{key}={value}" for key, value in session.cookies.get_dict().items())
         except Exception:
             return ""
+
+
+def _pickup_token_hash(credential: str) -> str:
+    parsed = urlsplit(str(credential or "").strip())
+    if parsed.scheme not in {"http", "https"}:
+        return ""
+    token = parse_qs(parsed.query).get("token", [""])[0]
+    return hashlib.sha256(token.encode("utf-8")).hexdigest() if token else ""
 
 
 class ChangeEmailClient:
@@ -508,9 +516,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         imported_channel = str(account_row.get("_rebind_target_channel") or "").strip().lower()
         if imported_email and imported_api:
             new_email, new_api = imported_email, imported_api
-            parsed = urlsplit(new_api)
-            token = parse_qs(parsed.query).get("token", [""])[0] if parsed.scheme in {"http", "https"} else ""
-            new_api_token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest() if token else ""
+            new_api_token_hash = _pickup_token_hash(new_api)
             log(f"[{old_email}] 使用已导入域名邮箱：{new_email}")
         else:
             new_email, new_api, new_api_token_hash = _domain_mailbox(db, log)
