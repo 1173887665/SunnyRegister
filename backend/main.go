@@ -159,7 +159,7 @@ func loadDotEnv(filename string) {
 }
 
 func resolveStaticFS() http.FileSystem {
-	for _, dir := range []string{"./static", "../static", "./frontend/dist", "../frontend/dist"} {
+	for _, dir := range []string{"./backend/static", "./static", "../static", "./frontend/dist", "../frontend/dist"} {
 		if st, err := os.Stat(dir); err == nil && st.IsDir() {
 			return http.Dir(dir)
 		}
