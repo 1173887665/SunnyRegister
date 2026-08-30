@@ -7,7 +7,13 @@ from unittest.mock import Mock, patch
 import pytest
 
 from sunny_core.mailbox import MailAccount
-from sunny_core.openai_auth import OpenAIEmailRegisterFlow, _goto_auth_page, _goto_chatgpt_page
+from sunny_core.openai_auth import (
+    LoginSecretAuthenticationError,
+    OpenAIEmailRegisterFlow,
+    _goto_auth_page,
+    _goto_chatgpt_page,
+    login_or_register,
+)
 from sunny_core.protocol_auth import ProtocolRegistrationError, ProtocolRegistrationFlow
 
 
@@ -173,6 +179,23 @@ def test_password_page_switches_from_japanese_one_time_code_label() -> None:
 
     assert flow._switch_password_to_email_code(page) is True
     target.click.assert_called_once()
+
+
+def test_login_retries_fresh_ls_context_after_password_stalls() -> None:
+    account = MailAccount("user@icloud.com", "", "", "", "raw", chatgpt_password="stored-password", totp_secret="JBSWY3DPEHPK3PXP")
+    first = Mock()
+    first.run.side_effect = LoginSecretAuthenticationError("ChatGPT 密码提交后认证页面未继续")
+    second = Mock()
+    second.run.return_value = {"access_token": "access-token"}
+
+    with patch("sunny_core.openai_auth.OpenAIEmailRegisterFlow", side_effect=[first, second]) as flow_class:
+        result = login_or_register(account, existing_account=True, require_refresh_token=False)
+
+    assert result["access_token"] == "access-token"
+    assert flow_class.call_count == 2
+    assert flow_class.call_args_list[0].kwargs["prefer_login_secret"] is True
+    assert flow_class.call_args_list[1].kwargs["prefer_login_secret"] is True
+    assert flow_class.call_args_list[1].kwargs["existing_session"] is None
 
 
 def test_protocol_email_otp_rebuilds_session_after_invalid_auth_step() -> None:

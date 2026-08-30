@@ -42,7 +42,10 @@ REGISTER_DEVICE_PROFILES = [
 PROFILE_SUBMISSION_TIMEOUT_SECONDS = 300
 PROFILE_TRANSITION_TIMEOUT_MS = 5000
 EMAIL_OTP_INITIAL_WAIT_SECONDS = 120
-EMAIL_OTP_RESEND_WAIT_SECONDS = 60
+# URL mailbox providers can publish a freshly resent message noticeably later
+# than the initial delivery. Keep the retry bounded, but long enough to avoid
+# classifying a delayed delivery as a failed registration.
+EMAIL_OTP_RESEND_WAIT_SECONDS = 180
 # A complete LS is intended to be a fast renewal path.  Keep the browser
 # state machine bounded so a stalled auth SPA can hand off to the mailbox flow
 # instead of leaving an AT renewal task in "authentication_running" for many
@@ -1547,11 +1550,16 @@ class OpenAIEmailRegisterFlow:
                 raise TimeoutError(
                     "邮箱验证码等待 120 秒后超时，当前页面没有可用的重新发送按钮"
                 ) from exc
-            self.log("[邮箱] 120 秒未收到验证码，已重新发送 OpenAI 邮箱验证码，继续等待 60 秒")
+            self.log(
+                f"[邮箱] {EMAIL_OTP_INITIAL_WAIT_SECONDS} 秒未收到验证码，已重新发送 OpenAI 邮箱验证码，"
+                f"继续等待 {EMAIL_OTP_RESEND_WAIT_SECONDS} 秒"
+            )
             try:
                 code = self.otp_reader.wait_for_code(requested_at, EMAIL_OTP_RESEND_WAIT_SECONDS)
             except TimeoutError as resend_exc:
-                raise TimeoutError("重新发送 OpenAI 邮箱验证码后等待 60 秒仍未收到验证码") from resend_exc
+                raise TimeoutError(
+                    f"重新发送 OpenAI 邮箱验证码后等待 {EMAIL_OTP_RESEND_WAIT_SECONDS} 秒仍未收到验证码"
+                ) from resend_exc
         self.recent_email_code = str(code or "").strip()
         self.recent_email_code_at = time.time()
         journal, detach_journal, otp_network_state = self._attach_email_otp_network_journal(page)
@@ -3717,6 +3725,26 @@ def login_or_register(account: MailAccount, proxy_url: str = "", headless: bool 
         )
         if any(marker in str(exc).lower() for marker in transient_totp_markers):
             _emit(log, "[认证] LS 登录在 2FA 提交后暂未推进，正在重新建立密码+2FA 会话重试一次")
+            retry_kwargs = {**flow_kwargs, "existing_session": None}
+            try:
+                return OpenAIEmailRegisterFlow(
+                    account, proxy_url, headless, log, prefer_login_secret=True, **retry_kwargs,
+                ).run()
+            except LoginSecretAuthenticationError as retry_exc:
+                exc = retry_exc
+                if any(marker in str(exc).lower() for marker in _ACCOUNT_DEACTIVATED_MARKERS):
+                    raise
+        # Password submission can be accepted by the page while the current
+        # browser context never receives the navigation. Retry the complete
+        # password + 2FA flow once in a fresh context before abandoning valid
+        # login credentials for an email-code fallback.
+        transient_password_markers = (
+            "密码提交后认证页面未继续",
+            "password step did not advance",
+            "chatgpt 密码登录页面异常",
+        )
+        if any(marker in str(exc).lower() for marker in transient_password_markers):
+            _emit(log, "[认证] 密码提交后页面未推进，正在重新建立密码+2FA 隔离会话重试一次")
             retry_kwargs = {**flow_kwargs, "existing_session": None}
             try:
                 return OpenAIEmailRegisterFlow(
