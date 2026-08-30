@@ -279,6 +279,11 @@ func serializeSunnyMailboxList(m SunnyMailbox, groups map[uint]string, plan, acc
 	for _, key := range []string{"password", "chatgpt_password", "totp_secret", "client_id", "refresh_token", "access_key", "rebind_mailbox_api", "openai_rt", "access_token", "raw", "last_error", "latest_mail", "last_mail_at"} {
 		delete(item, key)
 	}
+	// Keep failure diagnostics available in the workbench without returning any
+	// mailbox credentials or raw payloads in the summary response.
+	if strings.TrimSpace(m.LastError) != "" && normalizeSunnyMailboxCountStatus(m.Status) == "失败" {
+		item["error"] = m.LastError
+	}
 	return item
 }
 
