@@ -38,6 +38,23 @@ def test_rebound_mailbox_credentials_are_used_for_bulk_mailbox_selection():
     assert account.mailbox_type == "domain"
 
 
+def test_rebound_url_api_mailbox_preserves_apple_channel():
+    row = {
+        "email": "original@icloud.com",
+        "access_key": "https://legacy.example/messages/original",
+        "mailbox_type": "apple",
+        "mailbox_channel": "url_api",
+        "rebind_email": "replacement@example.com",
+        "rebind_mailbox_api": "https://mail.example/inbox/replacement",
+    }
+
+    effective = SunnyDB._apply_rebind_mailbox_credentials(row)
+
+    assert effective["email"] == "replacement@example.com"
+    assert effective["mailbox_type"] == "apple"
+    assert effective["mailbox_channel"] == "url_api"
+
+
 def test_account_from_row_supports_domain_credentials():
     account = account_from_row({
         "email": "user@example.com",
@@ -234,6 +251,32 @@ def test_rebind_begin_retries_transient_network_error():
     assert rebind_module._begin_with_retry(Client(), "new@example.com", logs.append) == {"success": True}
     assert calls == ["new@example.com", "new@example.com"]
     assert any("瞬时网络错误" in message for message in logs)
+
+
+def test_rebound_account_login_retries_transient_certificate_error(monkeypatch):
+    account = account_from_row({
+        "email": "replacement@example.com",
+        "mailbox_type": "apple",
+        "mailbox_channel": "url_api",
+        "access_key": "https://mail.example/inbox",
+    })
+    expected = (object(), {"access_token": "access"})
+    calls = []
+
+    def login(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            raise RuntimeError("curl: (60) unable to get local issuer certificate")
+        return expected
+
+    logs = []
+    monkeypatch.setattr(rebind_module, "_login_flow", login)
+
+    assert rebind_module._login_rebound_account(
+        account, "http://proxy.example:8080", logs.append, should_cancel=None
+    ) == expected
+    assert len(calls) == 2
+    assert any("建立全新认证会话重试一次" in message for message in logs)
 
 
 def test_failed_domain_mailbox_retention_defaults_to_enabled():

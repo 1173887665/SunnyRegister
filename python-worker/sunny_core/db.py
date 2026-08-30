@@ -7,6 +7,7 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import parse_qsl, urlparse
 from zoneinfo import ZoneInfo
 
 
@@ -782,8 +783,11 @@ class SunnyDB:
         mailbox["email"] = rebind_email
         mailbox["access_key"] = rebind_api
         mailbox["raw"] = f"{rebind_email}----{rebind_api}"
-        mailbox["mailbox_type"] = "domain"
-        mailbox["mailbox_channel"] = "domain_api"
+        parsed = urlparse(rebind_api)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        if query.get("email") and query.get("token"):
+            mailbox["mailbox_type"] = "domain"
+            mailbox["mailbox_channel"] = "domain_api"
         return mailbox
 
     def fetch_accounts(self, ids: list[int] | None = None) -> list[dict[str, Any]]:
@@ -919,6 +923,40 @@ class SunnyDB:
             values = (int(group['id']), new_email, mailbox_type, mailbox_channel, new_mailbox_api, pickup_token_hash, raw, '换绑中', True, '', '{}', timestamp, timestamp)
             sql = "insert into sunny_mailboxes(group_id,email,mailbox_type,mailbox_channel,access_key,pickup_token_hash,raw,status,enabled,last_error,latest_mail_json,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?)"
             self.conn.execute(sql, values)
+
+    def persist_rebind_verified(
+        self,
+        old_email: str,
+        new_email: str,
+        new_mailbox_api: str,
+        pickup_token_hash: str,
+        mailbox_type: str,
+        mailbox_channel: str,
+    ) -> None:
+        """Checkpoint an upstream-verified email change before the new login finishes."""
+        old_email = str(old_email or "").strip()
+        new_email = str(new_email or "").strip()
+        if not old_email or not new_email or "@" not in new_email:
+            raise ValueError("换绑邮箱地址无效")
+        timestamp = now_sql()
+        raw = f"{new_email}----{new_mailbox_api}"
+        with self.conn:
+            mailbox = self.conn.execute(
+                "select id from sunny_mailboxes where lower(email)=lower(?) limit 1", (old_email,)
+            ).fetchone()
+            account = self.conn.execute(
+                "select id from sunny_accounts where lower(email)=lower(?) limit 1", (old_email,)
+            ).fetchone()
+            if not mailbox or not account:
+                raise ValueError("换绑账户关联的邮箱或账户记录不完整")
+            self.conn.execute(
+                """update sunny_mailboxes set rebind_email=?,rebind_mailbox_api=?,mailbox_type=?,mailbox_channel=?,access_key=?,pickup_token_hash=?,raw=?,last_error='',updated_at=? where id=?""",
+                (new_email, new_mailbox_api, mailbox_type, mailbox_channel, new_mailbox_api, pickup_token_hash, raw, timestamp, mailbox["id"]),
+            )
+            self.conn.execute(
+                "update sunny_accounts set rebind_email=?,rebind_mailbox_api=?,last_error='',updated_at=? where id=?",
+                (new_email, new_mailbox_api, timestamp, account["id"]),
+            )
 
     def persist_rebind_failure(self, email: str, new_email: str, new_mailbox_api: str, pickup_token_hash: str, error: str) -> None:
         """Keep a generated replacement mailbox visible when the rebind flow fails later."""

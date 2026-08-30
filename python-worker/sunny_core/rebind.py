@@ -486,6 +486,25 @@ def _handle_failed_domain_mailbox(
         log(f"[{old_email}] 失败邮箱清理未完全完成：{cleanup_exc}")
 
 
+def _login_rebound_account(
+    account: MailAccount,
+    proxy: str,
+    log: Callable[[str], None],
+    *,
+    should_cancel: Callable[[], bool] | None,
+) -> tuple[ProtocolRegistrationFlow, dict[str, Any]]:
+    """Login the verified replacement address, retrying one fresh auth session."""
+    for attempt in range(2):
+        try:
+            return _login_flow(account, proxy, log, keep_session=False, should_cancel=should_cancel)
+        except Exception as exc:
+            retryable = _is_retryable_rebind_error(exc) or _should_use_mailbox_browser_fallback(exc)
+            if attempt > 0 or not retryable:
+                raise
+            log(f"[{account.email}] 换绑后新邮箱登录未完成，建立全新认证会话重试一次：{str(exc)[:260]}")
+    raise RebindError("换绑后新邮箱登录未返回结果")
+
+
 def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callable[[str], None]) -> dict[str, Any]:
     old_email = str(account_row.get("email") or "").strip()
     if not old_email:
@@ -504,6 +523,37 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
     old_flow = None
     new_flow = None
     try:
+        verified_email = str(account_row.get("rebind_email") or "").strip()
+        verified_api = str(account_row.get("rebind_mailbox_api") or "").strip()
+        if verified_email and verified_api and verified_email.lower() != old_email.lower():
+            verified_type = str(mailbox.get("mailbox_type") or "domain").strip().lower() or "domain"
+            verified_channel = str(mailbox.get("mailbox_channel") or "").strip().lower() or (
+                "url_api" if verified_type == "apple" else "remail_api" if verified_type == "remail" else "domain_api"
+            )
+            verified_hash = _pickup_token_hash(verified_api)
+            resumed_account = replace(
+                account,
+                email=verified_email,
+                raw=f"{verified_email}----{verified_api}",
+                mailbox_type=verified_type,
+                mailbox_channel=verified_channel,
+                access_key=verified_api,
+            )
+            log(f"[{old_email}] 检测到已验证换绑断点，直接恢复新邮箱登录：{verified_email}")
+            new_flow, new_result = _login_rebound_account(
+                resumed_account, proxy, log, should_cancel=db.cancel_requested
+            )
+            if not str(new_result.get("access_token") or "").strip():
+                raise RebindError("换绑断点恢复登录未返回新的 Access Token")
+            if not str(new_result.get("refresh_token") or "").strip() and account.openai_rt:
+                new_result["refresh_token"] = account.openai_rt
+            _persist_login_result(db, old_email, mailbox, new_result, log)
+            db.persist_rebind(
+                old_email, verified_email, verified_api, verified_hash, new_result, verified_type, verified_channel
+            )
+            log(f"[{old_email}] 换绑断点恢复成功：{verified_email}")
+            return {"email": old_email, "new_email": verified_email, "status": "success", "resumed": True}
+
         log(f"[{old_email}] 开始协议换绑")
         old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
         _persist_login_result(db, old_email, mailbox, old_result, log)
@@ -553,8 +603,14 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             reader.close()
         client.verify(new_email, code)
         log(f"[{old_email}] 已向 ChatGPT 提交换绑邮箱验证码")
+        db.persist_rebind_verified(
+            old_email, new_email, new_api, new_api_token_hash, imported_type, target_channel
+        )
+        log(f"[{old_email}] 已保存上游换绑验证断点，后续登录失败可直接恢复")
         new_account = MailAccount(email=new_email, password="", client_id="", refresh_token="", raw=f"{new_email}----{new_api}", mailbox_type=imported_type, mailbox_channel=imported_channel or ("domain_api" if imported_type == "domain" else "url_api" if imported_type == "apple" else "remail_api"), access_key=new_api, chatgpt_password=account.chatgpt_password, totp_secret=account.totp_secret)
-        new_flow, new_result = _login_flow(new_account, proxy, log, keep_session=False, should_cancel=db.cancel_requested)
+        new_flow, new_result = _login_rebound_account(
+            new_account, proxy, log, should_cancel=db.cancel_requested
+        )
         if str(new_result.get("access_token") or "").strip() == "":
             raise RebindError("换绑后重新登录未返回新的 Access Token")
         if not str(new_result.get("refresh_token") or "").strip() and account.openai_rt:

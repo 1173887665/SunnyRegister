@@ -3689,12 +3689,16 @@ def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[st
                 for offset, account in enumerate(batch, start=1)
             }
             pending = set(futures)
+            last_heartbeat = time.monotonic()
             while pending:
                 if db.cancel_requested():
                     for future in pending:
                         future.cancel()
                     raise SunnyTaskCancelled("Task cancelled by user")
                 done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                if time.monotonic() - last_heartbeat >= 15:
+                    db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
+                    last_heartbeat = time.monotonic()
                 for future in done:
                     email = futures[future]
                     try:
