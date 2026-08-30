@@ -3466,8 +3466,8 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .payment-method-tabs button span:last-child { display:flex; flex-direction:column; gap:1px; }
 .payment-method-tabs strong { font-size:13px; }
 .payment-method-tabs small { color:var(--text-muted); font-size:10px; font-weight:700; text-transform:uppercase; }
-.gopay-segmented { display:flex; gap:4px; width:max-content; margin-bottom:12px; padding:3px; border:1px solid var(--border); background:var(--bg-card); }
-.gopay-segmented button { border:0; background:transparent; color:var(--text-secondary); padding:7px 14px; font-size:12px; font-weight:700; cursor:pointer; }
+.gopay-segmented { display:flex; gap:4px; width:max-content; max-width:100%; margin-bottom:12px; padding:3px; overflow-x:auto; border:1px solid var(--border); background:var(--bg-card); }
+.gopay-segmented button { flex:0 0 auto; border:0; background:transparent; color:var(--text-secondary); padding:7px 14px; font-size:12px; font-weight:700; cursor:pointer; }
 .gopay-segmented button.active { background:var(--bg-card); color:var(--text-primary); box-shadow:var(--surface-glow); }
 .paypal-active-count { display:inline-flex; align-items:center; border:1px solid var(--accent-edge); background:var(--accent-soft); color:var(--text-primary); padding:6px 10px; font-size:12px; font-weight:750; }
 .paypal-config-layout { align-items:start; }

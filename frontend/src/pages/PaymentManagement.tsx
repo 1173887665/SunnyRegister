@@ -13,7 +13,15 @@ import DirectCardPayment from "@/pages/payments/DirectCardPayment";
 type Row = Record<string, any>;
 type GoPayView = "overview" | "register" | "pool" | "accounts" | "payment" | "settings";
 type PaymentMethod = "gopay" | "paypal" | "direct_card";
+type SmsProvider = "smsbower" | "smspool" | "grizzlysms" | "hero_sms";
 type RunAction = (key: string, action: () => Promise<any>, success: string, refresh?: () => Promise<void>) => Promise<void>;
+
+const smsProviderConfig: Record<SmsProvider, { label: string; baseUrl: string; service: string; country: string; pool?: boolean; maxPrice?: boolean }> = {
+  smsbower: { label: "SMSBower", baseUrl: "https://smsbower.page", service: "ni", country: "6" },
+  smspool: { label: "SMSPool", baseUrl: "https://api.smspool.net", service: "392", country: "9", pool: true, maxPrice: true },
+  grizzlysms: { label: "GrizzlySMS", baseUrl: "https://api.grizzlysms.com/stubs/handler_api.php", service: "dr", country: "0", maxPrice: true },
+  hero_sms: { label: "HeroSMS", baseUrl: "https://hero-sms.com/api/v1", service: "dr", country: "6", maxPrice: true },
+};
 
 const api = (path: string, options?: RequestInit) => apiFetch(`/payments/gopay${path}`, options);
 const post = (path: string, body: Row = {}) => api(path, { method: "POST", body: JSON.stringify(body) });
@@ -194,7 +202,7 @@ function RegisterView({ jobs, busy, run, refresh, onLogs }: { jobs: Row[]; busy:
   }
   return <div className="gopay-view"><div className="gopay-section-title"><div><h2>注册与登录</h2><p>创建批量任务并处理短信验证码</p></div></div>
     <Panel title="新建批量任务"><form className="gopay-form" onSubmit={submit}><div className="gopay-form-grid">
-      <label><span>号码来源</span><select name="source"><option value="pool">号码池</option><option value="smsbower">SMSBower</option><option value="smspool">SMSPool</option></select></label>
+      <label><span>号码来源</span><select name="source"><option value="pool">号码池</option><option value="smsbower">SMSBower</option><option value="smspool">SMSPool</option><option value="grizzlysms">GrizzlySMS</option><option value="hero_sms">HeroSMS</option></select></label>
       <label><span>任务模式</span><select value={mode} onChange={(e) => { setMode(e.target.value); setChangePin(false); }}><option value="register">注册新号</option><option value="login">登录已有号</option></select></label>
       <label><span>数量</span><input name="count" type="number" min="1" max="500" defaultValue="1" /></label>
       <label><span>线程数</span><input name="workers" type="number" min="1" max="50" defaultValue="2" /></label>
@@ -313,10 +321,23 @@ function PaymentDetail({ job, run, refresh }: { job: Row | null; run: RunAction;
 }
 
 function SettingsView({ sms, busy, run, refresh }: { sms: Row; busy: string; run: RunAction; refresh: () => Promise<void> }) {
-  const [provider, setProvider] = useState<"smsbower" | "smspool">("smsbower");
-  const current = provider === "smspool" ? (sms.providers?.smspool || {}) : (sms.providers?.smsbower || sms);
-  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const data = new FormData(event.currentTarget); await run("sms", () => post("/sms-config", { provider, api_key: data.get("api_key"), api_base_url: data.get("api_base_url"), service: data.get("service"), country: data.get("country"), pool: data.get("pool"), max_price: data.get("max_price") }), `${provider === "smspool" ? "SMSPool" : "SMSBower"} 配置已保存`, refresh); }
-  return <div className="gopay-view"><div className="gopay-section-title"><div><h2>系统配置</h2><p>按支付方式维护号码供应商接口</p></div></div><div className="gopay-segmented" role="tablist" aria-label="短信供应商"><button type="button" className={provider === "smsbower" ? "active" : ""} onClick={() => setProvider("smsbower")}>SMSBower</button><button type="button" className={provider === "smspool" ? "active" : ""} onClick={() => setProvider("smspool")}>SMSPool</button></div><Panel title={`${provider === "smspool" ? "SMSPool" : "SMSBower"} 配置`} className="gopay-settings-panel" action={<Status value={current.api_key_configured ? "success" : "failed"} />}><form className="gopay-form" onSubmit={submit}><div className="gopay-form-grid"><label className="wide"><span>API Key</span><input name="api_key" type="password" autoComplete="off" placeholder={current.api_key_configured ? `已配置 ${current.api_key || ""}，留空保持不变` : "请输入 API Key"} /></label><label className="wide"><span>Base URL</span><input name="api_base_url" type="url" defaultValue={current.api_base_url || (provider === "smspool" ? "https://api.smspool.net" : "https://smsbower.page")} /></label><label><span>服务代码</span><input name="service" defaultValue={current.service || (provider === "smspool" ? "392" : "ni")} /></label><label><span>国家代码</span><input name="country" defaultValue={current.country || (provider === "smspool" ? "9" : "6")} /></label>{provider === "smspool" && <><label><span>号码池（可选）</span><input name="pool" defaultValue={current.pool || ""} /></label><label><span>最高价格（可选）</span><input name="max_price" defaultValue={current.max_price || ""} placeholder="例如 0.01" /></label></>}</div><Button type="submit" disabled={busy !== ""}><Settings2 className="mr-2 h-4 w-4" />保存配置</Button></form></Panel></div>;
+  const [provider, setProvider] = useState<SmsProvider>("smsbower");
+  const config = smsProviderConfig[provider];
+  const current = sms.providers?.[provider] || (provider === "smsbower" ? sms : {});
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    await run("sms", () => post("/sms-config", {
+      provider,
+      api_key: data.get("api_key"),
+      api_base_url: data.get("api_base_url"),
+      service: data.get("service"),
+      country: data.get("country"),
+      pool: data.get("pool"),
+      max_price: data.get("max_price"),
+    }), `${config.label} 配置已保存`, refresh);
+  }
+  return <div className="gopay-view"><div className="gopay-section-title"><div><h2>系统配置</h2><p>按支付方式维护号码供应商接口</p></div></div><div className="gopay-segmented" role="tablist" aria-label="短信供应商">{(Object.keys(smsProviderConfig) as SmsProvider[]).map((item) => <button key={item} type="button" role="tab" aria-selected={provider === item} className={provider === item ? "active" : ""} onClick={() => setProvider(item)}>{smsProviderConfig[item].label}</button>)}</div><Panel title={`${config.label} 配置`} className="gopay-settings-panel" action={<Status value={current.api_key_configured ? "success" : "failed"} />}><form key={provider} className="gopay-form" onSubmit={submit}><div className="gopay-form-grid"><label className="wide"><span>API Key</span><input name="api_key" type="password" autoComplete="off" placeholder={current.api_key_configured ? `已配置 ${current.api_key || ""}，留空保持不变` : "请输入 API Key"} /></label><label className="wide"><span>Base URL</span><input name="api_base_url" type="url" defaultValue={current.api_base_url || config.baseUrl} /></label><label><span>服务代码</span><input name="service" defaultValue={current.service || config.service} /></label><label><span>国家代码</span><input name="country" defaultValue={current.country || config.country} /></label>{config.pool && <label><span>号码池（可选）</span><input name="pool" defaultValue={current.pool || ""} /></label>}{config.maxPrice && <label><span>最高价格（可选）</span><input name="max_price" type="number" min="0" step="any" defaultValue={current.max_price ?? ""} placeholder="留空不限制" /></label>}</div><Button type="submit" disabled={busy !== ""}>{busy === "sms" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Settings2 className="mr-2 h-4 w-4" />}保存配置</Button></form></Panel></div>;
 }
 
 function TaskLogModal({ job, onClose }: { job: Row; onClose: () => void }) {

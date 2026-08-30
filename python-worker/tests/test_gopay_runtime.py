@@ -18,8 +18,31 @@ def test_gopay_embedded_service_uses_configured_phone_pool(monkeypatch, tmp_path
         base_url = f"http://127.0.0.1:{httpd.server_port}"
         accounts = json.loads(urllib.request.urlopen(base_url + "/api/accounts", timeout=5).read())
         phones = json.loads(urllib.request.urlopen(base_url + "/api/phone-pool", timeout=5).read())
+        sms_status = json.loads(urllib.request.urlopen(base_url + "/api/sms-status", timeout=5).read())
         assert accounts == {"accounts": []}
         assert phones == {"phones": []}
+        assert set(sms_status["providers"]) == {"smsbower", "smspool", "grizzlysms", "hero_sms"}
+
+        request = urllib.request.Request(
+            base_url + "/api/sms-config",
+            data=json.dumps({
+                "provider": "hero_sms",
+                "api_key": "hero-test-key",
+                "api_base_url": "https://hero-sms.com/api/v1",
+                "service": "dr",
+                "country": "6",
+                "max_price": "0.5",
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        saved = json.loads(urllib.request.urlopen(request, timeout=5).read())
+        assert saved["provider"] == "hero_sms"
+        assert saved["api_key_configured"] is True
+
+        refreshed = json.loads(urllib.request.urlopen(base_url + "/api/sms-status", timeout=5).read())
+        assert refreshed["providers"]["hero_sms"]["api_key_configured"] is True
+        assert refreshed["providers"]["hero_sms"]["max_price"] == "0.5"
     finally:
         httpd.shutdown()
         httpd.server_close()
