@@ -94,7 +94,10 @@ function Test-RunningPid([string]$File) {
 $workerPidFile = Join-Path $RuntimeDir "python-worker.pid"
 $backendPidFile = Join-Path $RuntimeDir "backend.pid"
 if (Test-RunningPid $workerPidFile -or Test-RunningPid $backendPidFile) {
-  throw "SunnyRegister already appears to be running. Run scripts\stop-windows.ps1 first."
+  $existingPort = if ($env:SUNNYREGISTER_PORT) { $env:SUNNYREGISTER_PORT } else { "8000" }
+  Write-Host "SunnyRegister is already running: http://127.0.0.1:$existingPort" -ForegroundColor Green
+  Start-Process "http://127.0.0.1:$existingPort"
+  exit 0
 }
 
 $env:PYTHONUTF8 = "1"
@@ -157,3 +160,4 @@ $username = if ($env:ADMIN_USERNAME) { $env:ADMIN_USERNAME } else { "admin" }
 Write-Host "Username: $username"
 Write-Host "Password: stored in $passwordFile or ADMIN_PASSWORD; it is not printed for security"
 Write-Host "Logs: $LogDir"
+Start-Process "http://127.0.0.1:$($env:PORT)"
