@@ -163,12 +163,32 @@ class SentinelBrowserRuntime:
             hook = "t.token=ye,t}({});"
             replacement = "t.___n=_n,t.__Nt=Nt,t.__D=D,t.__jt=jt,t.token=ye,t}({});"
             patched = sdk_code.replace(hook, replacement) if hook in sdk_code else sdk_code
+            # Firefox exposes objects created by the browser runtime through
+            # Xray wrappers.  The bundled SDK's UTF-8 helper spreads the
+            # native TextEncoder Uint8Array into btoa(), which Firefox blocks
+            # with "Accessing TypedArray data over Xrays".  Keep the SDK's
+            # behavior while returning a plain array for that one conversion.
+            patched = patched.replace(
+                "new TextEncoder",
+                "new __sunnyTextEncoder",
+            )
             # Keep the SDK's own PoW state alongside its browser-proof helpers.
             # The reference free-registration flow uses this instance for both
             # requirements and enforcement tokens; Python-generated PoW only
             # passes the Sentinel endpoint's shallow validation.
             patched = patched.replace("var P=new _;", "var P=new _;globalThis.__debugP=P;")
-            self._page.evaluate("code => window.eval(code)", patched)
+            self._page.evaluate(
+                """code => {
+                  globalThis.__sunnyTextEncoder = class {
+                    encode(value) {
+                      const binary = unescape(encodeURIComponent(String(value)));
+                      return Array.from(binary, char => char.charCodeAt(0));
+                    }
+                  };
+                  window.eval(code);
+                }""",
+                patched,
+            )
             if self._page.evaluate("typeof window.SentinelSDK") != "object":
                 raise RuntimeError("Sentinel SDK 初始化失败")
             self.log("[认证] 已启动 Sentinel 协议运行时；仅浏览器证明生成使用 Camoufox，注册请求仍走 HTTP/TLS")
