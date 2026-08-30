@@ -3,7 +3,7 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
-import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
@@ -19,21 +19,24 @@ class RegistrationBrowserSession:
 
 
 def _close_with_timeout(callback: Callable[[], Any], timeout: float) -> tuple[bool, Exception | None]:
-    """Bound Playwright/Camoufox cleanup so a dead driver cannot stall a task."""
-    outcome: list[Exception | None] = [None]
+    """Run Playwright cleanup on its owning thread and report slow teardown.
 
-    def run() -> None:
-        try:
-            callback()
-        except Exception as exc:  # cleanup must never escape the worker
-            outcome[0] = exc
-
-    thread = threading.Thread(target=run, name="sunny-browser-cleanup", daemon=True)
-    thread.start()
-    thread.join(max(0.1, float(timeout)))
-    if thread.is_alive():
-        return False, TimeoutError(f"browser cleanup exceeded {timeout:.0f}s")
-    return True, outcome[0]
+    Playwright's sync API is backed by a greenlet bound to the thread that
+    created it. Running ``context.close`` or ``Camoufox.__exit__`` in a helper
+    thread raises ``Cannot switch to a different thread`` and can strand the
+    whole registration batch. The worker-level watchdog still handles a
+    genuinely blocked teardown; this helper keeps the API thread-safe and
+    records when cleanup exceeds the configured diagnostic threshold.
+    """
+    started = time.monotonic()
+    try:
+        callback()
+    except Exception as exc:  # cleanup must never escape the worker
+        return True, exc
+    elapsed = time.monotonic() - started
+    if elapsed > max(0.1, float(timeout)):
+        return False, TimeoutError(f"browser cleanup exceeded {timeout:.0f}s ({elapsed:.1f}s)")
+    return True, None
 
 
 def camoufox_runtime_error() -> str:

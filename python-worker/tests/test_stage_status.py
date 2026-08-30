@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import unittest
+import threading
 from unittest.mock import ANY, MagicMock, Mock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -1192,6 +1193,8 @@ class BrowserCsrfTests(unittest.TestCase):
 
 class BrowserBackendTests(unittest.TestCase):
     def test_background_mode_uses_one_camoufox_incognito_context(self):
+        owner_thread = threading.get_ident()
+        cleanup_threads: list[int] = []
         fingerprint = Mock(
             locale="ja-JP",
             languages=["ja-JP", "ja"],
@@ -1200,7 +1203,9 @@ class BrowserBackendTests(unittest.TestCase):
         manager = MagicMock()
         browser = Mock()
         context = Mock()
+        context.close.side_effect = lambda: cleanup_threads.append(threading.get_ident())
         browser.new_context.return_value = context
+        manager.__exit__.side_effect = lambda *args: cleanup_threads.append(threading.get_ident())
         manager.__enter__.return_value = browser
 
         with patch("camoufox.sync_api.Camoufox", return_value=manager) as camoufox:
@@ -1226,6 +1231,7 @@ class BrowserBackendTests(unittest.TestCase):
         )
         context.close.assert_called_once()
         manager.__exit__.assert_called_once()
+        self.assertEqual(cleanup_threads, [owner_thread, owner_thread])
 
     def test_background_mode_loads_existing_protocol_storage_state(self):
         fingerprint = Mock(locale="ja-JP", languages=["ja-JP", "ja"], timezone="Asia/Tokyo")
