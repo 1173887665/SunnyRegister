@@ -128,6 +128,103 @@ def _mask_secret(value: str) -> str:
     return value[:4] + "..." + value[-4:]
 
 
+_GOPAY_SMS_LABELS = {"smsbower": "SMSBower", "smspool": "SMSPool", "grizzlysms": "GrizzlySMS", "hero_sms": "HeroSMS"}
+
+
+def _gopay_sms_label(provider: str) -> str:
+    return _GOPAY_SMS_LABELS.get(str(provider or "").strip().lower(), "SMS")
+
+
+def _gopay_sms_api_key(provider: str, value: str = "") -> str:
+    provider = str(provider or "smsbower").strip().lower()
+    if provider == "smspool":
+        from opai.core.smspool_helpers import smspool_api_key
+        return smspool_api_key(value)
+    if provider == "grizzlysms":
+        from opai.core.grizzly_helpers import grizzly_api_key
+        return grizzly_api_key(value)
+    if provider == "hero_sms":
+        from opai.core.hero_helpers import hero_api_key
+        return hero_api_key(value)
+    from opai.core.sms_helpers import get_sms_api_key
+    return get_sms_api_key(value)
+
+
+def _gopay_sms_get_number(provider: str) -> tuple[str | None, str | None]:
+    provider = str(provider or "smsbower").strip().lower()
+    if provider == "smspool":
+        from opai.core.smspool_helpers import smspool_get_number
+        return smspool_get_number()
+    if provider == "grizzlysms":
+        from opai.core.grizzly_helpers import grizzly_get_number
+        return grizzly_get_number()
+    if provider == "hero_sms":
+        from opai.core.hero_helpers import hero_get_number
+        return hero_get_number()
+    from opai.core.sms_helpers import sms_get_number
+    return sms_get_number(_gopay_sms_api_key(provider))
+
+
+def _gopay_sms_wait_code(provider: str, api_key: str, activation_id: str, timeout: int, ignore_code_hashes: set[str] | None = None) -> str | None:
+    provider = str(provider or "smsbower").strip().lower()
+    if provider == "smspool":
+        from opai.core.smspool_helpers import smspool_wait_code
+        return smspool_wait_code(activation_id, timeout=timeout, ignore_code_hashes=ignore_code_hashes)
+    if provider == "grizzlysms":
+        from opai.core.grizzly_helpers import grizzly_wait_code
+        return grizzly_wait_code(activation_id, timeout=timeout, ignore_code_hashes=ignore_code_hashes)
+    if provider == "hero_sms":
+        from opai.core.hero_helpers import hero_wait_code
+        return hero_wait_code(activation_id, timeout=timeout, ignore_code_hashes=ignore_code_hashes)
+    from opai.core.sms_helpers import sms_wait_code
+    return sms_wait_code(api_key, activation_id, timeout=timeout, ignore_code_hashes=ignore_code_hashes)
+
+
+def _gopay_sms_resend(provider: str, api_key: str, activation_id: str) -> bool:
+    provider = str(provider or "smsbower").strip().lower()
+    if provider == "smspool":
+        from opai.core.smspool_helpers import smspool_resend
+        return bool(smspool_resend(activation_id))
+    if provider == "grizzlysms":
+        from opai.core.grizzly_helpers import grizzly_resend
+        return bool(grizzly_resend(activation_id))
+    if provider == "hero_sms":
+        from opai.core.hero_helpers import hero_resend
+        return bool(hero_resend(activation_id))
+    from opai.core.sms_helpers import sms_request_another
+    return bool(sms_request_another(api_key, activation_id))
+
+
+def _gopay_sms_cancel(provider: str, api_key: str, activation_id: str) -> bool:
+    provider = str(provider or "smsbower").strip().lower()
+    if provider == "smspool":
+        from opai.core.smspool_helpers import smspool_cancel
+        return bool(smspool_cancel(activation_id))
+    if provider == "grizzlysms":
+        from opai.core.grizzly_helpers import grizzly_cancel
+        return bool(grizzly_cancel(activation_id))
+    if provider == "hero_sms":
+        from opai.core.hero_helpers import hero_cancel
+        return bool(hero_cancel(activation_id))
+    from opai.core.sms_helpers import sms_cancel
+    return bool(sms_cancel(api_key, activation_id))
+
+
+def _gopay_sms_finish(provider: str, api_key: str, activation_id: str) -> bool:
+    provider = str(provider or "smsbower").strip().lower()
+    if provider == "smspool":
+        from opai.core.smspool_helpers import smspool_activate
+        return bool(smspool_activate(activation_id))
+    if provider == "grizzlysms":
+        from opai.core.grizzly_helpers import grizzly_finish
+        return bool(grizzly_finish(activation_id))
+    if provider == "hero_sms":
+        from opai.core.hero_helpers import hero_finish
+        return bool(hero_finish(activation_id))
+    from opai.core.sms_helpers import sms_done
+    return bool(sms_done(api_key, activation_id))
+
+
 def _sms_api_status(otp_box: Any = None, include_balance: bool = False) -> dict[str, Any]:
     from opai.core.sms_helpers import get_sms_api_key, load_selected_env_file, sms_api, sms_api_base_url
 
@@ -189,7 +286,29 @@ def _sms_api_status(otp_box: Any = None, include_balance: bool = False) -> dict[
         else:
             pool_status["ok"] = bool(pool_config["api_key"])
             pool_status["balance_raw"] = "未刷新" if pool_config["api_key"] else ""
-        status["providers"] = {"smsbower": status.copy(), "smspool": pool_status}
+        providers = {"smsbower": status.copy(), "smspool": pool_status}
+        for provider, module_name, prefix, label, defaults in (
+            ("grizzlysms", "grizzly_helpers", "grizzly", "GrizzlySMS", ("https://api.grizzlysms.com/stubs/handler_api.php", "dr", "0")),
+            ("hero_sms", "hero_helpers", "hero", "HeroSMS", ("https://hero-sms.com/api/v1", "dr", "6")),
+        ):
+            try:
+                mod = __import__(f"opai.core.{module_name}", fromlist=[f"{prefix}_config", f"{prefix}_balance"])
+                cfg = getattr(mod, f"{prefix}_config")()
+                item = {"provider": label, "api_base_url": cfg["api_base_url"], "api_key_configured": bool(cfg["api_key"]), "api_key": _mask_secret(cfg["api_key"]), "country": cfg["country"] or defaults[2], "service": cfg["service"] or defaults[1], "max_price": cfg.get("max_price", "")}
+                if cfg["api_key"] and include_balance:
+                    try:
+                        raw = getattr(mod, f"{prefix}_balance")()
+                        item["balance_raw"] = raw
+                        item["balance"] = raw.get("balance") if isinstance(raw, dict) else str(raw)
+                        item["ok"] = True
+                    except Exception as exc:
+                        item["ok"] = False; item["balance_error"] = str(exc)[:300]
+                else:
+                    item["ok"] = bool(cfg["api_key"]); item["balance_raw"] = "未刷新" if cfg["api_key"] else ""
+                providers[provider] = item
+            except Exception:
+                log.debug("%s status unavailable", provider, exc_info=True)
+        status["providers"] = providers
     except Exception:
         log.debug("SMSPool status unavailable", exc_info=True)
     return status
@@ -221,6 +340,28 @@ def _read_env_pairs(path: Path) -> dict[str, str]:
 def _write_sms_config(data: dict[str, Any]) -> dict[str, Any]:
     path = _sms_env_path()
     provider = str(data.get("provider") or "smsbower").strip().lower()
+    if provider in {"grizzlysms", "hero_sms"}:
+        pairs = _read_env_pairs(path)
+        prefix = "OPAI_GRIZZLYSMS" if provider == "grizzlysms" else "OPAI_HERO_SMS"
+        defaults = ("https://api.grizzlysms.com/stubs/handler_api.php", "dr", "0") if provider == "grizzlysms" else ("https://hero-sms.com/api/v1", "dr", "6")
+        current_key = pairs.get(f"{prefix}_API_KEY") or os.environ.get(f"{prefix}_API_KEY", "")
+        pairs[f"{prefix}_API_KEY"] = str(data.get("api_key") or current_key).strip()
+        pairs[f"{prefix}_API_BASE_URL"] = str(data.get("api_base_url") or defaults[0]).strip().rstrip("/") or defaults[0]
+        pairs[f"{prefix}_COUNTRY"] = str(data.get("country") or defaults[2]).strip() or defaults[2]
+        pairs[f"{prefix}_SERVICE"] = str(data.get("service") or defaults[1]).strip() or defaults[1]
+        pairs[f"{prefix}_MAX_PRICE"] = str(data.get("max_price") or "").strip()
+        ordered = [
+            "OPAI_SMSBOWER_API_KEY", "OPAI_SMSBOWER_API_KEY_FILE", "OPAI_SMSBOWER_API_BASE_URL", "OPAI_SMSBOWER_SERVICE", "OPAI_SMSBOWER_COUNTRY",
+            "OPAI_SMSPOOL_API_KEY", "OPAI_SMSPOOL_API_BASE_URL", "OPAI_SMSPOOL_COUNTRY", "OPAI_SMSPOOL_SERVICE", "OPAI_SMSPOOL_POOL", "OPAI_SMSPOOL_MAX_PRICE",
+            "OPAI_GRIZZLYSMS_API_KEY", "OPAI_GRIZZLYSMS_API_BASE_URL", "OPAI_GRIZZLYSMS_COUNTRY", "OPAI_GRIZZLYSMS_SERVICE", "OPAI_GRIZZLYSMS_MAX_PRICE",
+            "OPAI_HERO_SMS_API_KEY", "OPAI_HERO_SMS_API_BASE_URL", "OPAI_HERO_SMS_COUNTRY", "OPAI_HERO_SMS_SERVICE", "OPAI_HERO_SMS_MAX_PRICE",
+        ]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# GoPay SMS provider configuration\n" + "\n".join(f"{key}={pairs.get(key, '')}" for key in ordered) + "\n", encoding="utf-8")
+        os.environ["OPAI_GOPAY_SMS_ENV_FILE"] = str(path)
+        for key in ordered:
+            os.environ[key] = pairs.get(key, "")
+        return {"ok": True, "provider": provider, "path": str(path), "api_key_configured": bool(pairs.get(f"{prefix}_API_KEY"))}
     if provider == "smspool":
         pairs = _read_env_pairs(path)
         api_key = str(data.get("api_key") or "").strip()
@@ -236,6 +377,8 @@ def _write_sms_config(data: dict[str, Any]) -> dict[str, Any]:
             "OPAI_SMSBOWER_SERVICE", "OPAI_SMSBOWER_COUNTRY",
             "OPAI_SMSPOOL_API_KEY", "OPAI_SMSPOOL_API_BASE_URL", "OPAI_SMSPOOL_COUNTRY",
             "OPAI_SMSPOOL_SERVICE", "OPAI_SMSPOOL_POOL", "OPAI_SMSPOOL_MAX_PRICE",
+            "OPAI_GRIZZLYSMS_API_KEY", "OPAI_GRIZZLYSMS_API_BASE_URL", "OPAI_GRIZZLYSMS_COUNTRY", "OPAI_GRIZZLYSMS_SERVICE", "OPAI_GRIZZLYSMS_MAX_PRICE",
+            "OPAI_HERO_SMS_API_KEY", "OPAI_HERO_SMS_API_BASE_URL", "OPAI_HERO_SMS_COUNTRY", "OPAI_HERO_SMS_SERVICE", "OPAI_HERO_SMS_MAX_PRICE",
         ]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# GoPay SMSPool API 配置\n" + "\n".join(f"{key}={pairs.get(key, '')}" for key in ordered) + "\n", encoding="utf-8")
@@ -268,6 +411,16 @@ def _write_sms_config(data: dict[str, Any]) -> dict[str, Any]:
         "OPAI_SMSPOOL_SERVICE",
         "OPAI_SMSPOOL_POOL",
         "OPAI_SMSPOOL_MAX_PRICE",
+        "OPAI_GRIZZLYSMS_API_KEY",
+        "OPAI_GRIZZLYSMS_API_BASE_URL",
+        "OPAI_GRIZZLYSMS_COUNTRY",
+        "OPAI_GRIZZLYSMS_SERVICE",
+        "OPAI_GRIZZLYSMS_MAX_PRICE",
+        "OPAI_HERO_SMS_API_KEY",
+        "OPAI_HERO_SMS_API_BASE_URL",
+        "OPAI_HERO_SMS_COUNTRY",
+        "OPAI_HERO_SMS_SERVICE",
+        "OPAI_HERO_SMS_MAX_PRICE",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -1324,10 +1477,12 @@ def _gopay_payment_sms_active(account: dict[str, Any]) -> bool:
     provider = str(account.get("sms_provider") or "smsbower").strip().lower()
     try:
         if provider == "smspool":
-            from opai.core.smspool_helpers import smspool_check, smspool_api_key
-            if not smspool_api_key(""):
+            from opai.core.smspool_helpers import smspool_check
+            if not _gopay_sms_api_key(provider):
                 return False
             return str(smspool_check(aid).get("status") or "") not in {"6", "0"}
+        if provider in {"grizzlysms", "hero_sms"}:
+            return bool(_gopay_sms_api_key(provider))
         from opai.core.sms_helpers import get_sms_api_key, sms_api
 
         api_key = get_sms_api_key("")
@@ -1369,16 +1524,7 @@ def _mark_gopay_sms_done(account: dict[str, Any]) -> bool:
     if str(account.get("sms_activation_status") or "").strip() == "completed":
         return True
     try:
-        if provider == "smspool":
-            from opai.core.smspool_helpers import smspool_cancel
-            if smspool_cancel(aid):
-                _set_gopay_sms_status(phone, "completed")
-                return True
-            return False
-        from opai.core.sms_helpers import get_sms_api_key, sms_done
-
-        api_key = get_sms_api_key("")
-        if api_key and sms_done(api_key, aid):
+        if _gopay_sms_finish(provider, _gopay_sms_api_key(provider), aid):
             _set_gopay_sms_status(phone, "completed")
             return True
     except Exception:
@@ -1394,10 +1540,10 @@ def _release_gopay_sms(phone: str) -> dict[str, Any]:
     provider = str(account.get("sms_provider") or "smsbower").strip().lower()
     if provider == "smsbower" and not re.fullmatch(r"\d+", aid):
         raise ValueError("该账号没有可用的 SMSBower 激活 ID")
-    if provider == "smspool" and not aid:
-        raise ValueError("该账号没有可用的 SMSPool 订单号")
+    if provider in {"smspool", "grizzlysms", "hero_sms"} and not aid:
+        raise ValueError(f"该账号没有可用的 {_gopay_sms_label(provider)} 激活 ID")
     if not _mark_gopay_sms_done(account):
-        raise RuntimeError(f"{('SMSPool' if provider == 'smspool' else 'SMSBower')} 号码释放失败，订单可能已结束或接口暂时不可用")
+        raise RuntimeError(f"{_gopay_sms_label(provider)} 号码释放失败，订单可能已结束或接口暂时不可用")
     return {"ok": True, "phone": account.get("phone") or phone, "sms_activation_status": "completed"}
 
 
@@ -1420,9 +1566,9 @@ def _cancel_sms_activation_with_retry(api_key: str, aid: str) -> None:
 def _cancel_gopay_sms(provider: str, api_key: str, activation_id: str) -> None:
     if not activation_id:
         return
-    if str(provider or "smsbower").strip().lower() == "smspool":
-        from opai.core.smspool_helpers import smspool_cancel
-        smspool_cancel(activation_id)
+    normalized = str(provider or "smsbower").strip().lower()
+    if normalized in {"smspool", "grizzlysms", "hero_sms"}:
+        _gopay_sms_cancel(normalized, api_key, activation_id)
     else:
         _cancel_sms_activation_with_retry(api_key, activation_id)
 
@@ -2243,7 +2389,7 @@ label{color:#4b5563}.input,.select{height:40px;border:1px solid #dce3ee;border-r
       </div>
       <div class="card form gopay-only">
         <h2>GoPay 注册 / 登录</h2>
-        <div class="field"><label>号码来源</label><select id="regSource"><option value="pool">号码池</option><option value="smsbower">SMSBower</option><option value="smspool">SMSPool</option></select></div>
+        <div class="field"><label>号码来源</label><select id="regSource"><option value="pool">号码池</option><option value="smsbower">SMSBower</option><option value="smspool">SMSPool</option><option value="grizzlysms">GrizzlySMS</option><option value="hero_sms">HeroSMS</option></select></div>
         <div class="field"><label>手机号（号码池模式）</label><input id="regPhone" placeholder="+62..."></div>
         <div class="field"><label>模式</label><select id="regTaskType"><option value="register">注册</option><option value="login">登录已有号</option></select></div>
         <div class="field"><label>PIN</label><input id="regPin" value="147258"></div>
@@ -2373,12 +2519,14 @@ label{color:#4b5563}.input,.select{height:40px;border:1px solid #dce3ee;border-r
       <div class="grid">
         <div class="card form">
           <h2>短信 API 接入</h2>
+          <div class="field"><label>接码供应商</label><select id="smsApiProvider"><option value="smsbower">SMSBower</option><option value="smspool">SMSPool</option><option value="grizzlysms">GrizzlySMS</option><option value="hero_sms">HeroSMS</option></select></div>
           <div class="field"><label>Base URL</label><input id="smsApiBaseUrl" placeholder="https://smsbower.page"></div>
           <div class="field"><label>API Key</label><input id="smsApiKey" placeholder="留空则保留当前 Key"></div>
           <div class="row-actions">
             <div class="field" style="flex:1;margin-bottom:0"><label>服务</label><input id="smsApiService" placeholder="ni"></div>
             <div class="field" style="flex:1;margin-bottom:0"><label>国家</label><input id="smsApiCountry" placeholder="6"></div>
           </div>
+          <div class="field"><label>最大价格（可选）</label><input id="smsApiMaxPrice" placeholder="留空使用平台默认价格"></div>
           <div class="row-actions" style="margin:12px 0 14px">
             <button class="btn primary" onclick="saveSmsConfig()">保存配置</button>
             <button class="btn" onclick="loadOtp(true)">刷新余额</button>
@@ -2465,8 +2613,9 @@ function setFlow(id,state,text){const el=document.getElementById(id);if(!el)retu
 function updatePaymentFlow(j){const status=j.status||'';const logs=(j.logs||[]).map(x=>String(x.message||'')).join('\n');setFlow('payFlowPrecheck',logs.includes('预检通过')||status?'success':'','完成');setFlow('payFlowLink',logs.includes('Linking complete')||logs.includes('GoPay linked')?'success':(logs.includes('linking')?'running':''),logs.includes('GoPay linked')?'完成':(logs.includes('linking')?'进行中':'等待'));setFlow('payFlowOtp',status==='waiting_otp'?'running':(logs.includes('OTP 已提交')||logs.includes('PIN verify')?'success':''),status==='waiting_otp'?'等待验证码':(logs.includes('OTP 已提交')||logs.includes('PIN verify')?'完成':'等待'));setFlow('payFlowDone',status==='success'?'success':(status==='failed'?'failed':(status==='running'?'running':'')),status==='success'?'成功':(status==='failed'?'失败':(status==='running'?'进行中':'等待')))}
 function renderPaymentDetail(j){updatePaymentFlow(j);const logs=(j.logs||[]).map(x=>`[${fmt(x.at)}] ${x.message}`).join('\n');document.getElementById('paymentLog').textContent=logs||j.message||'运行中';if(j.prompt){document.getElementById('paymentPrompt').innerHTML=`<div class="prompt"><b>${esc(j.prompt.label)}</b><div class="muted">发送到 ${esc(j.prompt.phone)}</div><div class="field" style="margin-top:10px"><input id="paymentOtpCode" placeholder="输入支付验证码"></div><button class="btn primary" onclick="submitPaymentOtp('${j.id}')">提交验证码</button></div>`}else{document.getElementById('paymentPrompt').innerHTML=''}}
 async function submitPaymentOtp(id){const code=document.getElementById('paymentOtpCode').value.trim();if(!code)return;await fetch('/api/payment-tasks/'+id+'/otp',{method:'POST',headers:authHeaders(),body:JSON.stringify({code})});setTimeout(loadPaymentJobs,400)}
-async function saveSmsConfig(){const body={api_base_url:smsApiBaseUrl.value.trim(),api_key:smsApiKey.value.trim(),service:smsApiService.value.trim(),country:smsApiCountry.value.trim()};smsConfigStatus.textContent='保存中...';const r=await fetch('/api/sms-config',{method:'POST',headers:authHeaders(),body:JSON.stringify(body)});const d=await r.json();if(!r.ok){smsConfigStatus.textContent=d.error||'保存失败';return}smsApiKey.value='';smsConfigStatus.textContent='已保存';loadOtp(true)}
-async function loadOtp(balance=false){const r=await fetch('/api/sms-status'+(balance?'?balance=1':''));const d=await r.json();if(smsApiBaseUrl&&!smsApiBaseUrl.value)smsApiBaseUrl.value=d.api_base_url||'';if(smsApiService&&!smsApiService.value)smsApiService.value=d.service||'ni';if(smsApiCountry&&!smsApiCountry.value)smsApiCountry.value=d.country||'6';const rows=[['API',d.provider||'-'],['Base URL',d.api_base_url||'-'],['Key',d.api_key_configured?`已配置 ${d.api_key||''}`:'未配置'],['余额',d.balance_raw||d.balance_error||'-'],['服务/国家',`${d.service||'-'} / ${d.country||'-'}`],['Env 文件',d.env_file||'-']];document.getElementById('smsApiRows').innerHTML=rows.map(x=>`<tr><th>${esc(x[0])}</th><td>${esc(x[1])}</td></tr>`).join('');document.getElementById('otpBox').textContent=JSON.stringify(d.pending_otp||{},null,2);refreshTopStats()}
+async function saveSmsConfig(){const body={provider:smsApiProvider.value,api_base_url:smsApiBaseUrl.value.trim(),api_key:smsApiKey.value.trim(),service:smsApiService.value.trim(),country:smsApiCountry.value.trim(),max_price:smsApiMaxPrice.value.trim()};smsConfigStatus.textContent='保存中...';const r=await fetch('/api/sms-config',{method:'POST',headers:authHeaders(),body:JSON.stringify(body)});const d=await r.json();if(!r.ok){smsConfigStatus.textContent=d.error||'保存失败';return}smsApiKey.value='';smsConfigStatus.textContent='已保存';loadOtp(true)}
+async function loadOtp(balance=false){const r=await fetch('/api/sms-status'+(balance?'?balance=1':''));const d=await r.json();const provider=smsApiProvider?.value||'smsbower';const p=(d.providers&&d.providers[provider])||d;if(smsApiBaseUrl&&!smsApiBaseUrl.value)smsApiBaseUrl.value=p.api_base_url||'';if(smsApiService&&!smsApiService.value)smsApiService.value=p.service||'ni';if(smsApiCountry&&!smsApiCountry.value)smsApiCountry.value=p.country||'6';if(smsApiMaxPrice&&!smsApiMaxPrice.value)smsApiMaxPrice.value=p.max_price||'';const rows=[['API',p.provider||'-'],['Base URL',p.api_base_url||'-'],['Key',p.api_key_configured?`已配置 ${p.api_key||''}`:'未配置'],['余额',p.balance_raw||p.balance_error||'-'],['服务/国家',`${p.service||'-'} / ${p.country||'-'}`],['Env 文件',d.env_file||'-']];document.getElementById('smsApiRows').innerHTML=rows.map(x=>`<tr><th>${esc(x[0])}</th><td>${esc(x[1])}</td></tr>`).join('');document.getElementById('otpBox').textContent=JSON.stringify(d.pending_otp||{},null,2);refreshTopStats()}
+smsApiProvider?.addEventListener('change',()=>{smsApiBaseUrl.value='';smsApiService.value='';smsApiCountry.value='';smsApiMaxPrice.value='';loadOtp()});
 document.getElementById('payUrl').addEventListener('input',()=>{generatedInboxJobId='';const s=document.getElementById('checkoutStatus');if(s)s.textContent=''});
 setInterval(()=>{loadJobs(); if(document.getElementById('view-register').style.display!=='none')loadGptRegisterTasks(); if(document.getElementById('view-email_orders').style.display!=='none')loadGptEmails(); if(document.getElementById('view-oauth_tokens').style.display!=='none')loadGptAccounts(); if(document.getElementById('view-oauth_tasks').style.display!=='none')loadGptRegisterTasks(); if(document.getElementById('view-payment').style.display!=='none')loadPaymentJobs(); if(document.getElementById('view-otp').style.display!=='none')loadOtp(); if(document.getElementById('view-plus_pool').style.display!=='none')loadPlusPool()},3000);
 loadJobs();loadAccounts();loadOtp();loadAutoFlow();refreshTopStats();
@@ -2611,7 +2760,7 @@ class _ManualRegisterManager:
             _normalize_phone_for_country,
         )
 
-        source = source if source in {"pool", "smsbower", "smspool"} else "pool"
+        source = source if source in {"pool", "smsbower", "smspool", "grizzlysms", "hero_sms"} else "pool"
         pin = str(pin or "").strip()
         if not re.fullmatch(r"\d{6}", pin):
             label = "原 PIN（账号无 PIN 时作为新 PIN）" if login_existing else "新 PIN"
@@ -2634,12 +2783,11 @@ class _ManualRegisterManager:
             if not sms_api_key:
                 raise ValueError("SMSBower API key is not configured")
             sms_provider = "smsbower"
-        elif source == "smspool":
-            from opai.core.smspool_helpers import smspool_api_key, smspool_get_number
-            sms_api_key = smspool_api_key("")
+        elif source in {"smspool", "grizzlysms", "hero_sms"}:
+            sms_api_key = _gopay_sms_api_key(source)
             if not sms_api_key:
-                raise ValueError("SMSPool API key is not configured")
-            sms_provider = "smspool"
+                raise ValueError(f"{_gopay_sms_label(source)} API key is not configured")
+            sms_provider = source
 
         # Verify the selected proxy before purchasing a disposable number.
         # This prevents dead proxies from consuming SMSBower activations.
@@ -2652,9 +2800,8 @@ class _ManualRegisterManager:
             from opai.core.sms_helpers import sms_get_number
             phone, sms_activation_id = sms_get_number(sms_api_key)
             activation_lease_owned = bool(sms_api_key and sms_activation_id)
-        elif source == "smspool":
-            from opai.core.smspool_helpers import smspool_get_number
-            phone, sms_activation_id = smspool_get_number()
+        elif source in {"smspool", "grizzlysms", "hero_sms"}:
+            phone, sms_activation_id = _gopay_sms_get_number(source)
             activation_lease_owned = bool(sms_api_key and sms_activation_id)
 
         def cancel_acquired_sms() -> None:
@@ -2916,7 +3063,7 @@ class _ManualRegisterManager:
         consumed_sms_code_hashes: set[str] = set()
 
         def persist_consumed_sms_hashes() -> None:
-            if source not in {"smsbower", "smspool"} or not sms_activation_id or not consumed_sms_code_hashes:
+            if source not in {"smsbower", "smspool", "grizzlysms", "hero_sms"} or not sms_activation_id or not consumed_sms_code_hashes:
                 return
             try:
                 _record_gopay_consumed_sms_code_hashes(
@@ -2938,19 +3085,15 @@ class _ManualRegisterManager:
 
             self._append_log(job_id, f"开始真实请求 GoPay: {phone} country_code={country_code}")
             envelope_did = _get_envelope_did()
-            if source in {"smsbower", "smspool"}:
-                from opai.core.sms_helpers import sms_code_sha256, sms_wait_code, sms_request_another
+            if source in {"smsbower", "smspool", "grizzlysms", "hero_sms"}:
+                from opai.core.sms_helpers import sms_code_sha256
                 retry_ready = False
 
                 def request_another_code() -> bool:
                     nonlocal retry_ready
                     if retry_ready:
                         return True
-                    if sms_provider == "smspool":
-                        from opai.core.smspool_helpers import smspool_resend
-                        retry_ready = bool(smspool_resend(sms_activation_id))
-                    else:
-                        retry_ready = bool(sms_request_another(sms_api_key, sms_activation_id))
+                    retry_ready = _gopay_sms_resend(sms_provider, sms_api_key, sms_activation_id)
                     return retry_ready
 
                 def wait_code(purpose: str, timeout: int) -> str | None:
@@ -2958,11 +3101,7 @@ class _ManualRegisterManager:
                     # A previously prepared retry slot is consumed by the OTP
                     # request that led to this wait.
                     retry_ready = False
-                    if sms_provider == "smspool":
-                        from opai.core.smspool_helpers import smspool_wait_code
-                        code = smspool_wait_code(sms_activation_id, timeout=max(timeout, 180), ignore_code_hashes=consumed_sms_code_hashes)
-                    else:
-                        code = sms_wait_code(sms_api_key, sms_activation_id, timeout=timeout, ignore_code_hashes=consumed_sms_code_hashes)
+                    code = _gopay_sms_wait_code(sms_provider, sms_api_key, sms_activation_id, timeout=max(timeout, 180), ignore_code_hashes=consumed_sms_code_hashes)
                     if code:
                         digest = sms_code_sha256(code)
                         if digest:
@@ -3027,8 +3166,8 @@ class _ManualRegisterManager:
                 if result and result.get("failed"):
                     job["status"] = "failed"
                     job["message"] = result.get("error") or "注册失败"
-                    if source in {"smsbower", "smspool"} and result.get("keep_sms"):
-                        job["message"] += f"；已登录账号和{('SMSPool' if source == 'smspool' else 'SMSBower')}号码仍保留，可以稍后重试或手动释放"
+                    if source in {"smsbower", "smspool", "grizzlysms", "hero_sms"} and result.get("keep_sms"):
+                        job["message"] += f"；已登录账号和{_gopay_sms_label(source)}号码仍保留，可以稍后重试或手动释放"
                     job["result"] = {
                         "phone": result.get("phone", phone),
                         "local": result.get("local", ""),
@@ -3053,15 +3192,15 @@ class _ManualRegisterManager:
                             pin_message = "账号已设置 PIN，但本次 OTP 登录未验证原 PIN，本机不保存 PIN"
                         else:
                             pin_message = "账号原 PIN 已验证"
-                        suffix = f"，{('SMSPool' if source == 'smspool' else 'SMSBower')}号码已保留等待付款 OTP" if source in {"smsbower", "smspool"} else ""
+                        suffix = f"，{_gopay_sms_label(source)}号码已保留等待付款 OTP" if source in {"smsbower", "smspool", "grizzlysms", "hero_sms"} else ""
                         job["message"] = f"已有账号登录完成；{pin_message}{suffix}"
                     elif result.get("relogged_in"):
                         job["status"] = "success"
-                        provider_label = "SMSPool" if source == "smspool" else "SMSBower"
-                        job["message"] = f"注册完成，token 已更新，{provider_label} 号码已保留等待付款 OTP" if source in {"smsbower", "smspool"} else "注册完成，已退出登录并重新登录更新 token"
+                        provider_label = _gopay_sms_label(source)
+                        job["message"] = f"注册完成，token 已更新，{provider_label} 号码已保留等待付款 OTP" if source in {"smsbower", "smspool", "grizzlysms", "hero_sms"} else "注册完成，已退出登录并重新登录更新 token"
                     else:
                         job["status"] = "success"
-                        job["message"] = f"注册完成，{('SMSPool' if source == 'smspool' else 'SMSBower')}号码已保留等待付款 OTP" if source in {"smsbower", "smspool"} else "注册完成"
+                        job["message"] = f"注册完成，{_gopay_sms_label(source)}号码已保留等待付款 OTP" if source in {"smsbower", "smspool", "grizzlysms", "hero_sms"} else "注册完成"
                     job["result"] = {
                         "phone": result.get("phone", phone),
                         "local": result.get("local", ""),
@@ -3081,7 +3220,7 @@ class _ManualRegisterManager:
                     job["message"] = "注册失败，查看服务端日志里的接口返回"
                 job["prompt"] = None
                 job["updated_at"] = _now_iso()
-            if source in {"smsbower", "smspool"} and sms_activation_id:
+            if source in {"smsbower", "smspool", "grizzlysms", "hero_sms"} and sms_activation_id:
                 # Keep a successful activation open: payment may require a
                 # second/third OTP.  Complete it only after payment succeeds or
                 # when the user explicitly releases the number.
@@ -3096,7 +3235,7 @@ class _ManualRegisterManager:
         except Exception as exc:
             log.exception("manual register job failed: %s", job_id)
             persist_consumed_sms_hashes()
-            if source in {"smsbower", "smspool"} and sms_activation_id:
+            if source in {"smsbower", "smspool", "grizzlysms", "hero_sms"} and sms_activation_id:
                 try:
                     _cancel_gopay_sms(sms_provider or source, sms_api_key, sms_activation_id)
                 except Exception:
@@ -3476,12 +3615,7 @@ class _WebPaymentManager:
             aid = str((account or {}).get("activation_id") or (account or {}).get("aid") or "").strip()
             sms_provider = str((account or {}).get("sms_provider") or "smsbower").strip().lower()
             if aid:
-                if sms_provider == "smspool":
-                    from opai.core.smspool_helpers import smspool_api_key
-                    api_key = smspool_api_key("")
-                else:
-                    from opai.core.sms_helpers import get_sms_api_key
-                    api_key = get_sms_api_key("")
+                api_key = _gopay_sms_api_key(sms_provider)
                 if api_key:
                     self._append_log(job_id, "使用短信 API 自动等待支付 OTP")
                     ignored_hashes = _account_consumed_sms_code_hashes(account or {}, aid)
@@ -3511,16 +3645,12 @@ class _WebPaymentManager:
 
             if api_key and aid:
                 try:
-                    from opai.core.sms_helpers import sms_code_sha256, sms_wait_code
+                    from opai.core.sms_helpers import sms_code_sha256
 
                     remaining = max(0.0, deadline - time.time())
                     if remaining <= 0:
                         break
-                    if sms_provider == "smspool":
-                        from opai.core.smspool_helpers import smspool_wait_code
-                        code = smspool_wait_code(aid, timeout=min(3, max(1, int(remaining))), ignore_code_hashes=ignored_hashes)
-                    else:
-                        code = sms_wait_code(api_key, aid, timeout=min(2.0, remaining), ignore_code_hashes=ignored_hashes)
+                    code = _gopay_sms_wait_code(sms_provider, api_key, aid, timeout=min(3, max(1, int(remaining))), ignore_code_hashes=ignored_hashes)
                     if code:
                         # A manual submission may have arrived while the SMS API
                         # request was in flight.  Honor that explicit submission
@@ -3611,23 +3741,16 @@ class _WebPaymentManager:
             sms_provider = str((account or {}).get("sms_provider") or "smsbower").strip().lower()
             if aid:
                 try:
-                    if sms_provider == "smspool":
-                        from opai.core.smspool_helpers import smspool_resend, smspool_api_key
-                        api_key = smspool_api_key("")
-                        prepared = bool(api_key and smspool_resend(aid))
-                        provider_label = "SMSPool"
-                    else:
-                        from opai.core.sms_helpers import get_sms_api_key, sms_request_another
-                        api_key = get_sms_api_key("")
-                        prepared = bool(api_key and sms_request_another(api_key, aid))
-                        provider_label = "SMSBower"
+                    api_key = _gopay_sms_api_key(sms_provider)
+                    prepared = bool(api_key and _gopay_sms_resend(sms_provider, api_key, aid))
+                    provider_label = _gopay_sms_label(sms_provider)
                     if prepared:
                         self._append_log(job_id, f"支付前已准备 {provider_label} 接收下一条验证码")
                     elif api_key:
                         self._append_log(job_id, f"{provider_label} 下一条验证码准备失败，仍可在网页手动输入")
                 except Exception:
                     log.debug("payment sms preparation failed", exc_info=True)
-                    self._append_log(job_id, f"{('SMSPool' if sms_provider == 'smspool' else 'SMSBower')} 下一条验证码准备异常，仍可在网页手动输入")
+                    self._append_log(job_id, f"{_gopay_sms_label(sms_provider)} 下一条验证码准备异常，仍可在网页手动输入")
             self._append_log(job_id, f"开始支付: {phone} -> {midtrans_url}")
             self._update_snap_state(snap, "linking", job_id=job_id)
             payment = GoPayPayment(proxy=proxy, payment_fingerprint=payment_fingerprint)
@@ -3675,9 +3798,9 @@ class _WebPaymentManager:
                 self._save_state_locked()
             if payment_succeeded:
                 account, _idx = _find_gopay_account(phone)
-                if account and str(account.get("activation_id") or "").strip() and str(account.get("sms_provider") or "smsbower").strip().lower() in {"smsbower", "smspool"}:
+                if account and str(account.get("activation_id") or "").strip() and str(account.get("sms_provider") or "smsbower").strip().lower() in {"smsbower", "smspool", "grizzlysms", "hero_sms"}:
                     if _mark_gopay_sms_done(account):
-                        self._append_log(job_id, f"付款完成，{('SMSPool' if str((account or {}).get('sms_provider') or '').lower() == 'smspool' else 'SMSBower')} 号码已自动释放")
+                        self._append_log(job_id, f"付款完成，{_gopay_sms_label(str((account or {}).get('sms_provider') or ''))} 号码已自动释放")
                     else:
                         self._append_log(job_id, "付款完成，但短信号码自动释放失败，请在账号列表手动释放")
         except GoPayFraudDenyError as exc:
