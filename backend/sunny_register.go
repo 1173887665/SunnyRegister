@@ -41,7 +41,7 @@ const (
 	fireFoxAPIURL    = "https://www.firefox.fun/yhapi.ashx"
 )
 
-var sunnyMailboxStatuses = []string{"未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "登录刷新", "失败"}
+var sunnyMailboxStatuses = []string{"未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "登录刷新", "失败", "已取消"}
 
 func (s *Server) handleSunny(w http.ResponseWriter, r *http.Request, rest string) {
 	rest = strings.Trim(rest, "/")
@@ -1331,6 +1331,8 @@ func normalizeSunnyMailboxCountStatus(status string) string {
 		return "需二验"
 	case "failed", "error":
 		return "失败"
+	case "cancelled", "canceled":
+		return "已取消"
 	default:
 		return raw
 	}
@@ -1352,6 +1354,8 @@ func sunnyMailboxStatusFilterValues(status string) []string {
 		return []string{"需二验", "needs_2fa", "needs-2fa", "2fa"}
 	case "失败":
 		return []string{"失败", "failed", "error"}
+	case "已取消":
+		return []string{"已取消", "cancelled", "canceled"}
 	default:
 		return []string{strings.TrimSpace(status)}
 	}

@@ -477,10 +477,10 @@ func auditSanitizeBody(body map[string]any) map[string]any {
 
 func truncateAuditText(value string, limit int) string {
 	value = strings.TrimSpace(value)
-	if len(value) <= limit {
+	if limit <= 0 || len([]rune(value)) <= limit {
 		return value
 	}
-	return value[:limit]
+	return string([]rune(value)[:limit])
 }
 
 func (s *Server) recordAudit(item AuditLog) {
@@ -495,6 +495,7 @@ func (s *Server) recordAudit(item AuditLog) {
 		item.SubjectKey = strings.ToLower(item.Email)
 	}
 	item.UserAgent = truncateAuditText(item.UserAgent, 512)
+	item.EntityName = truncateAuditText(item.EntityName, 512)
 	if item.Actor == "" {
 		item.Actor = "System"
 	}

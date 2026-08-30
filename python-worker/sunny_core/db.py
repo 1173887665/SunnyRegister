@@ -556,7 +556,7 @@ class SunnyDB:
         task = self.task()
         task_type = str(task.get("type") or "")
         if task_type in {"sunny_register", "sunny_login"}:
-            summary = self.fail_unfinished_mailboxes(message)
+            summary = self.fail_unfinished_mailboxes(message, status="已取消")
         else:
             summary = {
                 "completed": int(task.get("success_count") or 0),
@@ -591,8 +591,8 @@ class SunnyDB:
             self.event(event_message, "warning", detail={"scope": "global", "cancelled": True, **summary})
         return summary
 
-    def fail_unfinished_mailboxes(self, reason: str = "任务已由用户停止，当前邮箱未完成本次注册流程") -> dict[str, Any]:
-        """Fail selected mailboxes that did not complete successfully in this task."""
+    def fail_unfinished_mailboxes(self, reason: str = "任务已由用户停止，当前邮箱未完成本次注册流程", *, status: str = "失败") -> dict[str, Any]:
+        """Mark selected mailboxes that did not complete successfully in this task."""
         task = self.task()
         try:
             payload = json.loads(task.get("payload_json") or "{}")
@@ -681,8 +681,8 @@ class SunnyDB:
         if failed_ids:
             marks = ",".join("?" for _ in failed_ids)
             self.conn.execute(
-                f"update sunny_mailboxes set status='失败',last_error=?,updated_at=? where id in ({marks})",
-                [reason, now_sql(), *failed_ids],
+                f"update sunny_mailboxes set status=?,last_error=?,updated_at=? where id in ({marks})",
+                [status, reason, now_sql(), *failed_ids],
             )
         if completed_statuses or failed_ids:
             self.conn.commit()

@@ -9,7 +9,7 @@ import (
 
 func TestSunnyMailboxSummaryReturnsGlobalStatusCounts(t *testing.T) {
 	s := newSunnySessionTestServer(t)
-	for index, status := range []string{"未注册", "已接码", "已反代", "已封禁", "需二验", "failed"} {
+	for index, status := range []string{"未注册", "已接码", "已反代", "已封禁", "需二验", "failed", "已取消"} {
 		mailbox := SunnyMailbox{Email: string(rune('a'+index)) + "@summary.example", Status: status, Enabled: true}
 		if err := s.db.Create(&mailbox).Error; err != nil {
 			t.Fatalf("create %s mailbox: %v", status, err)
@@ -34,7 +34,7 @@ func TestSunnyMailboxSummaryReturnsGlobalStatusCounts(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if payload.Total != 1 || payload.MailboxTotal != 8 {
+	if payload.Total != 1 || payload.MailboxTotal != 9 {
 		t.Fatalf("filtered total = %d, mailbox total = %d", payload.Total, payload.MailboxTotal)
 	}
 	for _, status := range sunnyMailboxStatuses {

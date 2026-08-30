@@ -52,7 +52,9 @@ _configure_gopay_runtime()
 # A browser driver can occasionally remain busy after its browser disconnects. The
 # worker already runs each task in a dedicated process; reclaim an inactive child
 # after 15 minutes so its browser, IMAP sockets and memory cannot leak forever.
-TASK_IDLE_TIMEOUT_SECONDS = max(60, int(os.getenv("SUNNY_TASK_IDLE_TIMEOUT_SECONDS", "900")))
+# Keep the batch watchdog bounded while allowing the longest OTP poll (120s +
+# configured resends) to finish before reclaiming a genuinely stalled worker.
+TASK_IDLE_TIMEOUT_SECONDS = max(60, int(os.getenv("SUNNY_TASK_IDLE_TIMEOUT_SECONDS", "300")))
 TASK_WATCH_INTERVAL_SECONDS = max(5, int(os.getenv("SUNNY_TASK_WATCH_INTERVAL_SECONDS", "15")))
 
 app = FastAPI(title="SunnyRegister Python Automation Worker", version="1.0.0")

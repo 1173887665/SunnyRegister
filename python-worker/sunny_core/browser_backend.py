@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
@@ -15,6 +16,24 @@ class RegistrationBrowserSession:
     backend: str
     browser: Any
     context: Any
+
+
+def _close_with_timeout(callback: Callable[[], Any], timeout: float) -> tuple[bool, Exception | None]:
+    """Bound Playwright/Camoufox cleanup so a dead driver cannot stall a task."""
+    outcome: list[Exception | None] = [None]
+
+    def run() -> None:
+        try:
+            callback()
+        except Exception as exc:  # cleanup must never escape the worker
+            outcome[0] = exc
+
+    thread = threading.Thread(target=run, name="sunny-browser-cleanup", daemon=True)
+    thread.start()
+    thread.join(max(0.1, float(timeout)))
+    if thread.is_alive():
+        return False, TimeoutError(f"browser cleanup exceeded {timeout:.0f}s")
+    return True, outcome[0]
 
 
 def camoufox_runtime_error() -> str:
@@ -103,20 +122,20 @@ def open_registration_browser(
                     connected = bool(browser.is_connected())
                 except Exception:
                     connected = False
+            cleanup_timeout = max(1.0, float(os.getenv("SUNNY_BROWSER_CLEANUP_TIMEOUT_SECONDS", "10")))
             if context is not None and connected:
-                try:
-                    context.close()
-                except Exception as exc:
-                    log(f"[认证] Camoufox Context 关闭异常，继续回收驱动：{str(exc)[:180]}")
+                completed, error = _close_with_timeout(context.close, cleanup_timeout)
+                if not completed or error is not None:
+                    log(f"[认证] Camoufox Context 关闭异常，跳过阻塞回收：{str(error)[:180]}")
+                    connected = False
             if not connected:
                 # Camoufox.__exit__ calls browser.close() before stopping the
                 # Playwright transport. Calling close again on a dead driver can
                 # block forever, so skip that duplicate close and stop transport.
                 manager.browser = None
-            try:
-                manager.__exit__(None, None, None)
-            except Exception as exc:
-                log(f"[认证] Camoufox 驱动回收异常：{str(exc)[:180]}")
+            completed, error = _close_with_timeout(lambda: manager.__exit__(None, None, None), cleanup_timeout)
+            if not completed or error is not None:
+                log(f"[认证] Camoufox 驱动回收异常，已放弃阻塞清理：{str(error)[:180]}")
         return
 
     try:

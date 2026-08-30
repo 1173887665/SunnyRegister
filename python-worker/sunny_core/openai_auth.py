@@ -1389,7 +1389,61 @@ class OpenAIEmailRegisterFlow:
     def _has_otp_input(self, page) -> bool:
         if self._has_about_you_form(page) or self._looks_like_phone_code_page(page):
             return False
-        return bool(self._visible_inputs(page, ['input[autocomplete="one-time-code"]', 'input[name="code"]', 'input[inputmode="numeric"]']))
+        return bool(self._visible_inputs(page, [
+            'input[autocomplete="one-time-code"]',
+            'input[name="code"]',
+            'input[inputmode="numeric"]',
+            'input[type="tel"]',
+            'input[aria-label*="code" i]',
+        ]))
+
+    def _wait_for_email_otp_input(self, page, timeout: float = 12.0) -> bool:
+        """Wait for the verification form and recover once if navigation raced the OTP poll."""
+        selectors = [
+            'input[autocomplete="one-time-code"]',
+            'input[name="code"]',
+            'input[inputmode="numeric"]',
+            'input[type="tel"]',
+            'input[aria-label*="code" i]',
+        ]
+        deadline = time.monotonic() + max(1.0, float(timeout))
+        while time.monotonic() < deadline:
+            self._check_cancelled()
+            try:
+                ready = bool(self._visible_inputs(page, selectors))
+            except Exception:
+                ready = False
+            if ready or self._has_otp_input(page):
+                return True
+            self._sleep_checked(0.4)
+        try:
+            current_url = str(page.url or "")
+        except Exception:
+            current_url = ""
+        self.log(f"[邮箱] 验证码已收到但输入框未就绪，尝试恢复验证页：{current_url[:160]}")
+        try:
+            page.go_back(wait_until="domcontentloaded", timeout=30000)
+        except Exception:
+            try:
+                page.goto(f"{AUTH_BASE_URL}/email-verification", wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                pass
+        recovery_deadline = time.monotonic() + 12
+        while time.monotonic() < recovery_deadline:
+            self._check_cancelled()
+            try:
+                ready = bool(self._visible_inputs(page, selectors))
+            except Exception:
+                ready = False
+            if ready or self._has_otp_input(page):
+                return True
+            self._sleep_checked(0.4)
+        try:
+            summary = self._page_text_summary(page, 180)
+        except Exception:
+            summary = ""
+        self.log(f"[邮箱] 验证码输入框恢复失败，页面摘要：{summary}")
+        return False
 
     def _submit_email_code(self, page, min_timestamp: float) -> None:
         if not self.otp_reader:
@@ -1428,6 +1482,8 @@ class OpenAIEmailRegisterFlow:
                 self._wait_after_otp_submit(page)
                 return
 
+            if not self._wait_for_email_otp_input(page):
+                raise RuntimeError("Email OTP input was not found")
             if not self._fill_email_code_inputs(page, code):
                 raise RuntimeError("Email OTP input was not found")
             try:

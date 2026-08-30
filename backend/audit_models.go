@@ -23,7 +23,7 @@ type AuditLog struct {
 	SubjectKey  string    `gorm:"type:text" json:"subject_key"`
 	EntityType  string    `gorm:"index;size:64" json:"entity_type"`
 	EntityID    string    `gorm:"index;size:128" json:"entity_id"`
-	EntityName  string    `gorm:"size:512" json:"entity_name"`
+	EntityName  string    `gorm:"type:text" json:"entity_name"`
 	Summary     string    `gorm:"type:text" json:"summary"`
 	DetailsJSON string    `gorm:"type:text;default:'{}'" json:"details_json"`
 	HTTPStatus  int       `gorm:"index" json:"http_status"`

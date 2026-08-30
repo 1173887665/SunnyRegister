@@ -106,7 +106,7 @@ class TaskCancellationTests(unittest.TestCase):
             self.assertEqual(summary["failed_mailbox_ids"], [2])
             self.assertEqual(rows[0]["status"], "已注册")
             self.assertEqual(rows[0]["last_error"], "")
-            self.assertEqual(rows[1]["status"], "失败")
+            self.assertEqual(rows[1]["status"], "已取消")
             self.assertIn("停止", rows[1]["last_error"])
             self.assertEqual(rows[2]["status"], "已反代")
             self.assertEqual(task["status"], "cancelled")

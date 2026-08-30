@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import secrets
@@ -139,6 +140,7 @@ def _invalid_auth_step(result: dict[str, Any] | None, text: str = "") -> bool:
 RECENT_EMAIL_CODE_MAX_AGE_SECONDS = 120
 EMAIL_OTP_INITIAL_WAIT_SECONDS = 120
 EMAIL_OTP_RESEND_WAIT_SECONDS = 60
+EMAIL_OTP_MAX_RESENDS = max(1, int(os.getenv("SUNNY_EMAIL_OTP_MAX_RESENDS", "2")))
 LOGIN_SECRET_STEP_TIMEOUT_SECONDS = 30
 
 
@@ -641,8 +643,8 @@ class LoginSecretSetupFlow:
         force_fresh_email_code: bool = False,
         allow_email_fallback: bool = True,
     ) -> None:
-        deadline = time.time() + EMAIL_OTP_INITIAL_WAIT_SECONDS + EMAIL_OTP_RESEND_WAIT_SECONDS
-        resend_attempted = False
+        deadline = time.time() + EMAIL_OTP_INITIAL_WAIT_SECONDS + EMAIL_OTP_RESEND_WAIT_SECONDS * EMAIL_OTP_MAX_RESENDS
+        resend_attempts = 0
         email_code_used = False
         recent_code_submitted_at = 0.0
         submitted_email_code = ""
@@ -757,11 +759,11 @@ class LoginSecretSetupFlow:
                                 EMAIL_OTP_INITIAL_WAIT_SECONDS,
                             )
                         except TimeoutError as exc:
-                            if resend_attempted or not self._click_resend_email_code(page):
+                            if resend_attempts >= EMAIL_OTP_MAX_RESENDS or not self._click_resend_email_code(page):
                                 raise TimeoutError(
                                     "邮箱验证码等待 120 秒后超时，重新发送验证码不可用"
                                 ) from exc
-                            resend_attempted = True
+                            resend_attempts += 1
                             email_code_min_timestamp = time.time() - 2
                             self.log("[邮箱] 120 秒未收到重认证验证码，已重新发送，继续等待 60 秒")
                             try:
@@ -968,7 +970,7 @@ class LoginSecretSetupFlow:
         reader = self._reader_instance()
         page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
         code_timestamp = min_timestamp
-        resend_attempted = False
+        resend_attempts = 0
         rejected_codes: set[str] = set()
         for attempt in range(2):
             using_recent_code = False
@@ -1000,9 +1002,9 @@ class LoginSecretSetupFlow:
                     else:
                         code = self._wait_for_code(reader, code_timestamp, EMAIL_OTP_INITIAL_WAIT_SECONDS)
                 except TimeoutError as exc:
-                    if resend_attempted or not self._click_resend_email_code(page):
+                    if resend_attempts >= EMAIL_OTP_MAX_RESENDS or not self._click_resend_email_code(page):
                         raise TimeoutError("邮箱验证码等待 120 秒后超时，重新发送验证码不可用") from exc
-                    resend_attempted = True
+                    resend_attempts += 1
                     code_timestamp = time.time() - 2
                     self.log("[邮箱] 120 秒未收到重认证验证码，已重新发送，继续等待 60 秒")
                     try:
@@ -1682,7 +1684,7 @@ class ProtocolLoginSecretSetupFlow:
             raise RuntimeError(f"加载 ChatGPT 重认证页面失败: HTTP {status} {text[:180]}")
         code_timestamp = sent_at
         rejected_codes: set[str] = set()
-        resend_attempted = False
+        resend_attempts = 0
         for attempt in range(2):
             using_recent_code = False
             if (
@@ -1712,7 +1714,7 @@ class ProtocolLoginSecretSetupFlow:
                         reader, code_timestamp, EMAIL_OTP_INITIAL_WAIT_SECONDS
                     )
                 except TimeoutError as exc:
-                    if resend_attempted:
+                    if resend_attempts >= EMAIL_OTP_MAX_RESENDS:
                         raise TimeoutError("邮箱验证码等待 120 秒后超时，重认证重发次数已用尽") from exc
                     sent_at = time.time() - 2
                     resend_status, _resend_payload, resend_text = self._request(
@@ -1728,7 +1730,7 @@ class ProtocolLoginSecretSetupFlow:
                         raise RuntimeError(
                             f"重新发送 OpenAI 邮箱验证码失败: HTTP {resend_status} {resend_text[:180]}"
                         ) from exc
-                    resend_attempted = True
+                    resend_attempts += 1
                     self.log("[邮箱] 120 秒未收到协议重认证验证码，已重新发送，继续等待 60 秒")
                     code_timestamp = sent_at
                     try:
