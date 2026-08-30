@@ -691,6 +691,37 @@ func (s *Server) sunnyGroupMap() map[uint]string {
 }
 
 func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []string) {
+	if len(parts) == 1 && parts[0] == "rebind-options" && r.Method == http.MethodGet {
+		var rows []SunnyMailbox
+		// Source choices mirror the mailbox configuration list. Keep disabled rows
+		// visible so the user can see and re-enable the configured mailbox instead
+		// of getting an empty category with no explanation.
+		s.db.Select("id, email, access_key, raw, mailbox_type, mailbox_channel, password, client_id, refresh_token, enabled").Order("id asc").Find(&rows)
+		options := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			mailboxType := normalizeSunnyMailboxType(row.MailboxType)
+			mailboxChannel := normalizeSunnyMailboxChannel(row.MailboxType, row.MailboxChannel)
+			category := mailboxType
+			if mailboxType == "apple" && mailboxChannel == "url_api" && !strings.HasSuffix(strings.ToLower(strings.TrimSpace(row.Email)), "@icloud.com") {
+				category = "generic"
+			}
+			credential := strings.TrimSpace(row.AccessKey)
+			if credential == "" {
+				parts := strings.SplitN(strings.TrimSpace(row.Raw), "----", 2)
+				if len(parts) == 2 {
+					credential = strings.TrimSpace(parts[1])
+				}
+			}
+			if strings.TrimSpace(row.Email) != "" && credential != "" {
+				options = append(options, map[string]any{
+					"id": row.ID, "email": row.Email, "mailbox_api": credential, "enabled": row.Enabled,
+					"mailbox_type": mailboxType, "mailbox_channel": mailboxChannel, "category": category,
+				})
+			}
+		}
+		writeJSON(w, 200, map[string]any{"items": options})
+		return
+	}
 	if len(parts) == 1 && parts[0] == "config" {
 		if r.Method == http.MethodGet {
 			cfg := s.sunnyGetConfig(sunnyCfgMailbox, defaultMailboxConfig())
@@ -1706,12 +1737,24 @@ func (s *Server) sunnyImportMailboxes(w http.ResponseWriter, r *http.Request) {
 	lines := strings.Split(text(body["lines"]), "\n")
 	ok, bad := 0, []string{}
 	parsed := map[string]map[string]string{}
+	parsedTypes := map[string]string{}
+	parsedChannels := map[string]string{}
 	order := []string{}
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		p, err := parseSunnyMailboxLineForProvider(line, mailboxType, mailboxChannel)
+		lineType, lineChannel := mailboxType, mailboxChannel
+		p, err := parseSunnyMailboxLineForProvider(line, lineType, lineChannel)
+		// iCloud mailbox links are commonly pasted while the domain-mail tab is
+		// selected. Recognize those links as Apple URL API credentials.
+		if err != nil && mailboxType == "domain" {
+			parts := strings.SplitN(strings.TrimSpace(line), "----", 2)
+			if len(parts) == 2 && strings.HasSuffix(strings.ToLower(strings.TrimSpace(parts[0])), "@icloud.com") && isSunnyHTTPURL(strings.TrimSpace(parts[1])) {
+				lineType, lineChannel = "apple", "url_api"
+				p, err = parseSunnyMailboxLineForProvider(line, lineType, lineChannel)
+			}
+		}
 		if err != nil {
 			bad = append(bad, line+" => "+err.Error())
 			continue
@@ -1720,23 +1763,27 @@ func (s *Server) sunnyImportMailboxes(w http.ResponseWriter, r *http.Request) {
 		if _, exists := parsed[key]; !exists {
 			order = append(order, key)
 		}
-		if mailboxType == "microsoft" {
+		if lineType == "microsoft" {
 			p["raw"] = sunnyMicrosoftRaw(p["email"], p["password"], p["client_id"], p["refresh_token"])
 		} else {
 			p["raw"] = sunnyURLAPIRaw(p["email"], p["access_key"])
 		}
 		parsed[key] = p
+		parsedTypes[key] = lineType
+		parsedChannels[key] = lineChannel
 	}
+	importedEmails := make([]string, 0, ok)
 	for _, key := range order {
 		p := parsed[key]
+		lineType, lineChannel := parsedTypes[key], parsedChannels[key]
 		var old SunnyMailbox
 		if err := s.db.Where("lower(email) = ?", key).First(&old).Error; err == nil {
 			updates := map[string]any{
-				"group_id": gid, "mailbox_type": mailboxType, "mailbox_channel": mailboxChannel,
+				"group_id": gid, "mailbox_type": lineType, "mailbox_channel": lineChannel,
 				"access_key": p["access_key"], "password": p["password"], "chat_gpt_password": p["chatgpt_password"],
 				"totp_secret": p["totp_secret"], "client_id": p["client_id"], "refresh_token": p["refresh_token"], "raw": p["raw"],
 			}
-			if mailboxType == "domain" {
+			if lineType == "domain" {
 				updates["pickup_token_hash"] = domainMailboxTokenHashFromCredential(p["access_key"], p["email"])
 			}
 			if p["openai_rt"] != "" {
@@ -1751,15 +1798,25 @@ func (s *Server) sunnyImportMailboxes(w http.ResponseWriter, r *http.Request) {
 			if p["openai_rt"] != "" {
 				status = "已注册"
 			}
-			m := SunnyMailbox{GroupID: gid, Email: p["email"], MailboxType: mailboxType, MailboxChannel: mailboxChannel, AccessKey: p["access_key"], PickupTokenHash: domainMailboxTokenHashFromCredential(p["access_key"], p["email"]), Password: p["password"], ChatGPTPassword: p["chatgpt_password"], TOTPSecret: p["totp_secret"], ClientID: p["client_id"], RefreshToken: p["refresh_token"], OpenAIRT: p["openai_rt"], Raw: p["raw"], AccountType: "free", Status: status, Enabled: true, LatestMailJSON: "{}"}
+			m := SunnyMailbox{GroupID: gid, Email: p["email"], MailboxType: lineType, MailboxChannel: lineChannel, AccessKey: p["access_key"], PickupTokenHash: domainMailboxTokenHashFromCredential(p["access_key"], p["email"]), Password: p["password"], ChatGPTPassword: p["chatgpt_password"], TOTPSecret: p["totp_secret"], ClientID: p["client_id"], RefreshToken: p["refresh_token"], OpenAIRT: p["openai_rt"], Raw: p["raw"], AccountType: "free", Status: status, Enabled: true, LatestMailJSON: "{}"}
 			if err := s.db.Create(&m).Error; err != nil {
 				bad = append(bad, p["email"]+" => "+err.Error())
 				continue
 			}
 		}
 		ok++
+		importedEmails = append(importedEmails, p["email"])
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "imported": ok, "failed": len(bad), "errors": bad})
+	// Return enough context for the UI to show partial failures and reveal the
+	// newly imported group without requiring a second manual search.
+	writeJSON(w, 200, map[string]any{
+		"ok":              true,
+		"group_id":        gid,
+		"imported":        ok,
+		"imported_emails": importedEmails,
+		"failed":          len(bad),
+		"errors":          bad,
+	})
 }
 
 func (s *Server) sunnyReadImportBody(r *http.Request) map[string]any {
@@ -2514,31 +2571,43 @@ func extractMailBodies(header textproto.MIMEHeader, body io.Reader) (string, str
 
 func defaultPhoneConfig() map[string]any {
 	return map[string]any{
-		"pool_enabled":             true,
-		"luban_enabled":            false,
-		"luban_base_url":           "https://lubansms.com/v2/api/",
-		"luban_api_key":            "",
-		"luban_service_id":         "",
-		"smsbower_enabled":         false,
-		"smsbower_base_url":        "https://smsbower.page/stubs/handler_api.php",
-		"smsbower_api_key":         "",
-		"smsbower_default_country": "187",
-		"smsbower_default_service": "dr",
-		"smsbower_max_price":       -1,
-		"smspool_enabled":          false,
-		"smspool_base_url":         "https://api.smspool.net",
-		"smspool_api_key":          "",
-		"smspool_default_country":  "1",
-		"smspool_default_service":  "671",
-		"smspool_max_price":        -1,
-		"firefox_enabled":          false,
-		"firefox_base_url":         fireFoxAPIURL,
-		"firefox_api_token":        "",
-		"firefox_api_name":         "",
-		"firefox_password":         "",
-		"firefox_default_country":  "usa",
-		"firefox_default_service":  "1096",
-		"firefox_max_price":        0,
+		"pool_enabled":               true,
+		"luban_enabled":              false,
+		"luban_base_url":             "https://lubansms.com/v2/api/",
+		"luban_api_key":              "",
+		"luban_service_id":           "",
+		"smsbower_enabled":           false,
+		"smsbower_base_url":          "https://smsbower.page/stubs/handler_api.php",
+		"smsbower_api_key":           "",
+		"smsbower_default_country":   "187",
+		"smsbower_default_service":   "dr",
+		"smsbower_max_price":         -1,
+		"smspool_enabled":            false,
+		"smspool_base_url":           "https://api.smspool.net",
+		"smspool_api_key":            "",
+		"smspool_default_country":    "1",
+		"smspool_default_service":    "671",
+		"smspool_max_price":          -1,
+		"firefox_enabled":            false,
+		"firefox_base_url":           fireFoxAPIURL,
+		"firefox_api_token":          "",
+		"firefox_api_name":           "",
+		"firefox_password":           "",
+		"firefox_default_country":    "usa",
+		"firefox_default_service":    "1096",
+		"firefox_max_price":          0,
+		"grizzlysms_enabled":         false,
+		"grizzlysms_base_url":        "https://api.grizzlysms.com/stubs/handler_api.php",
+		"grizzlysms_api_key":         "",
+		"grizzlysms_default_country": "any",
+		"grizzlysms_default_service": "dr",
+		"grizzlysms_max_price":       -1,
+		"hero_sms_enabled":           false,
+		"hero_sms_base_url":          "https://hero-sms.com/api/v1",
+		"hero_sms_api_key":           "",
+		"hero_sms_default_country":   "6",
+		"hero_sms_default_service":   "dr",
+		"hero_sms_max_price":         -1,
 	}
 }
 func defaultMailboxConfig() map[string]any { return map[string]any{"pool_enabled": true} }
@@ -2578,6 +2647,14 @@ func (s *Server) sunnyPhones(w http.ResponseWriter, r *http.Request, parts []str
 	}
 	if len(parts) == 2 && parts[0] == "firefox" && parts[1] == "check" && r.Method == http.MethodPost {
 		s.sunnyCheckFireFox(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[0] == "grizzlysms" && parts[1] == "check" && r.Method == http.MethodPost {
+		s.sunnyCheckGrizzlySMS(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[0] == "hero_sms" && parts[1] == "check" && r.Method == http.MethodPost {
+		s.sunnyCheckHeroSMS(w, r)
 		return
 	}
 	if len(parts) == 1 && parts[0] == "provider-options" && (r.Method == http.MethodGet || r.Method == http.MethodPost) {
@@ -2836,6 +2913,77 @@ func (s *Server) sunnyCheckFireFox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "balance": strings.TrimSpace(infoParts[1]), "raw": infoRaw})
 }
 
+func (s *Server) sunnyCheckGrizzlySMS(w http.ResponseWriter, r *http.Request) {
+	body, _ := parseBody(r)
+	cfg := mergeConfig(s.sunnyGetConfig(sunnyCfgPhone, defaultPhoneConfig()), body)
+	key := strings.TrimSpace(text(cfg["grizzlysms_api_key"]))
+	if key == "" {
+		writeError(w, 400, "GrizzlySMS API Key is required")
+		return
+	}
+	base := strings.TrimSpace(text(cfg["grizzlysms_base_url"]))
+	if base == "" {
+		base = "https://api.grizzlysms.com/stubs/handler_api.php"
+	}
+	u, _ := url.Parse(base)
+	q := u.Query()
+	q.Set("api_key", key)
+	q.Set("action", "getBalance")
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw := strings.TrimSpace(string(b))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !strings.HasPrefix(raw, "ACCESS_BALANCE:") {
+		writeError(w, 400, fmt.Sprintf("GrizzlySMS HTTP %d: %s", resp.StatusCode, raw))
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "balance": strings.TrimPrefix(raw, "ACCESS_BALANCE:"), "raw": raw})
+}
+
+func (s *Server) sunnyCheckHeroSMS(w http.ResponseWriter, r *http.Request) {
+	body, _ := parseBody(r)
+	cfg := mergeConfig(s.sunnyGetConfig(sunnyCfgPhone, defaultPhoneConfig()), body)
+	key := strings.TrimSpace(text(cfg["hero_sms_api_key"]))
+	if key == "" {
+		writeError(w, 400, "HeroSMS API Key is required")
+		return
+	}
+	base := strings.TrimRight(strings.TrimSpace(text(cfg["hero_sms_base_url"])), "/")
+	if base == "" {
+		base = "https://hero-sms.com/api/v1"
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, base+"/activations?size=1", nil)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "ApiKey "+key)
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw := strings.TrimSpace(string(b))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		writeError(w, 400, fmt.Sprintf("HeroSMS HTTP %d: %s", resp.StatusCode, raw))
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "balance": "API reachable", "raw": raw})
+}
+
 func getFireFoxAPI(ctx context.Context, baseURL string, params url.Values) (string, error) {
 	normalized, err := normalizeFireFoxAPIURL(baseURL)
 	if err != nil {
@@ -3008,7 +3156,7 @@ func (s *Server) sunnySMSProviderOptions(w http.ResponseWriter, r *http.Request)
 	kind := strings.ToLower(strings.TrimSpace(fallback(text(body["kind"]), q.Get("kind"))))
 	parent := strings.TrimSpace(fallback(text(body["country"]), q.Get("country")))
 	refresh := boolValue(firstText(body["refresh"], q.Get("refresh")), false)
-	if provider != "smsbower" && provider != "smspool" && provider != "firefox" {
+	if provider != "smsbower" && provider != "smspool" && provider != "firefox" && provider != "grizzlysms" && provider != "hero_sms" {
 		writeError(w, 400, "invalid sms provider")
 		return
 	}
@@ -3129,6 +3277,10 @@ func (s *Server) sunnyFetchSMSProviderOptions(ctx context.Context, provider, kin
 		return fetchSMSPoolOptions(ctx, kind, parent, cfg)
 	case "firefox":
 		return fetchFireFoxOptions(ctx, kind, parent, cfg)
+	case "grizzlysms":
+		return fetchGrizzlySMSOptions(ctx, kind, parent, cfg)
+	case "hero_sms":
+		return fetchHeroSMSOptions(ctx, kind, parent, cfg)
 	default:
 		return nil, fmt.Errorf("invalid sms provider")
 	}
@@ -3146,6 +3298,8 @@ func (s *Server) sunnyWarmSMSProviderOptions() {
 		{name: "smsbower", enabledKey: "smsbower_enabled", credentialKeys: []string{"smsbower_api_key"}, countryKey: "smsbower_default_country"},
 		{name: "smspool", enabledKey: "smspool_enabled", credentialKeys: []string{"smspool_api_key"}, countryKey: "smspool_default_country"},
 		{name: "firefox", enabledKey: "firefox_enabled", countryKey: "firefox_default_country"},
+		{name: "grizzlysms", enabledKey: "grizzlysms_enabled", credentialKeys: []string{"grizzlysms_api_key"}, countryKey: "grizzlysms_default_country"},
+		{name: "hero_sms", enabledKey: "hero_sms_enabled", credentialKeys: []string{"hero_sms_api_key"}, countryKey: "hero_sms_default_country"},
 	}
 	for _, p := range providers {
 		ready := boolValue(cfg[p.enabledKey], false)
@@ -3210,6 +3364,109 @@ func fetchSMSBowerOptions(ctx context.Context, kind, parent string, cfg map[stri
 		return normalizeSMSProviderOptions(data, []string{"id", "country", "ID", "code"}, []string{"chn", "eng", "name", "label"}, "country"), nil
 	}
 	return normalizeSMSProviderOptions(data, []string{"code", "id", "service", "ID"}, []string{"name", "label", "title"}, "service"), nil
+}
+
+func fetchGrizzlySMSOptions(ctx context.Context, kind, parent string, cfg map[string]any) ([]map[string]any, error) {
+	key := strings.TrimSpace(text(cfg["grizzlysms_api_key"]))
+	if key == "" {
+		return nil, fmt.Errorf("GrizzlySMS API Key is required")
+	}
+	base := strings.TrimSpace(text(cfg["grizzlysms_base_url"]))
+	if base == "" {
+		base = "https://api.grizzlysms.com/stubs/handler_api.php"
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("api_key", key)
+	q.Set("action", map[string]string{"country": "getCountries", "service": "getServicesList"}[kind])
+	if parent != "" {
+		q.Set("country", parent)
+	}
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("GrizzlySMS HTTP %d: %s", resp.StatusCode, string(b)[:min(len(b), 500)])
+	}
+	var data any
+	if err := json.Unmarshal(b, &data); err != nil {
+		return nil, err
+	}
+	if kind == "country" {
+		return normalizeSMSProviderOptions(data, []string{"id", "ID", "code", "country"}, []string{"name", "chn", "eng", "country", "label"}, "country"), nil
+	}
+	return normalizeSMSProviderOptions(data, []string{"id", "ID", "code", "service", "key"}, []string{"name", "title", "label", "service"}, "service"), nil
+}
+
+func fetchHeroSMSOptions(ctx context.Context, kind, parent string, cfg map[string]any) ([]map[string]any, error) {
+	key := strings.TrimSpace(text(cfg["hero_sms_api_key"]))
+	if key == "" {
+		return nil, fmt.Errorf("HeroSMS API Key is required")
+	}
+	base := strings.TrimRight(strings.TrimSpace(text(cfg["hero_sms_base_url"])), "/")
+	if base == "" {
+		base = "https://hero-sms.com/api/v1"
+	}
+	path := "/activations/offers/sms"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "ApiKey "+key)
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("HeroSMS HTTP %d: %s", resp.StatusCode, string(b)[:min(len(b), 500)])
+	}
+	var payload struct {
+		Data map[string]map[string]map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(b, &payload); err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0)
+	seen := map[string]bool{}
+	if kind == "country" {
+		for service, countries := range payload.Data {
+			_ = service
+			for country, meta := range countries {
+				if seen[country] {
+					continue
+				}
+				seen[country] = true
+				items = append(items, map[string]any{"value": country, "label": country, "kind": "country", "extra": meta})
+			}
+		}
+		return items, nil
+	}
+	for service, countries := range payload.Data {
+		for country := range countries {
+			if parent != "" && country != parent {
+				continue
+			}
+			if !seen[service] {
+				seen[service] = true
+				items = append(items, map[string]any{"value": service, "label": service, "kind": "service", "parent_value": country})
+			}
+		}
+	}
+	return items, nil
 }
 
 func fetchSMSPoolOptions(ctx context.Context, kind, parent string, cfg map[string]any) ([]map[string]any, error) {
@@ -6000,6 +6257,12 @@ func (s *Server) sunnyHasUsableSMSConfig() bool {
 		return true
 	}
 	if boolValue(cfg["smspool_enabled"], false) && strings.TrimSpace(text(cfg["smspool_api_key"])) != "" {
+		return true
+	}
+	if boolValue(cfg["grizzlysms_enabled"], false) && strings.TrimSpace(text(cfg["grizzlysms_api_key"])) != "" {
+		return true
+	}
+	if boolValue(cfg["hero_sms_enabled"], false) && strings.TrimSpace(text(cfg["hero_sms_api_key"])) != "" {
 		return true
 	}
 	maxPrice, _ := strconv.ParseFloat(strings.TrimSpace(text(cfg["firefox_max_price"])), 64)

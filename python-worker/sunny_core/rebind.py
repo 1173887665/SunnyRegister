@@ -16,7 +16,7 @@ import requests
 
 from .db import SunnyDB
 from .domain_mail_cleanup import cleanup_failed_mailbox, retain_failed_mailbox
-from .mailbox import DomainMailReader, MailAccount, account_from_row
+from .mailbox import DomainMailReader, MailAccount, account_from_row, create_mailbox_reader
 from .openai_auth import LoginSecretAuthenticationError, login_or_register
 from .protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationFlow
 
@@ -502,12 +502,23 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""), log)
         client.set_access_token(str(old_result.get("access_token") or ""))
         client.eligibility()
-        new_email, new_api, new_api_token_hash = _domain_mailbox(db, log)
+        imported_email = str(account_row.get("_rebind_target_email") or "").strip()
+        imported_api = str(account_row.get("_rebind_target_api") or "").strip()
+        imported_type = str(account_row.get("_rebind_target_type") or "domain").strip().lower() or "domain"
+        imported_channel = str(account_row.get("_rebind_target_channel") or "").strip().lower()
+        if imported_email and imported_api:
+            new_email, new_api = imported_email, imported_api
+            parsed = urlsplit(new_api)
+            token = parse_qs(parsed.query).get("token", [""])[0] if parsed.scheme in {"http", "https"} else ""
+            new_api_token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest() if token else ""
+            log(f"[{old_email}] 使用已导入域名邮箱：{new_email}")
+        else:
+            new_email, new_api, new_api_token_hash = _domain_mailbox(db, log)
         # Register the one-time pickup credential before ChatGPT sends the verification mail.
         # The public pickup endpoint validates the token against this database row.
         db.persist_rebind_pending(new_email, new_api, new_api_token_hash)
-        reader_account = MailAccount(email=new_email, password="", client_id="", refresh_token="", raw=f"{new_email}----{new_api}", mailbox_type="domain", mailbox_channel="domain_api", access_key=new_api)
-        reader = DomainMailReader(reader_account, log)
+        reader_account = MailAccount(email=new_email, password="", client_id="", refresh_token="", raw=f"{new_email}----{new_api}", mailbox_type=imported_type, mailbox_channel=imported_channel or ("domain_api" if imported_type == "domain" else "url_api" if imported_type == "apple" else "remail_api"), access_key=new_api)
+        reader = create_mailbox_reader(reader_account, log)
         try:
             reader.connect()
             issued_after = time.time()
@@ -535,7 +546,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             reader.close()
         client.verify(new_email, code)
         log(f"[{old_email}] 已向 ChatGPT 提交换绑邮箱验证码")
-        new_account = MailAccount(email=new_email, password="", client_id="", refresh_token="", raw=f"{new_email}----{new_api}", mailbox_type="domain", mailbox_channel="domain_api", access_key=new_api, chatgpt_password=account.chatgpt_password, totp_secret=account.totp_secret)
+        new_account = MailAccount(email=new_email, password="", client_id="", refresh_token="", raw=f"{new_email}----{new_api}", mailbox_type=imported_type, mailbox_channel=imported_channel or ("domain_api" if imported_type == "domain" else "url_api" if imported_type == "apple" else "remail_api"), access_key=new_api, chatgpt_password=account.chatgpt_password, totp_secret=account.totp_secret)
         new_flow, new_result = _login_flow(new_account, proxy, log, keep_session=False, should_cancel=db.cancel_requested)
         if str(new_result.get("access_token") or "").strip() == "":
             raise RebindError("换绑后重新登录未返回新的 Access Token")

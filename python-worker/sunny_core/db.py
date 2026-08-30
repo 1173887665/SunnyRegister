@@ -1049,6 +1049,14 @@ class SunnyDB:
             and max_price > 0
         )
 
+    def grizzlysms_available(self) -> bool:
+        cfg = self.get_config("phone")
+        return bool(cfg.get("grizzlysms_enabled") and str(cfg.get("grizzlysms_api_key") or "").strip())
+
+    def hero_sms_available(self) -> bool:
+        cfg = self.get_config("phone")
+        return bool(cfg.get("hero_sms_enabled") and str(cfg.get("hero_sms_api_key") or "").strip())
+
     def resolve_sms_provider_option(self, provider: str, kind: str, value: str, parent: str = "") -> dict[str, Any] | None:
         value = str(value or "").strip()
         if not value:

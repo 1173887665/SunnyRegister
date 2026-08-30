@@ -37,6 +37,9 @@ func urlAPIDomainStrategy(raw string) string {
 		return "generic"
 	}
 	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "a-mail.sanai.pro" || strings.HasSuffix(host, ".a-mail.sanai.pro") {
+		return "amail"
+	}
 	if host == "mail.mczero.top" || strings.HasSuffix(host, ".mail.mczero.top") {
 		return "mczero"
 	}
@@ -337,6 +340,74 @@ func fetchURLAPIGenericLatestMail(email, accessURL string, limit int, proxyURL s
 	return map[string]any{"email": email, "mailbox_type": "apple", "mailbox_channel": "url_api", "mail_protocol": "url_api", "items": []map[string]any{item}, "count": 1, "limit": 1}, nil
 }
 
+func fetchAMailURLAPILatestMail(email, accessURL string, proxyURL string) (map[string]any, error) {
+	endpoint, err := validateURLAPIMailAddress(accessURL)
+	if err != nil {
+		return nil, err
+	}
+	parsed, _ := url.Parse(endpoint)
+	uuid := strings.TrimSpace(parsed.Query().Get("impersonate_uuid"))
+	if uuid == "" {
+		return nil, &outlookMailError{Code: "mailbox_format_error", Category: "format", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: "a-mail URL 缺少邮箱 UUID", Terminal: true}
+	}
+	base := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
+	client := urlAPIHTTPClient(proxyURL)
+	listURL := base + "/api/email-box/" + url.PathEscape(uuid) + "/emails"
+	requestJSON := func(target string, out any) error {
+		req, requestErr := http.NewRequest(http.MethodGet, target, nil)
+		if requestErr != nil {
+			return requestErr
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		resp, requestErr := client.Do(req)
+		if requestErr != nil {
+			return &outlookMailError{Code: "mailbox_network_error", Category: "network", HTTPStatus: http.StatusServiceUnavailable, UserMessage: "a-mail 邮箱接口连接失败", Detail: requestErr.Error()}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+			return &outlookMailError{Code: "mailbox_credential_invalid", Category: "credential", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: "a-mail 邮箱链接无效或已过期", Detail: fmt.Sprintf("HTTP %d", resp.StatusCode), Terminal: true}
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return &outlookMailError{Code: "mailbox_provider_failed", Category: "service", HTTPStatus: http.StatusBadGateway, UserMessage: "a-mail 邮箱接口请求失败", Detail: fmt.Sprintf("HTTP %d", resp.StatusCode)}
+		}
+		return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(out)
+	}
+	var messages []map[string]any
+	if err := requestJSON(listURL, &messages); err != nil {
+		return nil, err
+	}
+	message := map[string]any{}
+	if len(messages) > 0 {
+		message = messages[0]
+	}
+	messageUUID := strings.TrimSpace(text(message["uuid"]))
+	if messageUUID != "" {
+		var detail map[string]any
+		if err := requestJSON(base+"/api/email-box/"+url.PathEscape(uuid)+"/email/"+url.PathEscape(messageUUID), &detail); err == nil {
+			for key, value := range detail {
+				message[key] = value
+			}
+		}
+	}
+	rawBody := strings.Join([]string{text(message["body"]), text(message["html"]), text(message["content"]), text(message["text"]), text(message["snippet"]), text(message["subject"])}, "\n")
+	plain := urlAPIText(rawBody)
+	otp := ""
+	if match := urlAPIOTPPattern.FindStringSubmatch(plain); len(match) > 1 {
+		otp = match[1]
+	}
+	subject := strings.TrimSpace(text(message["subject"]))
+	if subject == "" {
+		subject = "Latest mail"
+	}
+	item := map[string]any{
+		"id": fmt.Sprintf("url-api-amail-%s", messageUUID), "email": email, "folder": "Inbox", "subject": subject,
+		"from": text(message["from"]), "to": email, "date": text(message["date"]), "body": plain, "body_preview": plain,
+		"raw_html": rawBody, "otp": otp, "source": "url_api",
+	}
+	return map[string]any{"email": email, "mailbox_type": "apple", "mailbox_channel": "url_api", "mail_protocol": "url_api", "items": []map[string]any{item}, "count": 1, "limit": 1}, nil
+}
+
 func fetchMCZeroURLAPILatestMail(email, accessURL string, proxyURL string) (map[string]any, error) {
 	endpoint, err := validateURLAPIMailAddress(accessURL)
 	if err != nil {
@@ -421,6 +492,9 @@ func fetchMCZeroURLAPILatestMail(email, accessURL string, proxyURL string) (map[
 }
 
 func fetchURLAPILatestMail(email, accessURL string, limit int, proxyURL string) (map[string]any, error) {
+	if urlAPIDomainStrategy(accessURL) == "amail" {
+		return fetchAMailURLAPILatestMail(email, accessURL, proxyURL)
+	}
 	if urlAPIDomainStrategy(accessURL) == "mczero" {
 		payload, err := fetchMCZeroURLAPILatestMail(email, accessURL, proxyURL)
 		if err == nil {

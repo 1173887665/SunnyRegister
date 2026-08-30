@@ -789,6 +789,8 @@ const zh: AnyObj = new Proxy(Object.assign({
   mailboxPoolName: "自建邮箱池", mailboxPoolGlobalSwitch: "使用自建邮箱池", mailboxPoolSwitchTip: "关闭后，注册机不会从自建邮箱池分配邮箱。", domainMailboxTitle: "自建域名邮箱池", domainMailboxDesc: "通过 CloudMail/CF Worker API 生成多个域名邮箱并收取验证码。", domainMailboxRegistration: "用于账户注册", domainMailboxRebinding: "用于邮箱换绑", domainMailboxApiURL: "CloudMail API 地址", domainMailboxPickupURL: "取件 API 公网地址", domainMailboxToken: "PUBLIC_API_TOKEN", domainMailboxSitePassword: "CloudMail 站点密码（PASSWORDS）", domainMailboxDomain: "邮箱域名（每行一个）", domainMailboxLength: "邮箱前缀长度", domainMailboxAutoAdd: "自动创建邮箱用户", domainMailboxSave: "保存域名邮箱配置", domainMailboxCheck: "测试连接", domainMailboxGenerate: "生成测试邮箱", domainMailboxConfigured: "自建域名邮箱已配置", domainMailboxNotConfigured: "请先配置并启用自建域名邮箱", mailboxOverviewTotal: "邮箱总数", mailboxOverviewPending: "待注册", mailboxOverviewRegistered: "已注册", mailboxOverviewPhoneBound: "已接码", mailboxOverviewReversed: "已反代", mailboxOverviewBanned: "已封禁", mailboxOverviewNeeds2FA: "待二验", mailboxOverviewRefreshing: "登录刷新", mailboxOverviewFailed: "失败",
   phoneTip: "格式：+手机号----接码链接。成功后冷却 5 小时，最多 3 次。", phonePool: "自建手机号池", phonePoolGlobalSwitch: "使用自建手机号池", importPhones: "导入手机号", phonePoolSwitchTip: "关闭后，注册机不会从自建手机号池分配号码；后续可切换为外部接码平台。", phonePoolOn: "可用于接码", phonePoolOff: "不用于接码", phoneImportHelp: "每行一个长效接码：第一个字符必须是 +，手机号与接码链接之间必须使用四个中横线 ---- 连接。", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "手机号导入格式错误", phoneSearch: "搜索手机号...", phoneNumber: "手机号", smsLink: "接码链接", usedCount: "已用次数", countFilter: "次数筛选", allCount: "全部次数", lastUsedAt: "最近使用时间", phoneEdit: "编辑手机号", phoneStatusEnabled: "启用", phoneStatusDisabled: "停用", phoneConfirmDelete: "确认删除该手机号？此操作不可撤销。", phoneConfirmBatchDelete: "确认删除选中的手机号？此操作不可撤销。",
   lubanProvider: "LubanSMS 接码供应商", lubanDesc: "通过供应商编号从 LubanSMS 获取一次性手机号并自动轮询验证码。", lubanSwitch: "启用 LubanSMS", lubanApiKey: "API Key", lubanServiceId: "供应商编号", lubanBaseURL: "接口地址", lubanCheck: "检测连接", lubanChecked: "LubanSMS 连接正常", lubanSaved: "LubanSMS 配置已保存",
+  grizzlyProvider: "GrizzlySMS 接码供应商", grizzlyDesc: "通过 GrizzlySMS API 自动申请手机号并轮询验证码。", grizzlySwitch: "启用 GrizzlySMS", grizzlyApiKey: "API Key", grizzlyCountry: "默认国家", grizzlyService: "默认服务", grizzlyMaxPrice: "最大价格", grizzlyBaseURL: "接口地址", grizzlyCheck: "检测余额", grizzlySaved: "GrizzlySMS 配置已保存",
+  heroProvider: "HeroSMS 接码供应商", heroDesc: "通过 HeroSMS REST API 自动申请手机号并轮询验证码。", heroSwitch: "启用 HeroSMS", heroApiKey: "API Key", heroCountry: "默认国家", heroService: "默认服务", heroMaxPrice: "最大价格", heroBaseURL: "接口地址", heroCheck: "检测连接", heroSaved: "HeroSMS 配置已保存",
   smsbowerProvider: "SMSBower 接码供应商", smsbowerDesc: "当自建手机号池不可用或无可用号码时，注册机会使用 SMSBower API 自动获取一次性手机号。", smsbowerSwitch: "启用 SMSBower", smsbowerReady: "SMSBower 已配置", smsbowerApiKey: "API Key", smsbowerCountry: "默认国家", smsbowerService: "默认服务", smsbowerMaxPrice: "最大价格", smsbowerBaseURL: "接口地址", smsbowerCheck: "检测余额", smsbowerBalance: "余额：{balance}", smsbowerSaved: "SMSBower 配置已保存",
   smspoolProvider: "SMSPool 接码供应商", smspoolDesc: "SMSPool 临时号码平台，可在自建手机号池和 SMSBower 不可用时自动购买一次性接码号码。", smspoolSwitch: "启用 SMSPool", smspoolReady: "SMSPool 已配置", smspoolApiKey: "API Key", smspoolCountry: "默认国家", smspoolService: "默认服务", refreshProviderOptions: "获取列表", providerOptionSearch: "搜索 ID、代码或名称...", providerOptionNoResults: "没有匹配的选项", smspoolMaxPrice: "最大价格", smspoolBaseURL: "接口地址", smspoolCheck: "检测余额", smspoolBalance: "余额：{balance}", smspoolSaved: "SMSPool 配置已保存",
   firefoxProvider: "FireFox 接码供应商", firefoxDesc: "FireFox 临时号码平台。使用 API 密钥 Token 直接取号，每 5 秒轮询验证码，不可用号码将在 35 秒后自动释放。", firefoxSwitch: "启用 FireFox", firefoxReady: "FireFox 已配置", firefoxApiToken: "API 密钥 Token", firefoxCountry: "默认国家", firefoxService: "默认服务", firefoxMaxPrice: "单号最高价格", firefoxBaseURL: "接口地址", firefoxCheck: "检测余额", firefoxBalance: "余额：{balance}", firefoxSaved: "FireFox 配置已保存", firefoxMaxPriceRequired: "FireFox 单号最高价格必须大于 0",
@@ -1038,7 +1040,7 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) { return <inp
 function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) { return <textarea {...props} className={cn("control-surface min-h-28", props.className)} />; }
 type SelectBoxOption = { value: string | number; label: React.ReactNode; searchText?: string };
 
-function SelectBox({ value, onChange, options, className, searchable = false, searchPlaceholder = "Search...", noResultsLabel = "No results" }: { value: string | number; onChange: (v: string | number) => void; options: SelectBoxOption[]; className?: string; searchable?: boolean; searchPlaceholder?: string; noResultsLabel?: string }) {
+function SelectBox({ value, onChange, options, className, searchable = false, searchPlaceholder = "Search...", noResultsLabel = "No results", placeholder }: { value: string | number; onChange: (v: string | number) => void; options: SelectBoxOption[]; className?: string; searchable?: boolean; searchPlaceholder?: string; noResultsLabel?: string; placeholder?: string }) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -1118,7 +1120,7 @@ function SelectBox({ value, onChange, options, className, searchable = false, se
     </div></PagePortal> : null;
   return <div ref={wrapRef} className={cn("sr-custom-select", className)}>
     <button ref={triggerRef} type="button" aria-haspopup="listbox" aria-expanded={open} className={cn("sr-custom-select-trigger", open && "open")} onClick={() => { updateRect(); setSearchQuery(""); setOpen((v) => !v); }} onKeyDown={(event)=>{ if (event.key === "Escape" && open) closeMenu(); }}>
-      <span>{active?.label}</span><ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")} />
+      <span>{active?.label || placeholder || ""}</span><ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")} />
     </button>
     {menu}
   </div>;
@@ -1931,6 +1933,8 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
   const poolPhoneReady = phoneCfg.pool_enabled !== false && usablePhones > 0;
   const smsbowerReady = phoneCfg.smsbower_enabled === true && !!String(phoneCfg.smsbower_api_key || "").trim();
   const smspoolReady = phoneCfg.smspool_enabled === true && !!String(phoneCfg.smspool_api_key || "").trim();
+  const grizzlyReady = phoneCfg.grizzlysms_enabled === true && !!String(phoneCfg.grizzlysms_api_key || "").trim();
+  const heroReady = phoneCfg.hero_sms_enabled === true && !!String(phoneCfg.hero_sms_api_key || "").trim();
   const firefoxReady = phoneCfg.firefox_enabled === true
     && !!String(phoneCfg.firefox_api_token || phoneCfg.firefox_password || "").trim()
     && !!String(phoneCfg.firefox_default_country || "").trim()
@@ -1948,7 +1952,7 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
   const registerOnlyDisabled = !identityValid;
   const stageValid = identityValid && (stage !== CODEX_PHONE_BIND || phoneResourceReady);
   const startDisabled = busy || !identityValid || !modeValid || !stageValid;
-  const phoneHint = t.linkedPhoneConfig + " · " + (!selectedNeedPhone ? t.existingRTReady : poolPhoneReady ? template(t.usablePhones, { count: usablePhones }) : smsbowerReady ? t.smsbowerReady : smspoolReady ? t.smspoolReady : firefoxReady ? t.firefoxReady : t.resourceMissing);
+  const phoneHint = t.linkedPhoneConfig + " · " + (!selectedNeedPhone ? t.existingRTReady : poolPhoneReady ? template(t.usablePhones, { count: usablePhones }) : smsbowerReady ? t.smsbowerReady : smspoolReady ? t.smspoolReady : grizzlyReady ? t.grizzlyProvider : heroReady ? t.heroProvider : firefoxReady ? t.firefoxReady : t.resourceMissing);
   const reverseHint = t.linkedReverseConfig + " · " + (sub2apiReady ? t.sub2apiReady : t.sub2apiMissing);
   const codexDisabled = !identityValid || !phoneResourceReady;
   const importDisabled = !identityValid;
@@ -2005,13 +2009,13 @@ function Choice({ active, disabled, disabledMessage, title, desc, onClick, onDis
   return <button type="button" className={cn("sr-choice", active && "active", disabled && "disabled")} aria-disabled={disabled} onClick={() => { if (disabled) { onDisabledClick?.(disabledMessage || "Disabled"); return; } onClick(); }}><b>{title}</b><span>{desc}</span></button>;
 }
 
-function mailboxLineErrors(lines: string, mailboxType: "microsoft" | "apple" | "remail" | "domain", mailboxChannel = "xbovo"): string[] {
+function mailboxLineErrors(lines: string, mailboxType: "microsoft" | "apple" | "remail" | "domain" | "generic", mailboxChannel = "xbovo"): string[] {
   const errors: string[] = [];
   String(lines || "").split(/\r?\n/).forEach((raw, index) => {
     const line = raw.trim();
     if (!line) return;
     const parts = line.split("----").map((x) => x.trim());
-    const urlAPIInvalid = mailboxType === "apple" && mailboxChannel === "url_api" && (
+    const urlAPIInvalid = (mailboxType === "apple" || mailboxType === "generic") && mailboxChannel === "url_api" && (
       parts.length < 1 || parts.length > 4 || !parts[0] || !parts[0].includes("@")
       || parts.slice(1).some((value)=>!value)
       || parts.slice(1).filter((value)=>/^https?:\/\//i.test(value)).length > 1
@@ -2019,24 +2023,31 @@ function mailboxLineErrors(lines: string, mailboxType: "microsoft" | "apple" | "
     );
     const invalid = (mailboxType === "remail" || mailboxType === "domain")
       ? (parts.length < 2 || !parts[0] || !parts[0].includes("@") || !parts.slice(1).join("----"))
-      : mailboxType === "apple"
+      : mailboxType === "apple" || mailboxType === "generic"
         ? (mailboxChannel === "url_api" ? urlAPIInvalid : parts.length !== 2 || !parts[0] || !parts[0].includes("@") || !parts[1])
         : parts.length < 4 || !parts[0] || !parts[0].includes("@") || !parts[2] || !parts[3];
     if (invalid) {
-      const hint = mailboxType === "domain" ? "email----域名邮箱凭证 JSON" : mailboxType === "remail" ? "email----serviceToken / 凭证" : mailboxType === "apple" ? (mailboxChannel === "url_api" ? "邮箱 / 邮箱----密码 / 邮箱----收码URL / 可选2FA" : "icloud_email----key") : "email----password----client_id----refresh_token";
+      const hint = mailboxType === "domain" ? "email----域名邮箱凭证 JSON" : mailboxType === "remail" ? "email----serviceToken / 凭证" : mailboxType === "apple" || mailboxType === "generic" ? (mailboxChannel === "url_api" ? "邮箱----HTTP(S)收件URL（可带密码和2FA）" : "icloud_email----key") : "email----password----client_id----refresh_token";
       errors.push(`Line ${index + 1}: ${hint}`);
     }
   });
   return errors;
 }
 
-function mailboxInvalidLineIndexes(lines: string, mailboxType: "microsoft" | "apple" | "remail" | "domain", mailboxChannel = "xbovo") {
+function mailboxInvalidLineIndexes(lines: string, mailboxType: "microsoft" | "apple" | "remail" | "domain" | "generic", mailboxChannel = "xbovo") {
   const invalid = new Set<number>();
   mailboxLineErrors(lines, mailboxType, mailboxChannel).forEach((message) => {
     const match = /^Line (\d+)/.exec(message);
     if (match) invalid.add(Number(match[1]) - 1);
   });
   return invalid;
+}
+
+function rebindMailboxCategory(item: AnyObj): string {
+  const type = String(item.category || item.mailbox_type || "domain").toLowerCase();
+  const channel = String(item.mailbox_channel || "").toLowerCase();
+  const email = String(item.email || "").toLowerCase();
+  return type === "apple" && channel === "url_api" && !email.endsWith("@icloud.com") ? "generic" : type;
 }
 
 function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", text: string) => void }) {
@@ -2066,6 +2077,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
   const [editing,setEditing]=useState<AnyObj|null>(null);
   const [batchEditing,setBatchEditing]=useState(false);
   const [mailboxForMail,setMailboxForMail]=useState<AnyObj|null>(null);
+  const [expandedMailboxOperationsId,setExpandedMailboxOperationsId]=useState<number|null>(null);
   const [mailboxCfg,setMailboxCfg]=useCachedState<AnyObj>("mailbox.config",{pool_enabled:true});
   const [remailCfg,setRemailCfg]=useCachedState<AnyObj>("mailbox.remail.config",{enabled:false,base_url:"https://remail.aishop6.com",project_id:0,service_mode:"purchase",supply:"private_first"});
   const [domainCfg,setDomainCfg]=useCachedState<AnyObj>("mailbox.domain.config",{enabled:true,enabled_for_registration:false,enabled_for_rebinding:false,random_local_length:12,auto_add_user:true});
@@ -2236,7 +2248,7 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
         </div>
         <div className="sr-table-card sr-mailbox-table-panel overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
           <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
-           <div className="sr-table-scroll"><ResizableDataTable tableKey="mailboxes" columns={DATA_TABLE_COLUMNS.mailboxes} className="sr-sticky-leading-columns" headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/>,t.mailbox,<RebindEmailFilterHeader t={t} value={rebindEmailFilter} onToggle={()=>setRebindEmailFilter((old)=>old===""?"present":old==="present"?"missing":"")}/>,t.mailboxGroup,t.status,t.planType,"AT","SK",<CredentialPresenceFilterHeader label={t.chatgptPasswordColumn} value={passwordFilter} onToggle={()=>setPasswordFilter((old)=>old===""?"present":old==="present"?"missing":"")} title={t.passwordFilterTitle} allLabel={t.passwordFilterAll} presentLabel={t.passwordFilterPresent} missingLabel={t.passwordFilterMissing}/>,<CredentialPresenceFilterHeader label={t.twoFactorColumn} value={twoFactorFilter} onToggle={()=>setTwoFactorFilter((old)=>old===""?"present":old==="present"?"missing":"")} title={t.twoFactorFilterTitle} allLabel={t.twoFactorFilterAll} presentLabel={t.twoFactorFilterPresent} missingLabel={t.twoFactorFilterMissing}/>,t.enabled,t.trafficUsage,<SortTimeHeader label={t.updatedAt} order={sortBy==="updated_at"?timeSort:"desc"} onToggle={()=>toggleSort("updated_at")}/>,t.actions]}>
+           <div className="sr-table-scroll"><ResizableDataTable tableKey="mailboxes" columns={DATA_TABLE_COLUMNS.mailboxes} className="sr-mailbox-table" headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,...items.map((m)=>m.id)])) : selected.filter((id)=>!items.some((m)=>m.id===id)))}/>,t.mailbox,<RebindEmailFilterHeader t={t} value={rebindEmailFilter} onToggle={()=>setRebindEmailFilter((old)=>old===""?"present":old==="present"?"missing":"")}/>,t.mailboxGroup,t.status,t.planType,"AT","SK",<CredentialPresenceFilterHeader label={t.chatgptPasswordColumn} value={passwordFilter} onToggle={()=>setPasswordFilter((old)=>old===""?"present":old==="present"?"missing":"")} title={t.passwordFilterTitle} allLabel={t.passwordFilterAll} presentLabel={t.passwordFilterPresent} missingLabel={t.passwordFilterMissing}/>,<CredentialPresenceFilterHeader label={t.twoFactorColumn} value={twoFactorFilter} onToggle={()=>setTwoFactorFilter((old)=>old===""?"present":old==="present"?"missing":"")} title={t.twoFactorFilterTitle} allLabel={t.passwordFilterAll} presentLabel={t.passwordFilterPresent} missingLabel={t.passwordFilterMissing}/>,t.enabled,t.trafficUsage,<SortTimeHeader label={t.updatedAt} order={sortBy==="updated_at"?timeSort:"desc"} onToggle={()=>toggleSort("updated_at")}/>,t.actions]}>
             <tbody>{items.length ? items.map((m)=><tr key={m.id}>
               <td><input type="checkbox" checked={selected.includes(m.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,m.id])) : selected.filter((id)=>id!==m.id))}/></td>
               <td title={m.email}><div className="font-semibold">{m.email}</div></td>
@@ -2251,14 +2263,34 @@ function MailboxConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fai
               <td><button className={cn("sr-toggle", m.enabled && "on")} onClick={()=>run(t.done,()=>apiFetch(`/sunny/mailboxes/${m.id}`,{method:"PUT",body:JSON.stringify({enabled:!m.enabled})}))}>{m.enabled ? "ON" : "OFF"}</button></td>
               <td className="whitespace-nowrap text-xs tabular-nums" title={`${t.trafficUsageTip}: ${formatTrafficUsage(m)}`}>{formatTrafficUsage(m)}</td>
               <td>{formatDateTime(m.updated_at)}</td>
-              <td><div className="flex flex-wrap gap-2"><button className="sr-link" onClick={()=>void openMailboxMail(m)}>{t.queryMail}</button><button className="sr-link" onClick={()=>void openMailboxEditor(m)}>{t.edit}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={m.email || ""} onConfirm={()=>deleteMailbox(m)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td>
+              <td><div className={cn("sr-mailbox-actions-shell",expandedMailboxOperationsId===m.id&&"is-open")}><button type="button" className="sr-mailbox-actions-toggle" aria-label={expandedMailboxOperationsId===m.id ? "隐藏操作" : "显示操作"} aria-expanded={expandedMailboxOperationsId===m.id} title={expandedMailboxOperationsId===m.id ? "隐藏操作" : "显示操作"} onClick={()=>setExpandedMailboxOperationsId((current)=>current===m.id?null:m.id)}><MoreHorizontal className="h-5 w-5"/></button>{expandedMailboxOperationsId===m.id && <div className="sr-mailbox-row-actions flex flex-wrap gap-2"><button className="sr-link" onClick={()=>void openMailboxMail(m)}>{t.queryMail}</button><button className="sr-link" onClick={()=>void openMailboxEditor(m)}>{t.edit}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={m.email || ""} onConfirm={()=>deleteMailbox(m)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div>}</div></td>
             </tr>) : <tr><td colSpan={14}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noMailbox}</div><p className="mt-2 text-sm text-slate-400">{emptyMailboxDescription}</p></div></td></tr>}</tbody>
           </ResizableDataTable></div>
           <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
         </div>
       </div>}
     </Card>
-    {importOpen && <MailboxImportModal t={t} groups={groups} onGroupsChanged={setGroups} onClose={()=>setImportOpen(false)} onImported={()=>{setImportOpen(false); notify("ok",t.done); void load(); void loadGroups().catch(()=>{});}} notify={notify}/>}
+    {importOpen && <MailboxImportModal t={t} groups={groups} onGroupsChanged={setGroups} onClose={()=>setImportOpen(false)} onImported={(result, importedGroupId)=>{
+      const imported = Number(result?.imported || 0);
+      const failed = Number(result?.failed || 0);
+      const targetGroup = Number(result?.group_id || importedGroupId || 0);
+      setImportOpen(false);
+      setSelected([]);
+      // Newly imported rows are sorted to the top. Reset the page and point the
+      // list at the selected import group so the user can see them immediately.
+      setPage(1);
+      if (targetGroup > 0) setGroupFilter(targetGroup);
+      const errors = Array.isArray(result?.errors) ? result.errors : [];
+      if (imported > 0 && failed === 0) {
+        notify("ok", t === zh ? `导入完成：${imported} 条，已显示在列表顶部` : `Imported ${imported} mailbox(es); shown at the top of the list`);
+      } else if (imported > 0) {
+        notify("fail", t === zh ? `部分导入：成功 ${imported} 条，失败 ${failed} 条${errors[0] ? `：${errors[0]}` : ""}` : `Partial import: ${imported} succeeded, ${failed} failed${errors[0] ? `: ${errors[0]}` : ""}`);
+      } else {
+        notify("fail", t === zh ? `导入失败${errors[0] ? `：${errors[0]}` : ""}` : `Import failed${errors[0] ? `: ${errors[0]}` : ""}`);
+      }
+      void load();
+      void loadGroups().catch(()=>{});
+    }} notify={notify}/>}
     {editing && <MailboxEditModal t={t} mailbox={editing} groups={groups} onClose={()=>setEditing(null)} onSaved={()=>{setEditing(null); notify("ok",t.done); void load();}} notify={notify}/>}
     {batchEditing && <MailboxBatchEditModal t={t} selected={selected} groups={groups} onClose={()=>setBatchEditing(false)} onSaved={()=>{setBatchEditing(false); setSelected([]); notify("ok",t.done); void load();}} notify={notify}/>}
     {mailboxForMail && <MailboxMailModal t={t} mailbox={mailboxForMail} onClose={()=>setMailboxForMail(null)} notify={notify}/>}
@@ -2696,9 +2728,9 @@ function MailboxMailModal({ t, mailbox, onClose, notify }: { t: typeof zh; mailb
   </div></div></PagePortal>;
 }
 
-function MailboxImportModal({ t, groups, onGroupsChanged, onClose, onImported, notify }: { t: typeof zh; groups: AnyObj[]; onGroupsChanged:(groups:AnyObj[])=>void; onClose:()=>void; onImported:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
+function MailboxImportModal({ t, groups, onGroupsChanged, onClose, onImported, notify }: { t: typeof zh; groups: AnyObj[]; onGroupsChanged:(groups:AnyObj[])=>void; onClose:()=>void; onImported:(result:AnyObj, importedGroupId:number)=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
   const [mode,setMode]=useState<"file"|"manual">("manual");
-  const [mailboxType,setMailboxType]=useState<"microsoft"|"apple"|"remail"|"domain">("microsoft");
+  const [mailboxType,setMailboxType]=useState<"microsoft"|"apple"|"remail"|"domain"|"generic">("microsoft");
   const [mailboxChannel,setMailboxChannel]=useState<"xbovo"|"url_api">("xbovo");
   const [lines,setLines]=useState("");
   const [groupId,setGroupId]=useState<number>(()=>Number(sortMailboxGroups(groups)[0]?.id || 0));
@@ -2763,8 +2795,8 @@ function MailboxImportModal({ t, groups, onGroupsChanged, onClose, onImported, n
     const validLines = sourceLines.filter((line, index) => line.trim() && !invalidIndexes.has(index));
     if (!validLines.length) { notify("fail", `${t.validationFailed}: ${errors[0] || t.fillOrChooseMailboxFile}`); return; }
     try {
-      await apiFetch("/sunny/mailboxes/import",{method:"POST",body:JSON.stringify({lines:validLines.join("\n"),group_id:groupId,import_mode:mode,mailbox_type:mailboxType,mailbox_channel:mailboxType==="apple"?mailboxChannel:mailboxType==="domain"?"domain_api":mailboxType==="remail"?"remail_api":"outlook"})});
-      onImported();
+      const result = await apiFetch("/sunny/mailboxes/import",{method:"POST",body:JSON.stringify({lines:validLines.join("\n"),group_id:groupId,import_mode:mode,mailbox_type:mailboxType==="generic"?"apple":mailboxType,mailbox_channel:mailboxType==="apple"||mailboxType==="generic"?"url_api":mailboxType==="domain"?"domain_api":mailboxType==="remail"?"remail_api":"outlook"})});
+      onImported(result || {}, groupId);
     } catch(e:any) { notify("fail", e.message || String(e)); }
   }
   return <div className="sr-modal-mask"><div className="sr-modal sr-mailbox-modal">
@@ -2778,13 +2810,13 @@ function MailboxImportModal({ t, groups, onGroupsChanged, onClose, onImported, n
       </div>
       <div>
         <Label>{t.mailboxType}</Label>
-        <div className="sr-import-tabs mt-2"><button className={cn(mailboxType==="microsoft"&&"active")} onClick={()=>{setMailboxType("microsoft");setLines("")}}>{t.microsoftMailbox}</button><button className={cn(mailboxType==="apple"&&"active")} onClick={()=>{setMailboxType("apple");setLines("")}}>{t.appleMailbox}</button><button className={cn(mailboxType==="domain"&&"active")} onClick={()=>{setMailboxType("domain");setLines("")}}>{t.domainMailboxIdentity}</button><button className={cn(mailboxType==="remail"&&"active")} onClick={()=>{setMailboxType("remail");setLines("")}}>Remail</button></div>
+        <div className="sr-import-tabs mt-2"><button className={cn(mailboxType==="microsoft"&&"active")} onClick={()=>{setMailboxType("microsoft");setLines("")}}>{t.microsoftMailbox}</button><button className={cn(mailboxType==="apple"&&"active")} onClick={()=>{setMailboxType("apple");setLines("")}}>{t.appleMailbox}</button><button className={cn(mailboxType==="domain"&&"active")} onClick={()=>{setMailboxType("domain");setLines("")}}>{t.domainMailboxIdentity}</button><button className={cn(mailboxType==="generic"&&"active")} onClick={()=>{setMailboxType("generic");setMailboxChannel("url_api");setLines("")}}>通用邮箱 URL</button><button className={cn(mailboxType==="remail"&&"active")} onClick={()=>{setMailboxType("remail");setLines("")}}>Remail</button></div>
       </div>
       {mailboxType==="apple" && <div title={mailboxChannel==="url_api" ? t.urlAPIChannelTip : t.xbovoChannelTip}><Label>{t.channelType}</Label><SelectBox className="mt-2" value={mailboxChannel} onChange={(value)=>{setMailboxChannel(String(value)==="url_api"?"url_api":"xbovo");setLines("")}} options={[{value:"xbovo",label:t.xbovoChannel},{value:"url_api",label:t.urlAPIChannel}]} /></div>}
       <div className="sr-import-tabs"><button className={cn(mode==="manual"&&"active")} onClick={()=>setMode("manual")}>{t.manualImport}</button><button className={cn(mode==="file"&&"active")} onClick={()=>setMode("file")}>{t.fileImport}</button></div>
       {mode==="file" ? <label className={cn("sr-drop-zone", drag && "drag")} onDragOver={(e)=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)} onDrop={(e)=>{e.preventDefault();setDrag(false);void pick(e.dataTransfer.files?.[0])}}>
         <Download className="h-8 w-8"/><span>{t.dragFile}</span><small>{lines ? `${validCount} valid line(s), ${errors.length} error(s)` : "TXT / CSV"}</small><input type="file" className="hidden" onChange={(e)=>pick(e.target.files?.[0])}/>
-      </label> : <Textarea className="min-h-56 rounded-2xl" value={lines} onChange={(e)=>setLines(e.target.value)} placeholder={mailboxType==="domain" ? 'email----{"base_url":"https://mail.example.com","auth_token":"..."}' : mailboxType==="remail" ? "email----serviceToken / 凭证" : mailboxType==="apple" ? (mailboxChannel==="url_api" ? "email----ChatGPT密码----https://收码URL----2FA密钥（后3段均可选）" : "icloud_email----key") : "email----password----client_id----refresh_token"} />}
+      </label> : <Textarea className="min-h-56 rounded-2xl" value={lines} onChange={(e)=>setLines(e.target.value)} placeholder={mailboxType==="domain" ? 'email----{"base_url":"https://mail.example.com","auth_token":"..."}' : mailboxType==="remail" ? "email----serviceToken / 凭证" : mailboxType==="generic" ? "email----https://mail.example.com/inbox?email=...&token=..." : mailboxType==="apple" ? (mailboxChannel==="url_api" ? "email----ChatGPT密码----https://收码URL----2FA密钥（后3段均可选）" : "icloud_email----key") : "email----password----client_id----refresh_token"} />}
       {lines ? <div className={cn("sr-validation", errors.length ? "bad" : "ok")}><b>{errors.length ? t.validationFailed : t.validationOk}</b><span>{validCount} valid / {errors.length} error</span>{errors.slice(0,4).map((e)=><div key={e}>{e}</div>)}</div> : null}
     </div>
     <div className="sr-modal-foot"><button onClick={onClose}>{t.cancel}</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={!lines.trim() || !groupId} onClick={submit}>{t.import}</Button></div>
@@ -2839,12 +2871,14 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   const [selectingAll,setSelectingAll]=useState(false);
   const [page,setPage]=useCachedState("phone.page",1);
   const [pageSize,setPageSize]=useCachedState("phone.pageSize",10);
-  const [phoneCfg,setPhoneCfg]=useCachedState<AnyObj>("phone.config",{pool_enabled:true, smsbower_enabled:false, smsbower_base_url:"https://smsbower.page/stubs/handler_api.php", smsbower_default_country:"187", smsbower_default_service:"dr", smsbower_max_price:-1, smspool_enabled:false, smspool_base_url:"https://api.smspool.net", smspool_default_country:"1", smspool_default_service:"671", smspool_max_price:-1, firefox_enabled:false, firefox_base_url:"https://www.firefox.fun/yhapi.ashx", firefox_api_token:"", firefox_default_country:"usa", firefox_default_service:"1096", firefox_max_price:0});
+  const [phoneCfg,setPhoneCfg]=useCachedState<AnyObj>("phone.config",{pool_enabled:true, grizzlysms_enabled:false, grizzlysms_base_url:"https://api.grizzlysms.com/stubs/handler_api.php", grizzlysms_default_country:"any", grizzlysms_default_service:"dr", grizzlysms_max_price:-1, hero_sms_enabled:false, hero_sms_base_url:"https://hero-sms.com/api/v1", hero_sms_default_country:"6", hero_sms_default_service:"dr", hero_sms_max_price:-1, smsbower_enabled:false, smsbower_base_url:"https://smsbower.page/stubs/handler_api.php", smsbower_default_country:"187", smsbower_default_service:"dr", smsbower_max_price:-1, smspool_enabled:false, smspool_base_url:"https://api.smspool.net", smspool_default_country:"1", smspool_default_service:"671", smspool_max_price:-1, firefox_enabled:false, firefox_base_url:"https://www.firefox.fun/yhapi.ashx", firefox_api_token:"", firefox_default_country:"usa", firefox_default_service:"1096", firefox_max_price:0});
   const [savedPhoneCfg,setSavedPhoneCfg]=useState<AnyObj|null>(null);
   const [smsCheck,setSmsCheck]=useState("");
   const [lubanCheck,setLubanCheck]=useState("");
   const [smsPoolCheck,setSmsPoolCheck]=useState("");
   const [firefoxCheck,setFireFoxCheck]=useState("");
+  const [grizzlyCheck,setGrizzlyCheck]=useState("");
+  const [heroCheck,setHeroCheck]=useState("");
   const [firefoxOptionsLoading,setFireFoxOptionsLoading]=useState(false);
   const [smsOptions,setSmsOptions]=useCachedState<AnyObj>("phone.providerOptions",{});
   const [editing,setEditing]=useState<AnyObj|null>(null);
@@ -2879,7 +2913,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   useEffect(()=>{apiFetch("/sunny/phones/config").then((cfg)=>{ const raw = cfg || {pool_enabled:true}; const next = {...raw, firefox_api_token: raw.firefox_api_token || raw.firefox_password || ""}; setPhoneCfg(next); setSavedPhoneCfg(next); }).catch(()=>{})},[]);
   useEffect(()=>{setPage(1)},[query, statusFilter, countFilter, timeSort, pageSize]);
   useEffect(()=>{const pages=pageCount(total,pageSize); if(page>pages) setPage(pages);},[total,pageSize,page]);
-  async function loadProviderOptions(provider: "smsbower"|"smspool"|"firefox", kind: "countries"|"services", refresh=false, country="", announceRefresh=true) {
+  async function loadProviderOptions(provider: "smsbower"|"smspool"|"firefox"|"grizzlysms"|"hero_sms", kind: "countries"|"services", refresh=false, country="", announceRefresh=true) {
     const key = `${provider}_${kind}_${country || "all"}`;
     try {
       const params = new URLSearchParams({ provider, kind });
@@ -2890,7 +2924,7 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
       const items = Array.isArray(res.items) ? res.items : [];
       setSmsOptions((old: AnyObj)=>({ ...old, [key]: items }));
       if (kind === "services") {
-        const field = provider === "smspool" ? "smspool_default_service" : provider === "firefox" ? "firefox_default_service" : "smsbower_default_service";
+        const field = provider === "smspool" ? "smspool_default_service" : provider === "firefox" ? "firefox_default_service" : provider === "grizzlysms" ? "grizzlysms_default_service" : provider === "hero_sms" ? "hero_sms_default_service" : "smsbower_default_service";
         const current = String(phoneCfg[field] || "").trim();
         const exact = items.some((item: AnyObj)=>String(item.value ?? "") === current);
         if (current && !exact) {
@@ -2907,10 +2941,12 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
       return false;
     }
   }
-  const optionsFor = (provider: "smsbower"|"smspool"|"firefox", kind: "countries"|"services", country="") => smsOptions[`${provider}_${kind}_${country || "all"}`] || [];
+  const optionsFor = (provider: "smsbower"|"smspool"|"firefox"|"grizzlysms"|"hero_sms", kind: "countries"|"services", country="") => smsOptions[`${provider}_${kind}_${country || "all"}`] || [];
   useEffect(()=>{ if (phoneCfg.smsbower_enabled === true) { void loadProviderOptions("smsbower","countries"); void loadProviderOptions("smsbower","services", false, String(phoneCfg.smsbower_default_country || "")); } },[phoneCfg.smsbower_enabled, phoneCfg.smsbower_default_country]);
   useEffect(()=>{ if (phoneCfg.smspool_enabled === true) { void loadProviderOptions("smspool","countries"); void loadProviderOptions("smspool","services", false, String(phoneCfg.smspool_default_country || "")); } },[phoneCfg.smspool_enabled, phoneCfg.smspool_default_country]);
   useEffect(()=>{ if (phoneCfg.firefox_enabled === true) { void loadProviderOptions("firefox","countries"); void loadProviderOptions("firefox","services", false, String(phoneCfg.firefox_default_country || "")); } },[phoneCfg.firefox_enabled, phoneCfg.firefox_default_country]);
+  useEffect(()=>{ if (phoneCfg.grizzlysms_enabled === true) { void loadProviderOptions("grizzlysms","countries"); void loadProviderOptions("grizzlysms","services", false, String(phoneCfg.grizzlysms_default_country || "")); } },[phoneCfg.grizzlysms_enabled, phoneCfg.grizzlysms_default_country]);
+  useEffect(()=>{ if (phoneCfg.hero_sms_enabled === true) { void loadProviderOptions("hero_sms","countries"); void loadProviderOptions("hero_sms","services", false, String(phoneCfg.hero_sms_default_country || "")); } },[phoneCfg.hero_sms_enabled, phoneCfg.hero_sms_default_country]);
   async function run(label:string, fn:()=>Promise<any>){
     try{await fn(); notify("ok",label); void load();}
     catch(e:any){notify("fail",e.message||String(e));}
@@ -2936,6 +2972,8 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   const SMSBOWER_CONFIG_KEYS = ["smsbower_base_url", "smsbower_api_key", "smsbower_default_country", "smsbower_default_service", "smsbower_max_price"];
   const SMSPOOL_CONFIG_KEYS = ["smspool_base_url", "smspool_api_key", "smspool_default_country", "smspool_default_service", "smspool_max_price"];
   const FIREFOX_CONFIG_KEYS = ["firefox_base_url", "firefox_api_token", "firefox_default_country", "firefox_default_service", "firefox_max_price"];
+  const GRIZZLY_CONFIG_KEYS = ["grizzlysms_base_url", "grizzlysms_api_key", "grizzlysms_default_country", "grizzlysms_default_service", "grizzlysms_max_price"];
+  const HERO_CONFIG_KEYS = ["hero_sms_base_url", "hero_sms_api_key", "hero_sms_default_country", "hero_sms_default_service", "hero_sms_max_price"];
   const pickConfig = (cfg: AnyObj | null | undefined, keys: string[]) => {
     const out: AnyObj = {};
     keys.forEach((key)=>{ out[key] = cfg?.[key] ?? ""; });
@@ -2949,6 +2987,8 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   const smsbowerDirty = configChanged(SMSBOWER_CONFIG_KEYS);
   const smspoolDirty = configChanged(SMSPOOL_CONFIG_KEYS);
   const firefoxDirty = configChanged(FIREFOX_CONFIG_KEYS);
+  const grizzlyDirty = configChanged(GRIZZLY_CONFIG_KEYS);
+  const heroDirty = configChanged(HERO_CONFIG_KEYS);
   const mergeSavedProviderFields = (saved: AnyObj, keys: string[]) => {
     const patch = pickConfig(saved, keys);
     setSavedPhoneCfg(saved);
@@ -2960,11 +3000,13 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
       smsbower_enabled: saved.smsbower_enabled,
       smspool_enabled: saved.smspool_enabled,
       firefox_enabled: saved.firefox_enabled,
+      grizzlysms_enabled: saved.grizzlysms_enabled,
+      hero_sms_enabled: saved.hero_sms_enabled,
       usable_count: saved.usable_count ?? current.usable_count,
       total_count: saved.total_count ?? current.total_count,
     }));
   };
-  async function savePhoneSwitch(key: "pool_enabled" | "luban_enabled" | "smsbower_enabled" | "smspool_enabled" | "firefox_enabled", next: boolean) {
+  async function savePhoneSwitch(key: "pool_enabled" | "luban_enabled" | "smsbower_enabled" | "smspool_enabled" | "firefox_enabled" | "grizzlysms_enabled" | "hero_sms_enabled", next: boolean) {
     const before = phoneCfg;
     setPhoneCfg((current: AnyObj)=>({ ...current, [key]: next }));
     try {
@@ -3013,6 +3055,13 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   async function toggleFireFoxEnabled() {
     await savePhoneSwitch("firefox_enabled", !(phoneCfg.firefox_enabled === true));
   }
+  async function toggleGrizzlyEnabled() { await savePhoneSwitch("grizzlysms_enabled", !(phoneCfg.grizzlysms_enabled === true)); }
+  async function toggleHeroEnabled() { await savePhoneSwitch("hero_sms_enabled", !(phoneCfg.hero_sms_enabled === true)); }
+  async function saveProviderConfig(keys:string[], enabledKey:"grizzlysms_enabled"|"hero_sms_enabled", dirty:boolean, savedLabel:string) {
+    if (!dirty) return;
+    try { const body={...(savedPhoneCfg||phoneCfg),...pickConfig(phoneCfg,keys),[enabledKey]:phoneCfg[enabledKey]===true}; const saved=await apiFetch("/sunny/phones/config",{method:"PUT",body:JSON.stringify(body)}); mergeSavedProviderFields(saved||body,keys); notify("ok",savedLabel); } catch(e:any) { notify("fail",e.message||String(e)); }
+  }
+  async function checkProvider(path:string,setter:(v:string)=>void,label:string) { setter(t.checking); try { const res=await apiFetch(path,{method:"POST",body:JSON.stringify(phoneCfg)}); const msg=res.balance||res.message||label; setter(String(msg)); notify("ok",String(msg)); } catch(e:any) { const msg=e.message||String(e); setter(msg); notify("fail",msg); } }
   async function saveSMSBowerConfig() {
     if (!smsbowerDirty) return;
     try {
@@ -3104,6 +3153,8 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
   const smsbowerEnabled = phoneCfg.smsbower_enabled === true;
   const smspoolEnabled = phoneCfg.smspool_enabled === true;
   const firefoxEnabled = phoneCfg.firefox_enabled === true;
+  const grizzlyEnabled = phoneCfg.grizzlysms_enabled === true;
+  const heroEnabled = phoneCfg.hero_sms_enabled === true;
   return <div className="space-y-6">
     <Card className="rounded-[24px] p-5 sr-sms-provider-card">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -3120,6 +3171,14 @@ function PhoneConfig({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail"
           <div className="sr-sms-provider-actions">{lubanCheck?<span className="sr-inline-result">{lubanCheck}</span>:null}<Button variant="outline" className="rounded-xl" onClick={checkLuban}><RefreshCw className="mr-2 h-4 w-4"/>{t.lubanCheck}</Button><Button disabled={!lubanDirty} className="rounded-xl bg-emerald-600 px-5 text-white hover:bg-emerald-700 disabled:opacity-50" onClick={saveLubanConfig}><Save className="mr-2 h-4 w-4"/>{t.save}</Button></div>
         </div>
       </div>}
+    </Card>
+    <Card className="rounded-[24px] p-5 sr-sms-provider-card">
+      <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><h2 className="text-lg font-bold">{t.grizzlyProvider}</h2><Tip text={t.grizzlyDesc}/></div><button type="button" aria-label={t.grizzlySwitch} title={t.grizzlySwitch} className={cn("sr-switch-only", grizzlyEnabled && "on")} onClick={toggleGrizzlyEnabled}><span /></button></div>
+      {grizzlyEnabled && <div className="sr-sms-provider-form mt-4 space-y-3"><div className="sr-sms-provider-top-row"><div className="sr-sms-provider-api"><Label>{t.grizzlyApiKey}</Label><Input type="password" value={phoneCfg.grizzlysms_api_key||""} onChange={(e)=>setPhoneCfg({...phoneCfg,grizzlysms_api_key:e.target.value})}/></div><div><Label>{t.grizzlyCountry}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.grizzlysms_default_country||"any")} onChange={(v)=>setPhoneCfg({...phoneCfg,grizzlysms_default_country:v})} options={optionsFor("grizzlysms","countries")} placeholder="any" searchPlaceholder={t.providerOptionSearch} noResultsLabel={t.providerOptionNoResults}/></div><div><Label>{t.grizzlyService}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.grizzlysms_default_service||"dr")} onChange={(v)=>setPhoneCfg({...phoneCfg,grizzlysms_default_service:v})} options={optionsFor("grizzlysms","services",String(phoneCfg.grizzlysms_default_country||""))} placeholder="dr" searchPlaceholder={t.providerOptionSearch} noResultsLabel={t.providerOptionNoResults}/></div><div className="sr-sms-provider-price"><Label>{t.grizzlyMaxPrice}</Label><Input type="number" value={phoneCfg.grizzlysms_max_price ?? -1} onChange={(e)=>setPhoneCfg({...phoneCfg,grizzlysms_max_price:Number(e.target.value)})}/></div></div><div className="sr-sms-provider-bottom-row"><div><Label>{t.grizzlyBaseURL}</Label><Input value={phoneCfg.grizzlysms_base_url||"https://api.grizzlysms.com/stubs/handler_api.php"} onChange={(e)=>setPhoneCfg({...phoneCfg,grizzlysms_base_url:e.target.value})}/></div><div className="sr-sms-provider-actions">{grizzlyCheck?<span className="sr-inline-result">{grizzlyCheck}</span>:null}<Button variant="outline" className="rounded-xl" onClick={()=>checkProvider("/sunny/phones/grizzlysms/check",setGrizzlyCheck,t.grizzlyCheck)}><RefreshCw className="mr-2 h-4 w-4"/>{t.grizzlyCheck}</Button><Button disabled={!grizzlyDirty} className="rounded-xl bg-emerald-600 px-5 text-white" onClick={()=>saveProviderConfig(GRIZZLY_CONFIG_KEYS,"grizzlysms_enabled",grizzlyDirty,t.grizzlySaved)}><Save className="mr-2 h-4 w-4"/>{t.save}</Button></div></div></div>}
+    </Card>
+    <Card className="rounded-[24px] p-5 sr-sms-provider-card">
+      <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><h2 className="text-lg font-bold">{t.heroProvider}</h2><Tip text={t.heroDesc}/></div><button type="button" aria-label={t.heroSwitch} title={t.heroSwitch} className={cn("sr-switch-only", heroEnabled && "on")} onClick={toggleHeroEnabled}><span /></button></div>
+      {heroEnabled && <div className="sr-sms-provider-form mt-4 space-y-3"><div className="sr-sms-provider-top-row"><div className="sr-sms-provider-api"><Label>{t.heroApiKey}</Label><Input type="password" value={phoneCfg.hero_sms_api_key||""} onChange={(e)=>setPhoneCfg({...phoneCfg,hero_sms_api_key:e.target.value})}/></div><div><Label>{t.heroCountry}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.hero_sms_default_country||"6")} onChange={(v)=>setPhoneCfg({...phoneCfg,hero_sms_default_country:v})} options={optionsFor("hero_sms","countries")} placeholder="6" searchPlaceholder={t.providerOptionSearch} noResultsLabel={t.providerOptionNoResults}/></div><div><Label>{t.heroService}</Label><ProviderOptionSelect className="sr-provider-option-select" value={String(phoneCfg.hero_sms_default_service||"dr")} onChange={(v)=>setPhoneCfg({...phoneCfg,hero_sms_default_service:v})} options={optionsFor("hero_sms","services",String(phoneCfg.hero_sms_default_country||""))} placeholder="dr" searchPlaceholder={t.providerOptionSearch} noResultsLabel={t.providerOptionNoResults}/></div><div className="sr-sms-provider-price"><Label>{t.heroMaxPrice}</Label><Input type="number" value={phoneCfg.hero_sms_max_price ?? -1} onChange={(e)=>setPhoneCfg({...phoneCfg,hero_sms_max_price:Number(e.target.value)})}/></div></div><div className="sr-sms-provider-bottom-row"><div><Label>{t.heroBaseURL}</Label><Input value={phoneCfg.hero_sms_base_url||"https://hero-sms.com/api/v1"} onChange={(e)=>setPhoneCfg({...phoneCfg,hero_sms_base_url:e.target.value})}/></div><div className="sr-sms-provider-actions">{heroCheck?<span className="sr-inline-result">{heroCheck}</span>:null}<Button variant="outline" className="rounded-xl" onClick={()=>checkProvider("/sunny/phones/hero_sms/check",setHeroCheck,t.heroCheck)}><RefreshCw className="mr-2 h-4 w-4"/>{t.heroCheck}</Button><Button disabled={!heroDirty} className="rounded-xl bg-emerald-600 px-5 text-white" onClick={()=>saveProviderConfig(HERO_CONFIG_KEYS,"hero_sms_enabled",heroDirty,t.heroSaved)}><Save className="mr-2 h-4 w-4"/>{t.save}</Button></div></div></div>}
     </Card>
     <Card className="rounded-[24px] p-5 sr-sms-provider-card">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -3956,6 +4015,11 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   const [paymentProbeCountrySelection,setPaymentProbeCountrySelection]=useState<string[]>([]);
   const [paymentProbeCountriesLoading,setPaymentProbeCountriesLoading]=useState(false);
   const [expandedOperationsId,setExpandedOperationsId]=useState<number|null>(null);
+  const [rebindDialog,setRebindDialog]=useState<{ids:number[];row?:AnyObj}|null>(null);
+  const [rebindCategory,setRebindCategory]=useState<"self"|"microsoft"|"apple"|"domain"|"generic"|"remail">("self");
+  const [importedDomainMailboxes,setImportedDomainMailboxes]=useState<AnyObj[]>([]);
+  const [selectedImportedDomainMailboxes,setSelectedImportedDomainMailboxes]=useState<string[]>([]);
+  const [rebindMailboxesLoading,setRebindMailboxesLoading]=useState(false);
   const persistentTasks = usePersistentSessionTasks();
   const accountLogs = useAccountLogs();
   const [accountLogOpen,setAccountLogOpen]=useState(false);
@@ -4283,12 +4347,77 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       await load();
     } catch(e:any) { notify("fail",e.message||String(e)); }
   }
-  async function rebindAccounts(ids: number[], row?: AnyObj) {
+  async function openRebindDialog(ids:number[], row?:AnyObj) {
+    if (!ids.length) { notify("fail", "请选择需要换绑的账户"); return; }
+    setRebindCategory("self");
+    setSelectedImportedDomainMailboxes([]);
+    setRebindDialog({ids,row});
+    setRebindMailboxesLoading(true);
+    try {
+      // Read the existing mailbox configuration endpoint so this works with
+      // an already-running backend as well as newer builds.
+      const [first, firstSessions] = await Promise.all([
+        apiFetch("/sunny/mailboxes?page=1&page_size=100"),
+        apiFetch("/sunny/sessions?page=1&page_size=100"),
+      ]);
+      const rows = Array.isArray(first?.items) ? [...first.items] : [];
+      const total = Math.min(Number(first?.total || rows.length), 5000);
+      const pages = Math.ceil(total / 100);
+      if (pages > 1) {
+        const rest = await Promise.all(Array.from({length: pages - 1}, (_, index)=>apiFetch(`/sunny/mailboxes?page=${index + 2}&page_size=100`)));
+        rest.forEach((result)=>{ if (Array.isArray(result?.items)) rows.push(...result.items); });
+      }
+      const usedEmails = new Set<string>();
+      const sessionRows = Array.isArray(firstSessions?.items) ? [...firstSessions.items] : [];
+      const sessionTotal = Math.min(Number(firstSessions?.total || sessionRows.length), 5000);
+      const sessionPages = Math.ceil(sessionTotal / 100);
+      if (sessionPages > 1) {
+        const rest = await Promise.all(Array.from({length: sessionPages - 1}, (_, index)=>apiFetch(`/sunny/sessions?page=${index + 2}&page_size=100`)));
+        rest.forEach((result)=>{ if (Array.isArray(result?.items)) sessionRows.push(...result.items); });
+      }
+      sessionRows.forEach((item: AnyObj)=>{
+        const email = String(item.rebind_email || "").trim().toLowerCase();
+        if (email) usedEmails.add(email);
+      });
+      rows.forEach((item: AnyObj)=>{
+        const rebound = String(item.rebind_email || "").trim().toLowerCase();
+        if (rebound) usedEmails.add(rebound);
+      });
+      const options = rows.map((item: AnyObj) => {
+        let api = String(item.access_key || item.rebind_mailbox_api || "").trim();
+        if (!api && String(item.raw || "").includes("----")) api = String(item.raw).split("----").slice(1).join("----").trim();
+        return {...item, mailbox_api: api};
+      }).filter((item: AnyObj)=>{
+        const status = String(item.status || "").trim().toLowerCase();
+        const availableStatus = !["已注册", "已接码", "已反代", "换绑中", "registered", "bound", "used", "disabled"].includes(status);
+        return Boolean(item.enabled !== false) && availableStatus && String(item.email || "").includes("@") && String(item.mailbox_api || "").trim() && !usedEmails.has(String(item.email).trim().toLowerCase());
+      });
+      setImportedDomainMailboxes(options);
+    } catch { setImportedDomainMailboxes([]); }
+    finally { setRebindMailboxesLoading(false); }
+  }
+  async function confirmRebind() {
+    if (!rebindDialog) return;
+    const targets = importedDomainMailboxes.filter((item)=>selectedImportedDomainMailboxes.includes(String(item.email)) && rebindMailboxCategory(item) === rebindCategory);
+    if (rebindCategory !== "self" && !targets.length) { notify("fail", "请选择已导入邮箱"); return; }
+    const first = targets[0];
+    const options = rebindCategory !== "self" ? {
+      rebind_source:"imported",
+      target_email:String(first?.email || ""),
+      target_mailbox_api:String(first?.mailbox_api || "").trim(),
+      target_mailbox_type:String(first?.mailbox_type || ""),
+      target_mailbox_channel:String(first?.mailbox_channel || ""),
+      target_mailboxes:targets.map((item)=>({email:String(item.email),mailbox_api:String(item.mailbox_api || "").trim(),mailbox_type:String(item.mailbox_type || ""),mailbox_channel:String(item.mailbox_channel || "")})),
+    } : { rebind_source:"self" };
+    setRebindDialog(null);
+    await rebindAccounts(rebindDialog.ids,rebindDialog.row,options);
+  }
+  async function rebindAccounts(ids: number[], row?: AnyObj, options:AnyObj = {rebind_source:"self"}) {
     if (!ids.length) { notify("fail", "请选择需要换绑的账户"); return; }
     if (row && ["已封禁", "banned", "disabled"].includes(String(row.status || ""))) { notify("ok", "已跳过已封禁账户"); return; }
     const targetIds = Array.from(new Set(ids.map(Number).filter(Boolean)));
     try {
-      const task = await runPersistentSessionTask("rebind", targetIds, row?.email, () => apiFetch("/sunny/sessions/rebind", { method:"POST", body:JSON.stringify({ session_ids: targetIds }) }));
+      const task = await runPersistentSessionTask("rebind", targetIds, row?.email, () => apiFetch("/sunny/sessions/rebind", { method:"POST", body:JSON.stringify({ session_ids: targetIds, ...options }) }));
       const result = task.result || {};
       const failed = Number(result.failed || 0);
       const skipped = Number(result.skipped || 0);
@@ -4465,7 +4594,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       </div>
       <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
         {activeRenewalTasks.length > 0 && <button className={cn("sr-text-btn sr-action-danger",stoppingRenewal&&"is-running")} aria-busy={stoppingRenewal} disabled={stoppingRenewal} title={t.stopRenewalTip} onClick={()=>void stopRenewalTasks()}>{stoppingRenewal ? <Loader2 className="h-4 w-4 animate-spin"/> : <X className="h-4 w-4"/>}{stoppingRenewal ? t.stoppingRenewal : t.stopRenewal}</button>}
-        <div className="sr-batch-action"><button className={cn("sr-text-btn sr-action-info",batchRebindBusy&&"is-running")} aria-busy={batchRebindBusy} disabled={batchRebindBusy || selected.length===0} title="将选中账户换绑为自建域名邮箱" onClick={()=>void rebindAccounts(selected)}>{batchRebindBusy?<Loader2 className="h-4 w-4 animate-spin"/>:<RotateCw className="h-4 w-4"/>}{batchRebindBusy?"换绑中":"换绑"}</button></div>
+        <div className="sr-batch-action"><button className={cn("sr-text-btn sr-action-info",batchRebindBusy&&"is-running")} aria-busy={batchRebindBusy} disabled={batchRebindBusy || selected.length===0} title="选择换绑邮箱来源" onClick={()=>void openRebindDialog(selected)}>{batchRebindBusy?<Loader2 className="h-4 w-4 animate-spin"/>:<RotateCw className="h-4 w-4"/>}{batchRebindBusy?"换绑中":"换绑"}</button></div>
         <div className="sr-batch-action"><button className={cn("sr-text-btn sr-action-info",batchSub2Busy&&"is-running")} aria-busy={batchSub2Busy} disabled={batchSub2Busy || selected.length===0} title={selected.length===0?t.sub2NoSelection:t.importSub2API} onClick={()=>void importSub2API(selected)}>{batchSub2Busy?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>}{batchSub2Busy?t.importingSub2API:"反代"}</button></div>
         <div className="sr-batch-action"><button className={cn("sr-text-btn sr-action-info",batchTrialBusy&&"is-running")} aria-busy={batchTrialBusy} disabled={batchTrialBusy || selected.length === 0} title={selected.length === 0 ? t.trialNoSelection : t.trialCheck} onClick={()=>void openTrialCountryDialog(selected)}>{batchTrialBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{batchTrialBusy ? t.trialChecking : t.trialCheck}</button></div>
         <div className="sr-batch-action"><button className={cn("sr-text-btn sr-action-info",batchCheckoutProbeBusy&&"is-running")} aria-busy={batchCheckoutProbeBusy} disabled={batchCheckoutProbeBusy || selected.length === 0} title={selected.length === 0 ? t.checkoutProbeNoSelection : t.checkoutProbe} onClick={()=>runCheckoutProbe(selected)}>{batchCheckoutProbeBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Globe2 className="h-4 w-4"/>}{batchCheckoutProbeBusy ? t.checkoutProbing : t.checkoutProbe}</button></div>
@@ -4500,7 +4629,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
           const operationBusy=refreshing || checkingAT || checkingHealth || checkingSubscription || checkingTrial || probingCheckout || probingPayment || importingSub2 || rebinding || acquiringRT || skLoading || lsLoading || atLoading || rtLoading;
           const operationsVisible=expandedOperationsId===s.id || operationBusy;
           return <Fragment key={s.id}>
-            <tr><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td title={s.email}>{s.email}</td><td title={s.rebind_email || "-"}>{s.rebind_email || "-"}</td><td title={s.group_name || "-"}>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_login_secret ? <button className="sr-session-field-button" disabled={lsLoading} onClick={()=>void copySessionField(s,"login_secret")}>{lsLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "LS"}</button> : "-"}</td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td><TrialEligibilityBadge t={t} row={s}/></td><td><CheckoutBadge t={t} row={s}/></td><td><PaymentMethodsBadge row={s}/></td><td>{s.access_token_status === "renewal_failed" ? <FailureState label={t.atRenewalFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "invalid" ? <FailureState label={t.atInvalidOrExpired} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_blocked" ? <FailureState label={t.atProbeBlocked} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_failed" ? <FailureState label={t.atProbeFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : formatDateTime(s.access_token_expires_at)}</td><td>{s.health_check_status === "failed" ? <FailureState label={t.accountHealthCheckFailed} detail={s.health_check_error} onOpen={setFailureDetail}/> : formatDateTime(s.last_health_checked_at)}</td><td><div className={cn("sr-session-actions-shell",operationBusy&&"is-busy")}><button type="button" className="sr-session-actions-toggle" aria-label={operationsVisible ? "隐藏操作" : "显示操作"} aria-expanded={operationsVisible} title={operationsVisible ? "隐藏操作" : "显示操作"} onClick={()=>setExpandedOperationsId((current)=>current===s.id?null:s.id)}><MoreHorizontal className="h-5 w-5"/></button>{operationsVisible && <div className="sr-session-actions flex flex-wrap gap-1"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link inline-flex items-center gap-1" disabled={rebinding} onClick={()=>void rebindAccounts([s.id],s)}>{rebinding?<Loader2 className="h-4 w-4 animate-spin"/>:<RotateCw className="h-4 w-4"/>}{rebinding?"换绑中":"换绑"}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble><button className="sr-link inline-flex items-center gap-1" disabled={importingSub2} onClick={()=>void importSub2API([s.id],s)}>{importingSub2?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>}{importingSub2?t.importingSub2API:"反代"}</button><button className="sr-link inline-flex items-center gap-1" disabled={!trialCheckable(s) || checkingTrial} title={!trialCheckable(s) ? t.trialUnavailable : t.trialCheck} onClick={()=>runTrialCheck([s.id],s)}>{checkingTrial ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{checkingTrial ? t.trialChecking : t.trialCheck}</button><button className="sr-link inline-flex items-center gap-1" disabled={!trialCheckable(s) || probingCheckout} title={!trialCheckable(s)?t.checkoutProbeUnavailable:t.checkoutProbe} onClick={()=>runCheckoutProbe([s.id],s)}>{probingCheckout?<Loader2 className="h-4 w-4 animate-spin"/>:<Globe2 className="h-4 w-4"/>}{probingCheckout?t.checkoutProbing:t.checkoutProbe}</button><button className="sr-link inline-flex items-center gap-1" disabled={!s.has_access_token || probingPayment} title={!s.has_access_token?t.paymentProbeUnavailable:t.paymentProbe} onClick={()=>void openPaymentProbeDialog([s.id],s)}>{probingPayment?<Loader2 className="h-4 w-4 animate-spin"/>:<CreditCard className="h-4 w-4"/>}{probingPayment?t.paymentProbing:t.paymentProbe}</button><button className="sr-link inline-flex items-center gap-1" disabled={addingLoginSecretSessionIds.includes(Number(s.id))} title={t.addLoginSecret} onClick={()=>addLoginSecrets([s.id],s)}>{addingLoginSecretSessionIds.includes(Number(s.id))?<Loader2 className="h-4 w-4 animate-spin"/>:<KeyRound className="h-4 w-4"/>}{addingLoginSecretSessionIds.includes(Number(s.id))?t.addingLoginSecret:t.addLoginSecret}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing || checkingAT} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing || checkingAT ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link inline-flex items-center gap-1" disabled={checkingHealth} onClick={()=>runHealthCheck([s.id],s)}>{checkingHealth ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Activity className="inline h-4 w-4"/>}{checkingHealth ? t.healthChecking : t.healthCheck}</button><button className="sr-link" disabled={subscriptionCheckingSessionIds.length > 0} onClick={()=>runSubscriptionCheck([s.id],s)}>{checkingSubscription ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Crown className="inline h-4 w-4"/>}{checkingSubscription ? t.subscriptionChecking : t.subscriptionCheck}</button></div>}</div></td></tr>
+            <tr><td><input type="checkbox" checked={selected.includes(s.id)} onChange={(e)=>setSelected(e.target.checked ? Array.from(new Set([...selected,s.id])) : selected.filter((id)=>id!==s.id))}/></td><td title={s.email}>{s.email}</td><td title={s.rebind_email || "-"}>{s.rebind_email || "-"}</td><td title={s.group_name || "-"}>{s.group_name || "-"}</td><td><StatusBadge t={t} status={s.status || "已注册"} /></td><td><PlanTypeBadge value={s.plan_type} /></td><td>{s.has_login_secret ? <button className="sr-session-field-button" disabled={lsLoading} onClick={()=>void copySessionField(s,"login_secret")}>{lsLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "LS"}</button> : "-"}</td><td>{s.has_secret_key ? <button className="sr-session-field-button" disabled={skLoading} onClick={()=>void copySessionField(s,"secret_key")}>{skLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "SK"}</button> : "-"}</td><td>{s.has_access_token ? <button className="sr-session-field-button" disabled={atLoading} onClick={()=>void copySessionField(s,"access_token")}>{atLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "AT"}</button> : "-"}</td><td>{s.has_refresh_token ? <button className="sr-session-field-button" disabled={rtLoading} onClick={()=>void copySessionField(s,"refresh_token")}>{rtLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : "RT"}</button> : <button className="sr-session-field-button text-slate-400" disabled={acquiringRT} title={t.acquiringRT} onClick={()=>void acquireRefreshToken(s)}>{acquiringRT ? <Loader2 className="h-4 w-4 animate-spin"/> : t.acquireRT}</button>}</td><td><TrialEligibilityBadge t={t} row={s}/></td><td><CheckoutBadge t={t} row={s}/></td><td><PaymentMethodsBadge row={s}/></td><td>{s.access_token_status === "renewal_failed" ? <FailureState label={t.atRenewalFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "invalid" ? <FailureState label={t.atInvalidOrExpired} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_blocked" ? <FailureState label={t.atProbeBlocked} detail={s.access_token_error} onOpen={setFailureDetail}/> : s.access_token_status === "probe_failed" ? <FailureState label={t.atProbeFailed} detail={s.access_token_error} onOpen={setFailureDetail}/> : formatDateTime(s.access_token_expires_at)}</td><td>{s.health_check_status === "failed" ? <FailureState label={t.accountHealthCheckFailed} detail={s.health_check_error} onOpen={setFailureDetail}/> : formatDateTime(s.last_health_checked_at)}</td><td><div className={cn("sr-session-actions-shell",operationBusy&&"is-busy")}><button type="button" className="sr-session-actions-toggle" aria-label={operationsVisible ? "隐藏操作" : "显示操作"} aria-expanded={operationsVisible} title={operationsVisible ? "隐藏操作" : "显示操作"} onClick={()=>setExpandedOperationsId((current)=>current===s.id?null:s.id)}><MoreHorizontal className="h-5 w-5"/></button>{operationsVisible && <div className="sr-session-actions flex flex-wrap gap-1"><button className="sr-link" onClick={()=>void openSessionMail(s)}>{t.queryMail}</button><button className="sr-link" onClick={()=>setEditing(s)}>{t.edit}</button><button className="sr-link inline-flex items-center gap-1" disabled={rebinding} onClick={()=>void openRebindDialog([s.id],s)}>{rebinding?<Loader2 className="h-4 w-4 animate-spin"/>:<RotateCw className="h-4 w-4"/>}{rebinding?"换绑中":"换绑"}</button><button className="sr-link" onClick={()=>exp([s.id],"sub")}>{t.export}</button><ConfirmBubble message={t.confirmDeleteMailbox} detail={s.email} onConfirm={()=>del(s)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble><button className="sr-link inline-flex items-center gap-1" disabled={importingSub2} onClick={()=>void importSub2API([s.id],s)}>{importingSub2?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>}{importingSub2?t.importingSub2API:"反代"}</button><button className="sr-link inline-flex items-center gap-1" disabled={!trialCheckable(s) || checkingTrial} title={!trialCheckable(s) ? t.trialUnavailable : t.trialCheck} onClick={()=>runTrialCheck([s.id],s)}>{checkingTrial ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{checkingTrial ? t.trialChecking : t.trialCheck}</button><button className="sr-link inline-flex items-center gap-1" disabled={!trialCheckable(s) || probingCheckout} title={!trialCheckable(s)?t.checkoutProbeUnavailable:t.checkoutProbe} onClick={()=>runCheckoutProbe([s.id],s)}>{probingCheckout?<Loader2 className="h-4 w-4 animate-spin"/>:<Globe2 className="h-4 w-4"/>}{probingCheckout?t.checkoutProbing:t.checkoutProbe}</button><button className="sr-link inline-flex items-center gap-1" disabled={!s.has_access_token || probingPayment} title={!s.has_access_token?t.paymentProbeUnavailable:t.paymentProbe} onClick={()=>void openPaymentProbeDialog([s.id],s)}>{probingPayment?<Loader2 className="h-4 w-4 animate-spin"/>:<CreditCard className="h-4 w-4"/>}{probingPayment?t.paymentProbing:t.paymentProbe}</button><button className="sr-link inline-flex items-center gap-1" disabled={addingLoginSecretSessionIds.includes(Number(s.id))} title={t.addLoginSecret} onClick={()=>addLoginSecrets([s.id],s)}>{addingLoginSecretSessionIds.includes(Number(s.id))?<Loader2 className="h-4 w-4 animate-spin"/>:<KeyRound className="h-4 w-4"/>}{addingLoginSecretSessionIds.includes(Number(s.id))?t.addingLoginSecret:t.addLoginSecret}</button><button className="sr-link inline-flex items-center gap-1" disabled={refreshing || checkingAT} onClick={()=>refreshAccessTokens([s.id],s)}>{refreshing || checkingAT ? <Loader2 className="h-4 w-4 animate-spin"/> : <RefreshCw className="h-4 w-4"/>}{t.updateAT}</button><button className="sr-link inline-flex items-center gap-1" disabled={checkingHealth} onClick={()=>runHealthCheck([s.id],s)}>{checkingHealth ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Activity className="inline h-4 w-4"/>}{checkingHealth ? t.healthChecking : t.healthCheck}</button><button className="sr-link" disabled={subscriptionCheckingSessionIds.length > 0} onClick={()=>runSubscriptionCheck([s.id],s)}>{checkingSubscription ? <Loader2 className="inline h-4 w-4 animate-spin"/> : <Crown className="inline h-4 w-4"/>}{checkingSubscription ? t.subscriptionChecking : t.subscriptionCheck}</button></div>}</div></td></tr>
             {loginSecretView && <SessionInlineProgressRow view={loginSecretView} label={t.progressSteps?.[loginSecretView.progress.checkpoint] || loginSecretView.progress.checkpoint} closeTitle={t.closeLoginSecretProgress}/>}
             {sub2ImportView && <SessionInlineProgressRow view={sub2ImportView} label={t.progressSteps?.[sub2ImportView.progress.checkpoint] || sub2ImportView.progress.checkpoint} closeTitle={t.closeRenewalProgress}/>}
             {renewalView && <SessionInlineProgressRow view={renewalView} label={renewalStepLabel(t,renewalView.progress.checkpoint)} closeTitle={t.closeRenewalProgress}/>}
@@ -4515,6 +4644,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     {failureDetail && <FailureDetailModal t={t} value={failureDetail} onClose={()=>setFailureDetail(null)}/>}
     {trialCountryDialog && <CountryProbeModal title={t.trialCountryTitle} hint={t.trialCountryHint} empty={t.trialCountryEmpty} start={t.trialStart} t={t} countries={trialCountries} selected={trialCountrySelection} loading={trialCountriesLoading} onToggle={(country)=>setTrialCountrySelection((old)=>old.includes(country)?old.filter((value)=>value!==country):[...old,country])} onSelectAll={()=>setTrialCountrySelection(trialCountries)} onClear={()=>setTrialCountrySelection([])} onClose={()=>setTrialCountryDialog(null)} onConfirm={confirmTrialCountries}/>}
     {paymentProbeDialog && <PaymentProbeCountryModal t={t} countries={paymentProbeCountries} selected={paymentProbeCountrySelection} loading={paymentProbeCountriesLoading} onToggle={(country)=>setPaymentProbeCountrySelection((old)=>old.includes(country)?old.filter((value)=>value!==country):[...old,country])} onSelectAll={()=>setPaymentProbeCountrySelection(paymentProbeCountries)} onClear={()=>setPaymentProbeCountrySelection([])} onClose={()=>setPaymentProbeDialog(null)} onConfirm={confirmPaymentProbeCountries}/>}
+    {rebindDialog && <PagePortal><div className="sr-modal-mask"><div className="sr-modal sr-mailbox-modal"><div className="sr-modal-head"><h3>选择换绑邮箱来源</h3><button type="button" onClick={()=>setRebindDialog(null)}><X className="h-5 w-5"/></button></div><div className="sr-modal-body space-y-4"><div className="sr-import-tabs">{([['self','自建域名邮箱'],['microsoft','微软邮箱'],['apple','苹果邮箱'],['domain','域名邮箱'],['generic','通用邮箱 URL'],['remail','Remail']] as const).map(([value,label])=><button key={value} type="button" className={cn(rebindCategory===value&&"active")} onClick={()=>{setRebindCategory(value);setSelectedImportedDomainMailboxes([])}}>{label}</button>)}</div>{rebindCategory==="self" ? <p className="text-sm text-slate-500">使用邮箱配置中已启用换绑的自建域名邮箱池生成新邮箱。</p> : <div><div className="flex items-center justify-between gap-3"><Label>选择已导入邮箱（可多选）</Label>{(() => { const available=importedDomainMailboxes.filter((item)=>rebindMailboxCategory(item)===rebindCategory); const allSelected=selectedImportedDomainMailboxes.length>0; return <button type="button" className="sr-text-btn" disabled={!available.length} onClick={()=>setSelectedImportedDomainMailboxes(allSelected ? [] : available.map((item)=>String(item.email)))}>{allSelected ? "清除选择" : "全选"}</button>; })()}</div><div className="sr-rebind-mailbox-options">{rebindMailboxesLoading ? <div className="text-sm text-slate-500">正在加载邮箱配置...</div> : (() => { const available=importedDomainMailboxes.filter((item)=>rebindMailboxCategory(item)===rebindCategory); return available.length ? available.map((item)=><label key={String(item.email)} className="sr-rebind-mailbox-option"><input type="checkbox" checked={selectedImportedDomainMailboxes.includes(String(item.email))} onChange={()=>setSelectedImportedDomainMailboxes((old)=>old.includes(String(item.email)) ? old.filter((email)=>email!==String(item.email)) : [...old,String(item.email)])}/><span title={String(item.email)}>{String(item.email)}</span></label>) : <div className="text-sm text-slate-500">该类目暂无可用邮箱，请先在邮箱配置中导入并启用。</div>; })()}</div><div className="text-xs text-slate-500">已选择 {selectedImportedDomainMailboxes.length} 个邮箱，将作为本次批量换绑的邮箱池。</div></div>}</div><div className="sr-modal-foot"><button type="button" onClick={()=>setRebindDialog(null)}>取消</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={rebindMailboxesLoading || (rebindCategory!=="self" && !selectedImportedDomainMailboxes.length)} onClick={()=>void confirmRebind()}><RotateCw className="mr-2 h-4 w-4"/>开始换绑</Button></div></div></div></PagePortal>}
     <AccountLogFloat t={t} open={accountLogOpen} kind={accountLogKind} logs={accountLogs[accountLogKind] || []} canCancel={cancellableAccountLogTasks.length > 0} cancelling={terminatingAccountLog} onCancel={()=>void terminateAccountLogTasks()} onToggle={()=>setAccountLogOpen((value)=>!value)} onKindChange={setAccountLogKind} onClear={()=>publishAccountLogs({ ...accountLogSnapshot, [accountLogKind]: [] })} />
   </Card>;
 }

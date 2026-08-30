@@ -31,6 +31,8 @@ from .proxy import build_proxy, proxy_target_tls_check, redact_proxy_url
 from .proxy_scheduler import ProxyLease, TaskProxyScheduler
 from .smsbower import SMSBowerClient
 from .smspool import SMSPOOL_CODE_TIMEOUT_SECONDS, SMSPoolClient
+from .grizzly_sms import GrizzlySMSClient
+from .hero_sms import HeroSMSClient
 from .rebind import rebind_one
 
 REGISTER_ONLY = "register_only"
@@ -1042,6 +1044,67 @@ def _firefox_provider(db: SunnyDB, email: str, proxy_url: str = "", country_over
     return provider
 
 
+def _api_phone_provider(db: SunnyDB, email: str, provider_name: str, client: Any, country_metadata: dict[str, str]):
+    """Adapt REST/SMS-Activate compatible clients to the worker phone protocol."""
+    active: dict[str, Any] = {}
+    attempts = 0
+
+    def provider(action: str, _email: str, payload: Any = None):
+        nonlocal active, attempts
+        if action == "next":
+            attempts += 1
+            activation = client.get_number()
+            active = {
+                "provider": provider_name.lower(),
+                "activation_id": str(activation.activation_id),
+                "number": activation.number,
+                **country_metadata,
+                "country": str(getattr(activation, "country", "") or country_metadata.get("country", "")),
+                "country_code": str(getattr(activation, "country_code", "") or country_metadata.get("country_code", "")),
+                "new_number_attempt": attempts,
+            }
+            db.event(f"[{email}] [接码] 已从 {provider_name} 获取手机号 {activation.number}，激活 ID {activation.activation_id}", detail={"email": email, "scope": "selected", "sms_provider": provider_name.lower()})
+            return active
+        phone = payload or active
+        activation_id = str(phone.get("activation_id") or "")
+        if action == "code":
+            return client.wait_code(activation_id, timeout=180, log=lambda m: db.event(f"[{email}] [接码] {m}", detail={"email": email, "scope": "selected", "sms_provider": provider_name.lower()}))
+        if action == "success":
+            client.finish(activation_id)
+            db.event(f"[{email}] [接码] {provider_name} 接码完成", detail={"email": email, "scope": "selected", "sms_provider": provider_name.lower()})
+            return True
+        if action == "bad":
+            try:
+                client.cancel(activation_id)
+            finally:
+                active = {}
+                db.event(f"[{email}] [接码] {provider_name} 激活已取消", "warning", detail={"email": email, "scope": "selected", "sms_provider": provider_name.lower()})
+            return {"retry_same_provider": attempts < 3}
+        return None
+
+    return provider
+
+
+def _grizzly_provider(db: SunnyDB, email: str, proxy_url: str = "", country_override: str = ""):
+    cfg = db.get_config("phone")
+    country = str(country_override or cfg.get("grizzlysms_default_country") or "any").strip()
+    service = str(cfg.get("grizzlysms_default_service") or "dr").strip()
+    option = db.resolve_sms_provider_option("grizzlysms", "country", country)
+    resolved = str((option or {}).get("value") or country)
+    client = GrizzlySMSClient({**cfg, "grizzlysms_default_country": resolved, "grizzlysms_default_service": service}, proxies={"http": proxy_url, "https": proxy_url} if proxy_url else None)
+    return _api_phone_provider(db, email, "GrizzlySMS", client, _sms_country_metadata(db, option, resolved))
+
+
+def _hero_provider(db: SunnyDB, email: str, proxy_url: str = "", country_override: str = ""):
+    cfg = db.get_config("phone")
+    country = str(country_override or cfg.get("hero_sms_default_country") or "6").strip()
+    service = str(cfg.get("hero_sms_default_service") or "dr").strip()
+    option = db.resolve_sms_provider_option("hero_sms", "country", country)
+    resolved = str((option or {}).get("value") or country)
+    client = HeroSMSClient({**cfg, "hero_sms_default_country": resolved, "hero_sms_default_service": service}, proxies={"http": proxy_url, "https": proxy_url} if proxy_url else None)
+    return _api_phone_provider(db, email, "HeroSMS", client, _sms_country_metadata(db, option, resolved))
+
+
 def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = "", execution_mode: str = "protocol"):
     background_us_only = str(execution_mode or "").strip().lower() == "background"
     candidates: list[tuple[str, Any]] = []
@@ -1053,6 +1116,10 @@ def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = "", execu
         candidates.append(("SMSPool", lambda: _smspool_provider(db, email, proxy_url, "1" if background_us_only else "")))
     if _provider_is_available(db, "firefox"):
         candidates.append(("FireFox", lambda: _firefox_provider(db, email, proxy_url, "usa" if background_us_only else "")))
+    if _provider_is_available(db, "grizzlysms"):
+        candidates.append(("GrizzlySMS", lambda: _grizzly_provider(db, email, proxy_url, "")))
+    if _provider_is_available(db, "hero_sms"):
+        candidates.append(("HeroSMS", lambda: _hero_provider(db, email, proxy_url, "")))
     random.shuffle(candidates)
     if db.usable_phone_count() > 0:
         candidates.append(("自建手机号池", lambda: _phone_provider(db, email)))
@@ -1830,7 +1897,7 @@ def _run_one_impl(
     if wants_rt:
         sms_cfg = db.get_config("phone")
         db.event(
-            f"[{email}] [接码] 接码资源检查：自建号池可用 {db.usable_phone_count()} 个，LubanSMS={'启用' if _provider_is_available(db, 'luban') else '不可用'}，SMSBower={'启用' if _provider_is_available(db, 'smsbower') else '不可用'}，SMSPool={'启用' if _provider_is_available(db, 'smspool') else '不可用'}，FireFox={'启用' if _provider_is_available(db, 'firefox') else '不可用'}",
+            f"[{email}] [接码] 接码资源检查：自建号池可用 {db.usable_phone_count()} 个，LubanSMS={'启用' if _provider_is_available(db, 'luban') else '不可用'}，SMSBower={'启用' if _provider_is_available(db, 'smsbower') else '不可用'}，SMSPool={'启用' if _provider_is_available(db, 'smspool') else '不可用'}，FireFox={'启用' if _provider_is_available(db, 'firefox') else '不可用'}，GrizzlySMS={'启用' if _provider_is_available(db, 'grizzlysms') else '不可用'}，HeroSMS={'启用' if _provider_is_available(db, 'hero_sms') else '不可用'}",
             detail={"email": email, "scope": "selected", "sms_provider": "resource_check", "phone_config": {"pool_enabled": sms_cfg.get("pool_enabled"), "luban_enabled": sms_cfg.get("luban_enabled"), "smsbower_enabled": sms_cfg.get("smsbower_enabled"), "smspool_enabled": sms_cfg.get("smspool_enabled"), "firefox_enabled": sms_cfg.get("firefox_enabled")}},
         )
         if account.openai_rt:
@@ -3483,7 +3550,11 @@ def _rebind_with_proxy_rotation(
             current_payload["_excluded_register_proxies"] = sorted(excluded)
         proxy = _prepare_register_proxy(db, current_payload, email, slot + attempt).get("register", "")
         try:
-            return rebind_one(db, account, proxy, log)
+            account_for_rebind = dict(account)
+            if str(current_payload.get("rebind_source") or "").strip().lower() == "imported":
+                account_for_rebind["_rebind_target_email"] = current_payload.get("target_email")
+                account_for_rebind["_rebind_target_api"] = current_payload.get("target_mailbox_api")
+            return rebind_one(db, account_for_rebind, proxy, log)
         except Exception as exc:
             failure = classify_auth_failure(exc)
             can_rotate = (
@@ -3518,6 +3589,17 @@ def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[st
     accounts = db.fetch_accounts(account_ids or None)
     if not accounts:
         return 0, ["未找到需要换绑的账户"], []
+    if str(payload.get("rebind_source") or "").strip().lower() == "imported":
+        raw_targets = payload.get("target_mailboxes")
+        targets = [item for item in raw_targets if isinstance(item, dict) and str(item.get("email") or "").strip() and str(item.get("mailbox_api") or "").strip()] if isinstance(raw_targets, list) else []
+        if not targets:
+            targets = [{"email": payload.get("target_email"), "mailbox_api": payload.get("target_mailbox_api"), "mailbox_type": payload.get("target_mailbox_type"), "mailbox_channel": payload.get("target_mailbox_channel")}]
+        for index, account in enumerate(accounts):
+            target = targets[index % len(targets)]
+            account["_rebind_target_email"] = str(target.get("email") or "").strip()
+            account["_rebind_target_api"] = str(target.get("mailbox_api") or "").strip()
+            account["_rebind_target_type"] = str(target.get("mailbox_type") or "").strip()
+            account["_rebind_target_channel"] = str(target.get("mailbox_channel") or "").strip()
     success = 0
     errors: list[str] = []
     items: list[dict[str, Any]] = []

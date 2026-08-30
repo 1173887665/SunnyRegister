@@ -19,7 +19,7 @@ from email.utils import parsedate_to_datetime
 from html import escape, unescape
 from html.parser import HTMLParser
 from typing import Any, Callable
-from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urljoin, urlparse
 
 import requests
 
@@ -340,6 +340,8 @@ def _validate_url_api_address(value: str) -> str:
 
 def _url_api_strategy(value: str) -> str:
     hostname = (urlparse(str(value or "")).hostname or "").lower().rstrip(".")
+    if hostname == "a-mail.sanai.pro" or hostname.endswith(".a-mail.sanai.pro"):
+        return "amail"
     if hostname == "mail.mczero.top" or hostname.endswith(".mail.mczero.top"):
         return "mczero"
     if hostname == "mail.ai1998.xyz" or hostname.endswith(".mail.ai1998.xyz"):
@@ -1592,6 +1594,62 @@ class URLAPIICloudReader:
             "source": "url_api",
         }
 
+    def _latest_amail(self, timeout: int = URL_API_REQUEST_TIMEOUT) -> dict[str, Any]:
+        """Read the a-mail.sanai.pro temporary inbox JSON endpoints."""
+        parsed = urlparse(self.url)
+        mailbox_uuid = parse_qs(parsed.query).get("impersonate_uuid", [""])[0].strip()
+        if not mailbox_uuid:
+            raise MailboxAccessError("mailbox_format_error", "a-mail URL 缺少邮箱 UUID", terminal=True)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        list_url = f"{base}/api/email-box/{quote(mailbox_uuid, safe='')}/emails"
+        response = self._request_url(list_url, headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"}, timeout=timeout, allow_redirects=True)
+        try:
+            if response.status_code in {401, 403, 404, 410}:
+                raise MailboxAccessError("mailbox_credential_invalid", "a-mail 邮箱链接无效或已过期", f"HTTP {response.status_code}", terminal=True)
+            if not response.ok:
+                raise MailboxAccessError("mailbox_provider_failed", "a-mail 邮箱接口请求失败", f"HTTP {response.status_code}")
+            payload = response.json()
+        except ValueError as exc:
+            raise MailboxAccessError("mailbox_service_response_invalid", "a-mail 邮箱接口返回格式无效", str(exc)) from exc
+        finally:
+            response.close()
+        messages = payload if isinstance(payload, list) else payload.get("emails", []) if isinstance(payload, dict) else []
+        message = messages[0] if messages and isinstance(messages[0], dict) else {}
+        message_uuid = str(message.get("uuid") or "").strip()
+        detail = {}
+        if message_uuid:
+            detail_url = f"{base}/api/email-box/{quote(mailbox_uuid, safe='')}/email/{quote(message_uuid, safe='')}"
+            detail_response = self._request_url(detail_url, headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"}, timeout=timeout, allow_redirects=True)
+            try:
+                if detail_response.ok:
+                    detail_payload = detail_response.json()
+                    detail = detail_payload if isinstance(detail_payload, dict) else {}
+            except (ValueError, requests.RequestException):
+                detail = {}
+            finally:
+                detail_response.close()
+        merged = {**message, **detail}
+        raw_body = "\n".join(str(merged.get(key) or "") for key in ("body", "html", "content", "text", "snippet", "subject"))
+        plain = _html_to_text(raw_body)
+        candidates = extract_otp_candidates(raw_body)
+        candidate = candidates[0] if candidates else None
+        return {
+            "id": f"url-api:amail:{message_uuid or abs(hash(raw_body))}",
+            "email": self.account.email,
+            "folder": "Inbox",
+            "subject": str(merged.get("subject") or "Latest mail"),
+            "from": str(merged.get("from") or merged.get("from_name") or ""),
+            "to": self.account.email,
+            "date": str(merged.get("date") or merged.get("created_at") or ""),
+            "body": plain,
+            "body_preview": plain[:500],
+            "raw_html": raw_body,
+            "otp": str(candidate.get("code") or "") if candidate else "",
+            "otp_key": str(candidate.get("key") or "") if candidate else "",
+            "otp_candidates": candidates,
+            "source": "url_api",
+        }
+
     def _latest_mczero(self, timeout: int = URL_API_REQUEST_TIMEOUT) -> dict[str, Any]:
         parsed = urlparse(self.url)
         query = list(parse_qsl(parsed.query, keep_blank_values=True))
@@ -1668,6 +1726,8 @@ class URLAPIICloudReader:
 
     def _latest(self, timeout: int = URL_API_REQUEST_TIMEOUT, strategy: str | None = None) -> dict[str, Any]:
         selected = strategy or getattr(self, "strategy", "generic")
+        if selected == "amail":
+            return self._latest_amail(timeout)
         if selected == "mczero":
             return self._latest_mczero(timeout)
         return self._latest_generic(timeout, latest_card_only=selected == "ai1998")
