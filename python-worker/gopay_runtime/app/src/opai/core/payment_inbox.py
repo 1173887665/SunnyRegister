@@ -4830,11 +4830,38 @@ def _midtrans_transaction_meta(
     session = tls_client.Session(client_identifier="chrome130", random_tls_extension_order=True)
     if proxy:
         session.proxies = {"http": proxy, "https": proxy}
-    resp = session.get(
-        f"https://app.midtrans.com/snap/v1/transactions/{snap}",
-        headers=payment_fingerprint_headers(payment_fingerprint),
-        timeout_seconds=30,
-    )
+    url = f"https://app.midtrans.com/snap/v1/transactions/{snap}"
+    headers = payment_fingerprint_headers(payment_fingerprint)
+    # Midtrans (or an HTTPS proxy) can close the response before it is complete.
+    # Retry only transport-level failures; HTTP business errors must remain final.
+    try:
+        max_attempts = max(1, min(4, int(os.environ.get("OPAI_MIDTRANS_META_RETRIES", "3"))))
+    except (TypeError, ValueError):
+        max_attempts = 3
+    resp = None
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = session.get(url, headers=headers, timeout_seconds=30)
+            break
+        except Exception as exc:
+            last_error = exc
+            text = str(exc).lower()
+            transient = any(
+                marker in text
+                for marker in (
+                    "unexpected eof", "connection reset", "connection aborted",
+                    "remote end closed", "timed out", "timeout", "temporarily unavailable",
+                )
+            )
+            if not transient or attempt >= max_attempts:
+                break
+            delay = min(3.0, 0.8 * (2 ** (attempt - 1)))
+            log.warning("Midtrans transaction request interrupted (attempt %s/%s): %s; retrying in %.1fs", attempt, max_attempts, exc, delay)
+            time.sleep(delay)
+    if resp is None:
+        detail = str(last_error or "unknown transport error")[:240]
+        raise RuntimeError(f"Midtrans 链接信息读取失败: 网络连接中断（已重试 {max_attempts} 次）: {detail}") from last_error
     try:
         data = resp.json()
     except Exception:
