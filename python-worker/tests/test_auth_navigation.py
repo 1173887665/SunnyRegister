@@ -75,6 +75,34 @@ def test_auth_navigation_does_not_accept_unchanged_chatgpt_page() -> None:
     assert page.goto.call_count == 2
 
 
+def test_auth_navigation_accepts_playwright_takeover_on_unchanged_chatgpt_page() -> None:
+    page = Mock()
+    page.url = "https://chatgpt.com/"
+    page.goto.side_effect = RuntimeError(
+        'Page.goto: Navigation to "https://auth.openai.com/api/accounts/authorize" '
+        'is interrupted by another navigation to "https://chatgpt.com/"'
+    )
+    logs: list[str] = []
+
+    assert _goto_auth_page(page, "https://auth.openai.com/api/accounts/authorize", logs.append) is None
+    page.goto.assert_called_once()
+    assert any("认证导航由上游重定向接管" in message for message in logs)
+
+
+def test_auth_navigation_rejects_playwright_takeover_to_untrusted_origin() -> None:
+    page = Mock()
+    page.url = "https://chatgpt.com/"
+    page.goto.side_effect = RuntimeError(
+        'Page.goto: Navigation to "https://auth.openai.com/api/accounts/authorize" '
+        'is interrupted by another navigation to "https://example.invalid/"'
+    )
+
+    with pytest.raises(RuntimeError, match="example.invalid"):
+        _goto_auth_page(page, "https://auth.openai.com/api/accounts/authorize")
+
+    assert page.goto.call_count == 2
+
+
 def test_auth_navigation_preserves_unrelated_failures() -> None:
     page = Mock()
     page.goto.side_effect = RuntimeError("Page.goto: net::ERR_CONNECTION_RESET")

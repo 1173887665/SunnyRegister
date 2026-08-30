@@ -110,6 +110,7 @@ _NAVIGATION_ABORT_MARKERS = (
     "ns_binding_aborted",
     "ns_error_abort",
     "net::err_aborted",
+    "interrupted by another navigation to",
 )
 
 _TRANSIENT_BROWSER_NETWORK_MARKERS = (
@@ -183,6 +184,32 @@ def _auth_navigation_landed(page: Any, previous_url: str = "") -> bool:
     return current.scheme in {"http", "https"} and (allowed_host or oauth_callback)
 
 
+def _navigation_abort_landed(page: Any, error: Any, previous_url: str = "") -> bool:
+    """Confirm that an aborted goto was replaced by a valid auth navigation."""
+    if not _is_navigation_aborted(error):
+        return False
+    if _auth_navigation_landed(page, previous_url):
+        return True
+
+    # Playwright may report the replacement URL in the exception while page.url
+    # remains unchanged (for example, chatgpt.com -> authorize -> chatgpt.com).
+    match = re.search(r'interrupted by another navigation to\s+["\']([^"\']+)["\']', str(error or ""), re.I)
+    if not match:
+        return False
+    try:
+        target = urlparse(match.group(1))
+        current = urlparse(str(page.url or ""))
+    except Exception:
+        return False
+    allowed_hosts = {"auth.openai.com", "chatgpt.com"}
+    return (
+        target.scheme in {"http", "https"}
+        and target.hostname in allowed_hosts
+        and current.scheme in {"http", "https"}
+        and current.hostname in allowed_hosts
+    )
+
+
 def _goto_auth_page(page: Any, url: str, log: Callable[[str], None] | None = None, *, timeout: int = 90000):
     """Navigate to auth while tolerating browser-engine redirect cancellation.
 
@@ -217,8 +244,9 @@ def _goto_auth_page(page: Any, url: str, log: Callable[[str], None] | None = Non
             try:
                 return page.goto(url, wait_until="commit", timeout=min(timeout, 30000))
             except Exception as retry_exc:
-                if _auth_navigation_landed(page, previous_url) and (
-                    _is_navigation_aborted(retry_exc) or "timeout" in str(retry_exc or "").lower()
+                if _navigation_abort_landed(page, retry_exc, previous_url) or (
+                    _auth_navigation_landed(page, previous_url)
+                    and "timeout" in str(retry_exc or "").lower()
                 ):
                     if log:
                         log(f"[认证] 授权页重试已进入 OpenAI 域，继续处理当前页面：{page.url}")
@@ -229,14 +257,14 @@ def _goto_auth_page(page: Any, url: str, log: Callable[[str], None] | None = Non
                 page.wait_for_timeout(600)
             except Exception:
                 pass
-            if _auth_navigation_landed(page, previous_url):
+            if _navigation_abort_landed(page, exc, previous_url):
                 if log:
                     log(f"[认证] 认证导航由上游重定向接管，继续处理当前页面：{page.url}")
                 return None
             try:
                 return page.goto(url, wait_until="commit", timeout=min(timeout, 30000))
             except Exception as retry_exc:
-                if _is_navigation_aborted(retry_exc) and _auth_navigation_landed(page, previous_url):
+                if _navigation_abort_landed(page, retry_exc, previous_url):
                     if log:
                         log(f"[认证] 认证导航重试已进入目标站点，继续处理当前页面：{page.url}")
                     return None
