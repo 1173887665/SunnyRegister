@@ -820,7 +820,7 @@ class SunnyDB:
         ).fetchone()
         return dict(row) if row else None
 
-    def persist_rebind(self, old_email: str, new_email: str, new_mailbox_api: str, pickup_token_hash: str, session: dict[str, Any]) -> None:
+    def persist_rebind(self, old_email: str, new_email: str, new_mailbox_api: str, pickup_token_hash: str, session: dict[str, Any], mailbox_type: str = "domain", mailbox_channel: str = "domain_api") -> None:
         """Persist rebind metadata while keeping the original mailbox identity."""
         old_email = str(old_email or '').strip()
         new_email = str(new_email or '').strip()
@@ -867,8 +867,8 @@ class SunnyDB:
             if not mailbox or not account or not current_session:
                 raise ValueError('换绑账户关联的邮箱、账户或会话记录不完整')
             self.conn.execute(
-                """update sunny_mailboxes set rebind_email=?,rebind_mailbox_api=?,mailbox_type='domain',mailbox_channel='domain_api',access_key=?,pickup_token_hash=?,raw=?,last_error='',updated_at=? where id=?""",
-                (new_email, new_mailbox_api, new_mailbox_api, pickup_token_hash, raw, timestamp, mailbox['id']),
+                """update sunny_mailboxes set rebind_email=?,rebind_mailbox_api=?,mailbox_type=?,mailbox_channel=?,access_key=?,pickup_token_hash=?,raw=?,last_error='',updated_at=? where id=?""",
+                (new_email, new_mailbox_api, str(mailbox_type or "domain"), str(mailbox_channel or "domain_api"), new_mailbox_api, pickup_token_hash, raw, timestamp, mailbox['id']),
             )
             self.conn.execute(
                 """update sunny_accounts set access_token=?,openai_rt=?,rebind_email=?,rebind_mailbox_api=?,last_error='',updated_at=? where id=?""",
@@ -881,7 +881,16 @@ class SunnyDB:
             if pending_id:
                 self.conn.execute("delete from sunny_mailboxes where id=?", (pending_id,))
 
-    def persist_rebind_pending(self, new_email: str, new_mailbox_api: str, pickup_token_hash: str) -> None:
+    def persist_rebind_pending(
+        self,
+        new_email: str,
+        new_mailbox_api: str,
+        pickup_token_hash: str,
+        mailbox_type: str = "domain",
+        mailbox_channel: str = "domain_api",
+    ) -> None:
+        mailbox_type = str(mailbox_type or "domain").strip() or "domain"
+        mailbox_channel = str(mailbox_channel or "domain_api").strip() or "domain_api"
         """Pre-register a generated pickup URL so the public endpoint can validate it."""
         new_email = str(new_email or '').strip()
         if not new_email or '@' not in new_email:
@@ -903,11 +912,11 @@ class SunnyDB:
                 if current and str(current['pickup_token_hash'] or '') not in {'', pickup_token_hash}:
                     raise ValueError('换绑邮箱已存在于邮箱池中')
                 self.conn.execute(
-                    "update sunny_mailboxes set group_id=?,mailbox_type='domain',mailbox_channel='domain_api',access_key=?,pickup_token_hash=?,raw=?,status='换绑中',enabled=?,last_error='',updated_at=? where id=?",
-                    (int(group['id']), new_mailbox_api, pickup_token_hash, raw, True, timestamp, int(existing['id'])),
+                    "update sunny_mailboxes set group_id=?,mailbox_type=?,mailbox_channel=?,access_key=?,pickup_token_hash=?,raw=?,status='换绑中',enabled=?,last_error='',updated_at=? where id=?",
+                    (int(group['id']), mailbox_type, mailbox_channel, new_mailbox_api, pickup_token_hash, raw, True, timestamp, int(existing['id'])),
                 )
                 return
-            values = (int(group['id']), new_email, 'domain', 'domain_api', new_mailbox_api, pickup_token_hash, raw, '换绑中', True, '', '{}', timestamp, timestamp)
+            values = (int(group['id']), new_email, mailbox_type, mailbox_channel, new_mailbox_api, pickup_token_hash, raw, '换绑中', True, '', '{}', timestamp, timestamp)
             sql = "insert into sunny_mailboxes(group_id,email,mailbox_type,mailbox_channel,access_key,pickup_token_hash,raw,status,enabled,last_error,latest_mail_json,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?)"
             self.conn.execute(sql, values)
 

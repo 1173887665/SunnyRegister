@@ -516,7 +516,8 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             new_email, new_api, new_api_token_hash = _domain_mailbox(db, log)
         # Register the one-time pickup credential before ChatGPT sends the verification mail.
         # The public pickup endpoint validates the token against this database row.
-        db.persist_rebind_pending(new_email, new_api, new_api_token_hash)
+        target_channel = imported_channel or ("domain_api" if imported_type == "domain" else "url_api" if imported_type == "apple" else "remail_api")
+        db.persist_rebind_pending(new_email, new_api, new_api_token_hash, imported_type, target_channel)
         reader_account = MailAccount(email=new_email, password="", client_id="", refresh_token="", raw=f"{new_email}----{new_api}", mailbox_type=imported_type, mailbox_channel=imported_channel or ("domain_api" if imported_type == "domain" else "url_api" if imported_type == "apple" else "remail_api"), access_key=new_api)
         reader = create_mailbox_reader(reader_account, log)
         try:
@@ -553,7 +554,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         if not str(new_result.get("refresh_token") or "").strip() and account.openai_rt:
             new_result["refresh_token"] = account.openai_rt
         _persist_login_result(db, old_email, mailbox, new_result, log)
-        db.persist_rebind(old_email, new_email, new_api, new_api_token_hash, new_result)
+        db.persist_rebind(old_email, new_email, new_api, new_api_token_hash, new_result, imported_type, target_channel)
         log(f"[{old_email}] 换绑成功：{new_email}")
         return {"email": old_email, "new_email": new_email, "status": "success"}
     except Exception as exc:

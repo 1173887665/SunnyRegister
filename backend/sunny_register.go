@@ -1869,14 +1869,22 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 	}
 	var payload map[string]any
 	var err error
+	mailboxType := normalizeSunnyMailboxType(m.MailboxType)
+	mailboxChannel := normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel)
 	if hasRebindCredential {
-		payload, err = s.domainMailLatestMail(mailAccessKey, mailEmail, limit)
-	} else if normalizeSunnyMailboxType(m.MailboxType) == "remail" {
+		if mailboxType == "apple" && mailboxChannel == "url_api" && urlAPIDomainStrategy(mailAccessKey) == "amail" {
+			payload, err = fetchURLAPILatestMail(mailEmail, mailAccessKey, limit, proxyURL)
+		} else if mailboxType == "remail" {
+			payload, err = remailLatestMail(mailAccessKey, mailEmail, limit)
+		} else {
+			payload, err = s.domainMailLatestMail(mailAccessKey, mailEmail, limit)
+		}
+	} else if mailboxType == "remail" {
 		payload, err = remailLatestMail(mailAccessKey, mailEmail, limit)
-	} else if normalizeSunnyMailboxType(m.MailboxType) == "domain" {
+	} else if mailboxType == "domain" {
 		payload, err = s.domainMailLatestMail(mailAccessKey, mailEmail, limit)
-	} else if normalizeSunnyMailboxType(m.MailboxType) == "apple" {
-		switch normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel) {
+	} else if mailboxType == "apple" {
+		switch mailboxChannel {
 		case "url_api":
 			if strings.TrimSpace(m.AccessKey) == "" {
 				writeError(w, http.StatusUnprocessableEntity, "该账号未配置 url_api 邮件收码接口")
@@ -5695,10 +5703,23 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 					accountUpdates["rebind_mailbox_api"] = rebindAPI
 					mailboxUpdates["rebind_mailbox_api"] = rebindAPI
 					if rebindEmail != "" {
-						mailboxUpdates["mailbox_type"] = "domain"
-						mailboxUpdates["mailbox_channel"] = "domain_api"
+						// Preserve the actual imported mailbox channel. A generic
+						// HTTP(S) inbox URL is an Apple/url_api reader, not a
+						// CloudMail domain pickup URL (which requires email+token).
+						mailboxType, mailboxChannel := "domain", "domain_api"
+						if parsed, parseErr := url.Parse(rebindAPI); parseErr == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+							if _, _, tokenErr := parseDomainMailboxPickupCredential(rebindAPI); tokenErr != nil {
+								mailboxType, mailboxChannel = "apple", "url_api"
+							}
+						}
+						mailboxUpdates["mailbox_type"] = mailboxType
+						mailboxUpdates["mailbox_channel"] = mailboxChannel
 						mailboxUpdates["access_key"] = rebindAPI
-						mailboxUpdates["pickup_token_hash"] = domainMailboxTokenHashFromCredential(rebindAPI, rebindEmail)
+						if mailboxType == "domain" {
+							mailboxUpdates["pickup_token_hash"] = domainMailboxTokenHashFromCredential(rebindAPI, rebindEmail)
+						} else {
+							mailboxUpdates["pickup_token_hash"] = ""
+						}
 						mailboxUpdates["raw"] = sunnyURLAPIRaw(rebindEmail, rebindAPI)
 						sess.RawMailboxLine = mailboxUpdates["raw"].(string)
 					}

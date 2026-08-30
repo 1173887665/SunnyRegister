@@ -40,6 +40,16 @@ func TestDomainMailboxCredentialAndTypeHelpers(t *testing.T) {
 	}
 }
 
+func TestValidateDomainMailboxAccessKeyAcceptsImportedURLAPI(t *testing.T) {
+	urlAPI := "https://a-mail.sanai.pro/?impersonate_email=user@example.com&impersonate_uuid=uuid-1"
+	if err := validateDomainMailboxAccessKey(urlAPI, "user@example.com"); err != nil {
+		t.Fatalf("imported URL API should be accepted: %v", err)
+	}
+	if err := validateDomainMailboxAccessKey(urlAPI, "other@example.com"); err == nil {
+		t.Fatal("URL API with an explicit mailbox identity must reject a mismatch")
+	}
+}
+
 func TestRandomDomainPickupTokenUsesDMSKPrefix(t *testing.T) {
 	first, err := randomDomainPickupToken()
 	if err != nil {
