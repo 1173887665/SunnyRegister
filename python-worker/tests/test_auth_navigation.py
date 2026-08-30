@@ -156,6 +156,24 @@ def test_auth_navigation_continues_when_dom_timeout_landed_on_auth_page() -> Non
     assert any("DOM 加载等待超时" in message for message in logs)
 
 
+def test_password_page_switches_from_japanese_one_time_code_label() -> None:
+    flow = OpenAIEmailRegisterFlow(MailAccount("user@icloud.com", "", "", "", "raw"), "", True, None)
+    page = Mock()
+    target = Mock()
+    target.is_visible.return_value = True
+
+    def locator(selector: str):
+        result = Mock()
+        result.first = target if "ワンタイムコードでログインする" in selector else Mock()
+        result.first.is_visible.return_value = "ワンタイムコードでログインする" in selector
+        return result
+
+    page.locator.side_effect = locator
+
+    assert flow._switch_password_to_email_code(page) is True
+    target.click.assert_called_once()
+
+
 def test_auth_navigation_retries_unknown_issuer_at_commit() -> None:
     page = Mock()
     response = object()

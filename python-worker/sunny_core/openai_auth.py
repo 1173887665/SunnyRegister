@@ -2309,6 +2309,7 @@ class OpenAIEmailRegisterFlow:
             '[role="button"]:has-text("尝试其他方式")', '[role="button"]:has-text("其他方式")',
             'button:has-text("メールコード")', 'button:has-text("メールで")',
             'button:has-text("別の方法")', 'button:has-text("メールでコード")',
+            'button:has-text("ワンタイムコードでログインする")',
             'a:has-text("メールコード")', 'button:has-text("이메일 코드")',
             'button:has-text("다른 방법")',
         ]
@@ -2329,7 +2330,7 @@ class OpenAIEmailRegisterFlow:
                     const label = el => `${el.innerText || ''} ${el.textContent || ''} ${el.getAttribute('aria-label') || ''}`
                         .replace(/\s+/g, ' ').trim().toLowerCase();
                     const candidates = [...document.querySelectorAll('button,a,[role="button"],[role="link"]')].filter(visible);
-                    const target = candidates.find(el => /email (code|verification)|email me a code|use email|try another way|use a different method|send code|sign in with email|verification code|邮箱验证码|使用邮箱|尝试其他方式|其他方式|郵箱驗證碼|メール.*(コード|で)|別の方法|이메일.*코드|다른 방법/.test(label(el)));
+                    const target = candidates.find(el => /email (code|verification)|email me a code|use email|try another way|use a different method|send code|sign in with email|verification code|邮箱验证码|使用邮箱|尝试其他方式|其他方式|郵箱驗證碼|メール.*(コード|で)|ワンタイムコードでログインする|別の方法|이메일.*코드|다른 방법/.test(label(el)));
                     if (!target) return false;
                     target.scrollIntoView({block:'center'}); target.click(); return true;
                 }"""
