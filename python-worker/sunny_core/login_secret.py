@@ -502,7 +502,7 @@ class LoginSecretSetupFlow:
                     const settings = [...document.querySelectorAll('a,button,[role="button"],[role="link"],[role="tab"]')].find(el =>
                         visible(el) && /settings|設定|设置|href=.*settings/.test(desc(el)));
                     if (settings) { settings.scrollIntoView({block:'center'}); settings.click(); return true; }
-                    const menu = [...document.querySelectorAll('[role="menu"],[data-radix-menu-content],[data-radix-popper-content-wrapper],[data-state="open"]')]
+                    const menu = [...document.querySelectorAll('[role="menu"],[data-radix-menu-content],[data-radix-popper-content-wrapper]')]
                         .some(el => visible(el));
                     const profile = [...document.querySelectorAll('button,[role="button"],a')].find(el =>
                         visible(el) && /accounts-profile-button|profile menu|プロファイルメニュー|账户菜单|个人资料/.test(desc(el)));
