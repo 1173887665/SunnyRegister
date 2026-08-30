@@ -947,6 +947,7 @@ class ProtocolRegistrationFlow:
         request_code: bool = True,
         load_page: bool = True,
         min_timestamp: float = 0.0,
+        allow_auth_retry: bool = True,
     ) -> dict[str, Any]:
         verification_url = continue_url or f"{AUTH_BASE_URL}/email-verification"
         self.browser_resume_url = verification_url
@@ -963,7 +964,22 @@ class ProtocolRegistrationFlow:
             self.log("[邮箱] 邮箱验证页已由认证初始化加载，跳过重复页面请求")
         sent_at = min_timestamp or (time.time() - 5)
         if request_code:
-            sent_at, verification_url = self._send_email_otp(verification_url)
+            try:
+                sent_at, verification_url = self._send_email_otp(verification_url)
+            except ProtocolRegistrationError as exc:
+                if not allow_auth_retry or "invalid_auth_step" not in str(exc or "").lower():
+                    raise
+                self.log("[认证] 邮箱验证码授权步骤已失效，正在重建 OAuth 会话并重试一次")
+                self._rebuild_auth_session_for_retry()
+                state = self._authorize_email()
+                retry_url = self._continue_url(state) or self.auth_page_url
+                return self._verify_email(
+                    retry_url,
+                    request_code=True,
+                    load_page=True,
+                    min_timestamp=min_timestamp,
+                    allow_auth_retry=False,
+                )
         else:
             self.log("[邮箱] 认证初始化已自动发送验证码，跳过重复发码")
         try:

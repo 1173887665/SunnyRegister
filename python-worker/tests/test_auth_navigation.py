@@ -8,6 +8,7 @@ import pytest
 
 from sunny_core.mailbox import MailAccount
 from sunny_core.openai_auth import OpenAIEmailRegisterFlow, _goto_auth_page, _goto_chatgpt_page
+from sunny_core.protocol_auth import ProtocolRegistrationError, ProtocolRegistrationFlow
 
 
 def test_auth_navigation_accepts_ns_binding_aborted_after_redirect() -> None:
@@ -172,6 +173,29 @@ def test_password_page_switches_from_japanese_one_time_code_label() -> None:
 
     assert flow._switch_password_to_email_code(page) is True
     target.click.assert_called_once()
+
+
+def test_protocol_email_otp_rebuilds_session_after_invalid_auth_step() -> None:
+    flow = ProtocolRegistrationFlow(MailAccount("user@icloud.com", "", "", "", "raw"), existing_account=True)
+    flow.session = Mock()
+    flow.auth_page_url = "https://auth.openai.com/auth/login_with?callback_path=/"
+    flow._send_email_otp = Mock(side_effect=[
+        ProtocolRegistrationError("Send email verification code failed: invalid_auth_step"),
+        (123.0, "https://auth.openai.com/email-verification"),
+    ])
+    flow._rebuild_auth_session_for_retry = Mock()
+    flow._authorize_email = Mock(return_value={"continue_url": "https://auth.openai.com/email-verification"})
+    flow._wait_for_email_code = Mock(return_value="123456")
+    validated = Mock(status_code=200)
+    validated.json.return_value = {"continue_url": "https://auth.openai.com/about-you"}
+    flow._request = Mock(return_value=validated)
+
+    result = flow._verify_email(flow.auth_page_url, load_page=False)
+
+    assert result["continue_url"].endswith("/about-you")
+    flow._rebuild_auth_session_for_retry.assert_called_once()
+    flow._authorize_email.assert_called_once()
+    assert flow._send_email_otp.call_count == 2
 
 
 def test_auth_navigation_retries_unknown_issuer_at_commit() -> None:
