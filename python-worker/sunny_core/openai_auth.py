@@ -42,10 +42,7 @@ REGISTER_DEVICE_PROFILES = [
 PROFILE_SUBMISSION_TIMEOUT_SECONDS = 300
 PROFILE_TRANSITION_TIMEOUT_MS = 5000
 EMAIL_OTP_INITIAL_WAIT_SECONDS = 120
-# URL mailbox providers can publish a freshly resent message noticeably later
-# than the initial delivery. Keep the retry bounded, but long enough to avoid
-# classifying a delayed delivery as a failed registration.
-EMAIL_OTP_RESEND_WAIT_SECONDS = 180
+EMAIL_OTP_RESEND_WAIT_SECONDS = 60
 # A complete LS is intended to be a fast renewal path.  Keep the browser
 # state machine bounded so a stalled auth SPA can hand off to the mailbox flow
 # instead of leaving an AT renewal task in "authentication_running" for many
