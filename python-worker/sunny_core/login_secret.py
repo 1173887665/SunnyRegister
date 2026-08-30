@@ -502,10 +502,13 @@ class LoginSecretSetupFlow:
                     const settings = [...document.querySelectorAll('a,button,[role="button"],[role="link"],[role="tab"]')].find(el =>
                         visible(el) && /settings|設定|设置|href=.*settings/.test(desc(el)));
                     if (settings) { settings.scrollIntoView({block:'center'}); settings.click(); return true; }
+                    const menu = [...document.querySelectorAll('[role="menu"],[data-radix-menu-content],[data-radix-popper-content-wrapper],[data-state="open"]')]
+                        .some(el => visible(el));
                     const profile = [...document.querySelectorAll('button,[role="button"],a')].find(el =>
                         visible(el) && /accounts-profile-button|profile menu|プロファイルメニュー|账户菜单|个人资料/.test(desc(el)));
-                    if (profile) profile.click();
-                    return !!sidebar || !!profile;
+                    const profileExpanded = profile && String(profile.getAttribute('aria-expanded') || '').toLowerCase() === 'true';
+                    if (profile && !profileExpanded && !menu) profile.click();
+                    return !!sidebar || !!menu || !!profileExpanded || !!profile;
                 }"""
             ))
         except Exception:
@@ -867,6 +870,14 @@ class LoginSecretSetupFlow:
             )
             protocol_result = self._add_password_via_protocol(page, password)
             status = int(protocol_result.get("status") or 0)
+            if not protocol_result.get("ok") and status == 0:
+                # A transient browser/proxy NetworkError should not immediately
+                # fall back to brittle SPA selectors. Retry the same authenticated
+                # endpoint once before opening the settings surface.
+                self.log("[登录密钥] 密码协议接口网络请求失败，将在当前认证状态下重试")
+                self._sleep(1.5)
+                protocol_result = self._add_password_via_protocol(page, password)
+                status = int(protocol_result.get("status") or 0)
             if not protocol_result.get("ok") and not _password_already_set(protocol_result):
                 if status == 409:
                     self.log("[登录密钥] 密码协议接口正在同步认证状态，将保持当前登录态后重试")
