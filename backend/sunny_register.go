@@ -701,16 +701,21 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		for _, row := range rows {
 			mailboxType := normalizeSunnyMailboxType(row.MailboxType)
 			mailboxChannel := normalizeSunnyMailboxChannel(row.MailboxType, row.MailboxChannel)
-			category := mailboxType
-			if mailboxType == "apple" && mailboxChannel == "url_api" && !strings.HasSuffix(strings.ToLower(strings.TrimSpace(row.Email)), "@icloud.com") {
-				category = "generic"
-			}
 			credential := strings.TrimSpace(row.AccessKey)
 			if credential == "" {
 				parts := strings.SplitN(strings.TrimSpace(row.Raw), "----", 2)
 				if len(parts) == 2 {
 					credential = strings.TrimSpace(parts[1])
 				}
+			}
+			if mailboxType == "domain" && isSunnyHTTPURL(credential) {
+				if _, _, parseErr := parseDomainMailboxPickupCredential(credential); parseErr != nil {
+					mailboxType, mailboxChannel = "apple", "url_api"
+				}
+			}
+			category := mailboxType
+			if mailboxType == "apple" && mailboxChannel == "url_api" && !strings.HasSuffix(strings.ToLower(strings.TrimSpace(row.Email)), "@icloud.com") {
+				category = "generic"
 			}
 			if strings.TrimSpace(row.Email) != "" && credential != "" {
 				options = append(options, map[string]any{
@@ -1871,8 +1876,15 @@ func (s *Server) sunnyLatestMail(w http.ResponseWriter, r *http.Request, m *Sunn
 	var err error
 	mailboxType := normalizeSunnyMailboxType(m.MailboxType)
 	mailboxChannel := normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel)
+	if isSunnyHTTPURL(mailAccessKey) {
+		if _, _, parseErr := parseDomainMailboxPickupCredential(mailAccessKey); parseErr == nil {
+			mailboxType, mailboxChannel = "domain", "domain_api"
+		} else if mailboxType == "domain" {
+			mailboxType, mailboxChannel = "apple", "url_api"
+		}
+	}
 	if hasRebindCredential {
-		if mailboxType == "apple" && mailboxChannel == "url_api" && urlAPIDomainStrategy(mailAccessKey) == "amail" {
+		if mailboxType == "apple" && mailboxChannel == "url_api" {
 			payload, err = fetchURLAPILatestMail(mailEmail, mailAccessKey, limit, proxyURL)
 		} else if mailboxType == "remail" {
 			payload, err = remailLatestMail(mailAccessKey, mailEmail, limit)
