@@ -213,6 +213,19 @@ func detectSunnySubscriptionMail(candidate sunnySubscriptionCandidate, proxyURL 
 
 func (s *Server) detectSunnySubscriptionMail(candidate sunnySubscriptionCandidate, proxyURL string) (bool, string, error) {
 	if candidate.MailboxType == "domain" && candidate.Channel == "domain_api" {
+		// Older rows may have a generic imported URL persisted under the
+		// historical domain type. Route those URLs through the url_api reader
+		// instead of requiring a domain pickup email+token query.
+		if isSunnyHTTPURL(candidate.AccessKey) {
+			if _, _, parseErr := parseDomainMailboxPickupCredential(candidate.AccessKey); parseErr != nil {
+				payload, err := fetchURLAPILatestMail(candidate.MailEmail, candidate.AccessKey, 5, proxyURL)
+				if err != nil {
+					return false, "", err
+				}
+				matched, subject := sunnySubscriptionPayloadConfirmed(payload)
+				return matched, subject, nil
+			}
+		}
 		payload, err := s.domainMailLatestMail(candidate.AccessKey, candidate.MailEmail, 5)
 		if err != nil {
 			return false, "", err
