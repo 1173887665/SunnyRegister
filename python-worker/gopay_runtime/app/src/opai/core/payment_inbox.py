@@ -1658,6 +1658,27 @@ def _clear_gopay_midtrans_binding(account: dict[str, Any], *, message: str = "")
     account["midtrans_binding_message"] = message or "预占未进入支付，已释放"
 
 
+def _release_gopay_midtrans_binding(phone: str) -> dict[str, Any]:
+    """Release a pending Midtrans reservation without deleting the GoPay account."""
+    with _gopay_accounts_write_guard():
+        accounts = _load_gopay_accounts_raw()
+        target = _digits(phone)
+        for account in accounts:
+            if target not in {_digits(account.get("phone", "")), _digits(account.get("local", ""))}:
+                continue
+            status = str(account.get("midtrans_binding_status") or "").strip()
+            if status == "success":
+                raise ValueError("该账号已绑定成功，不能释放")
+            if status in {"running", "linking", "waiting_otp"}:
+                raise ValueError("支付任务仍在进行中，请先取消任务后再释放")
+            if not status and not account.get("midtrans_binding_job_id"):
+                return {"phone": account.get("phone") or phone, "released": False, "message": "账号没有待释放的绑定"}
+            _clear_gopay_midtrans_binding(account, message="未完成绑定已释放，可重新使用")
+            _write_gopay_accounts_raw(accounts)
+            return {"phone": account.get("phone") or phone, "released": True}
+    raise ValueError(f"账号不存在: {phone}")
+
+
 def _normalize_gopay_binding_history() -> None:
     snap_states = _load_snap_states()
     auto_jobs: dict[str, dict[str, Any]] = {}
@@ -6083,6 +6104,14 @@ class _InboxHandler(BaseHTTPRequestHandler):
             phone = urllib.parse.unquote(path[len("/api/accounts/"):-len("/envelope")].strip("/"))
             try:
                 result = _claim_gopay_envelope(phone)
+                self._send_json(HTTPStatus.OK, result)
+            except Exception as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        if path.startswith("/api/accounts/") and path.endswith("/release-binding"):
+            phone = urllib.parse.unquote(path[len("/api/accounts/"):-len("/release-binding")].strip("/"))
+            try:
+                result = _release_gopay_midtrans_binding(phone)
                 self._send_json(HTTPStatus.OK, result)
             except Exception as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
