@@ -601,6 +601,12 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   flex:1 1 auto;
   justify-content:flex-start;
 }
+.sr-session-actions-shell.is-busy .sr-session-actions > :not(:has(svg.animate-spin)) {
+  display:none;
+}
+.sr-session-actions-shell.is-busy .sr-session-actions {
+  flex:0 0 auto;
+}
 .sr-session-actions-toggle {
   display:inline-flex;
   flex:0 0 32px;
