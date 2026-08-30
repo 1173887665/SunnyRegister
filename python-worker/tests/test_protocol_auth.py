@@ -506,6 +506,34 @@ def test_verify_email_can_reuse_page_loaded_by_auth_redirect() -> None:
     assert session.requests[0][1].endswith("/api/accounts/email-otp/validate")
 
 
+def test_protocol_email_otp_normalizes_chatgpt_login_callback_to_auth_route() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(text="verification page", url="https://auth.openai.com/email-verification"),
+            FakeResponse(payload={"continue_url": "https://auth.openai.com/email-verification"}),
+            FakeResponse(payload={"continue_url": "https://auth.openai.com/about-you"}),
+        ]
+    )
+    flow = ProtocolRegistrationFlow(
+        MailAccount("user@outlook.com", "password", "client-id", "refresh-token", "raw"),
+        session=session,
+        existing_account=True,
+    )
+    flow._wait_for_email_code = lambda _timestamp: "123456"
+
+    result = flow._verify_email(
+        "https://chatgpt.com/auth/login_with?callback_path=/",
+        min_timestamp=1.0,
+    )
+
+    assert result["continue_url"].endswith("/about-you")
+    send_request = session.requests[1]
+    assert send_request[1].endswith("/api/accounts/email-otp/send")
+    assert send_request[2]["headers"]["referer"] == "https://auth.openai.com/email-verification"
+    validate_request = session.requests[2]
+    assert validate_request[2]["headers"]["referer"] == "https://auth.openai.com/email-verification"
+
+
 def test_protocol_password_verification_uses_har_sentinel_flow() -> None:
     flow = ProtocolRegistrationFlow(
         MailAccount(

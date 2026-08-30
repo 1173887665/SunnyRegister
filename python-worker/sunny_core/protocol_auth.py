@@ -812,6 +812,25 @@ class ProtocolRegistrationFlow:
         return str(payload.get("continue_url") or payload.get("continueUrl") or "")
 
     @staticmethod
+    def _normalize_email_verification_url(value: str) -> str:
+        """Convert the ChatGPT login callback into the auth email-code route.
+
+        The login SPA exposes the password page through ``/auth/login_with``.
+        Its "use a one-time code" action then mounts the auth-domain email
+        verification page before calling the email OTP endpoints.  Protocol
+        callers do not click that SPA control, so using the callback URL as an
+        OTP referer leaves the authorization transaction on the wrong step.
+        """
+        candidate = str(value or "").strip()
+        parsed = urlsplit(candidate)
+        if (
+            parsed.netloc.casefold() == urlsplit(CHATGPT_BASE_URL).netloc.casefold()
+            and parsed.path.rstrip("/").casefold() == "/auth/login_with"
+        ):
+            return f"{AUTH_BASE_URL}/email-verification"
+        return candidate
+
+    @staticmethod
     def _page_type(payload: dict[str, Any]) -> str:
         page = payload.get("page") if isinstance(payload.get("page"), dict) else {}
         return str(page.get("type") or "")
@@ -931,7 +950,9 @@ class ProtocolRegistrationFlow:
             payload = payload if isinstance(payload, dict) else {}
         except Exception:
             payload = {}
-        returned_url = str(payload.get("continue_url") or "").strip()
+        returned_url = self._normalize_email_verification_url(
+            str(payload.get("continue_url") or "").strip()
+        )
         if returned_url:
             verification_url = returned_url
         self.log(
@@ -949,7 +970,11 @@ class ProtocolRegistrationFlow:
         min_timestamp: float = 0.0,
         allow_auth_retry: bool = True,
     ) -> dict[str, Any]:
-        verification_url = continue_url or f"{AUTH_BASE_URL}/email-verification"
+        verification_url = self._normalize_email_verification_url(
+            continue_url or f"{AUTH_BASE_URL}/email-verification"
+        )
+        if verification_url != str(continue_url or "").strip():
+            self.log("[认证] 登录密码页已切换为邮箱一次性验证码验证页")
         self.browser_resume_url = verification_url
         if load_page:
             page = self._request(
