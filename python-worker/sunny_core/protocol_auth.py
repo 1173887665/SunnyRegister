@@ -1017,21 +1017,41 @@ class ProtocolRegistrationFlow:
                 raise TimeoutError("重新发送协议验证码后等待 60 秒仍未收到验证码") from resend_exc
         self.recent_email_code = str(code or "").strip()
         self.recent_email_code_at = time.time()
-        validated = self._request(
-            "POST",
-            VALIDATE_EMAIL_OTP_URL,
-            step="Validate email verification code",
-            headers={
-                "accept": "application/json",
-                "content-type": "application/json",
-                "origin": AUTH_BASE_URL,
-                "referer": verification_url,
-                "sec-fetch-dest": "empty",
-                "sec-fetch-mode": "cors",
-                "sec-fetch-site": "same-origin",
-            },
-            data=json.dumps({"code": code}, separators=(",", ":")),
-        )
+        # A mailbox adapter can briefly expose the previous message while the
+        # provider is refreshing its inbox.  On OpenAI's explicit wrong-code
+        # response, request one fresh code and validate it once; never resend
+        # the same rejected value.
+        validated = None
+        for otp_attempt in range(2):
+            validated = self._request(
+                "POST",
+                VALIDATE_EMAIL_OTP_URL,
+                step="Validate email verification code",
+                headers={
+                    "accept": "application/json",
+                    "content-type": "application/json",
+                    "origin": AUTH_BASE_URL,
+                    "referer": verification_url,
+                    "sec-fetch-dest": "empty",
+                    "sec-fetch-mode": "cors",
+                    "sec-fetch-site": "same-origin",
+                },
+                data=json.dumps({"code": code}, separators=(",", ":")),
+            )
+            if validated.status_code == 200:
+                break
+            body = str(getattr(validated, "text", "") or "").lower()
+            if otp_attempt == 0 and validated.status_code in {400, 401, 422} and any(
+                marker in body for marker in ("wrong_email_otp_code", "wrong code", "incorrect code")
+            ):
+                resent_at, verification_url = self._send_email_otp(verification_url, resend=True)
+                code = self._wait_for_email_code(resent_at, timeout=EMAIL_OTP_RESEND_WAIT_SECONDS)
+                self.recent_email_code = str(code or "").strip()
+                self.recent_email_code_at = time.time()
+                self.log("[邮箱] OpenAI 拒绝了旧验证码，已重新发码并获取新验证码")
+                continue
+            break
+        assert validated is not None
         if validated.status_code != 200:
             raise _response_error(validated, "Validate email verification code")
         result = _json_response(validated, "Validate email verification code")

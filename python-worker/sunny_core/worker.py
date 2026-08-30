@@ -1948,6 +1948,33 @@ def _run_one_impl(
             post_registration_callback=setup_login_secret_in_browser if setup_login_secret_enabled else None,
         )
 
+    def run_visible_challenge_fallback(existing_session: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Give an interactive Cloudflare challenge one visible browser attempt.
+
+        Windows workers have a desktop even when the task was submitted in
+        background mode.  Linux/container workers stay headless unless a
+        display is explicitly available, so they retain the diagnostic error.
+        """
+        if os.name != "nt" and not os.getenv("DISPLAY"):
+            raise RuntimeError("后台浏览器遇到交互式验证，但当前 Worker 没有可用桌面显示器")
+        return login_or_register(
+            account,
+            proxies["register"],
+            False,
+            lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
+            phone_provider=phone_provider,
+            existing_account=is_registered_mailbox or task_type == "sunny_login",
+            require_refresh_token=require_refresh_token,
+            should_cancel=db.cancel_requested,
+            execution_mode="visible_challenge_fallback",
+            on_progress=save_progress,
+            mailbox_proxy_url=mailbox_proxy_url,
+            existing_session=existing_session,
+            traffic_meter=traffic_meter,
+            traffic_config=payload.get("browser_traffic_optimization"),
+            post_registration_callback=setup_login_secret_in_browser if setup_login_secret_enabled else None,
+        )
+
     try:
         db.ensure_not_cancelled()
         if execution_mode == "protocol":
@@ -2010,33 +2037,49 @@ def _run_one_impl(
                         },
                     )
                 handoff_failed = False
+                visible_handoff = False
                 try:
                     session = run_protocol_headless_fallback(native_handoff)
                 except Exception as handoff_error:
                     handoff_failure = classify_auth_failure(handoff_error)
                     if (
+                        handoff_failure.category == "browser_challenge"
+                        or "后台浏览器模式遇到 cloudflare" in str(handoff_error).lower()
+                    ):
+                        db.event(
+                            f"[{email}] [认证] 后台浏览器遇到交互式验证，切换可视浏览器接管一次；请在弹出的窗口中完成验证",
+                            "warning",
+                            detail={"email": email, "scope": "selected", "execution_mode": "visible_challenge_fallback"},
+                        )
+                        session = run_visible_challenge_fallback(native_handoff)
+                        visible_handoff = True
+                        handoff_error = None
+                    if handoff_error is not None and (
                         _is_cancel_exception(handoff_error)
                         or _is_account_deactivated(handoff_error)
                         or (native_handoff is None and not handoff_failure.retryable)
                     ):
                         raise
-                    handoff_failed = True
-                    db.event(
-                        f"[{email}] [认证] 协议断点无头接管未完成，将清除失效断点并使用新的隔离无头会话兜底一次："
-                        f"{str(handoff_error)[:300]}",
-                        "warning",
-                        detail={
-                            "email": email,
-                            "scope": "selected",
-                            "execution_mode": "protocol_headless_fallback",
-                            "protocol_fallback": "native_handoff_failed",
-                        },
-                    )
-                    session = run_protocol_headless_fallback()
+                    if handoff_error is not None:
+                        handoff_failed = True
+                        db.event(
+                            f"[{email}] [认证] 协议断点无头接管未完成，将清除失效断点并使用新的隔离无头会话兜底一次："
+                            f"{str(handoff_error)[:300]}",
+                            "warning",
+                            detail={
+                                "email": email,
+                                "scope": "selected",
+                                "execution_mode": "protocol_headless_fallback",
+                                "protocol_fallback": "native_handoff_failed",
+                            },
+                        )
+                        session = run_protocol_headless_fallback()
                 session["requested_execution_mode"] = "protocol"
                 session["execution_mode"] = "protocol_headless_fallback"
                 session["protocol_fallback"] = (
-                    "headless_after_handoff_failure"
+                    "visible_challenge_fallback"
+                    if visible_handoff
+                    else "headless_after_handoff_failure"
                     if handoff_failed
                     else "native_challenge_handoff" if native_handoff else "headless"
                 )
@@ -2104,7 +2147,17 @@ def _run_one_impl(
                     "protocol_fallback": "direct_headless",
                 },
             )
-            session = run_protocol_headless_fallback()
+            try:
+                session = run_protocol_headless_fallback()
+            except Exception as headless_error:
+                if classify_auth_failure(headless_error).category != "browser_challenge" and "后台浏览器模式遇到 cloudflare" not in str(headless_error).lower():
+                    raise
+                db.event(
+                    f"[{email}] [认证] 后台浏览器遇到交互式验证，切换可视浏览器接管一次；请在弹出的窗口中完成验证",
+                    "warning",
+                    detail={"email": email, "scope": "selected", "execution_mode": "visible_challenge_fallback"},
+                )
+                session = run_visible_challenge_fallback()
             session["requested_execution_mode"] = "background"
             session["execution_mode"] = "protocol_headless_fallback"
             session["protocol_fallback"] = "direct_headless"
