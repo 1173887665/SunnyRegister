@@ -45,7 +45,7 @@ from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     from .payment_fingerprint import ensure_account_payment_fingerprint, payment_fingerprint_headers
@@ -223,6 +223,20 @@ def _gopay_sms_finish(provider: str, api_key: str, activation_id: str) -> bool:
         return bool(hero_finish(activation_id))
     from opai.core.sms_helpers import sms_done
     return bool(sms_done(api_key, activation_id))
+
+
+def _poll_phone_pool_sms_url(url: str, seen: set[str] | None = None) -> str:
+    """Read a configured long-lived pool URL and return the newest OTP."""
+    endpoint = str(url or "").strip()
+    if not endpoint:
+        return ""
+    try:
+        body = urllib.request.urlopen(endpoint, timeout=8).read().decode("utf-8", "ignore")
+    except Exception:
+        return ""
+    ignored = {str(code) for code in (seen or set())}
+    codes = re.findall(r"(?<!\d)(\d{4,6})(?!\d)", body)
+    return next((code for code in reversed(codes) if code not in ignored), "")
 
 
 def _sms_api_status(otp_box: Any = None, include_balance: bool = False) -> dict[str, Any]:
@@ -1225,6 +1239,8 @@ def _load_gopay_accounts() -> list[dict[str, Any]]:
         if not sms_activation_status:
             sms_activation_status = "unknown" if re.fullmatch(r"\d+", activation_id) else "unavailable"
         sms_label = {
+            "pool": "号码池",
+            "sms_url": "号码池",
             "active": "可接付款 OTP",
             "completed": "已释放",
             "cancelled": "已取消",
@@ -2515,6 +2531,7 @@ label{color:#4b5563}.input,.select{height:40px;border:1px solid #dce3ee;border-r
           <div class="field"><label>GoPay账号</label><select id="payPhone"></select></div>
           <div class="field"><label>PIN</label><input id="payPin" value="147258"></div>
           <div class="field"><label>Midtrans 链接</label><input id="payUrl" placeholder="https://app.midtrans.com/snap/v4/redirection/..."></div>
+          <div class="field"><label>Midtrans 验证令牌</label><input id="midtransCaptchaToken" type="password" autocomplete="off" placeholder="完成页面验证后粘贴 X-Captcha-Token（短时有效）"></div>
           <button class="btn primary" onclick="startPayment()">直接支付</button>
           <button class="btn soft" onclick="claimAndPay()">领取订阅任务并支付</button>
           <button class="btn" onclick="checkSelectedBalance()">查余额</button>
@@ -2627,8 +2644,8 @@ async function claimReward(phone){const row=document.querySelector(`tr[data-phon
 async function claimEnvelope(phone){const row=document.querySelector(`tr[data-phone="${CSS.escape(phone)}"]`);const msg=row?row.querySelector('.balance-msg'):null;const cell=row?row.querySelector('.balance-cell'):null;if(msg)msg.textContent='领取红包中...';const r=await fetch('/api/accounts/'+encodeURIComponent(phone)+'/envelope',{method:'POST'});const d=await r.json();if(!r.ok){if(msg)msg.textContent=d.error||'领取失败';return}if(cell)cell.textContent=`${d.balance} Rp`;if(msg)msg.textContent=d.message||'已刷新';const opt=[...document.querySelectorAll('#payPhone option')].find(o=>o.value===phone);if(opt)opt.textContent=`${d.phone} ｜ ${d.balance} Rp`;loadEnvelopes()}
 async function checkSelectedBalance(){if(!payPhone.value)return alert('先选择账号');checkBalance(payPhone.value)}
 async function generateMidtrans(){const token=openaiAt.value.trim();if(!token)return alert('先填写 OpenAI AT');const status=document.getElementById('checkoutStatus');status.textContent='生成中，日本固定代理检测中，正在确认 Plus 优惠...';const body={access_token:token,cookie_header:'',device_id:'',account_email:checkoutEmail.value.trim()};try{const r=await fetch('/api/openai-checkout/midtrans',{method:'POST',headers:authHeaders(),body:JSON.stringify(body)});const d=await r.json();if(!r.ok){status.textContent=d.error||'生成失败';payUrl.value='';generatedInboxJobId='';return}payUrl.value=d.midtrans_url||'';generatedInboxJobId=(d.inbox_job&&d.inbox_job.id)||'';const amount=d.gross_amount&&d.currency?`${d.gross_amount} ${d.currency}`:'1 IDR';const country=d.egress_country?`，出口 ${d.egress_country}`:'';const promo=d.has_promo?'，优惠已确认':`，优惠状态 ${d.promo_status||'-'}`;status.textContent=generatedInboxJobId?`已生成 ${amount} 授权链${country}${promo}，任务 ${generatedInboxJobId}`:`已生成 ${amount} 授权链${country}${promo}`;loadJobs()}catch(e){status.textContent='生成失败: '+e;payUrl.value='';generatedInboxJobId=''}}
-async function startPayment(){if(!payPhone.value)return alert('先选择 GoPay 账号');if(!payUrl.value.trim()||!payUrl.value.includes('midtrans.com'))return alert('先生成或粘贴 Midtrans 链接');const body={phone:payPhone.value,pin:payPin.value,midtrans_url:payUrl.value,inbox_job_id:generatedInboxJobId};const r=await fetch('/api/payment-tasks',{method:'POST',headers:authHeaders(),body:JSON.stringify(body)});const d=await r.json();if(!r.ok){alert(d.error||'支付任务创建失败');return}activePaymentId=d.id;renderPaymentDetail(d);loadPaymentJobs()}
-async function claimAndPay(){const body={phone:payPhone.value,pin:payPin.value};const r=await fetch('/api/payment-tasks/claim-next',{method:'POST',headers:authHeaders(),body:JSON.stringify(body)});const d=await r.json();if(!r.ok){alert(d.error||'领取失败');return}activePaymentId=d.id;renderPaymentDetail(d);loadPaymentJobs();loadJobs()}
+async function startPayment(){if(!payPhone.value)return alert('先选择 GoPay 账号');if(!payUrl.value.trim()||!payUrl.value.includes('midtrans.com'))return alert('先生成或粘贴 Midtrans 链接');const body={phone:payPhone.value,pin:payPin.value,midtrans_url:payUrl.value,inbox_job_id:generatedInboxJobId,midtrans_captcha_token:(document.getElementById("midtransCaptchaToken")||{}).value||""};const r=await fetch('/api/payment-tasks',{method:'POST',headers:authHeaders(),body:JSON.stringify(body)});const d=await r.json();if(!r.ok){alert(d.error||'支付任务创建失败');return}activePaymentId=d.id;renderPaymentDetail(d);loadPaymentJobs()}
+async function claimAndPay(){const body={phone:payPhone.value,pin:payPin.value,midtrans_captcha_token:(document.getElementById("midtransCaptchaToken")||{}).value||""};const r=await fetch('/api/payment-tasks/claim-next',{method:'POST',headers:authHeaders(),body:JSON.stringify(body)});const d=await r.json();if(!r.ok){alert(d.error||'领取失败');return}activePaymentId=d.id;renderPaymentDetail(d);loadPaymentJobs();loadJobs()}
 async function loadPaymentJobs(){const r=await fetch('/api/payment-tasks');const d=await r.json();const jobs=d.jobs||[];document.getElementById('paymentRows').innerHTML=jobs.map(j=>`<tr onclick="activePaymentId='${j.id}';renderPaymentDetail(${JSON.stringify(j).replace(/"/g,'&quot;')})"><td>${esc(j.id)}</td><td>${esc(j.phone)}</td><td>${badge(j.status)}</td><td>${esc(j.message)}</td><td>${fmt(j.created_at)}</td></tr>`).join('')||'<tr><td colspan="5">暂无支付任务</td></tr>';if(activePaymentId){const j=jobs.find(x=>x.id===activePaymentId);if(j)renderPaymentDetail(j)}}
 function setFlow(id,state,text){const el=document.getElementById(id);if(!el)return;el.className='flow-step '+(state||'');const b=el.querySelector('b');if(b)b.textContent=text||'等待'}
 function updatePaymentFlow(j){const status=j.status||'';const logs=(j.logs||[]).map(x=>String(x.message||'')).join('\n');setFlow('payFlowPrecheck',logs.includes('预检通过')||status?'success':'','完成');setFlow('payFlowLink',logs.includes('Linking complete')||logs.includes('GoPay linked')?'success':(logs.includes('linking')?'running':''),logs.includes('GoPay linked')?'完成':(logs.includes('linking')?'进行中':'等待'));setFlow('payFlowOtp',status==='waiting_otp'?'running':(logs.includes('OTP 已提交')||logs.includes('PIN verify')?'success':''),status==='waiting_otp'?'等待验证码':(logs.includes('OTP 已提交')||logs.includes('PIN verify')?'完成':'等待'));setFlow('payFlowDone',status==='success'?'success':(status==='failed'?'failed':(status==='running'?'running':'')),status==='success'?'成功':(status==='failed'?'失败':(status==='running'?'进行中':'等待')))}
@@ -3464,7 +3481,7 @@ class _WebPaymentManager:
             state["updated_at"] = _now_iso()
             self._save_snap_state_locked()
 
-    def start(self, *, phone: str, pin: str, midtrans_url: str, inbox_job_id: str = "", proxy: str = "") -> dict[str, Any]:
+    def start(self, *, phone: str, pin: str, midtrans_url: str, inbox_job_id: str = "", proxy: str = "", midtrans_captcha_token: str = "") -> dict[str, Any]:
         account, _idx = _find_gopay_account(phone)
         if account is None:
             raise ValueError(f"账号不存在: {phone}")
@@ -3491,6 +3508,13 @@ class _WebPaymentManager:
         balance_info = _refresh_gopay_balance(account.get("phone") or phone)
         balance = int(balance_info.get("balance", 0) or 0)
         meta = _midtrans_transaction_meta(url, proxy=use_proxy, payment_fingerprint=payment_profile)
+        captcha_token = str(
+            midtrans_captcha_token
+            or meta.get("midtrans_captcha_token")
+            or os.environ.get("OPAI_MIDTRANS_CAPTCHA_TOKEN", "")
+        ).strip()
+        if not captcha_token:
+            raise ValueError("缺少 Midtrans 验证令牌，请先完成验证后填写 X-Captcha-Token")
         _validate_payment_midtrans_meta(meta, balance=balance)
         block_reason = _gopay_binding_block_reason(account, order_id=str(meta.get("order_id") or ""))
         if block_reason:
@@ -3546,6 +3570,7 @@ class _WebPaymentManager:
                 "proxy": use_proxy,
                 "payment_fingerprint": payment_profile,
                 "midtrans_client_key": str(meta.get("midtrans_client_key") or ""),
+                "midtrans_captcha_token": captcha_token,
             },
             daemon=True,
             name=f"web-payment-{job_id}",
@@ -3553,7 +3578,7 @@ class _WebPaymentManager:
         t.start()
         return self.get(job_id) or {}
 
-    def claim_and_start(self, *, phone: str, pin: str, proxy: str = "") -> dict[str, Any]:
+    def claim_and_start(self, *, phone: str, pin: str, proxy: str = "", midtrans_captcha_token: str = "") -> dict[str, Any]:
         job = self._store.claim_next_pending(
             prefer_paypal_url=True,
             prefer_oldest=True,
@@ -3566,7 +3591,7 @@ class _WebPaymentManager:
         if not url:
             raise ValueError("领取到的任务没有 Midtrans 链接")
         try:
-            return self.start(phone=phone, pin=pin, midtrans_url=url, inbox_job_id=job["id"], proxy=proxy)
+            return self.start(phone=phone, pin=pin, midtrans_url=url, inbox_job_id=job["id"], proxy=proxy, midtrans_captcha_token=midtrans_captcha_token)
         except Exception:
             self._store.set_status_if_pending(job["id"], "cancelled")
             raise
@@ -3630,11 +3655,13 @@ class _WebPaymentManager:
         api_key = ""
         aid = ""
         sms_provider = "smsbower"
+        sms_url = ""
         ignored_hashes: set[str] = set()
         try:
             account, _idx = _find_gopay_account(phone)
             aid = str((account or {}).get("activation_id") or (account or {}).get("aid") or "").strip()
             sms_provider = str((account or {}).get("sms_provider") or "smsbower").strip().lower()
+            sms_url = str((account or {}).get("sms_url") or "").strip()
             if aid:
                 api_key = _gopay_sms_api_key(sms_provider)
                 if api_key:
@@ -3664,7 +3691,20 @@ class _WebPaymentManager:
                 if job.get("status") not in {"waiting_otp", "running"}:
                     return None
 
-            if api_key and aid:
+            if sms_url and sms_provider in {"pool", "sms_url"}:
+                code = _poll_phone_pool_sms_url(sms_url)
+                if code:
+                    self._append_log(job_id, "支付 OTP 已由号码池获取，自动提交")
+                    with self._lock:
+                        job = self._jobs.get(job_id)
+                        if job:
+                            job["prompt"] = None
+                            job["status"] = "running"
+                            job["message"] = "支付 OTP 已提交"
+                            job["updated_at"] = _now_iso()
+                            self._save_state_locked()
+                    return code
+            elif api_key and aid:
                 try:
                     from opai.core.sms_helpers import sms_code_sha256
 
@@ -3739,6 +3779,7 @@ class _WebPaymentManager:
         proxy: str,
         payment_fingerprint: dict[str, Any] | None = None,
         midtrans_client_key: str = "",
+        midtrans_captcha_token: str = "",
     ) -> None:
         snap = _extract_midtrans_snap_token(midtrans_url)
         try:
@@ -3783,6 +3824,7 @@ class _WebPaymentManager:
                 wait_otp=lambda otp_phone, timeout: self._wait_otp(job_id, otp_phone, timeout),
                 progress=lambda message: self._append_log(job_id, message),
                 midtrans_client_key=midtrans_client_key,
+                midtrans_captcha_token=midtrans_captcha_token,
             )
             payment_succeeded = bool(result.get("success"))
             with self._lock:
@@ -4566,6 +4608,401 @@ class _PinManager:
                     job["updated_at"] = _now_iso()
 
 
+class _PhoneChangeManager:
+    """Background GoPay phone replacement workflow.
+
+    Number acquisition is deliberately separated from the protocol adapter:
+    a pool row supplies an SMS URL, while a configured provider supplies an
+    activation id.  The GoPay client owns the two state-changing HTTP calls;
+    this manager owns OTP delivery, job state and atomic account persistence.
+    """
+
+    SOURCES = {"pool", "smsbower", "smspool", "grizzlysms", "hero_sms"}
+
+    def __init__(self, pool_path: str | os.PathLike[str] | None = None, client_factory: Callable[..., Any] | None = None) -> None:
+        self.pool_path = Path(pool_path).expanduser() if pool_path else None
+        self._client_factory = client_factory
+        self._lock = threading.RLock()
+        self._pool_lock = threading.RLock()
+        self._jobs: dict[str, dict[str, Any]] = {}
+        self._conds: dict[str, threading.Condition] = {}
+
+    def _pool_file(self) -> Path:
+        if self.pool_path:
+            return self.pool_path
+        return Path(os.environ.get("OPAI_GOPAY_PHONE_POOL_FILE", "gopay_phone_pool.json")).expanduser()
+
+    def _load_pool(self) -> list[dict[str, Any]]:
+        try:
+            data = json.loads(self._pool_file().read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+
+    def _write_pool(self, rows: list[dict[str, Any]]) -> None:
+        path = self._pool_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _public(job: dict[str, Any]) -> dict[str, Any]:
+        clean = dict(job)
+        for key in ("_otp", "_pool_row", "_sms_api_key", "_client"):
+            clean.pop(key, None)
+        return clean
+
+    def list(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = [self._public(job) for job in self._jobs.values()]
+        rows.sort(key=lambda row: row.get("created_at", ""), reverse=True)
+        return rows
+
+    def get(self, job_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            job = self._jobs.get(str(job_id))
+            return self._public(job) if job else None
+
+    def clear_finished(self) -> int:
+        terminal = {"success", "failed", "cancelled", "done"}
+        with self._lock:
+            ids = [job_id for job_id, job in self._jobs.items() if str(job.get("status")) in terminal]
+            for job_id in ids:
+                self._jobs.pop(job_id, None)
+                self._conds.pop(job_id, None)
+        return len(ids)
+
+    def _set(self, job_id: str, **updates: Any) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return
+            job.update(updates)
+            job["updated_at"] = _now_iso()
+
+    def _log(self, job_id: str, message: str, *, status: str | None = None) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return
+            job.setdefault("logs", []).append({"at": _now_iso(), "message": message})
+            job["message"] = message
+            if status:
+                job["status"] = status
+            job["updated_at"] = _now_iso()
+
+    def _reserve_pool_phone(self, requested: str = "") -> dict[str, Any]:
+        target = _digits(requested)
+        with self._pool_lock:
+            rows = self._load_pool()
+            selected: dict[str, Any] | None = None
+            for row in rows:
+                digits = _digits(row.get("phone"))
+                state = str(row.get("status") or "available").lower()
+                if state != "available":
+                    continue
+                if target and digits != target:
+                    continue
+                if not target or digits == target:
+                    selected = row
+                    break
+            if not selected:
+                raise ValueError("号码池没有可用的替换号码")
+            selected["status"] = "reserved"
+            selected["reserved_at"] = _now_iso()
+            self._write_pool(rows)
+            return dict(selected)
+
+    def _release_pool_phone(self, phone: str, *, error: str = "") -> None:
+        target = _digits(phone)
+        if not target:
+            return
+        with self._pool_lock:
+            rows = self._load_pool()
+            changed = False
+            for row in rows:
+                if _digits(row.get("phone")) != target:
+                    continue
+                if str(row.get("status") or "").lower() == "reserved":
+                    row["status"] = "available"
+                    row.pop("reserved_at", None)
+                    if error:
+                        row["last_error"] = str(error)[:300]
+                    changed = True
+                break
+            if changed:
+                self._write_pool(rows)
+
+    def _mark_pool_registered(self, phone: str) -> None:
+        target = _digits(phone)
+        with self._pool_lock:
+            rows = self._load_pool()
+            changed = False
+            for row in rows:
+                if _digits(row.get("phone")) == target:
+                    row["status"] = "registered"
+                    row.pop("reserved_at", None)
+                    row.pop("last_error", None)
+                    changed = True
+                    break
+            if changed:
+                self._write_pool(rows)
+
+    def start(
+        self,
+        *,
+        phone: str,
+        source: str = "pool",
+        replacement_phone: str = "",
+        provider: str = "",
+        proxy: str = "",
+        pin: str = "",
+    ) -> dict[str, Any]:
+        source = str(source or "pool").strip().lower()
+        if source not in self.SOURCES:
+            raise ValueError("手机号来源无效")
+        account, _ = _find_gopay_account(phone)
+        if account is None:
+            raise ValueError(f"账号不存在: {phone}")
+
+        old_digits = _digits(account.get("phone") or phone)
+        pool_row: dict[str, Any] | None = None
+        sms_api_key = ""
+        activation_id = ""
+        new_phone = ""
+        if source == "pool":
+            pool_row = self._reserve_pool_phone(replacement_phone)
+            new_phone = str(pool_row.get("phone") or "").strip()
+        else:
+            provider = source
+            sms_api_key = _gopay_sms_api_key(provider)
+            if not sms_api_key:
+                raise ValueError(f"{_gopay_sms_label(provider)} API key is not configured")
+            new_phone, activation_id = _gopay_sms_get_number(provider)
+            new_phone = str(new_phone or "").strip()
+        if not new_phone:
+            raise ValueError("未取得替换手机号")
+        if _digits(new_phone) == old_digits:
+            if pool_row:
+                self._release_pool_phone(new_phone, error="替换号码不能与原号码相同")
+            if activation_id:
+                _cancel_gopay_sms(provider, sms_api_key, activation_id)
+            raise ValueError("替换号码不能与原号码相同")
+        existing, _ = _find_gopay_account(new_phone)
+        if existing is not None:
+            if pool_row:
+                self._release_pool_phone(new_phone, error="号码已存在于账号库")
+            if activation_id:
+                _cancel_gopay_sms(provider, sms_api_key, activation_id)
+            raise ValueError("替换号码已存在于账号库")
+
+        from opai.core.gopay_protocol_worker import _normalize_phone_for_country
+
+        normalized = _normalize_phone_for_country(new_phone, "+62")
+        if not normalized:
+            if pool_row:
+                self._release_pool_phone(new_phone, error="替换号码格式无效")
+            if activation_id:
+                _cancel_gopay_sms(provider, sms_api_key, activation_id)
+            raise ValueError("替换号码格式无效")
+
+        job_id = uuid.uuid4().hex[:12]
+        now = _now_iso()
+        cond = threading.Condition(self._lock)
+        with self._lock:
+            self._jobs[job_id] = {
+                "id": job_id,
+                "phone": account.get("phone") or phone,
+                "new_phone": normalized,
+                "source": source,
+                "provider": provider or ("sms_url" if source == "pool" else source),
+                "activation_id": activation_id,
+                "status": "running",
+                "message": "准备申请换号验证码",
+                "created_at": now,
+                "updated_at": now,
+                "prompt": None,
+                "logs": [],
+                "_otp": [],
+                "_pool_row": pool_row,
+                "_sms_api_key": sms_api_key,
+                "_proxy": proxy,
+                "_pin": str(pin or "").strip(),
+            }
+            self._conds[job_id] = cond
+        thread = threading.Thread(target=self._run, args=(job_id,), daemon=True, name=f"phone-change-{job_id}")
+        try:
+            thread.start()
+        except Exception:
+            with self._lock:
+                self._jobs.pop(job_id, None)
+                self._conds.pop(job_id, None)
+            if pool_row:
+                self._release_pool_phone(new_phone, error="换号任务启动失败")
+            if activation_id:
+                _cancel_gopay_sms(provider, sms_api_key, activation_id)
+            raise
+        return self.get(job_id) or {}
+
+    @staticmethod
+    def _extract_tokens(result: dict[str, Any]) -> dict[str, str]:
+        body = result.get("body") if isinstance(result, dict) else {}
+        if not isinstance(body, dict):
+            return {}
+        data = body.get("data") if isinstance(body.get("data"), dict) else body
+        return {
+            "otp_token": str(data.get("otp_token") or data.get("otpToken") or "").strip(),
+            "verification_id": str(data.get("verification_id") or data.get("verificationId") or "").strip(),
+        }
+
+    def _poll_pool_code(self, phone: str, row: dict[str, Any], seen: set[str]) -> str:
+        url = str(row.get("sms_url") or "").strip()
+        if not url:
+            return ""
+        try:
+            body = urllib.request.urlopen(url, timeout=8).read().decode("utf-8", "ignore")
+        except Exception:
+            return ""
+        codes = re.findall(r"(?<!\d)(\d{4,6})(?!\d)", body)
+        return next((code for code in reversed(codes) if code not in seen), "")
+
+    def submit_otp(self, job_id: str, code: str) -> dict[str, Any] | None:
+        code = str(code or "").strip()
+        if not re.fullmatch(r"\d{4,6}", code):
+            return None
+        with self._lock:
+            job = self._jobs.get(str(job_id))
+            cond = self._conds.get(str(job_id))
+            if not job or not cond or job.get("status") != "waiting_otp":
+                return None
+            job.setdefault("_otp", []).append(code)
+            job["prompt"] = None
+            job["message"] = "已收到验证码，正在提交"
+            job["updated_at"] = _now_iso()
+            cond.notify_all()
+            return self._public(job)
+
+    def _wait_code(self, job_id: str, job: dict[str, Any], timeout: int = 180) -> str:
+        deadline = time.time() + timeout
+        seen: set[str] = set()
+        while time.time() < deadline:
+            with self._lock:
+                queued = job.get("_otp") or []
+                if queued:
+                    return str(queued.pop(0))
+                cond = self._conds.get(job_id)
+                source = str(job.get("source") or "pool")
+                phone = str(job.get("new_phone") or "")
+                row = dict(job.get("_pool_row") or {})
+                aid = str(job.get("activation_id") or "")
+                provider = str(job.get("provider") or source)
+                api_key = str(job.get("_sms_api_key") or "")
+            if source == "pool":
+                code = self._poll_pool_code(phone, row, seen)
+            else:
+                code = _gopay_sms_wait_code(provider, api_key, aid, timeout=3, ignore_code_hashes=None) or ""
+            if code:
+                seen.add(code)
+                return code
+            with self._lock:
+                if cond:
+                    cond.wait(timeout=3)
+        return ""
+
+    def _persist_success(self, job: dict[str, Any], client: Any) -> None:
+        old_phone = str(job.get("phone") or "")
+        new_phone = str(job.get("new_phone") or "")
+        new_local = _digits(new_phone)
+        if new_local.startswith("62"):
+            new_local = new_local[2:]
+        with _gopay_accounts_write_guard():
+            accounts = _load_gopay_accounts_raw()
+            old_idx = next((idx for idx, row in enumerate(accounts) if _digits(row.get("phone")) == _digits(old_phone)), -1)
+            if old_idx < 0:
+                raise RuntimeError("换号成功，但原账号记录已不存在")
+            if any(idx != old_idx and _digits(row.get("phone")) == _digits(new_phone) for idx, row in enumerate(accounts)):
+                raise RuntimeError("替换号码已被其他账号占用")
+            account = accounts[old_idx]
+            account["phone"] = new_phone
+            account["local"] = new_local
+            account["updated_at"] = _now_iso()
+            account["phone_changed_at"] = account["updated_at"]
+            account["phone_change_source"] = job.get("source")
+            account["activation_id"] = str(job.get("activation_id") or "")
+            account["aid"] = account["activation_id"]
+            provider = str(job.get("provider") or "")
+            account["sms_provider"] = provider
+            pool_row = job.get("_pool_row") if isinstance(job.get("_pool_row"), dict) else {}
+            if provider == "sms_url" and pool_row.get("sms_url"):
+                account["sms_url"] = str(pool_row.get("sms_url"))
+            account["sms_activation_status"] = "active" if account["activation_id"] or account.get("sms_url") else "unavailable"
+            account["sms_activation_updated_at"] = account["updated_at"]
+            if getattr(getattr(client, "auth", None), "access_token", ""):
+                account["access_token"] = client.auth.access_token
+            if getattr(getattr(client, "auth", None), "refresh_token", ""):
+                account["refresh_token"] = client.auth.refresh_token
+            if getattr(client, "user_uuid", ""):
+                account["customer_id"] = client.user_uuid
+            ensure_account_payment_fingerprint(account)
+            _write_gopay_accounts_raw(accounts)
+
+    def _run(self, job_id: str) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+        if not job:
+            return
+        client = None
+        try:
+            account, _ = _find_gopay_account(str(job.get("phone") or ""))
+            if account is None:
+                raise ValueError("原账号已不存在")
+            if self._client_factory:
+                client = self._client_factory(account, str(job.get("phone") or ""))
+            else:
+                client = _gopay_client_from_account(account, str(job.get("phone") or ""))
+            self._log(job_id, "刷新账号 token")
+            try:
+                refreshed = client.refresh_token()
+                if refreshed.get("status") not in (200, 201):
+                    self._log(job_id, f"Token refresh 返回 {refreshed.get('status')}，继续使用现有 token")
+            except Exception:
+                self._log(job_id, "Token refresh 异常，继续使用现有 token")
+
+            self._log(job_id, "申请新手机号验证码")
+            request = client.phone_change_request(str(job.get("new_phone") or ""), country_code="+62")
+            if request.get("status") not in (200, 201, 202):
+                raise RuntimeError(f"GoPay 换号申请失败: HTTP {request.get('status')}")
+            tokens = self._extract_tokens(request)
+            with self._lock:
+                job["otp_token"] = tokens.get("otp_token", "")
+                job["verification_id"] = tokens.get("verification_id", "")
+                job["prompt"] = {"kind": "phone_change_otp", "phone": job.get("new_phone"), "submitted": False}
+            self._log(job_id, "新手机号验证码已发送，等待 OTP", status="waiting_otp")
+            code = self._wait_code(job_id, job)
+            if not code:
+                raise TimeoutError("等待换号验证码超时")
+            self._log(job_id, "提交换号验证码")
+            verify = client.phone_change_verify(code, otp_token=tokens.get("otp_token", ""), verification_id=tokens.get("verification_id", ""))
+            if verify.get("status") not in (200, 201, 202):
+                raise RuntimeError(f"GoPay 换号验证失败: HTTP {verify.get('status')}")
+            self._persist_success(job, client)
+            if job.get("source") == "pool":
+                self._mark_pool_registered(str(job.get("new_phone") or ""))
+            self._log(job_id, "换号成功，账号记录已更新", status="success")
+        except Exception as exc:
+            log.exception("phone change job failed: %s", job_id)
+            message = str(exc)[:300]
+            if job.get("source") == "pool":
+                self._release_pool_phone(str(job.get("new_phone") or ""), error=message)
+            else:
+                aid = str(job.get("activation_id") or "")
+                if aid:
+                    try:
+                        _cancel_gopay_sms(str(job.get("provider") or ""), str(job.get("_sms_api_key") or ""), aid)
+                    except Exception:
+                        log.debug("phone change activation cancellation failed", exc_info=True)
+            self._log(job_id, message or "换号失败", status="failed")
+
+
 class _InboxServer(ThreadingHTTPServer):
     # 每请求起独立线程：本地脚本 40 worker × 3s 轮询 = 13 QPS，靠多线程不阻塞
     store: InboxStore | None = None
@@ -4577,6 +5014,7 @@ class _InboxServer(ThreadingHTTPServer):
     manual_register: _ManualRegisterManager | None = None
     web_payment: _WebPaymentManager | None = None
     pin_manager: _PinManager | None = None
+    phone_change_manager: _PhoneChangeManager | None = None
     gpt_register: GptRegisterBridge | None = None
     auto_flow: _AutoFlowManager | None = None
 
@@ -4893,6 +5331,12 @@ def _midtrans_transaction_meta(
     merchant = data.get("merchant") if isinstance(data.get("merchant"), dict) else {}
     accounts = data.get("accounts") if isinstance(data.get("accounts"), dict) else {}
     gopay_account = accounts.get("gopay") if isinstance(accounts.get("gopay"), dict) else {}
+    captcha_token = ""
+    for key in ("x_captcha_token", "captcha_token", "captchaToken", "X-Captcha-Token"):
+        value = data.get(key)
+        if value:
+            captcha_token = str(value).strip()
+            break
     order_id = str(details.get("order_id") or data.get("order_id") or "").strip()
     gross_amount = str(details.get("gross_amount") or data.get("gross_amount") or "").strip()
     currency = str(details.get("currency") or data.get("currency") or "").strip().upper()
@@ -4902,6 +5346,7 @@ def _midtrans_transaction_meta(
         "gross_amount": gross_amount,
         "currency": currency,
         "midtrans_client_key": str(merchant.get("client_key") or data.get("client_key") or "").strip(),
+        "midtrans_captcha_token": captcha_token,
         "expiry_time": str(data.get("expiry_time") or "").strip(),
         "account_status": str(gopay_account.get("account_status") or "").strip(),
         "transaction_status": str(data.get("transaction_status") or "").strip(),
@@ -5005,6 +5450,8 @@ def _parse_midtrans_expiry(value: str) -> datetime | None:
 
 def _payment_failure_label(detail: str) -> str:
     text = (detail or "").lower()
+    if "captcha" in text or "验证令牌" in text:
+        return "缺少 Midtrans 验证令牌，请完成验证后重新提交"
     if "fraud denied" in text or "fraud_status" in text or "transaction_status\": \"deny" in text:
         return "Midtrans/GoPay 风控拒绝，这条链接不要重试"
     if "still linked" in text or "unfinished" in text or "406" in text or "未完成的 gopay 绑定状态" in text:
@@ -5962,6 +6409,7 @@ class _InboxHandler(BaseHTTPRequestHandler):
                     midtrans_url=str(data.get("midtrans_url") or "").strip(),
                     inbox_job_id=str(data.get("inbox_job_id") or "").strip(),
                     proxy=str(data.get("proxy") or "").strip(),
+                    midtrans_captcha_token=str(data.get("midtrans_captcha_token") or data.get("captcha_token") or "").strip(),
                 )
                 self._send_json(HTTPStatus.CREATED, job)
             except Exception as exc:
@@ -6059,6 +6507,7 @@ class _InboxHandler(BaseHTTPRequestHandler):
                     phone=str(data.get("phone") or "").strip(),
                     pin=str(data.get("pin") or "").strip(),
                     proxy=str(data.get("proxy") or "").strip(),
+                    midtrans_captcha_token=str(data.get("midtrans_captcha_token") or data.get("captcha_token") or "").strip(),
                 )
                 self._send_json(HTTPStatus.CREATED, job)
             except LookupError as exc:

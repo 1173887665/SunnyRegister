@@ -25,6 +25,7 @@ const smsProviderConfig: Record<SmsProvider, { label: string; baseUrl: string; s
 
 const api = (path: string, options?: RequestInit) => apiFetch(`/payments/gopay${path}`, options);
 const post = (path: string, body: Row = {}) => api(path, { method: "POST", body: JSON.stringify(body) });
+const registerProxyPoolStorageKey = "sunnyregister.gopay.register.proxy-pool";
 
 function formatTime(value: unknown) {
   if (!value) return "-";
@@ -70,6 +71,7 @@ export default function PaymentManagement() {
   const [notice, setNotice] = useState<{ type: "ok" | "error"; text: string } | null>(null);
   const [logJob, setLogJob] = useState<Row | null>(null);
   const [pinAccount, setPinAccount] = useState<Row | null>(null);
+  const [phoneAccount, setPhoneAccount] = useState<Row | null>(null);
   const [selectedPaymentId, setSelectedPaymentId] = useState("");
   const [poolSearch, setPoolSearch] = useState("");
   const [accountSearch, setAccountSearch] = useState("");
@@ -164,7 +166,7 @@ export default function PaymentManagement() {
             {view === "overview" && <Overview registerJobs={registerJobs} paymentJobs={paymentJobs} onView={setView} />}
             {view === "register" && <RegisterView jobs={registerJobs} busy={busy} run={run} refresh={loadJobs} onLogs={setLogJob} />}
             {view === "pool" && <PoolView phones={phones} search={poolSearch} setSearch={setPoolSearch} busy={busy} run={run} refresh={loadPhones} />}
-            {view === "accounts" && <AccountsView accounts={accounts} search={accountSearch} setSearch={setAccountSearch} busy={busy} run={run} refresh={loadAccounts} onPin={setPinAccount} onRegister={() => setView("register")} />}
+            {view === "accounts" && <AccountsView accounts={accounts} phones={phones} sms={sms} search={accountSearch} setSearch={setAccountSearch} busy={busy} run={run} refresh={loadAccounts} onPin={setPinAccount} onPhoneChange={setPhoneAccount} onRegister={() => setView("register")} />}
             {view === "payment" && <PaymentView accounts={accounts} jobs={paymentJobs} filter={paymentFilter} setFilter={setPaymentFilter} selected={selectedPayment} select={setSelectedPaymentId} busy={busy} run={run} refresh={loadJobs} onLogs={setLogJob} />}
             {view === "settings" && <SettingsView sms={sms} busy={busy} run={run} refresh={loadSms} />}
           </>}
@@ -173,6 +175,7 @@ export default function PaymentManagement() {
     </div>
     {logJob && <TaskLogModal job={logJob} onClose={() => setLogJob(null)} />}
     {pinAccount && <PinModal account={pinAccount} busy={busy} run={run} refresh={loadAccounts} onClose={() => setPinAccount(null)} />}
+    {phoneAccount && <PhoneChangeModal account={phoneAccount} phones={phones} sms={sms} busy={busy} run={run} refresh={async () => { await Promise.all([loadAccounts(), loadPhones()]); }} onClose={() => setPhoneAccount(null)} />}
   </div>;
 }
 
@@ -188,8 +191,15 @@ function Overview({ registerJobs, paymentJobs, onView }: { registerJobs: Row[]; 
 function RegisterView({ jobs, busy, run, refresh, onLogs }: { jobs: Row[]; busy: string; run: RunAction; refresh: () => Promise<void>; onLogs: (job: Row) => void }) {
   const [mode, setMode] = useState("register");
   const [changePin, setChangePin] = useState(false);
-  const [proxies, setProxies] = useState("");
+  const [proxies, setProxies] = useState(() => {
+    try { return window.localStorage.getItem(registerProxyPoolStorageKey) || ""; }
+    catch { return ""; }
+  });
   const [proxyResult, setProxyResult] = useState<Row | null>(null);
+  useEffect(() => {
+    try { window.localStorage.setItem(registerProxyPoolStorageKey, proxies); }
+    catch { /* Storage may be unavailable in private browsing. */ }
+  }, [proxies]);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -283,11 +293,11 @@ function pinText(account: Row) {
   return `${label} · ${account.pin_saved ? "本机已保存" : "本机未保存"}`;
 }
 
-function AccountsView({ accounts, search, setSearch, busy, run, refresh, onPin, onRegister }: { accounts: Row[]; search: string; setSearch: (value: string) => void; busy: string; run: RunAction; refresh: () => Promise<void>; onPin: (row: Row) => void; onRegister: () => void }) {
+function AccountsView({ accounts, phones, sms, search, setSearch, busy, run, refresh, onPin, onPhoneChange, onRegister }: { accounts: Row[]; phones: Row[]; sms: Row; search: string; setSearch: (value: string) => void; busy: string; run: RunAction; refresh: () => Promise<void>; onPin: (row: Row) => void; onPhoneChange: (row: Row) => void; onRegister: () => void }) {
   const needle = search.trim().toLowerCase();
   const rows = accounts.filter((row) => `${row.phone || ""} ${row.customer_id || ""}`.toLowerCase().includes(needle));
   return <div className="gopay-view"><div className="gopay-section-title"><div><h2>GoPay 账号</h2><p>余额、PIN、登录与短信激活状态</p></div><Button size="sm" variant="destructive" disabled={!accounts.length || busy !== ""} onClick={() => window.confirm("确定删除全部 GoPay 账号数据吗？") && void run("accounts-clear", () => post("/accounts/delete-all"), "账号数据已清空", refresh)}><Trash2 className="mr-1 h-3.5 w-3.5" />删除全部</Button></div>
-    <Panel title={`账号列表 · ${rows.length}`} action={<Button size="sm" variant="outline" onClick={() => void refresh()}><RefreshCw className="mr-1 h-3.5 w-3.5" />刷新</Button>}><div className="gopay-search"><Search /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索手机号或 Customer ID" /></div><div className="gopay-table-wrap"><table><thead><tr><th>手机号</th><th>本地号</th><th>余额</th><th>状态</th><th>PIN 状态</th><th>短信号码</th><th>Customer ID</th><th>操作</th></tr></thead><tbody>{rows.length ? rows.map((row) => <tr key={row.phone}><td className="mono">{row.phone}</td><td>{row.local || "-"}</td><td><strong>{Number(row.balance || 0).toLocaleString("zh-CN")} Rp</strong></td><td><Status value={row.use_status || "success"} /></td><td>{pinText(row)}</td><td>{row.sms_activation_label || "不可自动接码"}</td><td className="mono">{row.customer_id || "-"}</td><td><div className="gopay-row-actions"><Button size="sm" variant="outline" onClick={() => void run(`balance-${row.phone}`, () => post(`/accounts/${encodeURIComponent(row.phone)}/balance`), "余额已刷新", refresh)}>查余额</Button><Button size="sm" variant="outline" onClick={() => void run(`pin-${row.phone}`, () => post(`/accounts/${encodeURIComponent(row.phone)}/pin-status`), "PIN 状态已刷新", refresh)}>检测 PIN</Button><Button size="sm" variant="outline" onClick={() => onPin(row)}>修改 PIN</Button><Button size="sm" variant="outline" onClick={() => { const pin = window.prompt(`请输入 ${row.phone} 的原 PIN；没有 PIN 时请输入要设置的新 PIN`); if (pin && /^\d{6}$/.test(pin)) void run(`relogin-${row.phone}`, () => post(`/accounts/${encodeURIComponent(row.phone)}/relogin`, { pin }), "重新登录任务已创建", async () => { await refresh(); onRegister(); }); }}>重新登录</Button>{row.sms_activation_status === "active" && <Button size="sm" variant="outline" onClick={() => window.confirm("释放后将无法自动接收付款 OTP，确定继续吗？") && void run(`release-${row.phone}`, () => post(`/accounts/${encodeURIComponent(row.phone)}/release-sms`), "短信号码已释放", refresh)}>释放号码</Button>}<Button size="sm" variant="ghost" title="删除账号" onClick={() => window.confirm(`确定删除 ${row.phone} 吗？`) && void run(`delete-${row.phone}`, () => post(`/accounts/${encodeURIComponent(row.phone)}/delete`), "账号已删除", refresh)}><Trash2 className="h-4 w-4 text-red-500" /></Button></div></td></tr>) : <tr><td colSpan={8}><Empty title="暂无 GoPay 账号" detail="完成注册或登录后，账号会显示在这里" /></td></tr>}</tbody></table></div></Panel>
+    <Panel title={`账号列表 · ${rows.length}`} action={<Button size="sm" variant="outline" onClick={() => void refresh()}><RefreshCw className="mr-1 h-3.5 w-3.5" />刷新</Button>}><div className="gopay-search"><Search /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索手机号或 Customer ID" /></div><div className="gopay-table-wrap"><table><thead><tr><th>手机号</th><th>本地号</th><th>余额</th><th>状态</th><th>PIN 状态</th><th>短信号码</th><th>Customer ID</th><th>操作</th></tr></thead><tbody>{rows.length ? rows.map((row) => <tr key={row.phone}><td className="mono">{row.phone}</td><td>{row.local || "-"}</td><td><strong>{Number(row.balance || 0).toLocaleString("zh-CN")} Rp</strong></td><td><Status value={row.use_status || "success"} /></td><td>{pinText(row)}</td><td>{row.sms_activation_label || "不可自动接码"}</td><td className="mono">{row.customer_id || "-"}</td><td><div className="gopay-row-actions"><Button size="sm" variant="outline" onClick={() => onPhoneChange(row)}>换号</Button><Button size="sm" variant="outline" onClick={() => void run(`balance-${row.phone}`, () => post(`/accounts/${encodeURIComponent(row.phone)}/balance`), "余额已刷新", refresh)}>查余额</Button><Button size="sm" variant="outline" onClick={() => void run(`pin-${row.phone}`, () => post(`/accounts/${encodeURIComponent(row.phone)}/pin-status`), "PIN 状态已刷新", refresh)}>检测 PIN</Button><Button size="sm" variant="outline" onClick={() => onPin(row)}>修改 PIN</Button><Button size="sm" variant="outline" onClick={() => { const pin = window.prompt(`请输入 ${row.phone} 的原 PIN；没有 PIN 时请输入要设置的新 PIN`); if (pin && /^\d{6}$/.test(pin)) void run(`relogin-${row.phone}`, () => post(`/accounts/${encodeURIComponent(row.phone)}/relogin`, { pin }), "重新登录任务已创建", async () => { await refresh(); onRegister(); }); }}>重新登录</Button>{row.sms_activation_status === "active" && <Button size="sm" variant="outline" onClick={() => window.confirm("释放后将无法自动接收付款 OTP，确定继续吗？") && void run(`release-${row.phone}`, () => post(`/accounts/${encodeURIComponent(row.phone)}/release-sms`), "短信号码已释放", refresh)}>释放号码</Button>}<Button size="sm" variant="ghost" title="删除账号" onClick={() => window.confirm(`确定删除 ${row.phone} 吗？`) && void run(`delete-${row.phone}`, () => post(`/accounts/${encodeURIComponent(row.phone)}/delete`), "账号已删除", refresh)}><Trash2 className="h-4 w-4 text-red-500" /></Button></div></td></tr>) : <tr><td colSpan={8}><Empty title="暂无 GoPay 账号" detail="完成注册或登录后，账号会显示在这里" /></td></tr>}</tbody></table></div></Panel>
   </div>;
 }
 
@@ -304,10 +314,10 @@ const stageNames = ["检查账号", "绑定 Midtrans", "等待 OTP", "验证 PIN
 function PaymentView({ accounts, jobs, filter, setFilter, selected, select, busy, run, refresh, onLogs }: { accounts: Row[]; jobs: Row[]; filter: string; setFilter: (value: string) => void; selected: Row | null; select: (id: string) => void; busy: string; run: RunAction; refresh: () => Promise<void>; onLogs: (job: Row) => void }) {
   const rows = jobs.filter((row) => !filter || row.status === filter);
   const [ack, setAck] = useState(false);
-  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); await run("payment", async () => { const result = await post("/payment", { phone: data.get("phone"), pin: data.get("pin"), proxy: data.get("proxy"), midtrans_url: data.get("midtrans_url") }); select(String(result.id || "")); }, "支付任务已创建", refresh); setAck(false); }
+  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); await run("payment", async () => { const result = await post("/payment", { phone: data.get("phone"), pin: data.get("pin"), proxy: data.get("proxy"), midtrans_url: data.get("midtrans_url"), midtrans_captcha_token: data.get("midtrans_captcha_token") }); select(String(result.id || "")); }, "支付任务已创建", refresh); setAck(false); }
   const stage = selected ? paymentStage(selected) : 0;
   return <div className="gopay-view"><div className="gopay-section-title"><div><h2>支付中心</h2><p>绑定 GoPay 并完成 Midtrans 支付</p></div></div><div className="gopay-payment-layout"><div className="gopay-payment-main"><div className="gopay-two-column">
-    <Panel title="发起支付任务"><form className="gopay-form" onSubmit={submit}><div className="gopay-form-grid"><label className="wide"><span>GoPay 账号</span><select name="phone" required><option value="">请选择账号</option>{accounts.map((row) => <option key={row.phone} value={row.phone}>{row.phone} · {Number(row.balance || 0).toLocaleString("zh-CN")} Rp</option>)}</select></label><label><span>付款 PIN（可选）</span><input name="pin" type="password" inputMode="numeric" maxLength={6} autoComplete="off" placeholder="留空使用已保存 PIN" /></label><label><span>代理（可选）</span><input name="proxy" placeholder="留空使用账号代理" /></label><label className="wide"><span>Midtrans 链接</span><input name="midtrans_url" type="url" required placeholder="https://app.midtrans.com/snap/v4/redirection/..." /></label></div><div className="gopay-warning"><ShieldCheck />此操作可能直接产生真实扣款，请核对账号、订单与金额。</div><label className="gopay-check"><input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} /><span>我已核对订单并确认开始支付</span></label><Button type="submit" disabled={!ack || busy !== ""} className="w-full"><CircleDollarSign className="mr-2 h-4 w-4" />确认并开始支付</Button></form></Panel>
+    <Panel title="发起支付任务"><form className="gopay-form" onSubmit={submit}><div className="gopay-form-grid"><label className="wide"><span>GoPay 账号</span><select name="phone" required><option value="">请选择账号</option>{accounts.map((row) => <option key={row.phone} value={row.phone}>{row.phone} · {Number(row.balance || 0).toLocaleString("zh-CN")} Rp</option>)}</select></label><label><span>付款 PIN（可选）</span><input name="pin" type="password" inputMode="numeric" maxLength={6} autoComplete="off" placeholder="留空使用已保存 PIN" /></label><label><span>代理（可选）</span><input name="proxy" placeholder="留空使用账号代理" /></label><label className="wide"><span>Midtrans 链接</span><input name="midtrans_url" type="url" required placeholder="https://app.midtrans.com/snap/v4/redirection/..." /></label><label className="wide"><span>Midtrans 验证令牌</span><input name="midtrans_captcha_token" type="password" autoComplete="off" placeholder="完成页面验证后粘贴 X-Captcha-Token（短时有效）" /></label></div><div className="gopay-warning"><ShieldCheck />此操作可能直接产生真实扣款，请核对账号、订单与金额。</div><label className="gopay-check"><input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} /><span>我已核对订单并确认开始支付</span></label><Button type="submit" disabled={!ack || busy !== ""} className="w-full"><CircleDollarSign className="mr-2 h-4 w-4" />确认并开始支付</Button></form></Panel>
     <Panel title="支付流程" action={selected && <Status value={selected.status} />}><div className="gopay-flow">{stageNames.map((name, index) => <div key={name} className={cn(index <= stage && "active")}><span>{index + 1}</span><small>{name}</small></div>)}</div><div className="gopay-flow-copy"><strong>{selected ? stageNames[stage] : "准备开始"}</strong><span>{selected?.message || "创建或选择任务后显示当前阶段"}</span></div></Panel>
   </div><Panel title="支付任务" action={<div className="gopay-panel-actions"><select value={filter} onChange={(e) => setFilter(e.target.value)}><option value="">全部状态</option><option value="running">进行中</option><option value="waiting_otp">等待 OTP</option><option value="success">成功</option><option value="failed">失败</option></select><Button size="sm" variant="outline" onClick={() => void refresh()}><RefreshCw className="h-3.5 w-3.5" /></Button><Button size="sm" variant="outline" onClick={() => void run("clear-payment", () => post("/tasks/clear-finished", { scope: "payment" }), "支付历史已清理", refresh)}><ListRestart className="mr-1 h-3.5 w-3.5" />清理已结束</Button></div>}><div className="gopay-table-wrap"><table><thead><tr><th>任务 ID</th><th>手机号</th><th>当前阶段</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{rows.length ? rows.map((job) => <tr key={job.id} className={String(job.id) === String(selected?.id) ? "selected" : ""} onClick={() => select(String(job.id))}><td className="mono">{job.id}</td><td>{job.phone || "-"}</td><td>{stageNames[paymentStage(job)]}</td><td><Status value={job.status} /></td><td>{formatTime(job.updated_at)}</td><td><Button size="sm" variant="ghost" onClick={(event) => { event.stopPropagation(); onLogs(job); }}>日志</Button></td></tr>) : <tr><td colSpan={6}><Empty title="暂无支付任务" /></td></tr>}</tbody></table></div></Panel></div>
     <PaymentDetail job={selected} run={run} refresh={refresh} />
@@ -348,4 +358,58 @@ function TaskLogModal({ job, onClose }: { job: Row; onClose: () => void }) {
 function PinModal({ account, busy, run, refresh, onClose }: { account: Row; busy: string; run: RunAction; refresh: () => Promise<void>; onClose: () => void }) {
   async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const data = new FormData(event.currentTarget); const oldPin = String(data.get("old_pin") || ""); const newPin = String(data.get("new_pin") || ""); if (!/^\d{6}$/.test(oldPin) || !/^\d{6}$/.test(newPin) || oldPin === newPin) return void window.alert("原 PIN 与新 PIN 必须是不同的 6 位数字"); await run("pin-change", async () => { const task = await post("/pin-tasks", { mode: "known", phone: account.phone, old_pin: oldPin, new_pin: newPin }); for (let attempt = 0; attempt < 90; attempt += 1) { await new Promise((resolve) => window.setTimeout(resolve, 1000)); const state = await api(`/pin-tasks/${encodeURIComponent(task.id)}`); if (state.status === "success") return state; if (state.status === "failed") throw new Error(state.message || "PIN 修改失败"); } throw new Error("PIN 修改任务仍在执行，请稍后刷新账号状态"); }, "PIN 修改成功", refresh); onClose(); }
   return <Modal title="修改 GoPay PIN" subtitle={account.phone} onClose={onClose}><form className="gopay-form gopay-modal-body" onSubmit={submit}><div className="gopay-warning"><ShieldCheck />仅支持已知原 PIN 的账号；忘记 PIN 请使用 GoPay 官方找回流程。</div><label><span>原 PIN</span><input name="old_pin" type="password" inputMode="numeric" maxLength={6} required autoComplete="off" /></label><label><span>新 PIN</span><input name="new_pin" type="password" inputMode="numeric" maxLength={6} required autoComplete="off" /></label><div className="gopay-modal-actions"><Button type="button" variant="outline" onClick={onClose}>取消</Button><Button type="submit" disabled={busy !== ""}>验证并修改</Button></div></form></Modal>;
+}
+
+function PhoneChangeModal({ account, phones, sms, busy, run, refresh, onClose }: { account: Row; phones: Row[]; sms: Row; busy: string; run: RunAction; refresh: () => Promise<void>; onClose: () => void }) {
+  const availablePhones = phones.filter((row) => String(row.status || "available").toLowerCase() === "available");
+  const configuredProviders = (Object.keys(smsProviderConfig) as SmsProvider[]).filter((provider) => {
+    const state = sms.providers?.[provider] || (provider === "smsbower" ? sms : {});
+    return Boolean(state.api_key_configured);
+  });
+  const [source, setSource] = useState<"pool" | SmsProvider>(availablePhones.length ? "pool" : (configuredProviders[0] || "smsbower"));
+  const [poolPhone, setPoolPhone] = useState(String(availablePhones[0]?.phone || ""));
+  const [provider, setProvider] = useState<SmsProvider>(configuredProviders[0] || "smsbower");
+  const [job, setJob] = useState<Row | null>(null);
+  const [otp, setOtp] = useState("");
+
+  useEffect(() => {
+    if (!job?.id || ["success", "failed", "cancelled"].includes(String(job.status))) return undefined;
+    const timer = window.setInterval(() => {
+      void api(`/phone-change-jobs/${encodeURIComponent(job.id)}`).then((state) => {
+        setJob(state);
+        if (state.status === "success") void refresh().then(onClose);
+      }).catch(() => undefined);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [job?.id, job?.status, refresh, onClose]);
+
+  async function start(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const selectedSource = source === "pool" ? "pool" : source;
+    await run("phone-change", async () => {
+      const started = await post("/phone-change", {
+        phone: account.phone,
+        source: selectedSource,
+        provider: selectedSource === "pool" ? "" : provider,
+        replacement_phone: selectedSource === "pool" ? poolPhone : "",
+      });
+      setJob(started);
+    }, "换号任务已创建");
+  }
+
+  async function submitOtp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!job?.id || !/^\d{4,6}$/.test(otp)) return;
+    await run("phone-change-otp", async () => {
+      const state = await post(`/phone-change-jobs/${encodeURIComponent(job.id)}/otp`, { code: otp });
+      setJob(state);
+      setOtp("");
+    }, "换号验证码已提交");
+  }
+
+  const terminal = job && ["success", "failed", "cancelled"].includes(String(job.status));
+  return <Modal title="换号" subtitle={account.phone} onClose={onClose}><div className="gopay-form gopay-modal-body">
+    {!job && <form onSubmit={start}><label><span>号码来源</span><select value={source} onChange={(event) => setSource(event.target.value as "pool" | SmsProvider)}><option value="pool" disabled={!availablePhones.length}>号码池（{availablePhones.length}）</option>{(Object.keys(smsProviderConfig) as SmsProvider[]).map((item) => <option key={item} value={item}>{smsProviderConfig[item].label}{configuredProviders.includes(item) ? " · 已配置" : " · 未配置"}</option>)}</select></label>{source === "pool" ? <label><span>替换号码</span><select value={poolPhone} onChange={(event) => setPoolPhone(event.target.value)} required><option value="">请选择号码</option>{availablePhones.map((row) => <option key={row.phone} value={row.phone}>{row.phone}</option>)}</select></label> : <label><span>系统平台</span><select value={provider} onChange={(event) => setProvider(event.target.value as SmsProvider)}>{(Object.keys(smsProviderConfig) as SmsProvider[]).map((item) => <option key={item} value={item}>{smsProviderConfig[item].label}{configuredProviders.includes(item) ? " · 已配置" : " · 未配置"}</option>)}</select></label>}<div className="gopay-warning"><ShieldCheck />换号成功后才会更新本地账号记录；失败会释放本次占用的号码。</div><div className="gopay-modal-actions"><Button type="button" variant="outline" onClick={onClose}>取消</Button><Button type="submit" disabled={busy !== "" || (source === "pool" && !poolPhone)}><Smartphone className="mr-1 h-4 w-4" />开始换号</Button></div></form>}
+    {job && <><div className="gopay-log-summary"><dt>新手机号</dt><dd className="mono">{job.new_phone || "-"}</dd><dt>状态</dt><dd><Status value={job.status} /></dd><dt>进度</dt><dd>{job.message || "等待状态更新"}</dd></div>{job.status === "waiting_otp" && <form className="gopay-otp-box" onSubmit={submitOtp}><KeyRound /><strong>输入换号验证码</strong><p>验证码发送至 {job.new_phone}</p><input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" maxLength={6} placeholder="4 到 6 位数字" required /><Button type="submit" disabled={busy !== "" || !/^\d{4,6}$/.test(otp)}>提交验证码</Button></form>}<ol className="gopay-logs">{(job.logs || []).map((entry: Row, index: number) => <li key={index}><time>{formatTime(entry.at)}</time><span>{entry.message || "-"}</span></li>)}</ol>{terminal && job.status !== "success" && <div className="gopay-warning">{job.message || "换号失败"}</div>}{terminal && job.status !== "success" && <div className="gopay-modal-actions"><Button type="button" onClick={onClose}>关闭</Button></div>}</>}
+  </div></Modal>;
 }

@@ -19,6 +19,7 @@ from opai.core.payment_inbox import (  # noqa: E402
     ProxyPreflightError,
     _ManualRegisterManager,
     _PinManager,
+    _PhoneChangeManager,
     _WebPaymentManager,
     _find_gopay_account,
     _load_gopay_accounts,
@@ -184,6 +185,7 @@ def _clear_gopay_phone_pool():
 register = _ManualRegisterManager()
 payment = _WebPaymentManager(InboxStore())
 pin_manager = _PinManager()
+phone_change_manager = _PhoneChangeManager(pool_path=POOL)
 batch_jobs = {}
 batch_jobs_lock = threading.RLock()
 
@@ -295,13 +297,17 @@ class Handler(BaseHTTPRequestHandler):
             with batch_jobs_lock:
                 batches = [dict(batch) for batch in batch_jobs.values()]
             for batch in batches:
+                reason = _sanitize_public_error(batch.get("last_error"))
+                message = batch.get("message") or batch.get("error") or f"完成 {batch.get('finished', 0)}/{batch.get('count', 0)}"
+                if reason and reason not in message:
+                    message = f"{message}；原因：{reason}"
                 rows.insert(0, {
                     "id": batch["id"],
                     "phone": f"批量 {batch.get('started', 0)}/{batch.get('count', 0)}",
                     "source": batch.get("source"),
                     "login_existing": bool(batch.get("login_existing")),
                     "status": batch.get("status"),
-                    "message": batch.get("message") or batch.get("error") or f"完成 {batch.get('finished', 0)}/{batch.get('count', 0)}",
+                    "message": message,
                 })
             self.send(200, {"jobs": rows, "batches": batches})
             return
@@ -318,6 +324,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, job)
             else:
                 self.send(404, {"error": "pin_task_not_found"})
+            return
+        if path == "/api/phone-change-jobs":
+            self.send(200, {"jobs": phone_change_manager.list()})
+            return
+        if path.startswith("/api/phone-change-jobs/"):
+            job_id = unquote(path[len("/api/phone-change-jobs/"):].strip("/"))
+            job = phone_change_manager.get(job_id)
+            if job:
+                self.send(200, job)
+            else:
+                self.send(404, {"error": "phone_change_job_not_found"})
             return
         self.send(404, {"error": "not_found"})
 
@@ -451,7 +468,9 @@ class Handler(BaseHTTPRequestHandler):
                 proxy_value = data.get("proxies") if "proxies" in data else data.get("proxy")
                 proxies = _parse_proxy_list(proxy_value)
                 login_existing = bool(data.get("login_existing"))
-                phones = [x.get("phone") for x in _load_gopay_phone_pool() if x.get("status", "available") in {"available", "registered"}][:count]
+                # Keep the complete available pool so an already-registered
+                # number can be skipped and replaced by another number.
+                phones = [x.get("phone") for x in _load_gopay_phone_pool() if x.get("status", "available") in {"available", "registered"}]
                 if source == "pool" and len(phones) < count:
                     mode_label = "登录" if login_existing else "注册"
                     raise ValueError(f"号码池可用号码不足：{mode_label} {count} 个账号需要 {count} 个号码，当前只有 {len(phones)} 个。请先导入号码，或改用 SMSBower。")
@@ -469,6 +488,7 @@ class Handler(BaseHTTPRequestHandler):
                         "finished": 0,
                         "succeeded": 0,
                         "failed": 0,
+                        "replacements": 0,
                         "proxy_total": len(proxies),
                         "proxy_checked": 0,
                         "proxy_available": 0,
@@ -496,6 +516,10 @@ class Handler(BaseHTTPRequestHandler):
                             return
                     task_queue = list(phones) if source == "pool" else [""] * count
                     lock = threading.Lock()
+                    completed = 0
+                    attempts = 0
+                    replacements = 0
+                    replacement_limit = max(3, count * 2)
                     proxy_condition = threading.Condition()
                     available_proxies = list(healthy_proxies) if proxies else []
                     disabled_proxies = set()
@@ -526,10 +550,15 @@ class Handler(BaseHTTPRequestHandler):
                                 batch["proxy_unavailable"] = checked["unavailable"] + len(disabled_proxies)
 
                     def one():
+                        nonlocal completed, attempts, replacements
                         while True:
                             with lock:
-                                if not task_queue: return
+                                if completed >= count or attempts >= count + replacement_limit:
+                                    return
+                                if not task_queue:
+                                    return
                                 phone = task_queue.pop(0)
+                                attempts += 1
                             with batch_jobs_lock:
                                 batch_jobs[bid]["started"] += 1
                             job = None
@@ -569,14 +598,34 @@ class Handler(BaseHTTPRequestHandler):
                                 break
                             if candidate is None and not last_error:
                                 last_error = f"可用代理已全部失效，未购买 {dict(smsbower='SMSBower', smspool='SMSPool', grizzlysms='GrizzlySMS', hero_sms='HeroSMS').get(source, '短信')} 号码"
+                            # A number already tied to an account cannot be
+                            # registered again. Treat it as a replacement
+                            # event, not a failed target slot.
+                            terminal_status = str(current.get("status") or (job.get("status") if job else ""))
+                            if terminal_status == "already_registered" and not login_existing:
+                                with lock:
+                                    replacements += 1
+                                    if replacements <= replacement_limit and source in {"smsbower", "smspool", "grizzlysms", "hero_sms"}:
+                                        task_queue.append("")
+                                with batch_jobs_lock:
+                                    batch = batch_jobs[bid]
+                                    batch["replacements"] = replacements
+                                    batch["message"] = f"已跳过 {replacements} 个已注册号码，正在补领新号码（完成 {completed}/{count}）"
+                                continue
+
+                            with lock:
+                                completed += 1
+                                completed_now = completed
                             with batch_jobs_lock:
                                 batch = batch_jobs[bid]
-                                batch["finished"] += 1
-                                terminal_status = str(current.get("status") or (job.get("status") if job else ""))
+                                batch["finished"] = completed_now
                                 if terminal_status == "success":
                                     batch["succeeded"] += 1
                                 else:
                                     batch["failed"] += 1
+                                    if not last_error:
+                                        result = current.get("result") if isinstance(current.get("result"), dict) else {}
+                                        last_error = current.get("message") or result.get("error") or "注册任务未返回成功结果"
                                     if last_error:
                                         batch["last_error"] = last_error
                                 proxy_text = ""
@@ -589,8 +638,15 @@ class Handler(BaseHTTPRequestHandler):
                     threads = [threading.Thread(target=one, daemon=True) for _ in range(thread_count)]
                     for thread in threads: thread.start()
                     for thread in threads: thread.join()
+                    with lock:
+                        missing = max(0, count - completed)
+                        completed = count
                     with batch_jobs_lock:
                         batch = batch_jobs[bid]
+                        if missing:
+                            batch["finished"] = count
+                            batch["failed"] += missing
+                            batch["last_error"] = "已注册号码已跳过，但可替换号码库存不足"
                         batch["status"] = "failed" if batch["succeeded"] == 0 and batch["failed"] else "done"
                         if batch["status"] == "done" and batch["failed"]:
                             batch["message"] = f"部分完成：成功 {batch['succeeded']}，失败 {batch['failed']}"
@@ -599,7 +655,17 @@ class Handler(BaseHTTPRequestHandler):
                     response = dict(batch_jobs[bid])
                 self.send(201, response); return
             if path == "/api/payment":
-                job = payment.start(phone=str(data.get("phone") or ""), pin=str(data.get("pin") or "").strip(), midtrans_url=str(data.get("midtrans_url") or ""), proxy=str(data.get("proxy") or ""))
+                job = payment.start(phone=str(data.get("phone") or ""), pin=str(data.get("pin") or "").strip(), midtrans_url=str(data.get("midtrans_url") or ""), proxy=str(data.get("proxy") or ""), midtrans_captcha_token=str(data.get("midtrans_captcha_token") or data.get("captcha_token") or "").strip())
+                self.send(201, job); return
+            if path == "/api/phone-change":
+                job = phone_change_manager.start(
+                    phone=str(data.get("phone") or "").strip(),
+                    source=str(data.get("source") or "pool").strip(),
+                    replacement_phone=str(data.get("replacement_phone") or data.get("new_phone") or "").strip(),
+                    provider=str(data.get("provider") or "").strip(),
+                    proxy=str(data.get("proxy") or "").strip(),
+                    pin=str(data.get("pin") or "").strip(),
+                )
                 self.send(201, job); return
             if path == "/api/pin-tasks":
                 mode = str(data.get("mode") or "known").strip()
@@ -620,6 +686,15 @@ class Handler(BaseHTTPRequestHandler):
                 job = payment.submit_otp(job_id, code)
                 if not job:
                     raise ValueError(f"该支付任务当前不在等待 OTP，可能已经失败、完成或超时: {job_id}")
+                self.send(200, job); return
+            if path.startswith("/api/phone-change-jobs/") and path.endswith("/otp"):
+                job_id = unquote(path[len("/api/phone-change-jobs/"):-len("/otp")].strip("/"))
+                code = str(data.get("code") or data.get("value") or "").strip()
+                if not re.fullmatch(r"\d{4,6}", code):
+                    raise ValueError("验证码必须是 4 到 6 位数字")
+                job = phone_change_manager.submit_otp(job_id, code)
+                if not job:
+                    raise ValueError("换号任务不存在或当前不在等待验证码")
                 self.send(200, job); return
             if path.startswith("/api/register-jobs/") and path.endswith("/otp"):
                 job_id = unquote(path[len("/api/register-jobs/"):-len("/otp")].strip("/"))

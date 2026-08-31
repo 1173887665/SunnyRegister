@@ -75,6 +75,8 @@ SSO_BASE = "https://accounts.goto-products.com"
 GOPAY_BASE = "https://customer.gopayapi.com"
 GOJEK_API_BASE = "https://api.gojekapi.com"
 GOFIN_GATEWAY_BASE = "https://gateway.paylater.gofin.co.id"
+PHONE_CHANGE_PATH = os.environ.get("OPAI_GOPAY_PHONE_CHANGE_PATH", "/v6/customers/phone/newrequest")
+PHONE_CHANGE_VERIFY_PATH = os.environ.get("OPAI_GOPAY_PHONE_CHANGE_VERIFY_PATH", "/v6/customers/phone/verify")
 GOPAY_APP_ID = os.environ.get("OPAI_GOPAY_APP_ID", "com.gojek.gopay")
 GOPAY_APP_VERSION = os.environ.get("OPAI_GOPAY_APP_VERSION", "2.8.0")
 GOPAY_APP_BUILD = os.environ.get("OPAI_GOPAY_APP_BUILD", "2080")
@@ -1990,6 +1992,51 @@ class GojekClient:
             return acct_result
 
         return self.issue_token()
+
+    # ========================================================================
+    # Phase 2: Phone replacement
+    # ========================================================================
+
+    def phone_change_request(self, phone: str, country_code: str = "+62") -> dict:
+        """Request an OTP for replacing the authenticated account phone.
+
+        GoPay has changed this route/body shape across app releases.  The
+        default paths match the current protocol adapter and can be overridden
+        with ``OPAI_GOPAY_PHONE_CHANGE_PATH`` and
+        ``OPAI_GOPAY_PHONE_CHANGE_VERIFY_PATH`` when a capture confirms a
+        different version.
+        """
+        normalized = _normalize_signup_phone(phone, country_code)
+        body = {
+            "phone": normalized,
+            "phone_number": normalized,
+            "country_code": str(country_code or "+62").lstrip("+") or "62",
+            "verification_method": "otp_sms",
+        }
+        result = self._gojek_api_post(PHONE_CHANGE_PATH, body)
+        if result.get("status") in (200, 201, 202):
+            inner = result.get("body", {}).get("data", result.get("body", {}))
+            if isinstance(inner, dict):
+                self.auth.otp_token = str(inner.get("otp_token") or inner.get("otpToken") or "")
+                self.auth.verification_id = str(inner.get("verification_id") or inner.get("verificationId") or "")
+                self.auth.otp_length = int(inner.get("otp_length") or inner.get("otpLength") or 4)
+        return result
+
+    def phone_change_verify(
+        self,
+        otp: str,
+        *,
+        otp_token: str = "",
+        verification_id: str = "",
+    ) -> dict:
+        """Submit the replacement-phone OTP and finalize the change."""
+        body = {
+            "otp": str(otp or "").strip(),
+            "otp_token": otp_token or self.auth.otp_token,
+            "verification_id": verification_id or self.auth.verification_id,
+            "verification_method": "otp_sms",
+        }
+        return self._gojek_api_post(PHONE_CHANGE_VERIFY_PATH, body)
 
     # ========================================================================
     # Phase 2: GoPay PIN Setup (HAR-verified 2026-05-15)
