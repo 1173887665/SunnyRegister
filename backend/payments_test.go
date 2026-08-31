@@ -47,6 +47,29 @@ func TestHandlePaymentsProxiesGoPayRequest(t *testing.T) {
 	}
 }
 
+func TestHandlePaymentsProxiesMomoRequest(t *testing.T) {
+	var receivedPath string
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true,"provider":"momo"}`))
+	}))
+	defer worker.Close()
+	t.Setenv("PYTHON_WORKER_URL", worker.URL)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/payments/momo/payment", strings.NewReader(`{"phone":"+84901234567","qr_payload":"momo://fixture"}`))
+	recorder := httptest.NewRecorder()
+	(&Server{}).handlePayments(recorder, req, "/momo/payment")
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusCreated)
+	}
+	if receivedPath != "/momo/payment" {
+		t.Fatalf("worker target = %s", receivedPath)
+	}
+}
+
 func TestHandlePaymentsRejectsUnknownProvider(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	(&Server{}).handlePayments(recorder, httptest.NewRequest(http.MethodGet, "/api/payments/paypal/accounts", nil), "/paypal/accounts")

@@ -9,10 +9,11 @@ import { Button } from "@/components/ui/button";
 import { apiFetch, cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n-context";
 import DirectCardPayment from "@/pages/payments/DirectCardPayment";
+import MomoPayment from "@/pages/payments/MomoPayment";
 
 type Row = Record<string, any>;
 type GoPayView = "overview" | "register" | "pool" | "accounts" | "payment" | "settings";
-type PaymentMethod = "gopay" | "paypal" | "direct_card";
+type PaymentMethod = "gopay" | "momo" | "paypal" | "direct_card";
 type SmsProvider = "smsbower" | "smspool" | "grizzlysms" | "hero_sms";
 type RunAction = (key: string, action: () => Promise<any>, success: string, refresh?: () => Promise<void>) => Promise<void>;
 
@@ -26,6 +27,10 @@ const smsProviderConfig: Record<SmsProvider, { label: string; baseUrl: string; s
 const api = (path: string, options?: RequestInit) => apiFetch(`/payments/gopay${path}`, options);
 const post = (path: string, body: Row = {}) => api(path, { method: "POST", body: JSON.stringify(body) });
 const registerProxyPoolStorageKey = "sunnyregister.gopay.register.proxy-pool";
+
+function phoneKey(value: unknown) {
+  return String(value || "").replace(/\D/g, "");
+}
 
 function formatTime(value: unknown) {
   if (!value) return "-";
@@ -61,6 +66,7 @@ export default function PaymentManagement() {
   const [view, setView] = useState<GoPayView>("overview");
   const [accounts, setAccounts] = useState<Row[]>([]);
   const [phones, setPhones] = useState<Row[]>([]);
+  const [phoneCandidates, setPhoneCandidates] = useState<Row[]>([]);
   const [registerJobs, setRegisterJobs] = useState<Row[]>([]);
   const [paymentJobs, setPaymentJobs] = useState<Row[]>([]);
   const [paypalJobs, setPaypalJobs] = useState<Row[]>([]);
@@ -83,7 +89,38 @@ export default function PaymentManagement() {
   }, []);
 
   const loadAccounts = useCallback(async () => { const data = await api("/accounts"); setAccounts(data.accounts || []); }, []);
-  const loadPhones = useCallback(async () => { const data = await api("/phone-pool"); setPhones(data.phones || []); }, []);
+  const loadPhones = useCallback(async () => {
+    const data = await api("/phone-pool");
+    const localRows: Row[] = Array.isArray(data.phones) ? data.phones : [];
+    let systemRows: Row[] = [];
+    try {
+      const systemData = await apiFetch("/sunny/phones?page=1&page_size=100&status=available");
+      systemRows = Array.isArray(systemData.items) ? systemData.items : [];
+    } catch {
+      // The GoPay worker pool remains usable when the shared pool is unavailable.
+    }
+    const byPhone = new Map<string, Row>();
+    localRows.forEach((row) => byPhone.set(phoneKey(row.phone), row));
+    for (const row of systemRows) {
+      const phone = String(row.number || row.phone || "").trim();
+      const key = phoneKey(phone);
+      if (!key) continue;
+      const current = byPhone.get(key);
+      if (current) {
+        if (!current.sms_url && row.sms_url) current.sms_url = String(row.sms_url);
+        continue;
+      }
+      byPhone.set(key, {
+        phone,
+        sms_url: String(row.sms_url || ""),
+        status: row.enabled === false || row.display_status === "disabled" ? "disabled" : String(row.status || "available"),
+        source: "system",
+        source_id: row.id,
+      });
+    }
+    setPhones(localRows);
+    setPhoneCandidates(Array.from(byPhone.values()));
+  }, []);
   const loadJobs = useCallback(async () => {
     const [registerData, paymentData] = await Promise.all([api("/register-jobs"), api("/payment-jobs")]);
     setRegisterJobs(registerData.jobs || []);
@@ -124,11 +161,11 @@ export default function PaymentManagement() {
     const jobs = [...registerJobs, ...paymentJobs];
     return {
       accounts: accounts.length,
-      phones: phones.length,
+      phones: phoneCandidates.length,
       otp: jobs.filter((job) => job.status === "waiting_otp").length,
       running: jobs.filter((job) => job.status === "running").length,
     };
-  }, [accounts, phones, registerJobs, paymentJobs]);
+  }, [accounts, phoneCandidates, registerJobs, paymentJobs]);
 
   const nav: Array<[GoPayView, string, ReactNode]> = [
     ["overview", "总览", <LayoutDashboard />], ["register", "注册与登录", <UsersRound />],
@@ -145,6 +182,7 @@ export default function PaymentManagement() {
 
     <nav className="payment-method-tabs" aria-label="支付方式">
       <button className={method === "gopay" ? "active" : ""} type="button" onClick={() => setMethod("gopay")}><span className="gopay-method-mark">Go</span><span><strong>GoPay 支付</strong><small>Indonesia</small></span></button>
+      <button className={method === "momo" ? "active" : ""} type="button" onClick={() => setMethod("momo")}><span className="momo-method-mark">M</span><span><strong>MoMo 支付</strong><small>Vietnam</small></span></button>
       <button className={method === "paypal" ? "active" : ""} type="button" onClick={() => setMethod("paypal")}><CreditCard /><span><strong>PayPal 支付</strong><small>Billing Agreement</small></span></button>
       <button className={method === "direct_card" ? "active" : ""} type="button" onClick={() => setMethod("direct_card")}><span className="direct-card-method-mark"><CreditCard /></span><span><strong>直卡协议</strong><small>Card Protocol</small></span></button>
     </nav>
@@ -162,11 +200,11 @@ export default function PaymentManagement() {
         </section>}
 
         {loading ? <div className="gopay-loading"><Loader2 className="animate-spin" />正在加载支付模块...</div> : <>
-          {method === "paypal" ? <PayPalView key={`${paypalConfig.country || ""}-${paypalConfig.buyer_mode || ""}`} jobs={paypalJobs} config={paypalConfig} busy={busy} run={run} refresh={loadPaypal} /> : method === "direct_card" ? <DirectCardPayment /> : <>
+          {method === "momo" ? <MomoPayment /> : method === "paypal" ? <PayPalView key={`${paypalConfig.country || ""}-${paypalConfig.buyer_mode || ""}`} jobs={paypalJobs} config={paypalConfig} busy={busy} run={run} refresh={loadPaypal} /> : method === "direct_card" ? <DirectCardPayment /> : <>
             {view === "overview" && <Overview registerJobs={registerJobs} paymentJobs={paymentJobs} onView={setView} />}
             {view === "register" && <RegisterView jobs={registerJobs} busy={busy} run={run} refresh={loadJobs} onLogs={setLogJob} />}
             {view === "pool" && <PoolView phones={phones} search={poolSearch} setSearch={setPoolSearch} busy={busy} run={run} refresh={loadPhones} />}
-            {view === "accounts" && <AccountsView accounts={accounts} phones={phones} sms={sms} search={accountSearch} setSearch={setAccountSearch} busy={busy} run={run} refresh={loadAccounts} onPin={setPinAccount} onPhoneChange={setPhoneAccount} onRegister={() => setView("register")} />}
+            {view === "accounts" && <AccountsView accounts={accounts} phones={phoneCandidates} sms={sms} search={accountSearch} setSearch={setAccountSearch} busy={busy} run={run} refresh={loadAccounts} onPin={setPinAccount} onPhoneChange={setPhoneAccount} onRegister={() => setView("register")} />}
             {view === "payment" && <PaymentView accounts={accounts} jobs={paymentJobs} filter={paymentFilter} setFilter={setPaymentFilter} selected={selectedPayment} select={setSelectedPaymentId} busy={busy} run={run} refresh={loadJobs} onLogs={setLogJob} />}
             {view === "settings" && <SettingsView sms={sms} busy={busy} run={run} refresh={loadSms} />}
           </>}
@@ -175,7 +213,7 @@ export default function PaymentManagement() {
     </div>
     {logJob && <TaskLogModal job={logJob} onClose={() => setLogJob(null)} />}
     {pinAccount && <PinModal account={pinAccount} busy={busy} run={run} refresh={loadAccounts} onClose={() => setPinAccount(null)} />}
-    {phoneAccount && <PhoneChangeModal account={phoneAccount} phones={phones} sms={sms} busy={busy} run={run} refresh={async () => { await Promise.all([loadAccounts(), loadPhones()]); }} onClose={() => setPhoneAccount(null)} />}
+    {phoneAccount && <PhoneChangeModal account={phoneAccount} phones={phoneCandidates} sms={sms} busy={busy} run={run} refresh={async () => { await Promise.all([loadAccounts(), loadPhones()]); }} onClose={() => setPhoneAccount(null)} />}
   </div>;
 }
 
@@ -368,9 +406,9 @@ function PhoneChangeModal({ account, phones, sms, busy, run, refresh, onClose }:
   });
   const [source, setSource] = useState<"pool" | SmsProvider>(availablePhones.length ? "pool" : (configuredProviders[0] || "smsbower"));
   const [poolPhone, setPoolPhone] = useState(String(availablePhones[0]?.phone || ""));
-  const [provider, setProvider] = useState<SmsProvider>(configuredProviders[0] || "smsbower");
   const [job, setJob] = useState<Row | null>(null);
   const [otp, setOtp] = useState("");
+  const selectedPool = availablePhones.find((row) => phoneKey(row.phone) === phoneKey(poolPhone));
 
   useEffect(() => {
     if (!job?.id || ["success", "failed", "cancelled"].includes(String(job.status))) return undefined;
@@ -385,13 +423,13 @@ function PhoneChangeModal({ account, phones, sms, busy, run, refresh, onClose }:
 
   async function start(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const selectedSource = source === "pool" ? "pool" : source;
+    const selectedSource = source;
     await run("phone-change", async () => {
       const started = await post("/phone-change", {
         phone: account.phone,
         source: selectedSource,
-        provider: selectedSource === "pool" ? "" : provider,
         replacement_phone: selectedSource === "pool" ? poolPhone : "",
+        replacement_sms_url: selectedSource === "pool" ? String(selectedPool?.sms_url || "") : "",
       });
       setJob(started);
     }, "换号任务已创建");
@@ -409,7 +447,7 @@ function PhoneChangeModal({ account, phones, sms, busy, run, refresh, onClose }:
 
   const terminal = job && ["success", "failed", "cancelled"].includes(String(job.status));
   return <Modal title="换号" subtitle={account.phone} onClose={onClose}><div className="gopay-form gopay-modal-body">
-    {!job && <form onSubmit={start}><label><span>号码来源</span><select value={source} onChange={(event) => setSource(event.target.value as "pool" | SmsProvider)}><option value="pool" disabled={!availablePhones.length}>号码池（{availablePhones.length}）</option>{(Object.keys(smsProviderConfig) as SmsProvider[]).map((item) => <option key={item} value={item}>{smsProviderConfig[item].label}{configuredProviders.includes(item) ? " · 已配置" : " · 未配置"}</option>)}</select></label>{source === "pool" ? <label><span>替换号码</span><select value={poolPhone} onChange={(event) => setPoolPhone(event.target.value)} required><option value="">请选择号码</option>{availablePhones.map((row) => <option key={row.phone} value={row.phone}>{row.phone}</option>)}</select></label> : <label><span>系统平台</span><select value={provider} onChange={(event) => setProvider(event.target.value as SmsProvider)}>{(Object.keys(smsProviderConfig) as SmsProvider[]).map((item) => <option key={item} value={item}>{smsProviderConfig[item].label}{configuredProviders.includes(item) ? " · 已配置" : " · 未配置"}</option>)}</select></label>}<div className="gopay-warning"><ShieldCheck />换号成功后才会更新本地账号记录；失败会释放本次占用的号码。</div><div className="gopay-modal-actions"><Button type="button" variant="outline" onClick={onClose}>取消</Button><Button type="submit" disabled={busy !== "" || (source === "pool" && !poolPhone)}><Smartphone className="mr-1 h-4 w-4" />开始换号</Button></div></form>}
+    {!job && <form onSubmit={start}><label><span>号码来源</span><select value={source} onChange={(event) => setSource(event.target.value as "pool" | SmsProvider)}><option value="pool" disabled={!availablePhones.length}>号码池（{availablePhones.length}）</option>{(Object.keys(smsProviderConfig) as SmsProvider[]).map((item) => <option key={item} value={item}>{smsProviderConfig[item].label}{configuredProviders.includes(item) ? " · 已配置" : " · 未配置"}</option>)}</select></label>{source === "pool" && <><label><span>替换号码</span><select value={poolPhone} onChange={(event) => setPoolPhone(event.target.value)} required><option value="">请选择号码</option>{availablePhones.map((row) => <option key={row.phone} value={row.phone}>{row.phone}{row.sms_url ? " · 接口已配置" : " · 未配置接口"}</option>)}</select></label><div className="gopay-field-hint">短信接口：{selectedPool?.sms_url || "未配置，将在下一步手动输入验证码"}</div></>}<div className="gopay-warning"><ShieldCheck />换号成功后才会更新本地账号记录；失败会释放本次占用的号码。</div><div className="gopay-modal-actions"><Button type="button" variant="outline" onClick={onClose}>取消</Button><Button type="submit" disabled={busy !== "" || (source === "pool" && !poolPhone)}><Smartphone className="mr-1 h-4 w-4" />开始换号</Button></div></form>}
     {job && <><div className="gopay-log-summary"><dt>新手机号</dt><dd className="mono">{job.new_phone || "-"}</dd><dt>状态</dt><dd><Status value={job.status} /></dd><dt>进度</dt><dd>{job.message || "等待状态更新"}</dd></div>{job.status === "waiting_otp" && <form className="gopay-otp-box" onSubmit={submitOtp}><KeyRound /><strong>输入换号验证码</strong><p>验证码发送至 {job.new_phone}</p><input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" maxLength={6} placeholder="4 到 6 位数字" required /><Button type="submit" disabled={busy !== "" || !/^\d{4,6}$/.test(otp)}>提交验证码</Button></form>}<ol className="gopay-logs">{(job.logs || []).map((entry: Row, index: number) => <li key={index}><time>{formatTime(entry.at)}</time><span>{entry.message || "-"}</span></li>)}</ol>{terminal && job.status !== "success" && <div className="gopay-warning">{job.message || "换号失败"}</div>}{terminal && job.status !== "success" && <div className="gopay-modal-actions"><Button type="button" onClick={onClose}>关闭</Button></div>}</>}
   </div></Modal>;
 }

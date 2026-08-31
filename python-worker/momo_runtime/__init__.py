@@ -1,0 +1,1 @@
+"""Standalone MoMo payment runtime."""

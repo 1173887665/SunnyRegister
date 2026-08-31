@@ -707,9 +707,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .dark .sr-sticky-leading-columns tbody tr:not(.sr-renewal-progress-row):hover > td:nth-child(2),
 .dark .sr-session-table tbody tr:not(.sr-renewal-progress-row):hover > td:first-child,
 .dark .sr-session-table tbody tr:not(.sr-renewal-progress-row):hover > td:nth-child(2) { background:rgba(255,255,255,.06); }
-.sr-session-table thead th:first-child,
 .sr-session-table thead th:nth-child(2),
-.sr-session-table tbody tr:not(.sr-renewal-progress-row) > td:first-child,
 .sr-session-table tbody tr:not(.sr-renewal-progress-row) > td:nth-child(2) {
   position:static;
   left:auto;
@@ -1738,6 +1736,16 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .sr-concurrency-input { margin-top:4px; width:86px; height:34px; border:1px solid var(--border); border-radius:10px; background:var(--bg-card); padding:0 10px; color:var(--text-main); font-weight:900; outline:none; }
 .sr-concurrency-input:focus { border-color:#2dd4bf; box-shadow:0 0 0 3px rgba(45,212,191,.18); }
 .sr-register-account-list { grid-column:1 / -1; max-height:82px; overflow:auto; border-top:1px solid #e5e7eb; padding-top:8px; color:#334155; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size:12px; line-height:1.7; }
+.sr-proxy-picker { margin-top:16px; display:flex; flex-wrap:wrap; align-items:center; gap:12px; min-height:48px; padding:10px 14px; border:1px solid #e5e7eb; border-radius:12px; background:#fff; color:#64748b; font-size:13px; }
+.sr-proxy-picker b { color:#334155; font-size:13px; }
+.sr-proxy-select { min-width:140px; height:34px; border:1px solid var(--border); border-radius:9px; background:var(--bg-card); padding:0 10px; color:var(--text-main); font-weight:700; outline:none; }
+.sr-proxy-select:focus { border-color:#2dd4bf; box-shadow:0 0 0 3px rgba(45,212,191,.18); }
+.sr-proxy-dropdown { position:relative; min-width:180px; }
+.sr-proxy-trigger { display:flex; width:100%; align-items:center; justify-content:space-between; gap:8px; cursor:pointer; text-align:left; }
+.sr-proxy-menu { position:absolute; z-index:20; top:calc(100% + 6px); left:0; min-width:180px; max-height:220px; overflow:auto; padding:8px; border:1px solid var(--border); border-radius:10px; background:var(--bg-card); box-shadow:0 10px 25px rgba(15,23,42,.16); }
+.sr-proxy-menu label { display:flex; align-items:center; gap:8px; padding:6px 4px; color:var(--text-main); font-size:13px; cursor:pointer; }
+.sr-proxy-menu label:hover { background:rgba(45,212,191,.10); }
+.sr-proxy-clear { width:100%; margin-top:4px; border-top:1px solid var(--border-soft); padding-top:7px; color:var(--text-muted); font-size:12px; text-align:left; }
 .sr-register-actions { margin-top:24px; display:flex; align-items:center; gap:14px; }
 .sr-register-cancel { height:48px; min-width:92px; border:1px solid #e5e7eb; border-radius:12px; padding:0 22px; color:#475569; background:#fff; font-size:16px; transition:all .18s ease; }
 .sr-register-cancel:hover { background:#f8fafc; border-color:#cbd5e1; }
@@ -3517,6 +3525,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .direct-card-view .gopay-table-wrap th { height:43px; padding:0 12px; }
 .direct-card-view .gopay-table-wrap td { height:58px; padding:8px 12px; }
 .gopay-method-mark { display:flex; width:30px; height:30px; flex:0 0 auto; align-items:center; justify-content:center; border-radius:8px; background:#00aa13; color:white; font-size:12px; font-weight:950; }
+.momo-method-mark { display:flex; width:30px; height:30px; flex:0 0 auto; align-items:center; justify-content:center; border-radius:8px; background:#a50064; color:white; font-size:14px; font-weight:950; }
 .gopay-workspace { display:grid; min-width:0; grid-template-columns:180px minmax(0,1fr); overflow:hidden; border:1px solid var(--border); border-radius:8px; background:var(--bg-card); box-shadow:var(--surface-glow); }
 .gopay-workspace.paypal-workspace { grid-template-columns:minmax(0,1fr); }
 .gopay-nav { display:flex; flex-direction:column; gap:4px; border-right:1px solid var(--border); background:color-mix(in srgb,var(--bg-shell) 88%,var(--accent) 12%); padding:12px; }
@@ -3558,6 +3567,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .gopay-form input,.gopay-form select,.gopay-form textarea,.gopay-search input,.gopay-panel-actions select,.gopay-otp-inline input { width:100%; border:1px solid var(--border); border-radius:8px; background:var(--bg-input); color:var(--text-primary); outline:none; }
 .gopay-form input,.gopay-form select { height:39px; padding:0 10px; }
 .gopay-form textarea { min-height:88px; resize:vertical; padding:9px 10px; font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace; }
+.gopay-field-hint { margin-top:-6px; color:var(--text-muted); font-size:11px; line-height:1.45; overflow-wrap:anywhere; }
 .gopay-form input:focus,.gopay-form select:focus,.gopay-form textarea:focus,.gopay-search input:focus,.gopay-otp-inline input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
 .gopay-form .gopay-check { flex-direction:row; align-items:center; gap:9px; border:1px solid var(--border); border-radius:8px; background:var(--bg-input); padding:9px 11px; }
 .gopay-check input { width:16px; height:16px; flex:0 0 auto; accent-color:var(--accent); }
@@ -3594,6 +3604,20 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .gopay-search input { height:37px; padding:0 10px 0 34px; font-size:11px; }
 .gopay-otp-inline { display:flex; align-items:center; gap:5px; }
 .gopay-otp-inline input { width:78px; height:32px; padding:0 8px; font-size:11px; }
+.momo-qr-layout { display:grid; min-width:0; grid-template-columns:minmax(0,1fr) 300px; align-items:start; gap:12px; }
+.momo-qr-preview { position:sticky; top:104px; min-height:320px; }
+.momo-qr-preview > img { display:block; width:240px; max-width:calc(100% - 28px); aspect-ratio:1; object-fit:contain; margin:18px auto; border:1px solid var(--border); border-radius:8px; background:white; padding:8px; }
+.momo-upload input[type="file"] { height:auto; padding:9px 10px; }
+.momo-account-picker { display:flex; min-width:0; flex-direction:column; gap:6px; border:1px solid var(--border); border-radius:8px; background:var(--bg-input); padding:10px 12px; }
+.momo-account-picker legend { padding:0 4px; color:var(--text-secondary); font-size:11px; font-weight:800; }
+.momo-account-picker label { display:flex; min-height:38px; flex-direction:row; align-items:center; gap:9px; border-top:1px solid var(--border-soft); padding:6px 2px; }
+.momo-account-picker label:first-of-type { border-top:0; }
+.momo-account-picker input { width:16px; height:16px; flex:0 0 auto; accent-color:#a50064; }
+.momo-account-picker label span { display:flex; min-width:0; flex-direction:column; gap:2px; }
+.momo-account-picker label strong { color:var(--text-primary); font-size:12px; }
+.momo-account-picker label small,.momo-account-empty { color:var(--text-muted); font-size:10px; }
+.momo-payment .gopay-nav button.active { background:#a50064; }
+.momo-payment .gopay-summary span svg,.momo-payment .gopay-activity svg,.momo-payment .gopay-quick-actions svg { color:#a50064; }
 .gopay-payment-layout { display:grid; min-width:0; grid-template-columns:minmax(0,1fr) 300px; align-items:start; gap:12px; }
 .gopay-payment-main { display:flex; min-width:0; flex-direction:column; gap:12px; }
 .gopay-payment-detail { position:sticky; top:104px; }
@@ -3641,6 +3665,8 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   .gopay-nav button { min-width:max-content; }
   .gopay-payment-layout { grid-template-columns:1fr; }
   .gopay-payment-detail { position:static; }
+  .momo-qr-layout { grid-template-columns:1fr; }
+  .momo-qr-preview { position:static; }
   .gopay-form-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .direct-card-setup { grid-template-columns:1fr; }
 }

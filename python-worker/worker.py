@@ -48,7 +48,17 @@ def _configure_gopay_runtime() -> None:
     os.environ.setdefault("DIRECT_CARD_FINGERPRINT_STORE_PATH", str(gopay_data / "direct_card_fingerprints.json"))
 
 
+def _configure_momo_runtime() -> None:
+    worker_dir = Path(__file__).resolve().parent
+    data_root = Path(os.getenv("SUNNY_DATA_DIR") or ("/app/data" if Path("/app/data").is_dir() else worker_dir.parent / "data"))
+    momo_data = data_root / "momo"
+    momo_data.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("OPAI_MOMO_STATE_FILE", str(momo_data / "state.json"))
+    os.environ.setdefault("OPAI_MOMO_PHONE_POOL_FILE", str(momo_data / "phone_pool.json"))
+
+
 _configure_gopay_runtime()
+_configure_momo_runtime()
 # A browser driver can occasionally remain busy after its browser disconnects. The
 # worker already runs each task in a dedicated process; reclaim an inactive child
 # after 15 minutes so its browser, IMAP sockets and memory cannot leak forever.
@@ -62,6 +72,7 @@ _state_lock = threading.Lock()
 _running: set[str] = set()
 _processes: dict[str, subprocess.Popen] = {}
 _gopay_server = None
+_momo_server = None
 
 
 def _check_token(auth: str | None) -> None:
@@ -76,10 +87,12 @@ def _check_token(auth: str | None) -> None:
 def on_startup() -> None:
     # Do not import or validate Playwright/Camoufox here. Browser automation is
     # lazy-loaded by the isolated task subprocess only when a task is accepted.
-    global _gopay_server
+    global _gopay_server, _momo_server
     from gopay_runtime.gopay.server import start_embedded
+    from momo_runtime.momo.server import start_embedded as start_momo_embedded
 
     _gopay_server = start_embedded()
+    _momo_server = start_momo_embedded()
     print("[worker] SunnyRegister automation worker ready (browser lazy loading enabled, payment runtimes enabled)", flush=True)
 
 
@@ -108,6 +121,35 @@ async def gopay_proxy(path: str, request: Request, authorization: str | None = H
             return Response(content=exc.read(), status_code=exc.code, media_type="application/json")
         except OSError as exc:
             raise HTTPException(status_code=502, detail=f"GoPay service unavailable: {exc}") from exc
+
+    return await run_in_threadpool(send)
+
+
+@app.api_route("/momo/{path:path}", methods=["GET", "POST"])
+async def momo_proxy(path: str, request: Request, authorization: str | None = Header(default=None)) -> Response:
+    _check_token(authorization)
+    if _momo_server is None:
+        raise HTTPException(status_code=503, detail="MoMo service is not ready")
+    if "\\" in path or any(segment in {".", ".."} for segment in path.split("/")):
+        raise HTTPException(status_code=404, detail="Not found")
+    body = await request.body()
+    query = f"?{request.url.query}" if request.url.query else ""
+    target = f"http://127.0.0.1:{_momo_server.server_port}/api/{path}{query}"
+    upstream = urllib.request.Request(
+        target,
+        data=body if request.method == "POST" else None,
+        method=request.method,
+        headers={"Content-Type": request.headers.get("content-type", "application/json")},
+    )
+
+    def send() -> Response:
+        try:
+            with urllib.request.urlopen(upstream, timeout=300) as result:
+                return Response(content=result.read(), status_code=result.status, media_type="application/json")
+        except urllib.error.HTTPError as exc:
+            return Response(content=exc.read(), status_code=exc.code, media_type="application/json")
+        except OSError as exc:
+            raise HTTPException(status_code=502, detail=f"MoMo service unavailable: {exc}") from exc
 
     return await run_in_threadpool(send)
 
@@ -314,11 +356,15 @@ def cancel_checkout_job(job_id: str, authorization: str | None = Header(default=
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
-    global _gopay_server
+    global _gopay_server, _momo_server
     if _gopay_server is not None:
         _gopay_server.shutdown()
         _gopay_server.server_close()
         _gopay_server = None
+    if _momo_server is not None:
+        _momo_server.shutdown()
+        _momo_server.server_close()
+        _momo_server = None
     with _state_lock:
         processes = list(_processes.values())
         _processes.clear()
