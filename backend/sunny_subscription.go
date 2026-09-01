@@ -2,8 +2,12 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"html"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -13,6 +17,10 @@ import (
 )
 
 const sunnySubscriptionTaskType = "sunny_account_subscription_check"
+
+const sunnySubscriptionPlanEndpoint = "https://chatgpt.com/backend-api/subscriptions"
+
+var sunnySubscriptionPlanURL = sunnySubscriptionPlanEndpoint
 
 var sunnyDetectSubscriptionMail = detectSunnySubscriptionMail
 
@@ -378,9 +386,102 @@ func (s *Server) sunnySubscriptionProbeAT(candidate sunnySubscriptionCandidate, 
 		outcome.Error = probeErr.Error()
 	}
 	if status == "valid" {
+		// JWT claims are not present on every valid AT. Read the live
+		// subscription resource first, then retain the JWT claim as a fallback.
 		outcome.PlanType = sunnySubscriptionPlanTypeFromAccessToken(candidate.AccessToken)
+		if livePlan, liveErr := sunnySubscriptionPlanFromAPI(candidate.AccessToken, proxyURL); liveErr == nil && livePlan != "" {
+			outcome.PlanType = livePlan
+		} else if outcome.PlanType == "" && liveErr != nil {
+			// Keep a valid AT from being downgraded to Free when the live
+			// subscription endpoint is unavailable or returns an unknown shape.
+			outcome.Error = fmt.Sprintf("套餐实时接口检测失败：%v", liveErr)
+			outcome.Status = "plan_unknown"
+		}
 	}
 	return outcome
+}
+
+func sunnySubscriptionPlanFromAPI(accessToken, proxyURL string) (string, error) {
+	if strings.TrimSpace(accessToken) == "" {
+		return "", fmt.Errorf("账户没有可用的 Access Token")
+	}
+	endpoint := strings.TrimSpace(sunnySubscriptionPlanURL)
+	if endpoint == "" {
+		return "", fmt.Errorf("订阅接口地址为空")
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("订阅接口地址无效: %w", err)
+	}
+	if accountID := sunnySubscriptionAccountIDFromAccessToken(accessToken); accountID != "" && parsed.Query().Get("account_id") == "" {
+		query := parsed.Query()
+		query.Set("account_id", accountID)
+		parsed.RawQuery = query.Encode()
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if strings.TrimSpace(proxyURL) != "" {
+		proxy, parseErr := url.Parse(proxyURL)
+		if parseErr != nil {
+			return "", fmt.Errorf("订阅检测代理配置无效: %w", parseErr)
+		}
+		transport.Proxy = http.ProxyURL(proxy)
+	}
+	client := &http.Client{Timeout: 12 * time.Second, Transport: transport}
+	req, err := http.NewRequest(http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
+	req.Header.Set("Origin", "https://chatgpt.com")
+	req.Header.Set("Referer", "https://chatgpt.com/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/134.0.0.0 Safari/537.36")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("订阅接口请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return "", fmt.Errorf("订阅接口响应读取失败: %w", err)
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", fmt.Errorf("订阅接口返回 AT 失效")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("订阅接口返回 HTTP %d", resp.StatusCode)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", fmt.Errorf("订阅接口返回非 JSON 内容")
+	}
+	if plan := sunnySubscriptionPlanFromPayload(payload); plan != "" {
+		return plan, nil
+	}
+	return "", fmt.Errorf("订阅接口响应缺少 plan_type")
+}
+
+func sunnySubscriptionPlanFromPayload(payload map[string]any) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	if plan := normalizeSunnyPlanType(firstText(payload["plan_type"], payload["planType"], payload["plan"], payload["account_type"])); plan != "" {
+		return plan
+	}
+	for _, key := range []string{"data", "subscription", "account"} {
+		if nested, ok := payload[key].(map[string]any); ok {
+			if plan := sunnySubscriptionPlanFromPayload(nested); plan != "" {
+				return plan
+			}
+		}
+	}
+	return ""
+}
+
+func sunnySubscriptionAccountIDFromAccessToken(accessToken string) string {
+	claims := decodeJWTPayload(strings.TrimSpace(accessToken))
+	auth, _ := claims["https://api.openai.com/auth"].(map[string]any)
+	return strings.TrimSpace(firstText(auth["chatgpt_account_id"], claims["chatgpt_account_id"], auth["account_id"], claims["account_id"]))
 }
 
 func (s *Server) sunnySubscriptionRenewalTimeout() time.Duration {

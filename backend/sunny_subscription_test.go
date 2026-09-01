@@ -23,6 +23,36 @@ func TestSunnySubscriptionPlanTypeFromAccessToken(t *testing.T) {
 	}
 }
 
+func TestSunnySubscriptionPlanFromPayloadAcceptsNestedPlan(t *testing.T) {
+	if got := sunnySubscriptionPlanFromPayload(map[string]any{
+		"data": map[string]any{"plan_type": "chatgpt_plus"},
+	}); got != "plus" {
+		t.Fatalf("nested plan type=%q, want plus", got)
+	}
+}
+
+func TestSunnySubscriptionPlanFromAPIUsesAccountIDAndBearerToken(t *testing.T) {
+	encode := func(value string) string { return base64.RawURLEncoding.EncodeToString([]byte(value)) }
+	token := encode(`{"alg":"none"}`) + "." + encode(`{"https://api.openai.com/auth":{"chatgpt_account_id":"acct-live-1"}}`) + ".signature"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("account_id") != "acct-live-1" {
+			t.Fatalf("account_id=%q", r.URL.Query().Get("account_id"))
+		}
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Fatalf("authorization header was not forwarded")
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"plan_type": "plus"})
+	}))
+	defer server.Close()
+	previous := sunnySubscriptionPlanURL
+	sunnySubscriptionPlanURL = server.URL
+	t.Cleanup(func() { sunnySubscriptionPlanURL = previous })
+	plan, err := sunnySubscriptionPlanFromAPI(token, "")
+	if err != nil || plan != "plus" {
+		t.Fatalf("plan=%q err=%v", plan, err)
+	}
+}
+
 func TestSunnySubscriptionMailMarkers(t *testing.T) {
 	tests := []struct {
 		name    string
