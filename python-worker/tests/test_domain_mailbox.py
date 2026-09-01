@@ -125,6 +125,21 @@ def test_domain_reader_prefers_body_code_and_parses_cloudmail_utc(monkeypatch):
     assert current["timestamp"] == datetime(2026, 8, 24, 7, 34, 15, tzinfo=timezone.utc).timestamp()
 
 
+def test_domain_reader_parses_json_string_data_and_combines_body_fields(monkeypatch):
+    reader = DomainMailReader(
+        account_from_row({"email": "user@example.com", "mailbox_type": "domain", "access_key": _credential()}),
+        None,
+    )
+    monkeypatch.setattr(
+        reader,
+        "_request",
+        lambda: {"data": json.dumps({"items": [{"id": "m1", "text": "Your code", "content": "<b>654321</b>"}]})},
+    )
+    current = reader._latest()
+    assert current["id"] == "m1"
+    assert current["code"] == "654321"
+
+
 def test_domain_reader_filters_old_message(monkeypatch):
     reader = DomainMailReader(
         account_from_row({"email": "user@example.com", "mailbox_type": "domain", "access_key": _credential()}),
@@ -278,6 +293,19 @@ def test_rebind_begin_retries_transient_network_error():
     assert rebind_module._begin_with_retry(Client(), "new@example.com", logs.append) == {"success": True}
     assert calls == ["new@example.com", "new@example.com"]
     assert any("瞬时网络错误" in message for message in logs)
+
+
+def test_rebind_begin_rejects_http_success_with_failed_payload():
+    class Client:
+        def begin(self, email):
+            return {"success": False, "message": "request rejected"}
+
+    try:
+        rebind_module._begin_with_retry(Client(), "new@example.com", lambda _: None)
+    except rebind_module.RebindError as exc:
+        assert "request rejected" in str(exc)
+    else:
+        raise AssertionError("success=false response must fail before OTP polling")
 
 
 def test_rebound_account_login_retries_transient_certificate_error(monkeypatch):

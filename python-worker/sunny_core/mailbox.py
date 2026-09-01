@@ -1457,6 +1457,15 @@ class DomainMailReader:
                     values.extend(DomainMailReader._nested(payload[key]))
         elif isinstance(payload, list):
             values.extend(payload)
+        elif isinstance(payload, str):
+            # Some CloudMail-compatible gateways proxy the JSON body as a
+            # string inside `data`. Decode it before giving up on the row.
+            try:
+                decoded = json.loads(payload)
+            except (TypeError, ValueError):
+                decoded = None
+            if decoded is not None:
+                values.extend(DomainMailReader._nested(decoded))
         return values
 
     @staticmethod
@@ -1533,7 +1542,11 @@ class DomainMailReader:
         for order, item in enumerate(self._nested(self._request())):
             if not isinstance(item, dict):
                 continue
-            body_source = str(item.get("text") or item.get("body") or item.get("content") or item.get("html") or item.get("bodyPreview") or item.get("subject") or "")
+            body_source = "\n".join(
+                str(item.get(key) or "").strip()
+                for key in ("text", "body", "content", "html", "bodyPreview", "body_preview", "subject")
+                if str(item.get(key) or "").strip()
+            )
             body = _html_to_text(body_source)
             code = ""
             match = re.search(r"(?<!\d)(\d{6})(?!\d)", body)

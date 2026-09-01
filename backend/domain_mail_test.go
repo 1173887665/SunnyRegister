@@ -357,6 +357,38 @@ func TestDomainMailResponsesKeepJSONStrictAndReportHTTPStatus(t *testing.T) {
 	})
 }
 
+func TestDomainMailListRetriesWithoutOptionalFiltersWhenEmpty(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if _, ok := body["type"]; ok {
+			writeJSON(w, http.StatusOK, map[string]any{"code": 200, "message": "success", "data": []any{}})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"code": 200, "message": "success", "data": []any{
+			map[string]any{"emailId": 7, "toEmail": "user@example.com", "text": "code 654321"},
+		}})
+	}))
+	defer server.Close()
+	client := &domainMailClient{baseURL: server.URL, token: "token-1", client: server.Client()}
+	messages, err := client.listMessages(context.Background(), "user@example.com")
+	if err != nil || len(messages) != 1 || text(messages[0]["emailId"]) != "7" {
+		t.Fatalf("expected compatibility query to return one message, requests=%d messages=%#v err=%v", requests, messages, err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected strict query plus one compatibility retry, got %d requests", requests)
+	}
+}
+
+func TestDomainMailMessageListDecodesStringEnvelope(t *testing.T) {
+	got := domainMailMessageList(`{"data":[{"emailId":9,"text":"code 123456"}]}`)
+	if len(got) != 1 || text(got[0]["emailId"]) != "9" {
+		t.Fatalf("string JSON envelope was not decoded: %#v", got)
+	}
+}
+
 func TestDomainMailboxGenerateCreatesMailboxRecord(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

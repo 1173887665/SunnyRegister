@@ -50,7 +50,20 @@ def _is_retryable_rebind_error(error: Exception) -> bool:
 def _begin_with_retry(client: "ChangeEmailClient", email: str, log: Callable[[str], None], *, attempts: int = 2) -> dict[str, Any]:
     for attempt in range(1, max(1, attempts) + 1):
         try:
-            return client.begin(email)
+            result = client.begin(email)
+            if isinstance(result, dict):
+                success = result.get("success")
+                if success is False or str(success).strip().lower() in {"false", "0", "no"}:
+                    detail = next(
+                        (
+                            str(result.get(key) or "").strip()
+                            for key in ("message", "error", "detail", "code")
+                            if str(result.get(key) or "").strip()
+                        ),
+                        "上游未接受请求",
+                    )
+                    raise RebindError(f"换绑验证码请求未被接受：{detail[:220]}")
+            return result
         except RebindError as exc:
             if attempt >= attempts or not _is_retryable_rebind_error(exc):
                 raise

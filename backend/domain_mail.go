@@ -247,18 +247,35 @@ func (c *domainMailClient) deleteUser(ctx context.Context, email string) error {
 }
 
 func (c *domainMailClient) listMessages(ctx context.Context, email string) ([]map[string]any, error) {
-	payload, err := c.request(ctx, http.MethodPost, "/api/public/emailList", map[string]any{
-		"toEmail": email, "timeSort": "desc", "type": 0, "isDel": 0, "num": 1, "size": 20,
-	}, false)
-	if err != nil {
-		return nil, err
+	// CloudMail versions in the wild differ in whether the public endpoint
+	// applies the optional type/isDel filters. Keep the strict query first,
+	// then retry once without those optional fields when it returns no rows.
+	queries := []map[string]any{
+		{"toEmail": email, "timeSort": "desc", "type": 0, "isDel": 0, "num": 1, "size": 20},
+		{"toEmail": email, "timeSort": "desc", "num": 1, "size": 20},
 	}
-	return domainMailMessageList(payload), nil
+	for _, query := range queries {
+		payload, err := c.request(ctx, http.MethodPost, "/api/public/emailList", query, false)
+		if err != nil {
+			return nil, err
+		}
+		messages := domainMailMessageList(payload)
+		if len(messages) > 0 {
+			return messages, nil
+		}
+	}
+	return []map[string]any{}, nil
 }
 
 func domainMailMessageList(payload any) []map[string]any {
 	if list, ok := payload.([]any); ok {
 		return domainMailMapList(list)
+	}
+	if raw, ok := payload.(string); ok {
+		var decoded any
+		if json.Unmarshal([]byte(raw), &decoded) == nil {
+			return domainMailMessageList(decoded)
+		}
 	}
 	if obj, ok := payload.(map[string]any); ok {
 		for _, key := range []string{"data", "items", "messages", "result", "list", "rows", "records"} {
