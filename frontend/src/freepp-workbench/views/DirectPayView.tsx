@@ -128,7 +128,11 @@ export function DirectPayView() {
   const [cardSelected, setCardSelected] = useState<Set<number>>(new Set());
   const allCardsSelected = cards.length > 0 && cards.every((c) => cardSelected.has(c.id));
   const toggleCardSelect = (id: number) =>
-    setCardSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    setCardSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
   const toggleAllCards = () =>
     setCardSelected(allCardsSelected ? new Set() : new Set(cards.map((c) => c.id)));
   const handleBulkDeleteCards = async () => {

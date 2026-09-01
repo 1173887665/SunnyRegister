@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { STAGE_ORDER, STAGE_SHORT, STAGE_CN, OAICS_STAGE_ORDER, OAICS_STAGE_SHORT, OAICS_STAGE_CN, BRANCH_CN } from "../../types";
-import type { StageName, BranchName, StageCfg, BranchCfg, OaicsStageName, OaicsBranchCfg } from "../../types";
+import type { StageName, BranchName, StageCfg, BranchCfg, OaicsStageName } from "../../types";
 
 /* ==========================================================================
    提链链路页共享组件: 国家下拉单选(auto+搜索) / 分支开关 / 段配置行 / 七段面板
@@ -9,7 +9,7 @@ import type { StageName, BranchName, StageCfg, BranchCfg, OaicsStageName, OaicsB
 
 export const flag = (cc: string): string => {
   if (!cc || cc.length !== 2) return "";
-  const A = 0x1f1e6, Z = 0x1f1ff;
+  const A = 0x1f1e6;
   const c = cc.toUpperCase().charCodeAt(0) - 65;
   const c2 = cc.toUpperCase().charCodeAt(1) - 65;
   if (c < 0 || c > 25 || c2 < 0 || c2 > 25) return "";
@@ -373,26 +373,19 @@ export function StageSettingsPanel({
   branchName,
   branch,
   countries,
-  blocked,
   onSaveStage,
   onSaveFlags,
-  onSaveOaicsStage,
-  onSaveOaicsFlags,
   savingStage,
   savingFlags,
 }: {
   branchName: BranchName;
   branch: BranchCfg;
   countries: { code: string; capital?: string }[];
-  blocked?: string[];
   onSaveStage: (stage: StageName, patch: Partial<StageCfg>) => void;
   onSaveFlags: (patch: Partial<BranchCfg>) => void;
-  onSaveOaicsStage?: (stage: OaicsStageName, patch: Partial<StageCfg>) => void;
-  onSaveOaicsFlags?: (patch: Partial<OaicsBranchCfg>) => void;
   savingStage: string;
   savingFlags: boolean;
 }) {
-  const stages = branch.stages || {};
   const hasOaics = !!branch.oaics;
   const [tab, setTab] = useState<"cs" | "oaics">("cs");
   const chanLabel: Record<string, string> = {
@@ -446,13 +439,8 @@ export function StageSettingsPanel({
           />
         ) : (
           <OaicsStages
-            branchName={branchName}
-            oaics={branch.oaics!}
             csBranch={branch}
             countries={countries}
-            onSaveOaicsStage={onSaveOaicsStage || (() => {})}
-            onSaveOaicsFlags={onSaveOaicsFlags || (() => {})}
-            savingFlags={savingFlags}
           />
         )}
       </div>
@@ -473,22 +461,12 @@ export function StageSettingsPanel({
 }
 
 function OaicsStages({
-  branchName,
-  oaics,
   csBranch,
   countries,
-  onSaveOaicsStage,
-  onSaveOaicsFlags,
-  savingFlags,
 }: {
-  branchName: BranchName;
-  oaics: OaicsBranchCfg;
   /** 七段配置 (只读映射数据源: oaics 五段跟随七段) */
   csBranch: BranchCfg;
   countries: { code: string; capital?: string }[];
-  onSaveOaicsStage: (stage: OaicsStageName, patch: Partial<StageCfg>) => void;
-  onSaveOaicsFlags: (patch: Partial<OaicsBranchCfg>) => void;
-  savingFlags: boolean;
 }) {
   /* 2026-08-13: oaics 子配置已废弃只读 —— 五段出口国家/账单国/币种跟随七段
      (后端 pick_oaics_countries 直接映射, 本页仅展示, 控件全部禁用) */

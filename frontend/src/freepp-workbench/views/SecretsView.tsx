@@ -245,13 +245,6 @@ export function SecretsView() {
   };
   const readRebindFile = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setRebindImportText(String(reader.result || "")); reader.readAsText(file); e.target.value = ""; };
 
-  const openMailboxManager = async () => {
-    setMailboxOpen(true);
-    setMailboxMessage("");
-    setSelectedMailboxIds(new Set());
-    await loadMailboxes();
-  };
-
   const importMailboxes = async () => {
     if (!mailboxImportText.trim()) return;
     setMailboxBusy(true);
@@ -806,32 +799,6 @@ function SecretSelectRow({ label, value, onChange, options }: {
   );
 }
 
-// QG 代理池凭据行 (host/port/auth_key/auth_pwd)
-function PoolRow({ label, pool, onChange }: {
-  label: string; pool?: ProxyPool; onChange: (p: ProxyPool) => void;
-}) {
-  const p = pool || { host: "", port: 0, auth_key: "", auth_pwd: "" };
-  const upd = (k: keyof ProxyPool, v: string | number) => onChange({ ...p, [k]: v });
-  return (
-    <>
-      <div className="setting-row">
-        <span className="setting-label">{label} host</span>
-        <div className="setting-control">
-          <input className="input" value={p.host} onChange={(e) => upd("host", e.target.value)} placeholder="proxy.qg.example.com" style={{ width: 200 }} />
-          <input className="input" type="number" value={p.port || ""} onChange={(e) => upd("port", +e.target.value)} placeholder="端口" style={{ width: 80 }} />
-        </div>
-      </div>
-      <div className="setting-row">
-        <span className="setting-label">{label} 凭据</span>
-        <div className="setting-control">
-          <input className="input" value={p.auth_key} onChange={(e) => upd("auth_key", e.target.value)} placeholder="auth_key" style={{ width: 180 }} />
-          <input className="input" type="password" value={p.auth_pwd} onChange={(e) => upd("auth_pwd", e.target.value)} placeholder="auth_pwd" style={{ width: 180 }} />
-        </div>
-      </div>
-    </>
-  );
-}
-
 // config.yaml A 层文本行 (通用)
 function CfgTextRow({ label, section, field, value, onCfg, scheduleSave, placeholder }: {
   label: string; section: ConfigSection; field: string; value: string; onCfg: React.Dispatch<React.SetStateAction<ConfigScalars | null>>; scheduleSave: (s: ConfigSection, f: Record<string, unknown>) => void; placeholder?: string;
@@ -988,7 +955,7 @@ function ResidentialProxyPoolCard({ pool, title, hint }: { pool: "api" | "mixed"
                 <div style={{ maxHeight: 360, overflowY: "auto", borderTop: "1px solid var(--border)" }}>
                   {!items.length ? <div className="muted" style={{ padding: "24px 8px", textAlign: "center" }}>暂无代理记录</div> : items.map((item) => (
                     <label key={item.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 4px", borderBottom: "1px solid var(--border)", cursor: "pointer" }}>
-                      <input type="checkbox" checked={selected.has(item.id)} onChange={(e) => setSelected((prev) => { const next = new Set(prev); e.target.checked ? next.add(item.id) : next.delete(item.id); return next; })} style={{ marginTop: 3 }} />
+                      <input type="checkbox" checked={selected.has(item.id)} onChange={(e) => setSelected((prev) => { const next = new Set(prev); if (e.target.checked) next.add(item.id); else next.delete(item.id); return next; })} style={{ marginTop: 3 }} />
                       <span style={{ minWidth: 0, flex: 1, overflowWrap: "anywhere", fontSize: 12.5 }}>{item.url}</span>
                       <span className={`badge ${item.country ? "badge-info" : "badge-muted"}`} style={{ flex: "0 0 auto" }}>{item.country || "未标记"}</span>
                     </label>

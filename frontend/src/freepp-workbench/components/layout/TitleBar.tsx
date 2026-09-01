@@ -24,7 +24,6 @@ export function TitleBar() {
   const wsStatus = useStore((s) => s.wsStatus);
   const batchRunning = useStore((s) => s.batchRunning);
   const chainStates = useStore((s) => s.chainStates);
-  const tokens = useStore((s) => s.tokens);
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
   const traffic = useStore((s) => s.traffic);

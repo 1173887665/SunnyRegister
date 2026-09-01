@@ -204,7 +204,7 @@ export default function PaymentManagement() {
             {view === "overview" && <Overview registerJobs={registerJobs} paymentJobs={paymentJobs} onView={setView} />}
             {view === "register" && <RegisterView jobs={registerJobs} busy={busy} run={run} refresh={loadJobs} onLogs={setLogJob} />}
             {view === "pool" && <PoolView phones={phones} search={poolSearch} setSearch={setPoolSearch} busy={busy} run={run} refresh={loadPhones} />}
-            {view === "accounts" && <AccountsView accounts={accounts} phones={phoneCandidates} sms={sms} search={accountSearch} setSearch={setAccountSearch} busy={busy} run={run} refresh={loadAccounts} onPin={setPinAccount} onPhoneChange={setPhoneAccount} onRegister={() => setView("register")} />}
+            {view === "accounts" && <AccountsView accounts={accounts} search={accountSearch} setSearch={setAccountSearch} busy={busy} run={run} refresh={loadAccounts} onPin={setPinAccount} onPhoneChange={setPhoneAccount} onRegister={() => setView("register")} />}
             {view === "payment" && <PaymentView accounts={accounts} jobs={paymentJobs} filter={paymentFilter} setFilter={setPaymentFilter} selected={selectedPayment} select={setSelectedPaymentId} busy={busy} run={run} refresh={loadJobs} onLogs={setLogJob} />}
             {view === "settings" && <SettingsView sms={sms} busy={busy} run={run} refresh={loadSms} />}
           </>}
@@ -331,7 +331,7 @@ function pinText(account: Row) {
   return `${label} · ${account.pin_saved ? "本机已保存" : "本机未保存"}`;
 }
 
-function AccountsView({ accounts, phones, sms, search, setSearch, busy, run, refresh, onPin, onPhoneChange, onRegister }: { accounts: Row[]; phones: Row[]; sms: Row; search: string; setSearch: (value: string) => void; busy: string; run: RunAction; refresh: () => Promise<void>; onPin: (row: Row) => void; onPhoneChange: (row: Row) => void; onRegister: () => void }) {
+function AccountsView({ accounts, search, setSearch, busy, run, refresh, onPin, onPhoneChange, onRegister }: { accounts: Row[]; search: string; setSearch: (value: string) => void; busy: string; run: RunAction; refresh: () => Promise<void>; onPin: (row: Row) => void; onPhoneChange: (row: Row) => void; onRegister: () => void }) {
   const needle = search.trim().toLowerCase();
   const rows = accounts.filter((row) => `${row.phone || ""} ${row.customer_id || ""}`.toLowerCase().includes(needle));
   return <div className="gopay-view"><div className="gopay-section-title"><div><h2>GoPay 账号</h2><p>余额、PIN、登录与短信激活状态</p></div><Button size="sm" variant="destructive" disabled={!accounts.length || busy !== ""} onClick={() => window.confirm("确定删除全部 GoPay 账号数据吗？") && void run("accounts-clear", () => post("/accounts/delete-all"), "账号数据已清空", refresh)}><Trash2 className="mr-1 h-3.5 w-3.5" />删除全部</Button></div>

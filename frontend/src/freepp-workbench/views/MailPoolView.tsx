@@ -136,7 +136,11 @@ export function MailPoolView() {
     ? mboxes
     : mboxes.filter((m) => m.provider === providerFilter);
   const toggleSelect = (id: string) =>
-    setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
 
   async function bulkSetEnabled(enabled: boolean) {
     const ids = Array.from(selected);

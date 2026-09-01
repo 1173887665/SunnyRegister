@@ -34,18 +34,6 @@ function channelHint(channels: EmailChannel[], c: string): string {
   return "自定义渠道";
 }
 
-const TYPE_CN: Record<string, string> = {
-  start: "开始",
-  log: "日志",
-  progress: "进度",
-  complete: "完成",
-  error: "错误",
-  op_start: "操作开始",
-  op_progress: "操作进度",
-  op_complete: "操作完成",
-  op_error: "操作错误",
-};
-
 const OPERATION_CN: Record<string, string> = {
   account_import: "账号导入",
   account_export: "账号格式导出",
@@ -291,7 +279,6 @@ export function RegisterView() {
   const [busy, setBusy] = useState(false);
 
   const [events, setEvents] = useState<RegEvent[]>([]);
-  const [since, setSince] = useState(0);
   const [accounts, setAccounts] = useState<RegAccount[]>([]);
   const [accountPage, setAccountPage] = useState(1);
   const [accountPageSize, setAccountPageSize] = useState(50);
@@ -330,8 +317,6 @@ export function RegisterView() {
   const [probingCommerce, setProbingCommerce] = useState(false);
   const [accountActionMenu, setAccountActionMenu] = useState<RegAccount | null>(null);
   const [rowRunningAction, setRowRunningAction] = useState<{ id: number; label: string } | null>(null);
-  const [logLevel, setLogLevel] = useState("all");
-  const logRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(true);
   const sinceRef = useRef(0);
   const pollBusyRef = useRef(false);
@@ -462,7 +447,6 @@ export function RegisterView() {
         // long-running page aligned after the server trims its ring buffer.
         const next = Math.max(cursor, Number(r.last_seq) || 0);
         sinceRef.current = next;
-        setSince(next);
       }
     } catch { /* ignore */ }
     finally {
@@ -941,21 +925,6 @@ export function RegisterView() {
   };
 
   const successRate = stats && stats.total > 0 ? ((stats.active / stats.total) * 100).toFixed(0) : "—";
-  const visibleEvents = events.filter((ev) => {
-    if (logLevel === "all") return true;
-    const message = eventMessage(ev);
-    if (logLevel === "err") {
-      return ev.type === "error" || ev.type === "op_error" ||
-        (ev.type === "op_progress" && ev.ok === false) || /(失败|错误|error|fail|✗)/i.test(message);
-    }
-    if (logLevel === "ok") {
-      return ev.type === "complete" || ev.type === "op_complete" ||
-        (ev.type === "progress" && ev.ok === true) ||
-        (ev.type === "op_progress" && ev.ok === true) || /(成功|✓|OK|ok=)/i.test(message);
-    }
-    return true;
-  });
-
   const registrationTotal = Math.max(0, Number(progress?.total) || 0);
   const registrationDone = Math.min(registrationTotal, Math.max(0, Number(progress?.index) || 0));
   const registrationPercent = registrationTotal ? Math.round((registrationDone / registrationTotal) * 100) : 0;

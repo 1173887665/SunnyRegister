@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { StageName, StageCfg, BranchCfg, OaicsStageName, OaicsBranchCfg } from "../types";
+import type { StageName, StageCfg, BranchCfg } from "../types";
 import { StageSettingsPanel } from "../components/chain/StageSettings";
 
 /* ==========================================================================
@@ -83,49 +83,6 @@ export function PayPalExtractView() {
     }
   };
 
-  const handleSaveOaicsStage = async (stage: OaicsStageName, patch: Partial<StageCfg>) => {
-    setSavingStage(stage);
-    try {
-      await api("/api/config/branch", "POST", {
-        branch: "paypal",
-        oaics: {
-          billing_country: branch?.oaics?.billing_country,
-          attempts: branch?.oaics?.attempts,
-          stages: { [stage]: patch },
-        },
-      });
-      setBranch((prev) => {
-        if (!prev?.oaics) return prev;
-        return {
-          ...prev,
-          oaics: {
-            ...prev.oaics,
-            stages: { ...prev.oaics.stages, [stage]: { ...(prev.oaics.stages[stage] as StageCfg), ...patch } as StageCfg },
-          },
-        };
-      });
-    } catch {
-      // 静默
-    } finally {
-      setSavingStage("");
-    }
-  };
-
-  const handleSaveOaicsFlags = async (patch: Partial<OaicsBranchCfg>) => {
-    setSavingFlags(true);
-    try {
-      await api("/api/config/branch", "POST", {
-        branch: "paypal",
-        oaics: { ...(branch?.oaics || {}), ...patch } as any,
-      });
-      setBranch((prev) => (prev ? { ...prev, oaics: { ...(prev.oaics || ({} as OaicsBranchCfg)), ...patch } } : prev));
-    } catch {
-      // 静默
-    } finally {
-      setSavingFlags(false);
-    }
-  };
-
   return (
     <div className="page">
       <div className="page-head">
@@ -149,8 +106,6 @@ export function PayPalExtractView() {
           countries={countryOptions}
           onSaveStage={handleSaveStage}
           onSaveFlags={handleSaveFlags}
-          onSaveOaicsStage={handleSaveOaicsStage}
-          onSaveOaicsFlags={handleSaveOaicsFlags}
           savingStage={savingStage}
           savingFlags={savingFlags}
         />
@@ -175,7 +130,7 @@ export function PayPalExtractView() {
    Mock 分支 (后端离线时用于渲染七段面板)
    ========================================================================== */
 function makeMockBranch(): BranchCfg {
-  const mkStages = (cc: string[]): Partial<Record<StageName, StageCfg>> => ({
+  const mkStages = (): Partial<Record<StageName, StageCfg>> => ({
     checkout: { countries: ["auto"], timeout: 15, retry: 3 },
     init: { countries: ["auto"], timeout: 10, retry: 3 },
     update: { countries: ["US"], timeout: 10, retry: 3 },
@@ -199,7 +154,7 @@ function makeMockBranch(): BranchCfg {
     follow_checkout: false,
     billing_country: "auto",
     attempts: 8,
-    stages: mkStages([]),
+    stages: mkStages(),
     oaics: {
       label: "OAICS 五段",
       billing_country: "auto",

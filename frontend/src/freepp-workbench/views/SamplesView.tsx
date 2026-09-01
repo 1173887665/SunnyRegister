@@ -78,7 +78,11 @@ export function SamplesView() {
   const [deleting, setDeleting] = useState(false);
   const allSelected = list.length > 0 && list.every((s) => s.id != null && selected.has(s.id!));
   const toggleSelect = (id: number) =>
-    setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
   const toggleSelectAll = () =>
     setSelected(allSelected ? new Set() : new Set(list.map((s) => s.id!).filter((id) => id != null)));
 

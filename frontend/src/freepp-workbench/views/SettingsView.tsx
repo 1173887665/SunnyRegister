@@ -93,7 +93,7 @@ const maskKey = (k?: string): string => {
 
 const flag = (cc: string): string => {
   if (!cc || cc.length !== 2) return "";
-  const A = 0x1f1e6, Z = 0x1f1ff;
+  const A = 0x1f1e6;
   const c = cc.toUpperCase().charCodeAt(0) - 65;
   const c2 = cc.toUpperCase().charCodeAt(1) - 65;
   if (c < 0 || c > 25 || c2 < 0 || c2 > 25) return "";

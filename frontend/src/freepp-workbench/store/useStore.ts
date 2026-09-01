@@ -4,7 +4,7 @@ import type {
   InventoryRecord, LogEntry, ViewName, WSEvent, StageName, StageData, BranchName,
   BAFeedItem, BABaSnap, BAAuthRecord, Traffic, WorkspaceProject,
 } from "../types";
-import { STAGE_ORDER, baStepCn } from "../types";
+import { baStepCn } from "../types";
 
 const LOG_MAX = 1000;
 const BA_FEED_MAX = 300;

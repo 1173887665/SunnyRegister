@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
-import type { Mailbox } from "../types";
 
 type Route = { address: string; url: string; is_primary?: boolean };
 type Account = {
@@ -64,8 +63,10 @@ export function MailComView({ embedded = false }: { embedded?: boolean } = {}) {
           "/api/mail_pool/mailcom/accounts",
         ),
       ]);
+      const nextAccounts = a.accounts || [];
       setStatus(s);
-      setAccounts(a.accounts || []);
+      setAccounts(nextAccounts);
+      setSelectedAccount((current) => current ? nextAccounts.find((item) => item.email === current.email) || null : null);
       setMessage(null);
     } catch (e: any) {
       setStatus(EMPTY_STATUS);
@@ -1076,6 +1077,31 @@ export function MailComView({ embedded = false }: { embedded?: boolean } = {}) {
                     placeholder="mailIdentifier"
                   />
                 </label>
+              )}
+              {mailOperation === "aliases" && (
+                <div className="card" style={{ marginTop: 10 }}>
+                  <div className="card-head">
+                    <span className="card-title">别名管理</span>
+                    <span className="card-hint">当前账号 {selectedAccount.addresses?.length || 0} 个地址</span>
+                  </div>
+                  <div className="card-body">
+                    {(selectedAccount.addresses || []).length ? (
+                      <div style={{ display: "grid", gap: 6, marginBottom: 10 }}>
+                        {(selectedAccount.addresses || []).map((route) => (
+                          <div key={route.address} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span className="mono" style={{ minWidth: 0, flex: 1, overflowWrap: "anywhere" }}>{route.address}</span>
+                            {route.is_primary ? <span className="badge badge-info">主地址</span> : null}
+                            {!route.is_primary ? <button className="btn btn-sm btn-danger" onClick={() => void removeAlias(selectedAccount, route.address)} disabled={busy !== null}>删除</button> : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : <div className="muted" style={{ marginBottom: 10 }}>暂无别名</div>}
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input className="input" value={newAlias} onChange={(e) => setNewAlias(e.target.value)} placeholder="输入要添加的别名地址" />
+                      <button className="btn btn-primary" onClick={() => void addAlias()} disabled={busy !== null || !newAlias.trim()}>添加别名</button>
+                    </div>
+                  </div>
+                </div>
               )}
               <button
                 className="btn btn-primary"

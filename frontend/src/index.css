@@ -1712,6 +1712,8 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .sr-register-config-warning { display:flex; align-items:center; justify-content:space-between; gap:14px; margin:0 0 16px; border:1px solid rgba(245,158,11,.28); border-radius:12px; background:rgba(255,251,235,.92); padding:10px 12px; color:#92400e; font-size:13px; font-weight:700; }
 .sr-register-config-warning button { flex:none; border-radius:8px; background:#f59e0b; padding:6px 10px; color:#fff; font-size:12px; font-weight:800; }
 .sr-register-config-warning button:hover { background:#d97706; }
+.sr-inline-error { display:block; margin-top:6px; color:#b91c1c; font-size:12px; line-height:1.35; }
+.sr-inline-error button { margin-left:6px; color:#1d4ed8; font-weight:700; text-decoration:underline; }
 .dark .sr-register-config-warning { border-color:rgba(251,191,36,.28); background:rgba(120,53,15,.18); color:#fde68a; }
 .sr-choice-grid { display:grid; gap:14px; }
 .sr-choice-grid.two { grid-template-columns:repeat(2,minmax(0,1fr)); }

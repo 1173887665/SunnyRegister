@@ -44,10 +44,6 @@ const TOKEN_SOURCE_OPTIONS: { key: string; label: string; source: string }[] = [
   { key: "register", label: "注册账号 (register)", source: "register" },
 ];
 
-function activeBranchTokenSource(b: string): string {
-  return BRANCH_TOKEN_SOURCE[b as BranchName] || "stripe";
-}
-
 const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   idle: { label: "未提链", cls: "badge-muted" },
   running: { label: "提链中", cls: "badge-info" },
@@ -124,7 +120,6 @@ export function TokensView() {
   const tokens = useStore((s) => s.tokens);
   const selectedTokenIds = useStore((s) => s.selectedTokenIds);
   const toggleTokenSelect = useStore((s) => s.toggleTokenSelect);
-  const selectAllTokens = useStore((s) => s.selectAllTokens);
   const clearTokenSelection = useStore((s) => s.clearTokenSelection);
   const pushLog = useStore((s) => s.pushLog);
   const activeBranch = useStore((s) => s.activeBranch);

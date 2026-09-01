@@ -160,36 +160,6 @@ function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-/**
- * The task API historically returned progress as a `current/total` label,
- * while newer workers may return a numeric percentage or progress_detail.
- * Keep the UI tolerant of all three forms so malformed/missing values never
- * turn the progress bar into NaN.
- */
-function taskProgressPercent(task: Session) {
-  const detail = task?.progress_detail;
-  const detailCurrent = Number(detail?.current);
-  const detailTotal = Number(detail?.total);
-  if (Number.isFinite(detailCurrent) && Number.isFinite(detailTotal) && detailTotal > 0) {
-    return Math.max(0, Math.min(100, detailCurrent / detailTotal * 100));
-  }
-
-  const raw = task?.progress;
-  if (typeof raw === "string") {
-    const match = raw.trim().match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
-    if (match) {
-      const current = Number(match[1]);
-      const total = Number(match[2]);
-      if (Number.isFinite(current) && Number.isFinite(total) && total > 0) {
-        return Math.max(0, Math.min(100, current / total * 100));
-      }
-    }
-  }
-
-  const numeric = Number(raw);
-  return Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : 0;
-}
-
 function isTerminalTask(task: Session) {
   const status = String(task?.status || "").trim().toLowerCase();
   return Boolean(task?.terminal) || ["succeeded", "success", "done", "failed", "error", "cancelled", "canceled", "interrupted"].includes(status);

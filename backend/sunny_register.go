@@ -6061,40 +6061,52 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			if !validProviders[provider] {
-				writeError(w, http.StatusBadRequest, "请选择有效的接码平台")
-				return
-			}
-			cfg := s.sunnyGetConfig(sunnyCfgPhone, defaultPhoneConfig())
-			available := false
-			switch provider {
-			case "local":
-				available = s.sunnyUsablePhoneCount() > 0
-			case "luban":
-				available = boolValue(cfg["luban_enabled"], false) && strings.TrimSpace(text(cfg["luban_api_key"])) != "" && strings.TrimSpace(text(cfg["luban_service_id"])) != ""
-			case "smsbower":
-				available = boolValue(cfg["smsbower_enabled"], false) && strings.TrimSpace(text(cfg["smsbower_api_key"])) != ""
-			case "smspool":
-				available = boolValue(cfg["smspool_enabled"], false) && strings.TrimSpace(text(cfg["smspool_api_key"])) != ""
-			case "firefox":
-				available = boolValue(cfg["firefox_enabled"], false) && fireFoxAPIToken(cfg) != ""
-			case "grizzlysms":
-				available = boolValue(cfg["grizzlysms_enabled"], false) && strings.TrimSpace(text(cfg["grizzlysms_api_key"])) != ""
-			case "hero_sms":
-				available = boolValue(cfg["hero_sms_enabled"], false) && strings.TrimSpace(text(cfg["hero_sms_api_key"])) != ""
-			}
-			if !available {
-				writeError(w, http.StatusBadRequest, "所选接码平台未启用或配置不完整")
-				return
-			}
-			if provider != "local" && provider != "luban" && strings.TrimSpace(text(body["sms_country"])) == "" {
-				writeError(w, http.StatusBadRequest, "请选择注册国家")
-				return
+			if s.sunnyMailboxesNeedPhone(mailboxes) {
+				if !validProviders[provider] {
+					writeError(w, http.StatusBadRequest, "请选择有效的接码平台")
+					return
+				}
+				cfg := s.sunnyGetConfig(sunnyCfgPhone, defaultPhoneConfig())
+				available := false
+				switch provider {
+				case "local":
+					available = s.sunnyUsablePhoneCount() > 0
+				case "luban":
+					available = boolValue(cfg["luban_enabled"], false) && strings.TrimSpace(text(cfg["luban_api_key"])) != "" && strings.TrimSpace(text(cfg["luban_service_id"])) != ""
+				case "smsbower":
+					available = boolValue(cfg["smsbower_enabled"], false) && strings.TrimSpace(text(cfg["smsbower_api_key"])) != ""
+				case "smspool":
+					available = boolValue(cfg["smspool_enabled"], false) && strings.TrimSpace(text(cfg["smspool_api_key"])) != ""
+				case "firefox":
+					maxPrice, parseErr := strconv.ParseFloat(strings.TrimSpace(text(cfg["firefox_max_price"])), 64)
+					available = boolValue(cfg["firefox_enabled"], false) && fireFoxAPIToken(cfg) != "" &&
+						strings.TrimSpace(text(cfg["firefox_default_country"])) != "" &&
+						strings.TrimSpace(text(cfg["firefox_default_service"])) != "" && parseErr == nil && maxPrice > 0
+				case "grizzlysms":
+					available = boolValue(cfg["grizzlysms_enabled"], false) && strings.TrimSpace(text(cfg["grizzlysms_api_key"])) != ""
+				case "hero_sms":
+					available = boolValue(cfg["hero_sms_enabled"], false) && strings.TrimSpace(text(cfg["hero_sms_api_key"])) != ""
+				}
+				if !available {
+					writeError(w, http.StatusBadRequest, "所选接码平台未启用或配置不完整")
+					return
+				}
+				if provider != "local" && provider != "luban" && strings.TrimSpace(text(body["sms_country"])) == "" {
+					writeError(w, http.StatusBadRequest, "请选择注册国家")
+					return
+				}
 			}
 			if err := prepareSunnyPostRegistrationEmailBind(body, len(mailboxes)); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
+		} else {
+			normalizedIdentity, err := normalizeSunnyRegistrationIdentity(text(body["identity"]))
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			body["identity"] = normalizedIdentity
 		}
 		identity := strings.ToLower(strings.TrimSpace(text(body["identity"])))
 		if identity == "remail" {
@@ -6196,6 +6208,25 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 	body = s.sunnyTaskProxySnapshot(body)
 	task := s.createTask(typ, "sunny", body, total)
 	writeJSON(w, 200, serializeTask(task))
+}
+
+func normalizeSunnyRegistrationIdentity(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "system", "mailbox", "system_mailbox", "outlook", "outlook_mailbox", "microsoft_mailbox", "系统邮箱", "邮箱", "微软邮箱":
+		return "system", nil
+	case "remail", "remail_mailbox", "remail邮箱":
+		return "remail", nil
+	case "domain", "domain_mailbox", "cloudmail", "cfworker", "自建域名邮箱", "域名邮箱":
+		return "domain", nil
+	case "phone", "手机", "手机注册":
+		return "", fmt.Errorf("手机注册请使用独立的 phone-register 接口")
+	case "google", "google_mailbox":
+		return "", fmt.Errorf("Google 注册身份尚未接入")
+	case "microsoft", "microsoft_account":
+		return "", fmt.Errorf("Microsoft 注册身份尚未接入")
+	default:
+		return "", fmt.Errorf("无效的注册身份：%s", strings.TrimSpace(value))
+	}
 }
 
 func sunnyRegistrationStage(body map[string]any) string {

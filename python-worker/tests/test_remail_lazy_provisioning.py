@@ -187,3 +187,27 @@ def test_url_api_registration_uses_requested_concurrency_without_three_worker_ca
         if "注册任务并发数" in message
     ]
     assert concurrency_events == [{"scope": "global", "concurrency": 5, "total": 5}]
+
+
+def test_worker_normalizes_legacy_registration_identity_aliases():
+    assert worker._normalize_registration_identity("") == "system"
+    assert worker._normalize_registration_identity("自建域名邮箱") == "domain"
+    assert worker._normalize_registration_identity("Remail邮箱") == "remail"
+
+
+def test_worker_rejects_unsupported_registration_identities_before_mailbox_selection():
+    class UnsupportedTaskDB(FakeTaskDB):
+        def __init__(self, task_id):
+            super().__init__(task_id)
+            self.payload = {"identity": "google", "count": 1, "concurrency": 1, "proxy_enabled": False}
+
+    with (
+        patch.object(worker, "SunnyDB", UnsupportedTaskDB),
+        patch.object(worker, "_choose_mailboxes", side_effect=AssertionError("mailbox selection must not run")),
+        patch.object(worker, "_log_proxy_startup"),
+    ):
+        worker.run_sunny_task("task-unsupported-identity")
+
+    final = UnsupportedTaskDB.instance.updates[-1]
+    assert final["status"] == "failed"
+    assert "不受支持" in final["error"]

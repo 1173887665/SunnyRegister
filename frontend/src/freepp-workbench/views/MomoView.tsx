@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { StageName, StageCfg, BranchCfg, BranchName } from "../types";
+import type { StageName, StageCfg, BranchCfg } from "../types";
 import { StageSettingsPanel } from "../components/chain/StageSettings";
 
 /* ==========================================================================

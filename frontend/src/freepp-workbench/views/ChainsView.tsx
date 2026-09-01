@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
 import { api } from "../api/client";
-import { STAGE_ORDER, STAGE_SHORT, STAGE_CN } from "../types";
 import { ChainTable } from "../components/chain/ChainTable";
 import { SuccessSheet } from "../components/chain/SuccessSheet";
 
@@ -17,9 +16,9 @@ export function ChainsView() {
   const batchRunning = useStore((s) => s.batchRunning);
   const pushLog = useStore((s) => s.pushLog);
 
-  const [, setTick] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setTick((n) => n + 1), 1000);
+    const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
 
@@ -91,7 +90,7 @@ export function ChainsView() {
           </div>
         </div>
       ) : (
-        <ChainTable chainList={chainList} onClick={(url, meta) => setSheet({ url, meta })} />
+      <ChainTable now={now} chainList={chainList} onClick={(url, meta) => setSheet({ url, meta })} />
       )}
 
       {sheet && (

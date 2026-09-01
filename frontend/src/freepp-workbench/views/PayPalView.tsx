@@ -6,20 +6,6 @@ import { BA_STEPS, baStepCn } from "../types";
 
 /* ── 授权监控日志类型 (类型定义在 types, store 持有全局实例) ── */
 
-const FEED_BADGE: Record<BAFeedItem["level"], string> = {
-  ok: "badge-success",
-  info: "badge-info",
-  warn: "badge-warn",
-  err: "badge-danger",
-};
-
-const FEED_LABEL: Record<BAFeedItem["level"], string> = {
-  ok: "成功",
-  info: "信息",
-  warn: "警告",
-  err: "失败",
-};
-
 const FEED_LEVEL_OPTIONS: { value: string; label: string }[] = [
   { value: "all", label: "全部级别" },
   { value: "ok", label: "成功" },
@@ -47,7 +33,7 @@ const STATUS_BADGE: Record<string, string> = {
 
 /** 授权中 chip: 秒数自计时 (仅重渲染本 chip, 避免整页每秒重渲染) */
 function RunningChip({ r }: { r: BAAuthRecord }) {
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
@@ -135,13 +121,12 @@ export function PayPalView() {
 
   // 实时监控日志 (全局 store: 切换分栏/重挂载不丢)
   const baFeed = useStore((s) => s.baFeed);
-  const baSnap = useStore((s) => s.baSnap);
   const pushBaFeed = useStore((s) => s.pushBaFeed);
   const clearBaFeed = useStore((s) => s.clearBaFeed);
   const setBaSnap = useStore((s) => s.setBaSnap);
   const rehydrateBaFeed = useStore((s) => s.rehydrateBaFeed);
   const baFeedRef = useRef<ReturnType<typeof useStore.getState>["baFeed"]>(baFeed);
-  baFeedRef.current = baFeed;
+  useEffect(() => { baFeedRef.current = baFeed; }, [baFeed]);
 
   // 监控日志筛选 (模仿实时日志页: 级别 + 链路下拉)
   const [feedLevel, setFeedLevel] = useState<string>("all");
@@ -178,9 +163,9 @@ export function PayPalView() {
   // 用 ref 持有最新值, 避免每次渲染产生新数组导致 fetchBaRecords 依赖变化
   // -> useEffect 无限重跑 -> 刷新按钮"刷新中/刷新"闪烁
   const pendingFromChainsRef = useRef<typeof pendingFromChains>([]);
-  pendingFromChainsRef.current = pendingFromChains;
+  useEffect(() => { pendingFromChainsRef.current = pendingFromChains; }, [pendingFromChains]);
   const chainStatesRef = useRef(chainStates);
-  chainStatesRef.current = chainStates;
+  useEffect(() => { chainStatesRef.current = chainStates; }, [chainStates]);
 
   const fetchBaRecords = useCallback(async () => {
     setLoading(true);

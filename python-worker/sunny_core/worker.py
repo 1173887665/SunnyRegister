@@ -1929,7 +1929,11 @@ def _run_one_impl(
             ),
         )
 
-    phone_registration = task_type == "sunny_phone_register"
+    phone_registration_requested = task_type == "sunny_phone_register"
+    # A selected account that already has RT has completed the phone-gated
+    # registration path. Treat the task as a normal session refresh instead of
+    # forcing a second SMS lease or an unnecessary browser phone step.
+    phone_registration = phone_registration_requested and not bool(account.openai_rt)
     wants_rt = stage in {CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY} or explicit_rt_acquire
     phone_provider = None
     require_refresh_token = False
@@ -3926,6 +3930,23 @@ def _token_maintenance_result(success: int, errors: list[str], items: list[dict[
     }
 
 
+def _normalize_registration_identity(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"", "system", "mailbox", "system_mailbox", "outlook", "outlook_mailbox", "microsoft_mailbox", "系统邮箱", "邮箱", "微软邮箱"}:
+        return "system"
+    if normalized in {"remail", "remail_mailbox", "remail邮箱"}:
+        return "remail"
+    if normalized in {"domain", "domain_mailbox", "cloudmail", "cfworker", "自建域名邮箱", "域名邮箱"}:
+        return "domain"
+    if normalized in {"phone", "手机", "手机注册"}:
+        return "phone"
+    if normalized in {"google", "google_mailbox"}:
+        return "google"
+    if normalized in {"microsoft", "microsoft_account"}:
+        return "microsoft"
+    return normalized
+
+
 def run_sunny_task(task_id: str) -> None:
     db = SunnyDB(task_id)
     try:
@@ -3939,6 +3960,13 @@ def run_sunny_task(task_id: str) -> None:
         db.ensure_not_cancelled()
         db.event(f"========= SunnyRegister 注册任务开始 {now_sql()} =========", level="separator", detail={"scope": "global", "separator": True})
         db.event("SunnyRegister Worker accepted register task", typ="state")
+        if task_type in {"sunny_register", "sunny_phone_register"}:
+            identity = _normalize_registration_identity(payload.get("identity"))
+            if task_type == "sunny_phone_register":
+                identity = "system"
+            if identity not in {"system", "domain", "remail"}:
+                raise RuntimeError(f"注册身份不受支持：{identity or 'unknown'}")
+            payload["identity"] = identity
         if task_type == "sunny_refresh_session":
             ok, errors, items = _refresh_sessions(db, payload)
             db.ensure_not_cancelled()

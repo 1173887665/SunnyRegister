@@ -1,7 +1,6 @@
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { useStore } from "../store/useStore";
 import { api } from "../api/client";
-import type { ProxyNode } from "../types";
 
 interface ClashCountryInfo { country: string; count: number; ips: string[]; nodes?: Array<{ name: string; server: string; ip?: string; port: number; type: string; country: string }> }
 

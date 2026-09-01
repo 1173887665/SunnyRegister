@@ -28,9 +28,10 @@ interface Row {
 interface Props {
   chainList: Row[];
   onClick?: (url: string, meta: string) => void;
+  now?: number;
 }
 
-function ChainTableInner({ chainList, onClick }: Props) {
+function ChainTableInner({ chainList, onClick, now = 0 }: Props) {
   const [filter, setFilter] = useState<string>("all");
 
   const counts = useMemo(() => {
@@ -92,7 +93,7 @@ function ChainTableInner({ chainList, onClick }: Props) {
               // 终端状态使用后端固化的 elapsed, 运行中才实时计时
               const elapsed =
                 cs.elapsed ??
-                (cs.status === "running" && cs.startTime ? (Date.now() - cs.startTime) / 1000 : 0);
+                (cs.status === "running" && cs.startTime && now ? (now - cs.startTime) / 1000 : 0);
               const handleClick = () => {
                 if (cs.status === "success" && cs.url && onClick) {
                   let meta = `chain: ${id}`;

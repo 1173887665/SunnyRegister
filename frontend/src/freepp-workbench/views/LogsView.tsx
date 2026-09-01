@@ -1,13 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
-import type { LogEntry } from "../types";
-
-const TAG_MAP: Record<LogEntry["level"], string> = {
-  ok: "OK",
-  info: "INFO",
-  warn: "WARN",
-  err: "ERR",
-};
 
 const LEVEL_OPTIONS: { value: string; label: string }[] = [
   { value: "all", label: "全部级别" },

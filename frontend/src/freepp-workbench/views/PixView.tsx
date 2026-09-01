@@ -232,7 +232,7 @@ export function PixView() {
 }
 
 function makeMockBranch(): BranchCfg {
-  const mkStages = (cc: string[]): Partial<Record<StageName, StageCfg>> => ({
+  const mkStages = (): Partial<Record<StageName, StageCfg>> => ({
     checkout: { countries: ["auto"], timeout: 15, retry: 3 },
     init: { countries: ["auto"], timeout: 10, retry: 3 },
     update: { countries: ["BR"], timeout: 10, retry: 3 },
@@ -256,6 +256,6 @@ function makeMockBranch(): BranchCfg {
     follow_checkout: true,
     billing_country: "BR",
     attempts: 8,
-    stages: mkStages(["BR"]),
+    stages: mkStages(),
   };
 }

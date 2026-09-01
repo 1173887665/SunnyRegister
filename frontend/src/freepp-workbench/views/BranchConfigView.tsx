@@ -140,7 +140,7 @@ function makeMockBranch(
   defaultCountry: string,
   updateCountry: string
 ): BranchCfg {
-  const mkStages = (cc: string[]): Partial<Record<StageName, StageCfg>> => ({
+  const mkStages = (): Partial<Record<StageName, StageCfg>> => ({
     checkout: { countries: [defaultCountry], timeout: 15, retry: 3 },
     init: { countries: [defaultCountry], timeout: 10, retry: 3 },
     update: { countries: [updateCountry], timeout: 10, retry: 3 },
@@ -164,6 +164,6 @@ function makeMockBranch(
     follow_checkout: false,
     billing_country: defaultCountry,
     attempts: 8,
-    stages: mkStages([defaultCountry]),
+    stages: mkStages(),
   };
 }

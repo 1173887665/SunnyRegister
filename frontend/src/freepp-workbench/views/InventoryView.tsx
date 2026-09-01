@@ -6,6 +6,10 @@ import type { InventoryRecord, BranchName } from "../types";
 
 const PAGE_SIZES = [50, 100, 200];
 
+function fileStamp(): number {
+  return Date.now();
+}
+
 /** 分支 -> 产出渠道 (与后端 config branch.channel 对应) */
 const BRANCH_CHANNEL: Record<string, string> = {
   paypal: "paypal",
@@ -88,6 +92,9 @@ export function InventoryView() {
   const [pageSize, setPageSize] = useState(50);
   const [loading, setLoading] = useState(false);
   const [clearing, setClearing] = useState(false);
+  /* ── 批量管理 ── */
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const branchChannel = BRANCH_CHANNEL[activeBranch] || "paypal";
 
@@ -201,17 +208,18 @@ export function InventoryView() {
         .join(",")
     );
     const csv = "\uFEFF" + headers.join(",") + "\n" + rows.join("\n");
-    downloadCsv(csv, `inventory_${branchChannel}_${Date.now()}.csv`);
+    downloadCsv(csv, `inventory_${branchChannel}_${fileStamp()}.csv`);
   };
 
-  /* ── 批量管理 ── */
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [bulkDeleting, setBulkDeleting] = useState(false);
   // 基于可见(过滤后)记录的选择集
   const selectableIds = shown.map((r) => r.id).filter((id): id is number => id != null);
   const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
   const toggleSelect = (id: number) =>
-    setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
   const toggleSelectAll = () =>
     setSelected(allSelected ? new Set() : new Set(selectableIds));
 
@@ -245,7 +253,7 @@ export function InventoryView() {
       [r.ba_id, r.email, r.country, r.paypal_url, r.amount, r.currency, r.time].map(escape).join(",")
     );
     const csv = "\uFEFF" + headers.join(",") + "\n" + rows.join("\n");
-    downloadCsv(csv, `inventory_selected_${branchChannel}_${Date.now()}.csv`);
+    downloadCsv(csv, `inventory_selected_${branchChannel}_${fileStamp()}.csv`);
   }
 
   function downloadCsv(csv: string, filename: string) {

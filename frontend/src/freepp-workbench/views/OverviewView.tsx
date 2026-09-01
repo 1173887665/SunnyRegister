@@ -9,7 +9,6 @@ export function OverviewView() {
   const tokens = useStore((s) => s.tokens);
   const logLines = useStore((s) => s.logLines);
   const selectedTokenIds = useStore((s) => s.selectedTokenIds);
-  const pushLog = useStore((s) => s.pushLog);
   const setView = useStore((s) => s.setView);
 
   const chainList = useMemo(
