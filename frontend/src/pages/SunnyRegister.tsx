@@ -1932,28 +1932,40 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
   const [rebindAfterRegistration, setRebindAfterRegistration] = useState(false);
   const [rebindMailboxCategory, setRebindMailboxCategory] = useState<RebindMailboxCategory>("microsoft");
   const [rebindMailboxOptions, setRebindMailboxOptions] = useState<AnyObj[]>([]);
+  const [configLoading, setConfigLoading] = useState(true);
+  const [configLoadError, setConfigLoadError] = useState("");
+  const [configReloadKey, setConfigReloadKey] = useState(0);
   useEffect(() => {
     let alive = true;
-    Promise.all([
-      apiFetch("/sunny/phones/config").catch(() => ({})),
-      apiFetch("/sunny/sub2api-config").catch(() => ({})),
-      apiFetch("/sunny/mailboxes/config").catch(() => ({})),
-      apiFetch("/sunny/remail/config").catch(() => ({})),
-      apiFetch("/sunny/domain-mail/config").catch(() => ({})),
-      apiFetch("/sunny/proxy-config/pool?page=1&page_size=100&purpose=register&status=enabled&sort_by=updated_at&sort_order=desc").catch(() => ({})),
-    ]).then(([phone, reverse, mailbox, remail, domain, proxy]) => {
+    setConfigLoading(true);
+    setConfigLoadError("");
+    Promise.allSettled([
+      apiFetch("/sunny/phones/config"),
+      apiFetch("/sunny/sub2api-config"),
+      apiFetch("/sunny/mailboxes/config"),
+      apiFetch("/sunny/remail/config"),
+      apiFetch("/sunny/domain-mail/config"),
+      apiFetch("/sunny/proxy-config/pool?page=1&page_size=100&purpose=register&status=enabled&sort_by=updated_at&sort_order=desc"),
+    ]).then((results) => {
       if (!alive) return;
-      setPhoneCfg(phone || {});
-      setReverseCfg(reverse || {});
-      setMailboxCfg(mailbox || { pool_enabled: true });
-      setRemailCfg(remail || { enabled: false });
-      setDomainCfg(domain || { enabled: true, enabled_for_registration: false });
+      const [phoneResult, reverseResult, mailboxResult, remailResult, domainResult, proxyResult] = results;
+      if (phoneResult.status === "fulfilled") setPhoneCfg(phoneResult.value || {});
+      if (reverseResult.status === "fulfilled") setReverseCfg(reverseResult.value || {});
+      if (mailboxResult.status === "fulfilled") setMailboxCfg(mailboxResult.value || { pool_enabled: true });
+      if (remailResult.status === "fulfilled") setRemailCfg(remailResult.value || { enabled: false });
+      if (domainResult.status === "fulfilled") setDomainCfg(domainResult.value || { enabled: true, enabled_for_registration: false });
+      const failed = results.filter((result) => result.status === "rejected");
+      if (failed.length) {
+        const firstError = failed[0].status === "rejected" ? failed[0].reason : null;
+        setConfigLoadError(firstError?.message || String(firstError || "配置请求失败"));
+      }
+      const proxy = proxyResult.status === "fulfilled" ? proxyResult.value : {};
       const registerItems = Array.isArray(proxy?.items) ? proxy.items : [];
-  const itemCountries: string[] = Array.from(new Set<string>(registerItems.map((item:any) => String(item.country || "").trim().toUpperCase()).filter(Boolean))).sort();
+      const itemCountries: string[] = Array.from(new Set<string>(registerItems.map((item:any) => String(item.country || "").trim().toUpperCase()).filter(Boolean))).sort();
       setProxyCountries(itemCountries);
-    });
+    }).finally(() => { if (alive) setConfigLoading(false); });
     return () => { alive = false; };
-  }, []);
+  }, [configReloadKey]);
   const identityText = identity === "system" ? t.systemMailbox : identity === "phone" ? t.phoneRegister : identity === "domain" ? t.domainMailboxIdentity : identity === "remail" ? "Remail" : identity === "google" ? "Google" : "Microsoft";
   const protocolCopy = t === en ? PROTOCOL_MODE_COPY.en : PROTOCOL_MODE_COPY.zh;
   const modeText = mode === "protocol" ? t.protocolMode : mode === "background" ? t.backgroundMode : t.visibleMode;
@@ -2008,7 +2020,8 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
   }, [identity, rebindAfterRegistration]);
   const phoneResourceReady = !selectedNeedPhone || poolPhoneReady || smsbowerReady || smspoolReady || firefoxReady || grizzlyReady || heroReady || (phoneCfg.luban_enabled === true && !!String(phoneCfg.luban_api_key || "").trim() && !!String(phoneCfg.luban_service_id || "").trim());
   const sub2apiReady = reverseCfg.enabled !== false && !!String(reverseCfg.base_url || "").trim() && !!String(reverseCfg.admin_token || "").trim() && Array.isArray(reverseCfg.group_ids) && reverseCfg.group_ids.length > 0;
-  const mailboxPoolReady = mailboxCfg.pool_enabled !== false && selectedEmails.length > 0;
+  const mailboxPoolEnabled = mailboxCfg.pool_enabled !== false;
+  const mailboxPoolReady = mailboxPoolEnabled && selectedEmails.length > 0;
   const remailReady = remailCfg.enabled === true && (remailCfg.api_key_configured === true || !!String(remailCfg.api_key || "").trim()) && Number(remailCfg.project_id || 0) > 0;
   const domainReady = domainCfg.enabled !== false && domainCfg.enabled_for_registration === true && !!String(domainCfg.base_url || "").trim() && (domainCfg.auth_token_configured === true || !!String(domainCfg.auth_token || "").trim()) && !!String(domainCfg.domain || "").trim();
   const googleMailboxReady = false;
@@ -2044,9 +2057,10 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
     <div className="sr-modal-body">
       <div className="sr-step">{t.step} 1</div>
 		<h4>{t.step1Title}</h4><p>{mailboxVerificationDescription}</p>
+      {configLoadError ? <div className="sr-register-config-warning" role="alert"><span>{t === zh ? `部分注册配置加载失败：${configLoadError}` : `Some registration settings failed to load: ${configLoadError}`}</span><button type="button" onClick={()=>setConfigReloadKey((value)=>value+1)}>{t === zh ? "重新加载" : "Reload"}</button></div> : null}
       <div className="sr-choice-grid two">
-        <Choice disabled={!mailboxPoolReady} disabledMessage={t.systemMailboxPoolDisabled} active={mailboxPoolReady && identity==="system"} title={t.systemMailbox} desc={t.systemMailboxDesc} onClick={()=>{ setIdentity("system"); setStage(REGISTER_ONLY); }} onDisabledClick={(msg)=>notify("fail", msg)} />
-        <Choice disabled={!selectedEmails.length || !usableProviderEntries.length} disabledMessage={t.phoneRegisterUnavailable} active={identity==="phone"} title={t.phoneRegister} desc={t.phoneRegisterDesc} onClick={()=>{ setIdentity("phone"); setStage(CODEX_PHONE_BIND); }} onDisabledClick={(msg)=>notify("fail", msg)} />
+        <Choice disabled={configLoading || !mailboxPoolEnabled} disabledMessage={configLoading ? t.loadingData : t.systemMailboxPoolDisabled} active={!configLoading && mailboxPoolEnabled && identity==="system"} title={t.systemMailbox} desc={t.systemMailboxDesc + (!selectedEmails.length ? (t === zh ? " · 请先在工作台勾选邮箱" : " · Select mailboxes in the workbench first") : "")} onClick={()=>{ setIdentity("system"); setStage(REGISTER_ONLY); }} onDisabledClick={(msg)=>notify("fail", msg)} />
+        <Choice disabled={configLoading || !usableProviderEntries.length} disabledMessage={configLoading ? t.loadingData : t.phoneRegisterUnavailable} active={!configLoading && usableProviderEntries.length > 0 && identity==="phone"} title={t.phoneRegister} desc={t.phoneRegisterDesc + (!selectedEmails.length ? (t === zh ? " · 请先在工作台勾选邮箱" : " · Select mailboxes in the workbench first") : "")} onClick={()=>{ setIdentity("phone"); setStage(CODEX_PHONE_BIND); }} onDisabledClick={(msg)=>notify("fail", msg)} />
         <Choice disabled={!domainReady} disabledMessage={t.domainMailboxNotConfigured} active={domainReady && identity==="domain"} title={t.domainMailboxIdentity} desc={t.domainMailboxIdentityDesc} onClick={()=>{ setIdentity("domain"); setStage(REGISTER_ONLY); }} onDisabledClick={(msg)=>notify("fail", msg)} />
         <Choice disabled={!remailReady} disabledMessage="请先在邮箱配置中启用 Remail" active={remailReady && identity==="remail"} title="Remail" desc="使用 Remail 第三方邮箱供应商下单并通过 API 收取验证码" onClick={()=>{ setIdentity("remail"); setStage(REGISTER_ONLY); }} onDisabledClick={(msg)=>notify("fail", msg)} />
         <Choice disabled disabledMessage={t.googleMailboxDisabled} active={false} title="Google" desc={t.googleDesc} onClick={()=>setIdentity("google")} onDisabledClick={(msg)=>notify("fail", msg)} />
