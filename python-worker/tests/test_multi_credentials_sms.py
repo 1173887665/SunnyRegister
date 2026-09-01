@@ -420,6 +420,25 @@ def test_browser_password_login_uses_exact_imported_password() -> None:
     assert account.chatgpt_password == "Short1!"
 
 
+def test_browser_password_login_uses_saved_password_after_ls_fallback() -> None:
+    account = MailAccount(
+        "user@example.com", "mailbox-password", "client", "mail-rt", "raw",
+        chatgpt_password="Short1!",
+    )
+    flow = OpenAIEmailRegisterFlow(
+        account, "", True, None, existing_account=True, prefer_login_secret=False,
+    )
+    password_input = Mock()
+    flow._visible_inputs = Mock(return_value=[password_input])
+    flow._click_continue = Mock(return_value=True)
+    page = Mock(url="https://auth.openai.com/log-in/password")
+
+    assert flow._fill_password_step(page) is True
+
+    password_input.fill.assert_called_once_with("Short1!", timeout=5000)
+    flow._click_continue.assert_called_once_with(page)
+
+
 def test_browser_password_login_requires_complete_login_secret() -> None:
     password_only = MailAccount(
         "user@example.com", "mailbox-password", "client", "mail-rt", "raw",
@@ -659,6 +678,137 @@ def test_browser_can_switch_password_page_to_email_otp() -> None:
 
     assert flow._switch_password_to_email_code(page) is True
     target.click.assert_called_once()
+
+
+def test_browser_password_page_without_email_switch_uses_saved_password() -> None:
+    account = MailAccount(
+        "user@example.com", "mailbox-password", "client", "mail-rt", "raw",
+        chatgpt_password="Short1!",
+    )
+    messages: list[str] = []
+
+    class Flow(OpenAIEmailRegisterFlow):
+        def __init__(self):
+            super().__init__(account, "", True, messages.append, existing_account=True, prefer_login_secret=False)
+            self.complete = False
+
+        def _login_secret_rejection(self, _page):
+            return ""
+
+        def _has_chatgpt_session(self, _page):
+            return self.complete
+
+        def _progress_signature(self, _page):
+            return ""
+
+        def _page_reports_existing_account(self, _page):
+            return False
+
+        def _detect_route_error(self, _page):
+            return ""
+
+        def _has_phone_form(self, _page):
+            return False
+
+        def _has_totp_challenge(self, _page):
+            return False
+
+        def _has_workspace_selection(self, _page):
+            return False
+
+        def _has_visible_password(self, _page):
+            return True
+
+        def _switch_password_to_email_code(self, _page):
+            return False
+
+        def _fill_password_step(self, _page):
+            self.complete = True
+            return True
+
+        def _sleep_checked(self, _seconds):
+            return None
+
+    flow = Flow()
+    flow._drive_register_or_login(Mock(url="https://auth.openai.com/log-in/password"), 0)
+
+    assert any("已使用保存的 ChatGPT 密码继续登录" in item for item in messages)
+
+
+def test_browser_password_page_without_credentials_rebuilds_email_login_once() -> None:
+    account = MailAccount("user@example.com", "mailbox-password", "client", "mail-rt", "raw")
+    messages: list[str] = []
+
+    class Flow(OpenAIEmailRegisterFlow):
+        def __init__(self):
+            super().__init__(account, "", True, messages.append, existing_account=True, prefer_login_secret=False)
+            self.complete = False
+
+        def _login_secret_rejection(self, _page):
+            return ""
+
+        def _has_chatgpt_session(self, _page):
+            return self.complete
+
+        def _progress_signature(self, _page):
+            return ""
+
+        def _page_reports_existing_account(self, _page):
+            return False
+
+        def _detect_route_error(self, _page):
+            return ""
+
+        def _has_phone_form(self, _page):
+            return False
+
+        def _has_totp_challenge(self, _page):
+            return False
+
+        def _has_workspace_selection(self, _page):
+            return False
+
+        def _has_about_you_form(self, _page):
+            return False
+
+        def _has_visible_password(self, _page):
+            return self.page_url == "password"
+
+        def _has_otp_input(self, _page):
+            return self.page_url == "email"
+
+        def _switch_password_to_email_code(self, _page):
+            return False
+
+        def _create_openai_signin_url(self, _context, _page):
+            return "https://auth.openai.com/api/accounts/authorize?retry=1"
+
+        def _submit_email_code(self, _page, _timestamp):
+            self.complete = True
+
+        def _fill_email_if_visible(self, _page):
+            return False
+
+        def _sleep_checked(self, _seconds):
+            return None
+
+    flow = Flow()
+    flow.page_url = "password"
+    page = Mock(url="https://auth.openai.com/log-in/password")
+    signin = Mock(return_value="https://auth.openai.com/api/accounts/authorize?retry=1")
+    flow._create_openai_signin_url = signin
+
+    def goto_auth(_page, _url, _log, timeout):
+        assert timeout == 90000
+        flow.page_url = "email"
+        page.url = "https://auth.openai.com/email-verification"
+
+    with patch("sunny_core.openai_auth._goto_auth_page", side_effect=goto_auth) as goto:
+        flow._drive_register_or_login(page, 0)
+
+    signin.assert_called_once_with(page.context, page)
+    assert goto.call_count == 1
+    assert any("正在重新打开邮箱登录流程" in item for item in messages)
 
 
 def test_partial_ls_email_login_requires_existing_totp_before_session_completion() -> None:
