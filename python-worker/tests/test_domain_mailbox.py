@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+import sqlite3
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
@@ -51,6 +52,32 @@ def test_rebound_url_api_mailbox_preserves_apple_channel():
     effective = SunnyDB._apply_rebind_mailbox_credentials(row)
 
     assert effective["email"] == "replacement@example.com"
+    assert effective["mailbox_type"] == "apple"
+    assert effective["mailbox_channel"] == "url_api"
+
+
+def test_historical_domain_row_with_impersonate_url_routes_to_url_api():
+    access_key = "https://a-mail.sanai.pro/?impersonate_email=replacement@example.com&impersonate_uuid=uuid-1"
+    account = account_from_row({
+        "email": "replacement@example.com",
+        "mailbox_type": "domain",
+        "mailbox_channel": "domain_api",
+        "access_key": access_key,
+    })
+    assert account.mailbox_type == "apple"
+    assert account.mailbox_channel == "url_api"
+    assert account.access_key == access_key
+
+
+def test_historical_rebind_row_infers_external_url_channel():
+    row = {
+        "email": "original@icloud.com",
+        "mailbox_type": "domain",
+        "mailbox_channel": "domain_api",
+        "rebind_email": "replacement@example.com",
+        "rebind_mailbox_api": "https://a-mail.sanai.pro/?impersonate_email=replacement@example.com&impersonate_uuid=uuid-1",
+    }
+    effective = SunnyDB._apply_rebind_mailbox_credentials(row)
     assert effective["mailbox_type"] == "apple"
     assert effective["mailbox_channel"] == "url_api"
 
@@ -353,6 +380,53 @@ def test_rebind_failure_retention_policy_controls_persistence(monkeypatch):
     rebind_module._handle_failed_domain_mailbox(discarded, "old@example.com", "new@example.com", "pickup", "hash", RuntimeError("failed"), lambda _: None)
     assert discarded.persisted is False
     assert len(cleanup_calls) == 1
+
+
+def test_external_url_rebind_failure_preserves_url_api_type():
+    db = SunnyDB.__new__(SunnyDB)
+    db.conn = sqlite3.connect(":memory:")
+    db.conn.row_factory = sqlite3.Row
+    db.conn.execute(
+        "create table sunny_mailbox_groups(id integer primary key autoincrement,name text unique,description text,created_at text,updated_at text)"
+    )
+    db.conn.execute(
+        """create table sunny_mailboxes(
+        id integer primary key autoincrement,group_id integer,email text,mailbox_type text,mailbox_channel text,
+        access_key text,pickup_token_hash text,raw text,status text,enabled integer,last_error text,
+        latest_mail_json text,created_at text,updated_at text)"""
+    )
+    access_url = "https://a-mail.sanai.pro/?impersonate_email=new@example.com&impersonate_uuid=uuid-1"
+
+    db.persist_rebind_failure("old@example.com", "new@example.com", access_url, "", "failed")
+
+    row = db.conn.execute("select * from sunny_mailboxes where email='new@example.com'").fetchone()
+    assert row["mailbox_type"] == "apple"
+    assert row["mailbox_channel"] == "url_api"
+    assert row["pickup_token_hash"] == ""
+
+
+def test_external_url_rebind_cleanup_does_not_call_cloudmail(monkeypatch):
+    class DB:
+        deleted = False
+
+        @staticmethod
+        def get_config(key):
+            assert key == "domain_mailbox"
+            return {"retain_failed_mailboxes": False}
+
+        def delete_failed_domain_mailbox(self, email, pickup_token_hash):
+            self.deleted = (email, pickup_token_hash)
+            return True
+
+    monkeypatch.setattr(rebind_module, "cleanup_failed_mailbox", lambda *args: (_ for _ in ()).throw(AssertionError("unexpected CloudMail cleanup")))
+    db = DB()
+    access_url = "https://a-mail.sanai.pro/?impersonate_email=new@example.com&impersonate_uuid=uuid-1"
+
+    rebind_module._handle_failed_domain_mailbox(
+        db, "old@example.com", "new@example.com", access_url, "", RuntimeError("failed"), lambda _: None
+    )
+
+    assert db.deleted == ("new@example.com", "")
 
 
 def test_rebind_client_observation_header_matches_web_format():

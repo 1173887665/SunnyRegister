@@ -7,8 +7,9 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import parse_qsl, urlparse
 from zoneinfo import ZoneInfo
+
+from .mailbox import _infer_rebind_mailbox_kind
 
 
 def database_url() -> str:
@@ -783,11 +784,12 @@ class SunnyDB:
         mailbox["email"] = rebind_email
         mailbox["access_key"] = rebind_api
         mailbox["raw"] = f"{rebind_email}----{rebind_api}"
-        parsed = urlparse(rebind_api)
-        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        if query.get("email") and query.get("token"):
-            mailbox["mailbox_type"] = "domain"
-            mailbox["mailbox_channel"] = "domain_api"
+        try:
+            detected_kind = _infer_rebind_mailbox_kind(rebind_api, rebind_email)
+        except ValueError:
+            detected_kind = None
+        if detected_kind:
+            mailbox["mailbox_type"], mailbox["mailbox_channel"] = detected_kind
         return mailbox
 
     def fetch_accounts(self, ids: list[int] | None = None) -> list[dict[str, Any]]:
@@ -958,12 +960,32 @@ class SunnyDB:
                 (new_email, new_mailbox_api, timestamp, account["id"]),
             )
 
-    def persist_rebind_failure(self, email: str, new_email: str, new_mailbox_api: str, pickup_token_hash: str, error: str) -> None:
+    def persist_rebind_failure(
+        self,
+        email: str,
+        new_email: str,
+        new_mailbox_api: str,
+        pickup_token_hash: str,
+        error: str,
+        mailbox_type: str = "domain",
+        mailbox_channel: str = "domain_api",
+    ) -> None:
         """Keep a generated replacement mailbox visible when the rebind flow fails later."""
         email = str(email or '').strip()
         new_email = str(new_email or '').strip()
         if not new_email or '@' not in new_email:
             return
+        try:
+            detected_kind = _infer_rebind_mailbox_kind(new_mailbox_api, new_email)
+        except ValueError:
+            detected_kind = None
+        if detected_kind:
+            mailbox_type, mailbox_channel = detected_kind
+        else:
+            mailbox_type = str(mailbox_type or "domain").strip().lower() or "domain"
+            mailbox_channel = str(mailbox_channel or "").strip().lower() or (
+                "url_api" if mailbox_type == "apple" else "remail_api" if mailbox_type == "remail" else "domain_api"
+            )
         timestamp = now_sql()
         raw = f"{new_email}----{new_mailbox_api}"
         with self.conn:
@@ -977,10 +999,12 @@ class SunnyDB:
                     (True, error, timestamp, int(pending['id'])),
                 )
                 return
-            group_name = f"domain-api-{datetime.now(app_timezone()).strftime('%m-%d')}"
+            group_prefix = "domain-api" if mailbox_type == "domain" else mailbox_channel.replace("_", "-")
+            group_name = f"{group_prefix}-{datetime.now(app_timezone()).strftime('%m-%d')}"
+            group_description = "自建域名邮箱 API 换绑失败邮箱" if mailbox_type == "domain" else "换绑失败邮箱"
             self.conn.execute(
                 "insert into sunny_mailbox_groups(name,description,created_at,updated_at) values(?,?,?,?) on conflict(name) do nothing",
-                (group_name, "自建域名邮箱 API 换绑失败邮箱", timestamp, timestamp),
+                (group_name, group_description, timestamp, timestamp),
             )
             group = self.conn.execute("select id from sunny_mailbox_groups where name=?", (group_name,)).fetchone()
             if not group:
@@ -990,15 +1014,15 @@ class SunnyDB:
                 return
             self.conn.execute(
                 """insert into sunny_mailboxes(group_id,email,mailbox_type,mailbox_channel,access_key,pickup_token_hash,raw,status,enabled,last_error,latest_mail_json,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (group['id'], new_email, 'domain', 'domain_api', new_mailbox_api, pickup_token_hash, raw, '失败', True, error, '{}', timestamp, timestamp),
+                (group['id'], new_email, mailbox_type, mailbox_channel, new_mailbox_api, pickup_token_hash, raw, '失败', True, error, '{}', timestamp, timestamp),
             )
 
     def delete_failed_domain_mailbox(self, email: str, pickup_token_hash: str = "") -> bool:
-        """Delete only a generated, unfinished domain mailbox from the current flow."""
+        """Delete only an unfinished replacement mailbox from the current flow."""
         email = str(email or '').strip()
         if not email or '@' not in email:
             return False
-        query = "select id from sunny_mailboxes where lower(email)=lower(?) and mailbox_type='domain' and status in ('失败','换绑中')"
+        query = "select id from sunny_mailboxes where lower(email)=lower(?) and mailbox_type in ('domain','apple','remail') and status in ('失败','换绑中')"
         params: list[Any] = [email]
         if pickup_token_hash:
             query += " and pickup_token_hash=?"

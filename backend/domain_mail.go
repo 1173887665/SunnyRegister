@@ -55,8 +55,8 @@ func newDomainMailClient(cfg map[string]any) (*domainMailClient, error) {
 	base := strings.TrimRight(strings.TrimSpace(text(cfg["base_url"])), "/")
 	token := strings.TrimSpace(text(cfg["auth_token"]))
 	sitePassword := strings.TrimSpace(text(cfg["site_password"]))
-	if base == "" || token == "" || sitePassword == "" {
-		return nil, fmt.Errorf("自建域名邮箱配置不完整：请填写 API 地址、PUBLIC_API_TOKEN、站点密码和邮箱域名")
+	if base == "" || token == "" {
+		return nil, fmt.Errorf("自建域名邮箱配置不完整：请填写 API 地址、PUBLIC_API_TOKEN 和邮箱域名")
 	}
 	if _, err := domainMailboxDomains(cfg); err != nil {
 		return nil, err
@@ -179,7 +179,9 @@ func (c *domainMailClient) request(ctx context.Context, method, path string, bod
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", c.token)
 	req.Header.Set("X-Auth-Token", c.token)
-	req.Header.Set("x-custom-auth", c.sitePassword)
+	if c.sitePassword != "" {
+		req.Header.Set("x-custom-auth", c.sitePassword)
+	}
 	req.Header.Set("User-Agent", "SunnyRegister/1.0")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -499,32 +501,44 @@ func parseDomainMailboxPickupCredential(value string) (string, string, error) {
 }
 
 func validateDomainMailboxAccessKey(value, email string) error {
-	value = strings.TrimSpace(value)
-	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
-		credentialEmail, _, err := parseDomainMailboxPickupCredential(value)
-		if err == nil {
-			if sunnyEmailKey(credentialEmail) != sunnyEmailKey(email) {
-				return fmt.Errorf("自建域名邮箱取件 URL 与邮箱名不匹配")
-			}
-			return nil
-		}
-		// Imported mailbox providers use a dedicated HTTPS inbox URL and may
-		// identify the mailbox with UUID/impersonation query parameters instead
-		// of the local pickup email+token pair. Validate the URL shape here and
-		// let the url_api reader perform provider-specific checks later.
-		if _, urlErr := validateURLAPIMailAddress(value); urlErr == nil {
-			parsed, _ := url.Parse(value)
-			for _, key := range []string{"email", "impersonate_email", "mailbox", "toEmail"} {
-				if candidate := strings.TrimSpace(parsed.Query().Get(key)); candidate != "" && strings.Contains(candidate, "@") && sunnyEmailKey(candidate) != sunnyEmailKey(email) {
-					return fmt.Errorf("邮箱取件 URL 与邮箱名不匹配")
-				}
-			}
-			return nil
-		}
-		return err
-	}
-	_, _, err := parseDomainMailboxCredential(value)
+	_, _, err := classifySunnyRebindMailboxCredential(value, email)
 	return err
+}
+
+// classifySunnyRebindMailboxCredential keeps persisted rebind metadata aligned
+// with the reader that can actually consume the credential. Local pickup URLs
+// carry email+token; imported inbox URLs use provider-specific query fields.
+func classifySunnyRebindMailboxCredential(value, email string) (string, string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", fmt.Errorf("邮箱取件凭证为空")
+	}
+	if isSunnyHTTPURL(value) {
+		credentialEmail, _, domainErr := parseDomainMailboxPickupCredential(value)
+		if domainErr == nil {
+			if sunnyEmailKey(credentialEmail) != sunnyEmailKey(email) {
+				return "", "", fmt.Errorf("自建域名邮箱取件 URL 与邮箱名不匹配")
+			}
+			return "domain", "domain_api", nil
+		}
+		if _, urlErr := validateURLAPIMailAddress(value); urlErr != nil {
+			return "", "", urlErr
+		}
+		parsed, parseErr := url.Parse(value)
+		if parseErr != nil {
+			return "", "", parseErr
+		}
+		for _, key := range []string{"email", "impersonate_email", "mailbox", "toEmail"} {
+			if candidate := strings.TrimSpace(parsed.Query().Get(key)); candidate != "" && strings.Contains(candidate, "@") && sunnyEmailKey(candidate) != sunnyEmailKey(email) {
+				return "", "", fmt.Errorf("邮箱取件 URL 与邮箱名不匹配")
+			}
+		}
+		return "apple", "url_api", nil
+	}
+	if _, _, err := parseDomainMailboxCredential(value); err != nil {
+		return "", "", err
+	}
+	return "domain", "domain_api", nil
 }
 
 func domainMailboxTokenHashFromCredential(value, email string) string {

@@ -40,6 +40,60 @@ func TestDomainMailboxCredentialAndTypeHelpers(t *testing.T) {
 	}
 }
 
+func TestClassifySunnyRebindMailboxCredential(t *testing.T) {
+	domainPickup := "https://sunny.example/api/sunny/domain-mail/pickup?email=user%40example.com&token=dmsk_test"
+	if mailboxType, channel, err := classifySunnyRebindMailboxCredential(domainPickup, "user@example.com"); err != nil || mailboxType != "domain" || channel != "domain_api" {
+		t.Fatalf("domain pickup classification = %q/%q err=%v", mailboxType, channel, err)
+	}
+	externalURL := "https://a-mail.sanai.pro/?impersonate_email=user@example.com&impersonate_uuid=uuid-1"
+	if mailboxType, channel, err := classifySunnyRebindMailboxCredential(externalURL, "user@example.com"); err != nil || mailboxType != "apple" || channel != "url_api" {
+		t.Fatalf("external URL classification = %q/%q err=%v", mailboxType, channel, err)
+	}
+	if _, _, err := classifySunnyRebindMailboxCredential(externalURL, "other@example.com"); err == nil {
+		t.Fatal("mismatched external URL email should be rejected")
+	}
+}
+
+func TestReconcileSunnyRebindCredentialsPreservesExternalURLType(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatal(err)
+	}
+	var account SunnyAccount
+	if err := s.db.First(&account, session.AccountID).Error; err != nil {
+		t.Fatal(err)
+	}
+	accessURL := "https://a-mail.sanai.pro/?impersonate_email=rebound@example.com&impersonate_uuid=uuid-1"
+	if err := s.db.Model(&account).Updates(map[string]any{"rebind_email": "rebound@example.com", "rebind_mailbox_api": accessURL}).Error; err != nil {
+		t.Fatal(err)
+	}
+	reconcileSunnyRebindCredentials(s.db)
+	var mailbox SunnyMailbox
+	if err := s.db.First(&mailbox, account.MailboxID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if mailbox.MailboxType != "apple" || mailbox.MailboxChannel != "url_api" || mailbox.AccessKey != accessURL || mailbox.PickupTokenHash != "" {
+		t.Fatalf("external URL type was not preserved: %#v", mailbox)
+	}
+}
+
+func TestSunnyMailboxFromBodyInfersExternalURLAPI(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	mailbox, err := s.sunnyMailboxFromBody(map[string]any{
+		"mailbox_type":    "domain",
+		"mailbox_channel": "domain_api",
+		"email":           "replacement@example.com",
+		"access_key":      "https://a-mail.sanai.pro/?impersonate_email=replacement@example.com&impersonate_uuid=uuid-1",
+	})
+	if err != nil {
+		t.Fatalf("build external URL mailbox: %v", err)
+	}
+	if mailbox.MailboxType != "apple" || mailbox.MailboxChannel != "url_api" || mailbox.PickupTokenHash != "" {
+		t.Fatalf("external URL mailbox was not normalized: %#v", mailbox)
+	}
+}
+
 func TestValidateDomainMailboxAccessKeyAcceptsImportedURLAPI(t *testing.T) {
 	urlAPI := "https://a-mail.sanai.pro/?impersonate_email=user@example.com&impersonate_uuid=uuid-1"
 	if err := validateDomainMailboxAccessKey(urlAPI, "user@example.com"); err != nil {

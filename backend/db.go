@@ -563,7 +563,8 @@ func reconcileSunnyRebindCredentials(db *gorm.DB) {
 	for _, account := range accounts {
 		rebindEmail := strings.TrimSpace(account.RebindEmail)
 		rebindAPI := strings.TrimSpace(account.RebindMailboxAPI)
-		if validateDomainMailboxAccessKey(rebindAPI, rebindEmail) != nil {
+		mailboxType, mailboxChannel, credentialErr := classifySunnyRebindMailboxCredential(rebindAPI, rebindEmail)
+		if credentialErr != nil {
 			continue
 		}
 		var mailbox SunnyMailbox
@@ -571,18 +572,22 @@ func reconcileSunnyRebindCredentials(db *gorm.DB) {
 			db.First(&mailbox, account.MailboxID)
 		}
 		if mailbox.ID == 0 {
-			db.Where("LOWER(email) = ? OR LOWER(rebind_email) = ?", sunnyEmailKey(account.Email), sunnyEmailKey(account.Email)).First(&mailbox)
+			db.Where("LOWER(email) = ? OR LOWER(rebind_email) = ?", sunnyEmailKey(account.Email), sunnyEmailKey(rebindEmail)).First(&mailbox)
 		}
 		if mailbox.ID == 0 {
 			continue
 		}
 		raw := sunnyURLAPIRaw(rebindEmail, rebindAPI)
 		canonicalEmail := strings.TrimSpace(mailbox.Email)
+		pickupTokenHash := ""
+		if mailboxType == "domain" {
+			pickupTokenHash = domainMailboxTokenHashFromCredential(rebindAPI, rebindEmail)
+		}
 		_ = db.Transaction(func(tx *gorm.DB) error {
 			if err := tx.Model(&SunnyMailbox{}).Where("id = ?", mailbox.ID).Updates(map[string]any{
 				"rebind_email": rebindEmail, "rebind_mailbox_api": rebindAPI,
-				"mailbox_type": "domain", "mailbox_channel": "domain_api", "access_key": rebindAPI,
-				"pickup_token_hash": domainMailboxTokenHashFromCredential(rebindAPI, rebindEmail), "raw": raw,
+				"mailbox_type": mailboxType, "mailbox_channel": mailboxChannel, "access_key": rebindAPI,
+				"pickup_token_hash": pickupTokenHash, "raw": raw,
 			}).Error; err != nil {
 				return err
 			}

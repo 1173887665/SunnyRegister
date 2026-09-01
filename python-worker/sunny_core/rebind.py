@@ -16,7 +16,7 @@ import requests
 
 from .db import SunnyDB
 from .domain_mail_cleanup import cleanup_failed_mailbox, retain_failed_mailbox
-from .mailbox import DomainMailReader, MailAccount, account_from_row, create_mailbox_reader
+from .mailbox import DomainMailReader, MailAccount, _infer_rebind_mailbox_kind, account_from_row, create_mailbox_reader
 from .openai_auth import LoginSecretAuthenticationError, login_or_register
 from .protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationFlow
 
@@ -183,8 +183,8 @@ def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str, 
     domains = list(dict.fromkeys(domain_values))
     pickup_base = str(cfg.get("pickup_base_url") or os.getenv("SUNNY_PUBLIC_ORIGIN") or "").strip().rstrip("/")
     pickup_parts = urlsplit(pickup_base)
-    if not base or not token or not site_password or not domains or any("@" in domain or "." not in domain or any(char.isspace() for char in domain) for domain in domains):
-        raise RebindError("自建域名邮箱配置不完整，请填写 CloudMail API、PUBLIC_API_TOKEN、PASSWORDS 和域名")
+    if not base or not token or not domains or any("@" in domain or "." not in domain or any(char.isspace() for char in domain) for domain in domains):
+        raise RebindError("自建域名邮箱配置不完整，请填写 CloudMail API、PUBLIC_API_TOKEN 和域名")
     if pickup_parts.scheme not in {"http", "https"} or not pickup_parts.netloc:
         raise RebindError("请先配置可公网访问的 SunnyRegister 取件 API 地址")
     length = max(6, min(32, int(cfg.get("random_local_length") or 12)))
@@ -194,10 +194,13 @@ def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str, 
         local = re.sub(r"[^a-z0-9]", "", secrets.token_urlsafe(length + 4).lower())[:length]
         email = f"{local}@{domain}"
         try:
+            headers = {"Accept": "application/json", "Authorization": token, "X-Auth-Token": token, "User-Agent": "SunnyRegister/1.0"}
+            if site_password:
+                headers["x-custom-auth"] = site_password
             response = requests.post(
                 base + "/api/public/addUser",
                 json={"list": [{"email": email, "password": secrets.token_urlsafe(18)}]},
-                headers={"Accept": "application/json", "Authorization": token, "X-Auth-Token": token, "x-custom-auth": site_password, "User-Agent": "SunnyRegister/1.0"},
+                headers=headers,
                 timeout=30,
                 proxies=proxies,
             )
@@ -470,14 +473,37 @@ def _handle_failed_domain_mailbox(
     pickup_token_hash: str,
     error: Exception,
     log: Callable[[str], None],
+    *,
+    mailbox_type: str = "domain",
+    mailbox_channel: str = "domain_api",
 ) -> None:
+    try:
+        detected_kind = _infer_rebind_mailbox_kind(new_api, new_email)
+    except ValueError:
+        detected_kind = None
+    if detected_kind:
+        mailbox_type, mailbox_channel = detected_kind
+    mailbox_type = str(mailbox_type or "domain").strip().lower() or "domain"
+    mailbox_channel = str(mailbox_channel or "").strip().lower() or (
+        "url_api" if mailbox_type == "apple" else "remail_api" if mailbox_type == "remail" else "domain_api"
+    )
     cfg = db.get_config("domain_mailbox")
     if retain_failed_mailbox(cfg):
         try:
-            db.persist_rebind_failure(old_email, new_email, new_api, pickup_token_hash, str(error))
-            log(f"[{old_email}] 换绑失败邮箱已保存到自建域名邮箱池：{new_email}")
+            db.persist_rebind_failure(
+                old_email, new_email, new_api, pickup_token_hash, str(error), mailbox_type, mailbox_channel
+            )
+            log(f"[{old_email}] 换绑失败邮箱已保存到邮箱池：{new_email}")
         except Exception as persist_exc:
             log(f"[{old_email}] 保存失败邮箱记录失败：{persist_exc}")
+        return
+    if mailbox_type != "domain":
+        try:
+            removed = db.delete_failed_domain_mailbox(new_email, pickup_token_hash)
+            message = "已清理本地失败邮箱记录" if removed else "本地未找到匹配的失败邮箱记录"
+            log(f"[{old_email}] {message}：{new_email}")
+        except Exception as cleanup_exc:
+            log(f"[{old_email}] 失败邮箱清理未完全完成：{cleanup_exc}")
         return
     try:
         cleanup_failed_mailbox(db, cfg, new_email, pickup_token_hash, log)
@@ -526,8 +552,9 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         verified_email = str(account_row.get("rebind_email") or "").strip()
         verified_api = str(account_row.get("rebind_mailbox_api") or "").strip()
         if verified_email and verified_api and verified_email.lower() != old_email.lower():
-            verified_type = str(mailbox.get("mailbox_type") or "domain").strip().lower() or "domain"
-            verified_channel = str(mailbox.get("mailbox_channel") or "").strip().lower() or (
+            detected_kind = _infer_rebind_mailbox_kind(verified_api, verified_email)
+            verified_type = detected_kind[0] if detected_kind else str(mailbox.get("mailbox_type") or "domain").strip().lower() or "domain"
+            verified_channel = detected_kind[1] if detected_kind else str(mailbox.get("mailbox_channel") or "").strip().lower() or (
                 "url_api" if verified_type == "apple" else "remail_api" if verified_type == "remail" else "domain_api"
             )
             verified_hash = _pickup_token_hash(verified_api)
@@ -565,6 +592,9 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         imported_type = str(account_row.get("_rebind_target_type") or "domain").strip().lower() or "domain"
         imported_channel = str(account_row.get("_rebind_target_channel") or "").strip().lower()
         if imported_email and imported_api:
+            detected_kind = _infer_rebind_mailbox_kind(imported_api, imported_email)
+            if detected_kind:
+                imported_type, imported_channel = detected_kind
             new_email, new_api = imported_email, imported_api
             new_api_token_hash = _pickup_token_hash(new_api)
             log(f"[{old_email}] 使用已导入域名邮箱：{new_email}")
@@ -626,7 +656,17 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             except Exception:
                 pass
         if new_email and new_api:
-            _handle_failed_domain_mailbox(db, old_email, new_email, new_api, new_api_token_hash, exc, log)
+            _handle_failed_domain_mailbox(
+                db,
+                old_email,
+                new_email,
+                new_api,
+                new_api_token_hash,
+                exc,
+                log,
+                mailbox_type=imported_type,
+                mailbox_channel=target_channel,
+            )
         raise
     finally:
         for flow in (old_flow, new_flow):

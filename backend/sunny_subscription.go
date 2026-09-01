@@ -233,6 +233,18 @@ func (s *Server) detectSunnySubscriptionMail(candidate sunnySubscriptionCandidat
 		matched, subject := sunnySubscriptionPayloadConfirmed(payload)
 		return matched, subject, nil
 	}
+	if candidate.MailboxType == "apple" && candidate.Channel == "url_api" {
+		mailEmail := strings.TrimSpace(candidate.MailEmail)
+		if mailEmail == "" {
+			mailEmail = candidate.Email
+		}
+		payload, err := fetchURLAPILatestMail(mailEmail, candidate.AccessKey, 5, proxyURL)
+		if err != nil {
+			return false, "", err
+		}
+		matched, subject := sunnySubscriptionPayloadConfirmed(payload)
+		return matched, subject, nil
+	}
 	return sunnyDetectSubscriptionMail(candidate, proxyURL)
 }
 
@@ -330,11 +342,16 @@ func (s *Server) sunnySubscriptionCandidates(ids []uint) ([]sunnySubscriptionCan
 				candidate.Error = "换绑邮箱凭证不完整"
 			} else {
 				candidate.MailEmail = strings.TrimSpace(mailbox.RebindEmail)
-				candidate.MailboxType = "domain"
-				candidate.Channel = "domain_api"
-				candidate.AccessKey = strings.TrimSpace(mailbox.RebindMailboxAPI)
-				candidate.ClientID = ""
-				candidate.RefreshToken = ""
+				mailboxType, mailboxChannel, classifyErr := classifySunnyRebindMailboxCredential(mailbox.RebindMailboxAPI, candidate.MailEmail)
+				if classifyErr != nil {
+					candidate.Error = "换绑邮箱凭证无效：" + classifyErr.Error()
+				} else {
+					candidate.MailboxType = mailboxType
+					candidate.Channel = mailboxChannel
+					candidate.AccessKey = strings.TrimSpace(mailbox.RebindMailboxAPI)
+					candidate.ClientID = ""
+					candidate.RefreshToken = ""
+				}
 			}
 		}
 		if (candidate.MailboxType == "apple" && strings.TrimSpace(candidate.AccessKey) == "") ||

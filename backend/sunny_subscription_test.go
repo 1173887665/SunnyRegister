@@ -438,6 +438,45 @@ func TestSunnySubscriptionUsesReboundDomainMailAPI(t *testing.T) {
 	}
 }
 
+func TestSunnySubscriptionUsesReboundURLAPIMailAPI(t *testing.T) {
+	urlAPIAllowPrivateForTests = true
+	defer func() { urlAPIAllowPrivateForTests = false }()
+	requested := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested++
+		if r.URL.Query().Get("impersonate_email") != "rebound@example.com" {
+			t.Fatalf("unexpected rebound URL query: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, `<html><h2>ChatGPT - Your new plan</h2><p>Manage your subscription</p></html>`)
+	}))
+	defer upstream.Close()
+	s := newSunnySessionTestServer(t)
+	accessURL := upstream.URL + "?impersonate_email=rebound%40example.com&impersonate_uuid=uuid-1"
+	if err := s.db.Model(&SunnyMailbox{}).Where("email = ?", "session@example.com").Updates(map[string]any{
+		"rebind_email": "rebound@example.com", "rebind_mailbox_api": accessURL,
+		"mailbox_type": "domain", "mailbox_channel": "domain_api", "access_key": accessURL,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var session SunnySession
+	if err := s.db.Where("email = ?", "session@example.com").First(&session).Error; err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := s.sunnySubscriptionCandidates([]uint{session.ID})
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("subscription candidates: err=%v candidates=%#v", err, candidates)
+	}
+	candidate := candidates[0]
+	if candidate.MailEmail != "rebound@example.com" || candidate.MailboxType != "apple" || candidate.Channel != "url_api" {
+		t.Fatalf("rebound URL API candidate was not classified: %#v", candidate)
+	}
+	matched, subject, err := s.detectSunnySubscriptionMail(candidate, "")
+	if err != nil || !matched || subject == "" || requested != 1 {
+		t.Fatalf("rebound URL API lookup failed: matched=%v subject=%q requests=%d err=%v", matched, subject, requested, err)
+	}
+}
+
 func TestSunnySubscriptionRouteCreatesLocalTask(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	var session SunnySession

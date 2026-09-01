@@ -182,6 +182,33 @@ def _normalize_microsoft_credentials(values: list[str]) -> tuple[str, str, str]:
     return password, client_id, refresh_token
 
 
+def _infer_rebind_mailbox_kind(value: str, email: str = "") -> tuple[str, str] | None:
+    """Infer the reader for persisted replacement-mailbox credentials."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+        query = {key.lower(): str(value or "").strip() for key, value in parse_qsl(parsed.query, keep_blank_values=True)}
+        pickup_email = query.get("email", "")
+        if pickup_email and query.get("token"):
+            if email and pickup_email.casefold() != str(email).strip().casefold():
+                raise ValueError("Mailbox pickup URL email does not match mailbox address")
+            return "domain", "domain_api"
+        for key in ("email", "impersonate_email", "mailbox", "toemail"):
+            candidate = query.get(key, "")
+            if candidate and "@" in candidate and email and candidate.casefold() != str(email).strip().casefold():
+                raise ValueError("Mailbox pickup URL email does not match mailbox address")
+        return "apple", "url_api"
+    try:
+        metadata = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(metadata, dict) and str(metadata.get("base_url") or "").strip() and str(metadata.get("auth_token") or "").strip():
+        return "domain", "domain_api"
+    return None
+
+
 def parse_account_line(line: str) -> MailAccount:
     parts = [p.strip() for p in str(line or "").strip().split("----")]
     if len(parts) < 4:
@@ -208,7 +235,9 @@ def parse_account_line(line: str) -> MailAccount:
 
 def account_from_row(row: dict[str, Any]) -> MailAccount:
     mailbox_type = str(row.get("mailbox_type") or "microsoft").strip().lower()
-    if mailbox_type in {"domain", "domain_mailbox", "cloudmail", "cfworker"} or str(row.get("mailbox_channel") or "").strip().lower() == "domain_api":
+    mailbox_channel = str(row.get("mailbox_channel") or "").strip().lower()
+    inferred_url_api = False
+    if mailbox_type in {"domain", "domain_mailbox", "cloudmail", "cfworker"} or mailbox_channel == "domain_api":
         email = str(row.get("email") or "").strip()
         access_key = str(row.get("access_key") or "").strip()
         raw = str(row.get("raw") or "").strip()
@@ -218,25 +247,27 @@ def account_from_row(row: dict[str, Any]) -> MailAccount:
             access_key = access_key or (parts[1] if len(parts) > 1 else "")
         if not email or "@" not in email or not access_key:
             raise ValueError("Invalid domain mailbox row; expected email and CloudMail credential")
-        if access_key.startswith(("http://", "https://")):
-            parsed = urlparse(access_key)
-            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc or not query.get("token") or str(query.get("email") or "").strip().lower() != email.lower():
-                raise ValueError("Invalid domain mailbox pickup URL")
-        else:
+        detected = _infer_rebind_mailbox_kind(access_key, email)
+        inferred_url_api = detected == ("apple", "url_api")
+        if detected == ("apple", "url_api"):
+            mailbox_type, mailbox_channel = detected
+        elif detected == ("domain", "domain_api") and not access_key.lower().startswith(("http://", "https://")):
             try:
                 metadata = json.loads(access_key)
             except (TypeError, ValueError) as exc:
                 raise ValueError("Invalid domain mailbox credential JSON") from exc
             if not str(metadata.get("base_url") or "").strip() or not str(metadata.get("auth_token") or "").strip():
                 raise ValueError("Domain mailbox credential is missing base_url or auth_token")
-        return MailAccount(
-            email=email, password="", client_id="", refresh_token="", raw=raw or f"{email}----{access_key}",
-            account_type=str(row.get("account_type") or "free"), openai_rt=str(row.get("openai_rt") or ""),
-            mailbox_type="domain", mailbox_channel="domain_api", access_key=access_key,
-            chatgpt_password=str(row.get("chat_gpt_password") or row.get("chatgpt_password") or ""),
-            totp_secret=str(row.get("totp_secret") or "").strip(),
-        )
+        elif detected is None:
+            raise ValueError("Invalid domain mailbox credential")
+        if mailbox_type == "domain":
+            return MailAccount(
+                email=email, password="", client_id="", refresh_token="", raw=raw or f"{email}----{access_key}",
+                account_type=str(row.get("account_type") or "free"), openai_rt=str(row.get("openai_rt") or ""),
+                mailbox_type="domain", mailbox_channel="domain_api", access_key=access_key,
+                chatgpt_password=str(row.get("chat_gpt_password") or row.get("chatgpt_password") or ""),
+                totp_secret=str(row.get("totp_secret") or "").strip(),
+            )
     if mailbox_type == "remail" or str(row.get("mailbox_channel") or "").strip().lower() == "remail_api":
         email = str(row.get("email") or "").strip()
         access_key = str(row.get("access_key") or "").strip()
@@ -258,7 +289,7 @@ def account_from_row(row: dict[str, Any]) -> MailAccount:
         email = str(row.get("email") or "").strip()
         access_key = str(row.get("access_key") or "").strip()
         raw = str(row.get("raw") or "").strip()
-        mailbox_channel = str(row.get("mailbox_channel") or "xbovo").strip().lower()
+        mailbox_channel = "url_api" if inferred_url_api else str(row.get("mailbox_channel") or "xbovo").strip().lower()
         chatgpt_password = str(row.get("chat_gpt_password") or row.get("chatgpt_password") or "")
         totp_secret = str(row.get("totp_secret") or "").strip()
         if raw:
@@ -1455,10 +1486,13 @@ class DomainMailReader:
                     proxies=self.proxies,
                 )
             else:
+                headers = {"Authorization": self.auth_token, "X-Auth-Token": self.auth_token, "Accept": "application/json", "User-Agent": "SunnyRegister/1.0"}
+                if self.site_password:
+                    headers["x-custom-auth"] = self.site_password
                 response = requests.post(
                     self.base_url + "/api/public/emailList",
                     json={"toEmail": self.account.email, "timeSort": "desc", "type": 0, "isDel": 0, "num": 1, "size": 20},
-                    headers={"Authorization": self.auth_token, "X-Auth-Token": self.auth_token, "x-custom-auth": self.site_password, "Accept": "application/json", "User-Agent": "SunnyRegister/1.0"},
+                    headers=headers,
                     timeout=30,
                     proxies=self.proxies,
                 )
@@ -1811,12 +1845,18 @@ class URLAPIICloudReader:
             )
         try:
             last_error: Exception | None = None
+            # A mailbox endpoint should be polled several times during the
+            # OTP window. Keep each proxy attempt bounded so one dead tunnel
+            # cannot consume the entire 120-second initial wait.
+            request_timeout = timeout
+            if self.proxies:
+                request_timeout = max(5, min(int(timeout or 0), 15))
             for attempt in range(3):
                 try:
                     return requests.get(
                         target,
                         headers=headers,
-                        timeout=timeout,
+                        timeout=request_timeout,
                         proxies=self.proxies,
                         allow_redirects=allow_redirects,
                         stream=stream,
@@ -1826,6 +1866,25 @@ class URLAPIICloudReader:
                     if attempt >= 2:
                         break
                     time.sleep(0.4 * (attempt + 1) + random.uniform(0, 0.4))
+            # Mailbox URL endpoints are independent from the OpenAI browser
+            # session.  A dead/overloaded proxy must not prevent OTP pickup;
+            # after the bounded proxy retries, try the endpoint once directly.
+            # This keeps proxy use as the default while recovering transient
+            # proxy tunnel timeouts and remote disconnects seen in task logs.
+            if self.proxies:
+                try:
+                    direct_response = requests.get(
+                        target,
+                        headers=headers,
+                        timeout=request_timeout,
+                        proxies=None,
+                        allow_redirects=allow_redirects,
+                        stream=stream,
+                    )
+                    self.log(f"[{self.account.email}] url_api 代理重试失败，已切换直连取件")
+                    return direct_response
+                except requests.RequestException as direct_exc:
+                    last_error = direct_exc
             raise MailboxAccessError(
                 "mailbox_network_error",
                 "url_api 邮箱渠道连接超时或网络不可达，请检查取码 URL、服务器出网与代理配置",

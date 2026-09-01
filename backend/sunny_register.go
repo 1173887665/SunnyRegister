@@ -977,11 +977,12 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 				return
 			}
 			if m.RebindEmail != "" {
-				if err := validateDomainMailboxAccessKey(m.RebindMailboxAPI, m.RebindEmail); err != nil {
+				detectedType, detectedChannel, err := classifySunnyRebindMailboxCredential(m.RebindMailboxAPI, m.RebindEmail)
+				if err != nil {
 					writeError(w, http.StatusUnprocessableEntity, err.Error())
 					return
 				}
-				mailboxType, mailboxChannel = "domain", "domain_api"
+				mailboxType, mailboxChannel = detectedType, detectedChannel
 				m.MailboxType, m.MailboxChannel = mailboxType, mailboxChannel
 				m.AccessKey = m.RebindMailboxAPI
 			}
@@ -1095,9 +1096,14 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 						return
 					}
 				}
+				m.PickupTokenHash = ""
 				m.Password, m.ClientID, m.RefreshToken = "", "", ""
 				if mailboxChannel == "url_api" {
-					m.Raw = sunnyURLAPIRaw(m.Email, m.AccessKey)
+					rawEmail := m.Email
+					if m.RebindEmail != "" {
+						rawEmail = m.RebindEmail
+					}
+					m.Raw = sunnyURLAPIRaw(rawEmail, m.AccessKey)
 				} else {
 					m.Raw = strings.Join([]string{strings.TrimSpace(m.Email), strings.TrimSpace(m.AccessKey)}, "----")
 				}
@@ -1260,6 +1266,13 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 			raw = sunnyMicrosoftRaw(email, password, clientID, refreshToken)
 		}
 	}
+	if mailboxType == "domain" && isSunnyHTTPURL(accessKey) {
+		detectedType, detectedChannel, err := classifySunnyRebindMailboxCredential(accessKey, email)
+		if err != nil {
+			return SunnyMailbox{}, err
+		}
+		mailboxType, mailboxChannel = detectedType, detectedChannel
+	}
 	if email == "" || !strings.Contains(email, "@") || (mailboxType == "apple" && mailboxChannel != "url_api" && accessKey == "") || (mailboxType == "microsoft" && (clientID == "" || refreshToken == "")) || ((mailboxType == "remail" || mailboxType == "domain") && accessKey == "") {
 		return SunnyMailbox{}, fmt.Errorf("%s", sunnyMailboxFormatHint(mailboxType, mailboxChannel))
 	}
@@ -1290,7 +1303,11 @@ func (s *Server) sunnyMailboxFromBody(body map[string]any) (SunnyMailbox, error)
 	if openaiRT != "" && status == "未注册" {
 		status = "已注册"
 	}
-	return SunnyMailbox{GroupID: gid, Email: email, MailboxType: mailboxType, MailboxChannel: mailboxChannel, AccessKey: accessKey, PickupTokenHash: domainMailboxTokenHashFromCredential(accessKey, email), Password: password, ChatGPTPassword: chatgptPassword, TOTPSecret: totpSecret, ClientID: clientID, RefreshToken: refreshToken, OpenAIRT: openaiRT, Raw: raw, AccountType: fallback(normalizeSunnyPlanType(fallback(text(body["plan_type"]), text(body["account_type"]))), "free"), Status: status, Enabled: enabled, LatestMailJSON: "{}"}, nil
+	pickupTokenHash := ""
+	if mailboxType == "domain" {
+		pickupTokenHash = domainMailboxTokenHashFromCredential(accessKey, email)
+	}
+	return SunnyMailbox{GroupID: gid, Email: email, MailboxType: mailboxType, MailboxChannel: mailboxChannel, AccessKey: accessKey, PickupTokenHash: pickupTokenHash, Password: password, ChatGPTPassword: chatgptPassword, TOTPSecret: totpSecret, ClientID: clientID, RefreshToken: refreshToken, OpenAIRT: openaiRT, Raw: raw, AccountType: fallback(normalizeSunnyPlanType(fallback(text(body["plan_type"]), text(body["account_type"]))), "free"), Status: status, Enabled: enabled, LatestMailJSON: "{}"}, nil
 }
 
 func normalizeSunnyMailboxType(value string) string {
@@ -1755,16 +1772,15 @@ func (s *Server) sunnyImportMailboxes(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		lineType, lineChannel := mailboxType, mailboxChannel
-		p, err := parseSunnyMailboxLineForProvider(line, lineType, lineChannel)
-		// iCloud mailbox links are commonly pasted while the domain-mail tab is
-		// selected. Recognize those links as Apple URL API credentials.
-		if err != nil && mailboxType == "domain" {
+		if mailboxType == "domain" {
 			parts := strings.SplitN(strings.TrimSpace(line), "----", 2)
-			if len(parts) == 2 && strings.HasSuffix(strings.ToLower(strings.TrimSpace(parts[0])), "@icloud.com") && isSunnyHTTPURL(strings.TrimSpace(parts[1])) {
-				lineType, lineChannel = "apple", "url_api"
-				p, err = parseSunnyMailboxLineForProvider(line, lineType, lineChannel)
+			if len(parts) == 2 && isSunnyHTTPURL(strings.TrimSpace(parts[1])) {
+				if _, _, parseErr := parseDomainMailboxPickupCredential(strings.TrimSpace(parts[1])); parseErr != nil {
+					lineType, lineChannel = "apple", "url_api"
+				}
 			}
 		}
+		p, err := parseSunnyMailboxLineForProvider(line, lineType, lineChannel)
 		if err != nil {
 			bad = append(bad, line+" => "+err.Error())
 			continue
@@ -1795,6 +1811,8 @@ func (s *Server) sunnyImportMailboxes(w http.ResponseWriter, r *http.Request) {
 			}
 			if lineType == "domain" {
 				updates["pickup_token_hash"] = domainMailboxTokenHashFromCredential(p["access_key"], p["email"])
+			} else {
+				updates["pickup_token_hash"] = ""
 			}
 			if p["openai_rt"] != "" {
 				updates["openai_rt"] = p["openai_rt"]
@@ -5720,14 +5738,12 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 					accountUpdates["rebind_mailbox_api"] = rebindAPI
 					mailboxUpdates["rebind_mailbox_api"] = rebindAPI
 					if rebindEmail != "" {
-						// Preserve the actual imported mailbox channel. A generic
-						// HTTP(S) inbox URL is an Apple/url_api reader, not a
-						// CloudMail domain pickup URL (which requires email+token).
-						mailboxType, mailboxChannel := "domain", "domain_api"
-						if parsed, parseErr := url.Parse(rebindAPI); parseErr == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
-							if _, _, tokenErr := parseDomainMailboxPickupCredential(rebindAPI); tokenErr != nil {
-								mailboxType, mailboxChannel = "apple", "url_api"
-							}
+						// Keep the stored mailbox channel aligned with the credential
+						// format so the Worker selects the matching reader after a
+						// restart or a historical-data reconciliation.
+						mailboxType, mailboxChannel, classifyErr := classifySunnyRebindMailboxCredential(rebindAPI, rebindEmail)
+						if classifyErr != nil {
+							return classifyErr
 						}
 						mailboxUpdates["mailbox_type"] = mailboxType
 						mailboxUpdates["mailbox_channel"] = mailboxChannel

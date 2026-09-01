@@ -28,6 +28,13 @@ func (s *Server) createSunnyRebindTask(body map[string]any) (Task, error) {
 				if email == "" || api == "" {
 					continue
 				}
+				if typ == "domain" && isSunnyHTTPURL(api) {
+					detectedType, detectedChannel, classifyErr := classifySunnyRebindMailboxCredential(api, email)
+					if classifyErr != nil {
+						return Task{}, classifyErr
+					}
+					typ, channel = detectedType, detectedChannel
+				}
 				if err := validateImportedRebindMailbox(api, email, typ, channel); err != nil {
 					return Task{}, err
 				}
@@ -44,6 +51,13 @@ func (s *Server) createSunnyRebindTask(body map[string]any) (Task, error) {
 		}
 		if targetEmail == "" || targetAPI == "" {
 			return Task{}, fmt.Errorf("请选择有有效取件凭证的已导入邮箱")
+		}
+		if targetType == "domain" && isSunnyHTTPURL(targetAPI) {
+			detectedType, detectedChannel, err := classifySunnyRebindMailboxCredential(targetAPI, targetEmail)
+			if err != nil {
+				return Task{}, err
+			}
+			targetType, targetChannel = detectedType, detectedChannel
 		}
 		if _, hasPool := body["target_mailboxes"]; !hasPool {
 			if err := validateImportedRebindMailbox(targetAPI, targetEmail, targetType, targetChannel); err != nil {
@@ -63,8 +77,8 @@ func (s *Server) createSunnyRebindTask(body map[string]any) (Task, error) {
 		if !boolValue(cfg["enabled_for_rebinding"], false) {
 			return Task{}, fmt.Errorf("自建域名邮箱未启用邮箱换绑，请先在邮箱配置中启用")
 		}
-		if strings.TrimSpace(text(cfg["base_url"])) == "" || strings.TrimSpace(text(cfg["auth_token"])) == "" || strings.TrimSpace(text(cfg["site_password"])) == "" || strings.TrimSpace(text(cfg["domain"])) == "" {
-			return Task{}, fmt.Errorf("自建域名邮箱配置不完整，请先配置 CloudMail API、PUBLIC_API_TOKEN、PASSWORDS 和域名")
+		if strings.TrimSpace(text(cfg["base_url"])) == "" || strings.TrimSpace(text(cfg["auth_token"])) == "" || strings.TrimSpace(text(cfg["domain"])) == "" {
+			return Task{}, fmt.Errorf("自建域名邮箱配置不完整，请先配置 CloudMail API、PUBLIC_API_TOKEN 和域名")
 		}
 		if _, err := domainMailboxPickupBaseURL(cfg); err != nil {
 			return Task{}, err
