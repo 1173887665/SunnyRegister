@@ -38,6 +38,11 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled", "ok", "success"}
 
 
+def _has_header(headers: dict[str, str], name: str) -> bool:
+    target = name.lower()
+    return any(str(key).lower() == target for key in headers)
+
+
 class MobileWalletProvider(ABC):
     """Small provider interface used by the MoMo task state machine."""
 
@@ -55,6 +60,12 @@ class MobileWalletProvider(ABC):
 
     @abstractmethod
     def set_pin(self, session: dict[str, Any], pin: str) -> ProviderResult: ...
+
+    @abstractmethod
+    def bind_device(self, session: dict[str, Any]) -> ProviderResult: ...
+
+    @abstractmethod
+    def get_session(self, session: dict[str, Any]) -> ProviderResult: ...
 
     @abstractmethod
     def login(self, phone: str, pin: str = "", proxy: str = "", session: dict[str, Any] | None = None) -> ProviderResult: ...
@@ -100,6 +111,10 @@ class MobileWalletProvider(ABC):
             return self.submit_profile(session, profile)
         if operation in {"register_pin", "register/pin"}:
             return self.set_pin(session, str(payload.get("pin") or ""))
+        if operation in {"bind_device", "device/bind", "register/bind-device"}:
+            return self.bind_device(session or payload)
+        if operation in {"get_session", "session", "session/get"}:
+            return self.get_session(session or payload)
         if operation == "register":
             checked = self.verify_otp(session, str(payload.get("otp") or ""))
             if not checked.ok:
@@ -158,6 +173,12 @@ class LocalMomoProvider(MobileWalletProvider):
     def set_pin(self, session: dict[str, Any], pin: str) -> ProviderResult:
         return ProviderResult(True, {"pin_set": bool(pin)})
 
+    def bind_device(self, session: dict[str, Any]) -> ProviderResult:
+        return ProviderResult(True, {"device_bound": True, "device_id": f"momo-device-{uuid.uuid4().hex[:10]}"})
+
+    def get_session(self, session: dict[str, Any]) -> ProviderResult:
+        return ProviderResult(True, {"session_ready": True, **_as_dict(session)})
+
     def login(self, phone: str, pin: str = "", proxy: str = "", session: dict[str, Any] | None = None) -> ProviderResult:
         return ProviderResult(True, {"phone": phone, "session_ready": True, "proxy": proxy, **_as_dict(session)})
 
@@ -176,7 +197,7 @@ class HttpMomoProvider(MobileWalletProvider):
 
     Routes are stable and provider-neutral: ``register/start``,
     ``register/send-otp``, ``register/verify-otp``, ``register/profile``,
-    ``register/pin``, ``login``, ``payment/scan``, ``payment/otp`` and
+    ``register/pin``, ``device/bind``, ``session``, ``login``, ``payment/scan``, ``payment/otp`` and
     ``payment/confirm``. The adapter service is responsible for the official
     MoMo SDK/device protocol and returns
     ``{"ok": bool, ...}`` JSON.
@@ -190,6 +211,9 @@ class HttpMomoProvider(MobileWalletProvider):
     def _call(self, operation: str, payload: dict[str, Any], proxy: str = "") -> ProviderResult:
         url = f"{self.base_url}/{operation.strip('/')}"
         headers = {"Content-Type": "application/json", "Accept": "application/json", **self.headers}
+        request_id = str(payload.get("idempotency_key") or payload.get("request_id") or "").strip()
+        if request_id and not _has_header(headers, "Idempotency-Key"):
+            headers["Idempotency-Key"] = request_id
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         try:
             if httpx is not None:
@@ -224,7 +248,12 @@ class HttpMomoProvider(MobileWalletProvider):
             data = raw if isinstance(raw, dict) else {"value": raw}
             if "ok" not in data:
                 return ProviderResult(False, data, "MoMo adapter 响应缺少 ok 字段")
-            return ProviderResult(_as_bool(data.get("ok"), False), data, str(data.get("error") or data.get("message") or ""))
+            ok = _as_bool(data.get("ok"), False)
+            if ok and operation == "login" and not any(data.get(key) for key in ("session", "token", "session_id")):
+                return ProviderResult(False, data, "MoMo adapter 登录响应缺少 session/token")
+            if ok and operation == "payment/scan" and not any(data.get(key) for key in ("payment_id", "payment_token", "transaction_id", "requires_otp", "otp_required", "requires_confirmation", "confirmation_required")):
+                return ProviderResult(False, data, "MoMo adapter 扫码响应缺少支付标识或下一步状态")
+            return ProviderResult(ok, data, str(data.get("error") or data.get("message") or ""))
         except urllib.error.HTTPError as exc:
             try:
                 raw_error: Any = json.loads(exc.read().decode("utf-8", "ignore") or "{}")
@@ -256,6 +285,12 @@ class HttpMomoProvider(MobileWalletProvider):
 
     def set_pin(self, session: dict[str, Any], pin: str) -> ProviderResult:
         return self._call("register/pin", {**session, "pin": pin}, self._session_proxy(session))
+
+    def bind_device(self, session: dict[str, Any]) -> ProviderResult:
+        return self._call("device/bind", session, self._session_proxy(session))
+
+    def get_session(self, session: dict[str, Any]) -> ProviderResult:
+        return self._call("session", session, self._session_proxy(session))
 
     def login(self, phone: str, pin: str = "", proxy: str = "", session: dict[str, Any] | None = None) -> ProviderResult:
         data = {**_as_dict(session), "phone": phone, "pin": pin, "proxy": proxy}
@@ -292,6 +327,6 @@ def build_provider(*, mock_mode: bool, base_url: str, timeout: int = 60, headers
         raise ValueError("MoMo API Base URL is required when live mode is enabled")
     configured = _parse_headers(headers)
     token = os.getenv("OPAI_MOMO_API_TOKEN", "").strip()
-    if token and "Authorization" not in configured:
+    if token and not _has_header(configured, "Authorization"):
         configured["Authorization"] = f"Bearer {token}"
     return HttpMomoProvider(base_url, timeout=timeout, headers=configured)
