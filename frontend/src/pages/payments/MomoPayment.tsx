@@ -144,7 +144,7 @@ function MomoRegister({ jobs, phones, settings, busy, run }: { jobs: Row[]; phon
     await run("momo-register", () => post("/register", { phone, source, pin, login_existing: mode === "login", skip_kyc: skipKyc, profile, count: Number(data.get("count") || 1) }), mode === "login" ? "MoMo 登录任务已创建" : "MoMo 注册任务已创建");
     event.currentTarget.reset();
   }
-  return <div className="gopay-view"><div className="gopay-section-title"><div><h2>MoMo 注册与登录</h2><p>使用越南 +84 手机号完成 OTP、登录和账号初始化</p></div></div><Panel title="新建任务"><form className="gopay-form" onSubmit={submit}><div className="gopay-form-grid"><label><span>号码来源（系统配置）</span><input value={sourceLabel} readOnly /><small className="gopay-field-hint">注册时自动从系统配置取号，不在此页覆盖</small></label><label><span>任务模式</span><select value={mode} onChange={(event) => setMode(event.target.value as "register" | "login")}><option value="register">注册新号</option><option value="login">登录已有号</option></select></label><label><span>手机号（+84，可选）</span><input name="phone" placeholder={mode === "login" ? "+849xxxxxxxx" : "留空自动从系统取号"} required={mode === "login"} /></label><label><span>数量</span><input name="count" type="number" min="1" max="100" defaultValue="1" /></label><label><span>{mode === "login" ? "登录密码 / PIN" : "设置支付密码"}</span><input name="pin" type="password" inputMode="numeric" maxLength={8} autoComplete="off" placeholder="4 到 8 位数字（可选）" /></label><label><span>姓名 / 昵称（可选）</span><input name="display_name" maxLength={80} placeholder="提交给适配器的资料" /></label><label><span>邮箱（可选）</span><input name="email" type="email" maxLength={160} placeholder="name@example.com" /></label><label><span>出生日期（可选）</span><input name="date_of_birth" type="date" /></label><label className="wide"><span>地址（可选）</span><input name="address" maxLength={240} placeholder="提交给适配器的资料" /></label><label className="gopay-check wide"><input type="checkbox" checked={skipKyc} onChange={(event) => setSkipKyc(event.target.checked)} /><span><strong>默认跳过实名认证 / KYC</strong><small>由系统配置控制目标 APP 的流程分支</small></span></label></div><div className="gopay-warning"><ShieldCheck />代理、手机号来源、OTP 轮询均由 MoMo 系统配置统一管理；注册完成后会写入账号列表。</div><Button type="submit" disabled={busy !== ""}><Plus className="mr-2 h-4 w-4" />创建 MoMo 任务</Button></form></Panel><Panel title={`最近任务 · ${jobs.length}`} action={<Status value={jobs.some((job) => job.status === "running") ? "running" : "idle"} />}><div className="gopay-table-wrap"><table><thead><tr><th>任务 ID</th><th>手机号</th><th>模式</th><th>状态</th><th>消息</th><th>验证码</th></tr></thead><tbody>{jobs.length ? jobs.map((job) => <tr key={job.id}><td className="mono">{job.id}</td><td>{job.phone || "-"}</td><td>{job.login_existing ? "登录" : "注册"}</td><td><Status value={job.status} /></td><td className="gopay-message">{job.message || "-"}</td><td>{job.status === "waiting_otp" ? <MomoOtp jobId={job.id} run={run} /> : "-"}{["running", "waiting_otp"].includes(String(job.status)) && <MomoCancel jobId={job.id} kind="register" run={run} />}</td></tr>) : <tr><td colSpan={6}><Empty title="暂无注册任务" /></td></tr>}</tbody></table></div></Panel></div>;
+  return <div className="gopay-view"><div className="gopay-section-title"><div><h2>MoMo 注册与登录</h2><p>使用越南 +84 手机号完成 OTP、登录和账号初始化</p></div></div><Panel title="新建任务"><form className="gopay-form" onSubmit={submit}><div className="gopay-form-grid"><label><span>号码来源（系统配置）</span><input value={sourceLabel} readOnly /><small className="gopay-field-hint">注册时自动从系统配置取号，不在此页覆盖</small></label><label><span>任务模式</span><select value={mode} onChange={(event) => setMode(event.target.value as "register" | "login")}><option value="register">注册新号</option><option value="login">登录已有号</option></select></label><label><span>手机号（+84，可选）</span><input name="phone" placeholder={mode === "login" ? "+849xxxxxxxx" : "留空自动从系统取号"} required={mode === "login"} /></label><label><span>数量</span><input name="count" type="number" min="1" max="100" defaultValue="1" /></label><label><span>{mode === "login" ? "登录密码 / PIN" : "设置支付密码"}</span><input name="pin" type="password" inputMode="numeric" maxLength={8} autoComplete="off" placeholder="4 到 8 位数字（可选）" /></label><label><span>姓名 / 昵称（可选）</span><input name="display_name" maxLength={80} placeholder="提交给直连协议的资料" /></label><label><span>邮箱（可选）</span><input name="email" type="email" maxLength={160} placeholder="name@example.com" /></label><label><span>出生日期（可选）</span><input name="date_of_birth" type="date" /></label><label className="wide"><span>地址（可选）</span><input name="address" maxLength={240} placeholder="提交给直连协议的资料" /></label><label className="gopay-check wide"><input type="checkbox" checked={skipKyc} onChange={(event) => setSkipKyc(event.target.checked)} /><span><strong>默认跳过实名认证 / KYC</strong><small>由系统配置控制目标 APP 的流程分支</small></span></label></div><div className="gopay-warning"><ShieldCheck />代理、手机号来源、OTP 轮询均由 MoMo 系统配置统一管理；注册完成后会写入账号列表。</div><Button type="submit" disabled={busy !== ""}><Plus className="mr-2 h-4 w-4" />创建 MoMo 任务</Button></form></Panel><Panel title={`最近任务 · ${jobs.length}`} action={<Status value={jobs.some((job) => job.status === "running") ? "running" : "idle"} />}><div className="gopay-table-wrap"><table><thead><tr><th>任务 ID</th><th>手机号</th><th>模式</th><th>状态</th><th>消息</th><th>验证码</th></tr></thead><tbody>{jobs.length ? jobs.map((job) => <tr key={job.id}><td className="mono">{job.id}</td><td>{job.phone || "-"}</td><td>{job.login_existing ? "登录" : "注册"}</td><td><Status value={job.status} /></td><td className="gopay-message">{job.message || "-"}</td><td>{job.status === "waiting_otp" ? <MomoOtp jobId={job.id} run={run} /> : "-"}{["running", "waiting_otp"].includes(String(job.status)) && <MomoCancel jobId={job.id} kind="register" run={run} />}</td></tr>) : <tr><td colSpan={6}><Empty title="暂无注册任务" /></td></tr>}</tbody></table></div></Panel></div>;
 }
 
 function MomoOtp({ jobId, kind = "register", run }: { jobId: string; kind?: "register" | "payment"; run: (key: string, action: () => Promise<any>, success: string) => Promise<void> }) { const [code, setCode] = useState(""); const path = kind === "payment" ? "/payment-jobs" : "/register-jobs"; return <span className="gopay-otp-inline"><input value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 8))} inputMode="numeric" placeholder="OTP" /><Button size="sm" disabled={!/^\d{4,8}$/.test(code)} onClick={() => void run(`momo-otp-${kind}-${jobId}`, () => post(`${path}/${encodeURIComponent(jobId)}/otp`, { code }), "MoMo OTP 已提交")}>提交</Button></span>; }
@@ -197,12 +197,121 @@ function MomoQrPayment({ accounts, jobs, settings, busy, run }: { accounts: Row[
 }
 
 function MomoSettings({ settings, busy, run }: { settings: Row; busy: string; run: (key: string, action: () => Promise<any>, success: string) => Promise<void> }) {
-  const [values, setValues] = useState<Row>({}); const [apiKey, setApiKey] = useState(""); const [apiHeaders, setApiHeaders] = useState(""); const [headersTouched, setHeadersTouched] = useState(false); const [proxyPool, setProxyPool] = useState(""); const [proxyPoolTouched, setProxyPoolTouched] = useState(false); const [dirty, setDirty] = useState(false); const [check, setCheck] = useState<Row | null>(null);
-  useEffect(() => { if (dirty) return; const timer = window.setTimeout(() => { setValues({ ...settings }); setApiHeaders(""); setHeadersTouched(false); setProxyPool(""); setProxyPoolTouched(false); }, 0); return () => window.clearTimeout(timer); }, [settings, dirty]);
+  const [values, setValues] = useState<Row>({});
+  const [smsApiKey, setSmsApiKey] = useState("");
+  const [protocolToken, setProtocolToken] = useState("");
+  const [protocolAccessKey, setProtocolAccessKey] = useState("");
+  const [protocolSecretKey, setProtocolSecretKey] = useState("");
+  const [protocolHeaders, setProtocolHeaders] = useState("");
+  const [protocolRoutes, setProtocolRoutes] = useState("");
+  const [headersTouched, setHeadersTouched] = useState(false);
+  const [routesTouched, setRoutesTouched] = useState(false);
+  const [proxyPool, setProxyPool] = useState("");
+  const [proxyPoolTouched, setProxyPoolTouched] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [check, setCheck] = useState<Row | null>(null);
+  useEffect(() => {
+    if (dirty) return;
+    const timer = window.setTimeout(() => {
+      const next = { ...settings };
+      delete next.sms_api_key;
+      delete next.protocol_token;
+      delete next.protocol_access_key;
+      setValues(next);
+      setSmsApiKey("");
+      setProtocolToken("");
+      setProtocolAccessKey("");
+      setProtocolSecretKey("");
+      setProtocolHeaders("");
+      setProtocolRoutes("");
+      setHeadersTouched(false);
+      setRoutesTouched(false);
+      setProxyPool("");
+      setProxyPoolTouched(false);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [settings, dirty]);
   const set = (key: string, value: any) => { setDirty(true); setValues((current) => ({ ...current, [key]: value })); };
-  function buildPayload() { const payload: Row = { ...values, mock_mode: false, skip_kyc_default: Boolean(values.skip_kyc_default) }; delete payload.proxy_pool; delete payload.sms_api_key; if (apiKey.trim()) payload.sms_api_key = apiKey.trim(); if (headersTouched) payload.api_headers_json = apiHeaders; if (proxyPoolTouched) payload.proxy_pool = proxyPool; return payload; }
-  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const payload = buildPayload(); await run("momo-settings", async () => { const result = await post("/settings", payload); setValues({ ...result }); setApiKey(""); setApiHeaders(""); setHeadersTouched(false); setProxyPool(""); setProxyPoolTouched(false); setDirty(false); return result; }, "MoMo 系统配置已保存"); }
+  function buildPayload() {
+    const payload: Row = { ...values, mock_mode: false, skip_kyc_default: Boolean(values.skip_kyc_default) };
+    delete payload.proxy_pool;
+    delete payload.sms_api_key;
+    delete payload.protocol_token;
+    delete payload.protocol_access_key;
+    delete payload.protocol_secret_key;
+    if (smsApiKey.trim()) payload.sms_api_key = smsApiKey.trim();
+    if (protocolToken.trim()) payload.protocol_token = protocolToken.trim();
+    if (protocolAccessKey.trim()) payload.protocol_access_key = protocolAccessKey.trim();
+    if (protocolSecretKey.trim()) payload.protocol_secret_key = protocolSecretKey.trim();
+    if (headersTouched) payload.protocol_headers_json = protocolHeaders;
+    if (routesTouched) payload.protocol_routes_json = protocolRoutes;
+    if (proxyPoolTouched) payload.proxy_pool = proxyPool;
+    return payload;
+  }
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const payload = buildPayload();
+    await run("momo-settings", async () => {
+      const result = await post("/settings", payload);
+      setValues({ ...result });
+      setSmsApiKey("");
+      setProtocolToken("");
+      setProtocolAccessKey("");
+      setProtocolSecretKey("");
+      setProtocolHeaders("");
+      setProtocolRoutes("");
+      setHeadersTouched(false);
+      setRoutesTouched(false);
+      setProxyPool("");
+      setProxyPoolTouched(false);
+      setDirty(false);
+      return result;
+    }, "MoMo 系统配置已保存");
+  }
   async function checkSettings() { await run("momo-settings-check", async () => { const result = await post("/settings/check", buildPayload()); setCheck(result); return result; }, "MoMo 配置检测完成"); }
   const source = String(values.phone_source || "pool");
-  return <div className="gopay-view"><div className="gopay-section-title"><div><h2>MoMo 系统配置</h2><p>手机号、短信供应商、代理池和真实 MoMo 适配器均从这里统一读取</p></div></div><Panel title="MoMo 适配器与手机号"><form className="gopay-form" onSubmit={submit}><div className="gopay-form-grid"><label className="wide"><span>MoMo API Base URL</span><input value={String(values.api_base_url || "")} onChange={(event) => set("api_base_url", event.target.value)} type="url" placeholder="https://adapter.example/api" /></label><label className="wide"><span>API Headers JSON（可选）</span><textarea value={apiHeaders} onChange={(event) => { setApiHeaders(event.target.value); setHeadersTouched(true); setDirty(true); }} rows={2} placeholder={settings.api_headers_configured ? "已配置，输入新 JSON 将覆盖" : '{"X-Client":"momo"}'} /></label><label><span>手机号来源</span><select value={source} onChange={(event) => set("phone_source", event.target.value)}><option value="pool">系统号码池</option>{(Object.keys(smsLabels) as Array<Exclude<SmsSource, "pool">>).map((item) => <option key={item} value={item}>{smsLabels[item]}</option>)}</select></label><label><span>国家代码</span><input value={String(values.phone_country_code || "84")} onChange={(event) => set("phone_country_code", event.target.value)} inputMode="numeric" /></label><label><span>手机号前缀</span><input value={String(values.phone_prefix || "+84")} onChange={(event) => set("phone_prefix", event.target.value)} /></label><label className="gopay-check"><input type="checkbox" checked={values.skip_kyc_default !== false} onChange={(event) => set("skip_kyc_default", event.target.checked)} /><span><strong>默认跳过 KYC</strong><small>由实际适配器决定是否允许继续</small></span></label></div><h4>短信自动取号</h4><div className="gopay-form-grid"><label><span>SMS 服务代码</span><input value={String(values.sms_service_code || "momo")} onChange={(event) => set("sms_service_code", event.target.value)} /></label><label><span>SMS 国家代码</span><input value={String(values.sms_country_code || "84")} onChange={(event) => set("sms_country_code", event.target.value)} /></label><label className="wide"><span>SMS API Base URL（可选）</span><input value={String(values.sms_api_base_url || "")} onChange={(event) => set("sms_api_base_url", event.target.value)} type="url" /></label><label className="wide"><span>SMS API Key</span><input value={apiKey} onChange={(event) => { setApiKey(event.target.value); setDirty(true); }} type="password" autoComplete="new-password" placeholder={settings.sms_api_key_configured ? `已配置 ${settings.sms_api_key || ""}，留空保持不变` : "请输入 API Key"} /></label><label><span>最高价格（可选）</span><input value={String(values.sms_max_price || "")} onChange={(event) => set("sms_max_price", event.target.value)} type="number" min="0" step="any" /></label><label><span>SMSPool 号码池（可选）</span><input value={String(values.sms_pool || "")} onChange={(event) => set("sms_pool", event.target.value)} /></label></div><h4>OTP 与代理策略</h4><div className="gopay-form-grid"><label><span>OTP 超时（秒）</span><input value={String(values.otp_timeout_sec || 300)} onChange={(event) => set("otp_timeout_sec", Number(event.target.value) || 300)} type="number" min="30" max="900" /></label><label><span>轮询间隔（秒）</span><input value={String(values.otp_poll_interval_sec || 3)} onChange={(event) => set("otp_poll_interval_sec", Number(event.target.value) || 3)} type="number" min="1" max="30" /></label><label><span>OTP 最大重发</span><input value={String(values.otp_max_resends ?? 2)} onChange={(event) => set("otp_max_resends", Number(event.target.value) || 0)} type="number" min="0" max="5" /></label><label><span>API 超时（秒）</span><input value={String(values.api_timeout_sec || 60)} onChange={(event) => set("api_timeout_sec", Number(event.target.value) || 60)} type="number" min="5" max="300" /></label><label className="wide"><span>代理池（每行一条）</span><textarea value={proxyPool} onChange={(event) => { setProxyPool(event.target.value); setProxyPoolTouched(true); setDirty(true); }} rows={5} placeholder={settings.proxy_count ? `${settings.proxy_count} 条已配置，输入新内容将覆盖` : "http://user:pass@host:port"} /></label><label><span>代理轮换方式</span><select value={String(values.proxy_mode || "round_robin")} onChange={(event) => set("proxy_mode", event.target.value)}><option value="round_robin">轮换</option><option value="random">随机</option></select></label><label className="gopay-check"><input type="checkbox" checked={Boolean(values.proxy_required)} onChange={(event) => set("proxy_required", event.target.checked)} /><span><strong>强制使用代理</strong><small>代理池为空时拒绝创建任务</small></span></label></div><div className="gopay-warning"><ShieldCheck />当前为真实适配器模式。注册、登录、支付和短信平台请求会携带系统选择的代理。</div><div className="gopay-row-actions"><Button type="submit" disabled={busy !== ""}><Settings2 className="mr-2 h-4 w-4" />保存全部配置</Button><Button type="button" variant="outline" disabled={busy !== ""} onClick={() => void checkSettings()}><Activity className="mr-2 h-4 w-4" />检测配置</Button></div></form></Panel>{check && <Panel title="配置检测结果"><div className="gopay-activity">{(check.checks || []).map((item: Row) => <div key={item.name}><Status value={item.ok ? "success" : "failed"} /><span><strong>{item.name}</strong><small>{item.message}</small></span></div>)}</div></Panel>}</div>;
+  const authMode = String(values.protocol_auth_mode || "none");
+  return <div className="gopay-view">
+    <div className="gopay-section-title"><div><h2>MoMo 系统配置</h2><p>Worker 内置协议直连手机号、短信、账号与支付接口，不再经过外置适配器</p></div></div>
+    <Panel title="MoMo 直连协议与手机号">
+      <form className="gopay-form" onSubmit={submit}>
+        <h4>直连协议</h4>
+        <div className="gopay-form-grid">
+          <label className="wide"><span>协议 Base URL</span><input value={String(values.protocol_base_url || "")} onChange={(event) => set("protocol_base_url", event.target.value)} type="url" placeholder="https://HOST/api" /></label>
+          <label><span>鉴权方式</span><select value={authMode} onChange={(event) => set("protocol_auth_mode", event.target.value)}><option value="none">无固定鉴权</option><option value="bearer">Bearer Token</option><option value="hmac_sha256">HMAC-SHA256</option></select></label>
+          <label><span>签名 Header</span><input value={String(values.protocol_signature_header || "X-Signature")} onChange={(event) => set("protocol_signature_header", event.target.value)} disabled={authMode !== "hmac_sha256"} /></label>
+          {authMode === "bearer" && <label className="wide"><span>协议 Token</span><input value={protocolToken} onChange={(event) => { setProtocolToken(event.target.value); setDirty(true); }} type="password" autoComplete="new-password" placeholder={settings.protocol_token_configured ? `已配置 ${settings.protocol_token || ""}，留空保持不变` : "输入 Bearer Token"} /></label>}
+          {authMode === "hmac_sha256" && <><label><span>Access Key</span><input value={protocolAccessKey} onChange={(event) => { setProtocolAccessKey(event.target.value); setDirty(true); }} type="password" autoComplete="new-password" placeholder={settings.protocol_access_key_configured ? `已配置 ${settings.protocol_access_key || ""}` : "输入 Access Key"} /></label><label><span>Secret Key</span><input value={protocolSecretKey} onChange={(event) => { setProtocolSecretKey(event.target.value); setDirty(true); }} type="password" autoComplete="new-password" placeholder={settings.protocol_secret_key_configured ? "已配置，留空保持不变" : "输入 Secret Key"} /></label></>}
+          <label className="wide"><span>固定 Headers JSON（可选）</span><textarea value={protocolHeaders} onChange={(event) => { setProtocolHeaders(event.target.value); setHeadersTouched(true); setDirty(true); }} rows={3} placeholder={settings.protocol_headers_configured ? "已配置，输入新 JSON 将覆盖" : '{"X-Client":"momo"}'} /></label>
+          <label className="wide"><span>协议路由 JSON（可选）</span><textarea value={protocolRoutes} onChange={(event) => { setProtocolRoutes(event.target.value); setRoutesTouched(true); setDirty(true); }} rows={4} placeholder={settings.protocol_routes_configured ? "已配置，输入新 JSON 将覆盖" : '{"login":"/login","payment_scan":"/payment/scan"}'} /></label>
+          <label><span>手机号来源</span><select value={source} onChange={(event) => set("phone_source", event.target.value)}><option value="pool">系统号码池</option>{(Object.keys(smsLabels) as Array<Exclude<SmsSource, "pool">>).map((item) => <option key={item} value={item}>{smsLabels[item]}</option>)}</select></label>
+          <label><span>国家代码</span><input value={String(values.phone_country_code || "84")} onChange={(event) => set("phone_country_code", event.target.value)} inputMode="numeric" /></label>
+          <label><span>手机号前缀</span><input value={String(values.phone_prefix || "+84")} onChange={(event) => set("phone_prefix", event.target.value)} /></label>
+          <label className="gopay-check"><input type="checkbox" checked={values.skip_kyc_default !== false} onChange={(event) => set("skip_kyc_default", event.target.checked)} /><span><strong>默认跳过 KYC</strong><small>以协议返回的 KYC 状态为准</small></span></label>
+        </div>
+        <h4>短信自动取号</h4>
+        <div className="gopay-form-grid">
+          <label><span>SMS 服务代码</span><input value={String(values.sms_service_code || "momo")} onChange={(event) => set("sms_service_code", event.target.value)} /></label>
+          <label><span>SMS 国家代码</span><input value={String(values.sms_country_code || "84")} onChange={(event) => set("sms_country_code", event.target.value)} /></label>
+          <label className="wide"><span>SMS API Base URL（可选）</span><input value={String(values.sms_api_base_url || "")} onChange={(event) => set("sms_api_base_url", event.target.value)} type="url" /></label>
+          <label className="wide"><span>SMS API Key</span><input value={smsApiKey} onChange={(event) => { setSmsApiKey(event.target.value); setDirty(true); }} type="password" autoComplete="new-password" placeholder={settings.sms_api_key_configured ? `已配置 ${settings.sms_api_key || ""}，留空保持不变` : "请输入 API Key"} /></label>
+          <label><span>最高价格（可选）</span><input value={String(values.sms_max_price || "")} onChange={(event) => set("sms_max_price", event.target.value)} type="number" min="0" step="any" /></label>
+          <label><span>SMSPool 号码池（可选）</span><input value={String(values.sms_pool || "")} onChange={(event) => set("sms_pool", event.target.value)} /></label>
+        </div>
+        <h4>OTP 与代理策略</h4>
+        <div className="gopay-form-grid">
+          <label><span>OTP 超时（秒）</span><input value={String(values.otp_timeout_sec || 300)} onChange={(event) => set("otp_timeout_sec", Number(event.target.value) || 300)} type="number" min="30" max="900" /></label>
+          <label><span>轮询间隔（秒）</span><input value={String(values.otp_poll_interval_sec || 3)} onChange={(event) => set("otp_poll_interval_sec", Number(event.target.value) || 3)} type="number" min="1" max="30" /></label>
+          <label><span>OTP 最大重发</span><input value={String(values.otp_max_resends ?? 2)} onChange={(event) => set("otp_max_resends", Number(event.target.value) || 0)} type="number" min="0" max="5" /></label>
+          <label><span>API 超时（秒）</span><input value={String(values.api_timeout_sec || 60)} onChange={(event) => set("api_timeout_sec", Number(event.target.value) || 60)} type="number" min="5" max="300" /></label>
+          <label className="wide"><span>代理池（每行一条）</span><textarea value={proxyPool} onChange={(event) => { setProxyPool(event.target.value); setProxyPoolTouched(true); setDirty(true); }} rows={5} placeholder={settings.proxy_count ? `${settings.proxy_count} 条已配置，输入新内容将覆盖` : "http://user:pass@host:port"} /></label>
+          <label><span>代理轮换方式</span><select value={String(values.proxy_mode || "round_robin")} onChange={(event) => set("proxy_mode", event.target.value)}><option value="round_robin">轮换</option><option value="random">随机</option></select></label>
+          <label className="gopay-check"><input type="checkbox" checked={Boolean(values.proxy_required)} onChange={(event) => set("proxy_required", event.target.checked)} /><span><strong>强制使用代理</strong><small>代理池为空时拒绝创建任务</small></span></label>
+        </div>
+        <div className="gopay-warning"><ShieldCheck />当前为 Worker 内置直连协议模式；注册、登录、支付和短信请求均使用系统选择的代理。</div>
+        <div className="gopay-row-actions"><Button type="submit" disabled={busy !== ""}><Settings2 className="mr-2 h-4 w-4" />保存全部配置</Button><Button type="button" variant="outline" disabled={busy !== ""} onClick={() => void checkSettings()}><Activity className="mr-2 h-4 w-4" />检测配置</Button></div>
+      </form>
+    </Panel>
+    {check && <Panel title="配置检测结果"><div className="gopay-activity">{(check.checks || []).map((item: Row) => <div key={item.name}><Status value={item.ok ? "success" : "failed"} /><span><strong>{item.name}</strong><small>{item.message}</small></span></div>)}</div></Panel>}
+  </div>;
 }

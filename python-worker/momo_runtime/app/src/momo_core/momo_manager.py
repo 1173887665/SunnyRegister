@@ -1,10 +1,4 @@
-"""Standalone MoMo task manager.
-
-The manager owns its own state files and provider boundary.  The default local
-mode exercises the complete registration, OTP and QR-payment state machine
-without touching a live payment service.  A provider adapter can be enabled by
-setting ``api_base_url`` in the MoMo settings endpoint.
-"""
+"""Standalone MoMo task manager with an in-process direct protocol client."""
 from __future__ import annotations
 
 import hashlib
@@ -133,7 +127,7 @@ _SENSITIVE_PUBLIC_KEYS = {
 def _redact_public(value: Any, key: str = "") -> Any:
     """Remove credentials from objects returned by the local HTTP API.
 
-    Provider adapters are allowed to return arbitrary metadata.  Persisting
+    Protocol providers are allowed to return arbitrary metadata.  Persisting
     that metadata is useful for retries, but exposing it to the browser would
     leak account credentials or proxy authentication details.  Redaction is
     recursive so nested provider ``result`` objects are covered as well.
@@ -160,19 +154,28 @@ class MomoManager:
         self.accounts: dict[str, dict[str, Any]] = {}
         self.phones: dict[str, dict[str, Any]] = {}
         self._proxy_cursor = 0
-        configured_api_base = os.getenv("OPAI_MOMO_API_BASE_URL", "").strip()
+        configured_protocol_base = (os.getenv("OPAI_MOMO_PROTOCOL_BASE_URL") or os.getenv("OPAI_MOMO_API_BASE_URL") or "").strip()
+        configured_protocol_token = (os.getenv("OPAI_MOMO_PROTOCOL_TOKEN") or os.getenv("OPAI_MOMO_API_TOKEN") or "").strip()
+        configured_protocol_headers = (os.getenv("OPAI_MOMO_PROTOCOL_HEADERS") or os.getenv("OPAI_MOMO_API_HEADERS") or "").strip()
         # A temporary state file is how unit tests opt into the deterministic
         # local provider.  A long-lived production state file must never turn
         # an old persisted ``mock_mode`` flag back on after an upgrade.  An
         # explicit environment flag remains available for integration tests.
-        explicit_test_store = state_file is not None and not configured_api_base and "OPAI_MOMO_MOCK_MODE" not in os.environ
+        explicit_test_store = state_file is not None and not configured_protocol_base and "OPAI_MOMO_MOCK_MODE" not in os.environ
         self._mock_mode_explicit = "OPAI_MOMO_MOCK_MODE" in os.environ or explicit_test_store
         configured_mock = True if explicit_test_store else _as_bool(os.getenv("OPAI_MOMO_MOCK_MODE", "0"), False)
         self.settings: dict[str, Any] = {
-            "api_base_url": configured_api_base,
-            # Live adapter is the runtime default. Unit tests can explicitly
+            "protocol_base_url": configured_protocol_base,
+            # Live direct protocol is the runtime default. Unit tests can explicitly
             # set OPAI_MOMO_MOCK_MODE=1 without exposing a demo switch in UI.
             "mock_mode": configured_mock,
+            "protocol_auth_mode": os.getenv("OPAI_MOMO_PROTOCOL_AUTH_MODE", "bearer" if configured_protocol_token else "none").strip().lower() or "none",
+            "protocol_token": configured_protocol_token,
+            "protocol_access_key": os.getenv("OPAI_MOMO_PROTOCOL_ACCESS_KEY", "").strip(),
+            "protocol_secret_key": os.getenv("OPAI_MOMO_PROTOCOL_SECRET_KEY", "").strip(),
+            "protocol_signature_header": os.getenv("OPAI_MOMO_PROTOCOL_SIGNATURE_HEADER", "X-Signature").strip() or "X-Signature",
+            "protocol_routes_json": os.getenv("OPAI_MOMO_PROTOCOL_ROUTES", "").strip(),
+            "protocol_headers_json": configured_protocol_headers,
             "skip_kyc_default": True,
             "phone_source": os.getenv("OPAI_MOMO_PHONE_SOURCE", "pool").strip().lower() or "pool",
             "phone_country_code": os.getenv("OPAI_MOMO_PHONE_COUNTRY", "84").strip() or "84",
@@ -187,7 +190,6 @@ class MomoManager:
             "otp_poll_interval_sec": 3,
             "otp_max_resends": 2,
             "api_timeout_sec": 60,
-            "api_headers_json": os.getenv("OPAI_MOMO_API_HEADERS", "").strip(),
             "proxy_pool": [],
             "proxy_mode": "round_robin",
             "proxy_required": False,
@@ -198,10 +200,23 @@ class MomoManager:
             self.settings["proxy_pool"] = []
         self._load()
         # Environment configuration is the deployment source of truth.  A
-        # state file created before the adapter was configured must not erase
-        # the URL supplied by the service manager.
-        if configured_api_base:
-            self.settings["api_base_url"] = configured_api_base
+        # state file created before direct protocol mode must not erase the
+        # URL supplied by the service manager.
+        if configured_protocol_base:
+            self.settings["protocol_base_url"] = configured_protocol_base
+        if configured_protocol_token:
+            self.settings["protocol_token"] = configured_protocol_token
+        if configured_protocol_headers:
+            self.settings["protocol_headers_json"] = configured_protocol_headers
+        for env_key, setting_key in (
+            ("OPAI_MOMO_PROTOCOL_AUTH_MODE", "protocol_auth_mode"),
+            ("OPAI_MOMO_PROTOCOL_ACCESS_KEY", "protocol_access_key"),
+            ("OPAI_MOMO_PROTOCOL_SECRET_KEY", "protocol_secret_key"),
+            ("OPAI_MOMO_PROTOCOL_SIGNATURE_HEADER", "protocol_signature_header"),
+            ("OPAI_MOMO_PROTOCOL_ROUTES", "protocol_routes_json"),
+        ):
+            if env_key in os.environ:
+                self.settings[setting_key] = os.getenv(env_key, "").strip()
         forced_live_migration = False
         if not self._mock_mode_explicit:
             forced_live_migration = _as_bool(self.settings.get("mock_mode"), False)
@@ -220,6 +235,10 @@ class MomoManager:
                 saved = payload.get("settings")
                 if isinstance(saved, dict):
                     self.settings.update(saved)
+                    if not str(saved.get("protocol_base_url") or "").strip() and str(saved.get("api_base_url") or "").strip():
+                        self.settings["protocol_base_url"] = saved.get("api_base_url")
+                    if not str(saved.get("protocol_headers_json") or "").strip() and str(saved.get("api_headers_json") or "").strip():
+                        self.settings["protocol_headers_json"] = saved.get("api_headers_json")
         except (OSError, ValueError):
             pass
 
@@ -255,14 +274,23 @@ class MomoManager:
         self.settings["mock_mode"] = _as_bool(self.settings.get("mock_mode"), False)
         self.settings["skip_kyc_default"] = _as_bool(self.settings.get("skip_kyc_default"), True)
         try:
-            self.settings["api_base_url"] = _normalize_endpoint(self.settings.get("api_base_url", ""), "MoMo API Base URL")
+            self.settings["protocol_base_url"] = _normalize_endpoint(self.settings.get("protocol_base_url", ""), "MoMo 协议 Base URL")
         except ValueError:
-            self.settings["api_base_url"] = ""
+            self.settings["protocol_base_url"] = ""
         try:
             self.settings["sms_api_base_url"] = _normalize_endpoint(self.settings.get("sms_api_base_url", ""), "SMS API Base URL")
         except ValueError:
             self.settings["sms_api_base_url"] = ""
-        self.settings["api_headers_json"] = str(self.settings.get("api_headers_json") or "").strip()
+        self.settings["protocol_headers_json"] = str(self.settings.get("protocol_headers_json") or "").strip()
+        self.settings["protocol_routes_json"] = str(self.settings.get("protocol_routes_json") or "").strip()
+        auth_mode = str(self.settings.get("protocol_auth_mode") or "none").strip().lower()
+        self.settings["protocol_auth_mode"] = auth_mode if auth_mode in {"none", "bearer", "hmac_sha256"} else "none"
+        self.settings["protocol_token"] = str(self.settings.get("protocol_token") or "").strip()
+        self.settings["protocol_access_key"] = str(self.settings.get("protocol_access_key") or "").strip()
+        self.settings["protocol_secret_key"] = str(self.settings.get("protocol_secret_key") or "").strip()
+        self.settings["protocol_signature_header"] = str(self.settings.get("protocol_signature_header") or "X-Signature").strip() or "X-Signature"
+        self.settings.pop("api_base_url", None)
+        self.settings.pop("api_headers_json", None)
         pool: list[str] = []
         for item in _split_lines(self.settings.get("proxy_pool")):
             try:
@@ -378,10 +406,19 @@ class MomoManager:
     def get_settings(self) -> dict[str, Any]:
         with self.lock:
             result = {
-                "api_base_url": self.settings.get("api_base_url", ""),
+                "protocol_base_url": self.settings.get("protocol_base_url", ""),
                 "mock_mode": _as_bool(self.settings.get("mock_mode"), False),
                 "live_mode": not _as_bool(self.settings.get("mock_mode"), False),
-                "live_adapter_ready": bool(self.settings.get("api_base_url")) or _as_bool(self.settings.get("mock_mode"), False),
+                "live_protocol_ready": bool(self.settings.get("protocol_base_url")) or _as_bool(self.settings.get("mock_mode"), False),
+                "protocol_auth_mode": self.settings.get("protocol_auth_mode", "none"),
+                "protocol_token_configured": bool(self.settings.get("protocol_token")),
+                "protocol_token": mask_secret(str(self.settings.get("protocol_token") or "")),
+                "protocol_access_key_configured": bool(self.settings.get("protocol_access_key")),
+                "protocol_access_key": mask_secret(str(self.settings.get("protocol_access_key") or "")),
+                "protocol_secret_key_configured": bool(self.settings.get("protocol_secret_key")),
+                "protocol_signature_header": self.settings.get("protocol_signature_header", "X-Signature"),
+                "protocol_routes_configured": bool(self.settings.get("protocol_routes_json")),
+                "protocol_headers_configured": bool(self.settings.get("protocol_headers_json")),
                 "skip_kyc_default": _as_bool(self.settings.get("skip_kyc_default"), True),
                 "phone_source": self.settings.get("phone_source", "pool"),
                 "phone_country_code": self.settings.get("phone_country_code", "84"),
@@ -397,7 +434,6 @@ class MomoManager:
                 "otp_poll_interval_sec": int(self.settings.get("otp_poll_interval_sec", 3)),
                 "otp_max_resends": int(self.settings.get("otp_max_resends", 2)),
                 "api_timeout_sec": int(self.settings.get("api_timeout_sec", 60)),
-                "api_headers_configured": bool(self.settings.get("api_headers_json")),
                 "proxy_pool": [_mask_proxy(item) for item in self.settings.get("proxy_pool", [])],
                 "proxy_count": len(self.settings.get("proxy_pool", [])),
                 "proxy_mode": self.settings.get("proxy_mode", "round_robin"),
@@ -410,11 +446,26 @@ class MomoManager:
 
     def update_settings(self, values: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
-            if "api_base_url" in values:
-                endpoint = _normalize_endpoint(values.get("api_base_url", ""), "MoMo API Base URL")
+            if "protocol_base_url" in values or "api_base_url" in values:
+                endpoint = _normalize_endpoint(values.get("protocol_base_url", values.get("api_base_url", "")), "MoMo 协议 Base URL")
                 if endpoint and _is_worker_management_endpoint(endpoint):
-                    raise ValueError("MoMo API Base URL 不能指向 Worker 的 /momo 管理路由，请填写独立适配器地址")
-                self.settings["api_base_url"] = endpoint
+                    raise ValueError("MoMo 协议 Base URL 不能指向 Worker 的 /momo 管理路由")
+                self.settings["protocol_base_url"] = endpoint
+            auth_mode = str(values.get("protocol_auth_mode", self.settings.get("protocol_auth_mode", "none")) or "none").strip().lower()
+            if auth_mode not in {"none", "bearer", "hmac_sha256"}:
+                raise ValueError("MoMo 协议鉴权方式无效")
+            self.settings["protocol_auth_mode"] = auth_mode
+            for key in ("protocol_token", "protocol_access_key", "protocol_secret_key"):
+                if key in values and str(values.get(key) or "").strip():
+                    candidate = str(values.get(key) or "").strip()
+                    if "***" not in candidate and "..." not in candidate:
+                        self.settings[key] = candidate
+                if _as_bool(values.get(f"clear_{key}"), False):
+                    self.settings[key] = ""
+            signature_header = str(values.get("protocol_signature_header", self.settings.get("protocol_signature_header", "X-Signature")) or "X-Signature").strip()
+            if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", signature_header):
+                raise ValueError("签名 Header 名称格式无效")
+            self.settings["protocol_signature_header"] = signature_header
             if "mock_mode" in values:
                 requested_mock = _as_bool(values.get("mock_mode"), False)
                 if requested_mock and not self._mock_mode_explicit:
@@ -465,16 +516,26 @@ class MomoManager:
             except (TypeError, ValueError) as exc:
                 raise ValueError("MoMo API 超时必须是数字") from exc
             self.settings["api_timeout_sec"] = min(300, max(5, api_timeout))
-            if "api_headers_json" in values:
-                raw_headers = str(values.get("api_headers_json") or "").strip()
+            if "protocol_headers_json" in values or "api_headers_json" in values:
+                raw_headers = str(values.get("protocol_headers_json", values.get("api_headers_json", "")) or "").strip()
                 if raw_headers:
                     try:
                         parsed_headers = json.loads(raw_headers)
                     except (TypeError, ValueError) as exc:
-                        raise ValueError("MoMo API Headers 必须是 JSON 对象") from exc
+                        raise ValueError("MoMo 协议 Headers 必须是 JSON 对象") from exc
                     if not isinstance(parsed_headers, dict):
-                        raise ValueError("MoMo API Headers 必须是 JSON 对象")
-                self.settings["api_headers_json"] = raw_headers
+                        raise ValueError("MoMo 协议 Headers 必须是 JSON 对象")
+                self.settings["protocol_headers_json"] = raw_headers
+            if "protocol_routes_json" in values:
+                raw_routes = str(values.get("protocol_routes_json") or "").strip()
+                if raw_routes:
+                    try:
+                        parsed_routes = json.loads(raw_routes)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("MoMo 协议路由必须是 JSON 对象") from exc
+                    if not isinstance(parsed_routes, dict) or not all(str(key).strip() and str(value).strip() for key, value in parsed_routes.items()):
+                        raise ValueError("MoMo 协议路由必须是非空字符串映射")
+                self.settings["protocol_routes_json"] = raw_routes
             if "proxy_pool" in values:
                 incoming_proxy_lines = _split_lines(values.get("proxy_pool"))
                 # GET /settings intentionally masks proxy credentials.  If a
@@ -516,7 +577,16 @@ class MomoManager:
         with self.lock:
             snapshot = dict(self.settings)
             if values:
-                snapshot.update({key: value for key, value in values.items() if key not in {"sms_api_key"} or str(value or "").strip()})
+                for key, value in values.items():
+                    if key in {"sms_api_key", "protocol_token", "protocol_access_key", "protocol_secret_key"}:
+                        candidate = str(value or "").strip()
+                        if not candidate or "***" in candidate or "..." in candidate:
+                            continue
+                    snapshot[key] = value
+                if not snapshot.get("protocol_base_url") and snapshot.get("api_base_url"):
+                    snapshot["protocol_base_url"] = snapshot.get("api_base_url")
+                if not snapshot.get("protocol_headers_json") and snapshot.get("api_headers_json"):
+                    snapshot["protocol_headers_json"] = snapshot.get("api_headers_json")
             if not self._mock_mode_explicit:
                 snapshot["mock_mode"] = False
             source = str(snapshot.get("phone_source") or "pool").strip().lower()
@@ -524,16 +594,26 @@ class MomoManager:
             phone_count = len(self.phones)
         checks: list[dict[str, Any]] = []
         live = not _as_bool(snapshot.get("mock_mode"), False)
-        endpoint = str(snapshot.get("api_base_url") or "").strip()
+        endpoint = str(snapshot.get("protocol_base_url") or "").strip()
         endpoint_ok = bool(endpoint) and not _is_worker_management_endpoint(endpoint)
-        adapter_check = {"name": "momo_adapter", "ok": endpoint_ok if live else True, "message": "MoMo API Base URL 已配置" if endpoint_ok else ("本地演练模式" if not live else "缺少独立 MoMo API 适配器地址")}
+        protocol_check = {"name": "momo_protocol", "ok": endpoint_ok if live else True, "message": "MoMo 直连协议地址已配置" if endpoint_ok else ("本地演练模式" if not live else "缺少 MoMo 直连协议地址")}
         if live and endpoint_ok:
-            probe = self._probe_adapter(endpoint, snapshot.get("api_headers_json"))
-            adapter_check["probe"] = probe
+            probe = self._probe_protocol(endpoint, snapshot.get("protocol_headers_json"), snapshot.get("protocol_token"))
+            protocol_check["probe"] = probe
             if probe.get("reachable") is False:
-                adapter_check["ok"] = False
-                adapter_check["message"] = str(probe.get("message") or "MoMo 适配器健康检查失败")
-        checks.append(adapter_check)
+                protocol_check["ok"] = False
+                protocol_check["message"] = str(probe.get("message") or "MoMo 直连协议检查失败")
+        checks.append(protocol_check)
+        auth_mode = str(snapshot.get("protocol_auth_mode") or "none").strip().lower()
+        auth_ok = auth_mode in {"none", "bearer", "hmac_sha256"}
+        auth_message = auth_mode
+        if auth_mode == "bearer":
+            auth_ok = bool(str(snapshot.get("protocol_token") or "").strip())
+            auth_message = "Bearer Token 已配置" if auth_ok else "Bearer 模式缺少 Token"
+        elif auth_mode == "hmac_sha256":
+            auth_ok = bool(str(snapshot.get("protocol_access_key") or "").strip() and str(snapshot.get("protocol_secret_key") or "").strip())
+            auth_message = "HMAC-SHA256 密钥已配置" if auth_ok else "HMAC-SHA256 模式缺少 Access Key 或 Secret Key"
+        checks.append({"name": "protocol_auth", "ok": auth_ok, "message": auth_message})
         checks.append({"name": "phone_source", "ok": source in SMS_SOURCES, "message": source if source in SMS_SOURCES else "号码来源无效"})
         if source == "pool":
             checks.append({"name": "phone_pool", "ok": phone_count > 0, "message": f"号码池 {phone_count} 条" if phone_count else "号码池为空，请导入 +84 号码"})
@@ -544,17 +624,25 @@ class MomoManager:
         return {"ok": all(item["ok"] for item in checks), "live_mode": live, "checks": checks, "proxy": proxy_check}
 
     def _ensure_provider_ready(self) -> None:
-        """Reject task creation when the live provider boundary is absent."""
+        """Reject task creation when the live direct-protocol boundary is absent."""
         with self.lock:
             mock = _as_bool(self.settings.get("mock_mode"), False)
-            endpoint = str(self.settings.get("api_base_url") or "").strip()
+            endpoint = str(self.settings.get("protocol_base_url") or "").strip()
+            auth_mode = str(self.settings.get("protocol_auth_mode") or "none")
+            token = str(self.settings.get("protocol_token") or "").strip()
+            access_key = str(self.settings.get("protocol_access_key") or "").strip()
+            secret_key = str(self.settings.get("protocol_secret_key") or "").strip()
         if not mock and not endpoint:
-            raise ValueError("请先在 MoMo 系统配置填写独立适配器地址")
+            raise ValueError("请先在 MoMo 系统配置填写直连协议地址")
+        if not mock and auth_mode == "bearer" and not token:
+            raise ValueError("请先在 MoMo 系统配置填写协议 Token")
+        if not mock and auth_mode == "hmac_sha256" and (not access_key or not secret_key):
+            raise ValueError("请先在 MoMo 系统配置填写协议 Access Key 和 Secret Key")
 
     @staticmethod
-    def _probe_adapter(endpoint: str, headers_raw: Any = "") -> dict[str, Any]:
-        """Probe the non-mutating adapter health endpoint before task creation."""
-        candidates = [f"{endpoint}/health", f"{endpoint}/api/health"]
+    def _probe_protocol(endpoint: str, headers_raw: Any = "", token: Any = "") -> dict[str, Any]:
+        """Probe protocol-host reachability without invoking a wallet mutation."""
+        candidates = [f"{endpoint}/health", f"{endpoint}/api/health", endpoint]
         headers: dict[str, str] = {"Accept": "application/json"}
         try:
             parsed = json.loads(str(headers_raw or "")) if str(headers_raw or "").strip() else {}
@@ -562,24 +650,25 @@ class MomoManager:
                 headers.update({str(key): str(value) for key, value in parsed.items() if str(key).strip() and value is not None})
         except (TypeError, ValueError):
             pass
-        token = os.getenv("OPAI_MOMO_API_TOKEN", "").strip()
-        if token and not any(str(key).lower() == "authorization" for key in headers):
-            headers["Authorization"] = f"Bearer {token}"
+        configured_token = str(token or os.getenv("OPAI_MOMO_PROTOCOL_TOKEN") or os.getenv("OPAI_MOMO_API_TOKEN") or "").strip()
+        if configured_token and not any(str(key).lower() == "authorization" for key in headers):
+            headers["Authorization"] = f"Bearer {configured_token}"
         last_error = ""
         for url in candidates:
             try:
                 request = urllib.request.Request(url, method="GET", headers=headers)
                 with urllib.request.urlopen(request, timeout=3) as response:
                     status = int(getattr(response, "status", 200) or 200)
-                    raw = json.loads(response.read().decode("utf-8", "ignore") or "{}")
-                    if status < 400 and isinstance(raw, dict) and _as_bool(raw.get("ok"), True):
-                        return {"reachable": True, "url": url, "status": status, "message": "适配器健康检查通过"}
+                    if status < 500:
+                        return {"reachable": True, "url": url, "status": status, "message": "直连协议主机可达"}
                     last_error = f"HTTP {status}"
             except urllib.error.HTTPError as exc:
+                if int(exc.code) in {400, 401, 403, 404, 405, 422, 429}:
+                    return {"reachable": True, "url": url, "status": int(exc.code), "message": f"直连协议主机可达（HTTP {exc.code}）"}
                 last_error = f"HTTP {exc.code}"
             except (OSError, ValueError) as exc:
                 last_error = str(exc)
-        return {"reachable": False, "message": f"适配器健康检查失败: {last_error or '未知错误'}"}
+        return {"reachable": False, "message": f"直连协议检查失败: {last_error or '未知错误'}"}
 
     def import_phones(self, raw: str) -> dict[str, int]:
         inserted = 0
@@ -712,7 +801,7 @@ class MomoManager:
 
     @staticmethod
     def _provider_state(result: ProviderResult) -> str:
-        """Normalize adapter progress hints into manager states."""
+        """Normalize direct-protocol progress hints into manager states."""
         data = result.data if isinstance(result.data, dict) else {}
         raw = str(data.get("status") or data.get("state") or data.get("next_step") or "").strip().lower().replace("-", "_")
         if _as_bool(data.get("requires_otp"), False) or _as_bool(data.get("otp_required"), False):
@@ -798,7 +887,7 @@ class MomoManager:
             self._log(job_id, message)
 
     def _complete_payment_result(self, job_id: str, session: dict[str, Any], result: ProviderResult, *, depth: int = 0) -> None:
-        """Handle adapter responses, including payment OTP/confirmation."""
+        """Handle direct-protocol responses, including payment OTP/confirmation."""
         if depth > 3:
             self._finish_job(job_id, success=False, message="MoMo 支付验证步骤超过最大重试次数")
             return
@@ -1377,11 +1466,29 @@ class MomoManager:
     def _provider_step_result(self, operation: str, job_id: str, payload: dict[str, Any]) -> ProviderResult:
         with self.lock:
             mock = _as_bool(self.settings.get("mock_mode"), False)
-            base_url = str(self.settings.get("api_base_url") or "").strip().rstrip("/")
+            base_url = str(self.settings.get("protocol_base_url") or "").strip().rstrip("/")
             timeout = int(self.settings.get("api_timeout_sec", 60))
-            headers = str(self.settings.get("api_headers_json") or "")
+            headers = str(self.settings.get("protocol_headers_json") or "")
+            routes = str(self.settings.get("protocol_routes_json") or "")
+            auth_mode = str(self.settings.get("protocol_auth_mode") or "none")
+            token = str(self.settings.get("protocol_token") or "")
+            access_key = str(self.settings.get("protocol_access_key") or "")
+            secret_key = str(self.settings.get("protocol_secret_key") or "")
+            signature_header = str(self.settings.get("protocol_signature_header") or "X-Signature")
         try:
-            worker = MomoTaskWorker(build_provider(mock_mode=mock, base_url=base_url, timeout=timeout, headers=headers), log=lambda message: self._append_worker_log(job_id, message))
+            provider = build_provider(
+                mock_mode=mock,
+                base_url=base_url,
+                timeout=timeout,
+                headers=headers,
+                routes=routes,
+                auth_mode=auth_mode,
+                token=token,
+                access_key=access_key,
+                secret_key=secret_key,
+                signature_header=signature_header,
+            )
+            worker = MomoTaskWorker(provider, log=lambda message: self._append_worker_log(job_id, message))
             request_payload = dict(payload)
             request_payload.setdefault("idempotency_key", f"momo-{job_id}-{str(operation).strip('/').replace('/', '-')}")
             return worker.run_result(operation, request_payload)
@@ -1390,7 +1497,7 @@ class MomoManager:
                 job = self.jobs.get(job_id)
                 if job:
                     job["status"] = "failed"
-                    self._log(job_id, f"MoMo {operation} provider failed: {exc}")
+                    self._log(job_id, f"MoMo {operation} direct protocol failed: {exc}")
             return ProviderResult(False, {}, str(exc))
 
     def _append_worker_log(self, job_id: str, message: str) -> None:

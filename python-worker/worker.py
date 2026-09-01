@@ -73,8 +73,6 @@ _running: set[str] = set()
 _processes: dict[str, subprocess.Popen] = {}
 _gopay_server = None
 _momo_server = None
-_momo_adapter_server = None
-_momo_original_api_base_url: str | None = None
 
 
 def _check_token(auth: str | None) -> None:
@@ -89,17 +87,8 @@ def _check_token(auth: str | None) -> None:
 def on_startup() -> None:
     # Do not import or validate Playwright/Camoufox here. Browser automation is
     # lazy-loaded by the isolated task subprocess only when a task is accepted.
-    global _gopay_server, _momo_server, _momo_adapter_server, _momo_original_api_base_url
+    global _gopay_server, _momo_server
     from gopay_runtime.gopay.server import start_embedded
-    # When a deployment supplies an upstream MoMo SDK service, expose it
-    # through the local provider-neutral adapter automatically.  This keeps
-    # the manager and the adapter on separate ports and avoids routing loops.
-    if _momo_adapter_server is None and not os.getenv("OPAI_MOMO_API_BASE_URL", "").strip() and os.getenv("OPAI_MOMO_ADAPTER_UPSTREAM_URL", "").strip():
-        from momo_adapter.server import start_embedded as start_momo_adapter
-
-        _momo_original_api_base_url = os.environ.get("OPAI_MOMO_API_BASE_URL")
-        _momo_adapter_server = start_momo_adapter()
-        os.environ["OPAI_MOMO_API_BASE_URL"] = f"http://127.0.0.1:{_momo_adapter_server.server_port}"
     from momo_runtime.momo.server import start_embedded as start_momo_embedded
 
     _gopay_server = start_embedded()
@@ -367,7 +356,7 @@ def cancel_checkout_job(job_id: str, authorization: str | None = Header(default=
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
-    global _gopay_server, _momo_server, _momo_adapter_server, _momo_original_api_base_url
+    global _gopay_server, _momo_server
     if _gopay_server is not None:
         _gopay_server.shutdown()
         _gopay_server.server_close()
@@ -376,15 +365,6 @@ def on_shutdown() -> None:
         _momo_server.shutdown()
         _momo_server.server_close()
         _momo_server = None
-    if _momo_adapter_server is not None:
-        _momo_adapter_server.shutdown()
-        _momo_adapter_server.server_close()
-        _momo_adapter_server = None
-        if _momo_original_api_base_url is None:
-            os.environ.pop("OPAI_MOMO_API_BASE_URL", None)
-        else:
-            os.environ["OPAI_MOMO_API_BASE_URL"] = _momo_original_api_base_url
-        _momo_original_api_base_url = None
     with _state_lock:
         processes = list(_processes.values())
         _processes.clear()

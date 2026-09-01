@@ -67,7 +67,6 @@ COPY python-worker/worker.py /app/worker.py
 COPY python-worker/sunny_runner.py /app/sunny_runner.py
 COPY python-worker/sunny_core/ /app/sunny_core/
 COPY python-worker/gopay_runtime/ /app/gopay_runtime/
-COPY python-worker/momo_adapter/ /app/momo_adapter/
 COPY python-worker/momo_runtime/ /app/momo_runtime/
 COPY python-worker/paypal_runtime/ /app/paypal_runtime/
 COPY python-worker/direct_card_runtime/ /app/direct_card_runtime/
