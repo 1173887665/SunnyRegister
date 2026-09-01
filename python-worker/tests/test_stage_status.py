@@ -590,6 +590,39 @@ class StageStatusTests(unittest.TestCase):
         self.assertEqual(browser_executor.call_args.kwargs["execution_mode"], "protocol_post_stage")
         self.assertIs(browser_executor.call_args.kwargs["existing_session"], protocol_session)
 
+    def test_phone_registration_protocol_mode_verifies_phone_without_acquiring_rt(self):
+        db = FakeDB()
+        payload = {
+            "registration_stage": worker.REGISTER_ONLY,
+            "execution_mode": "protocol",
+            "sms_provider": "local",
+        }
+        protocol_session = {"access_token": "protocol-access", "auth_action": "register"}
+        completed_session = {
+            "access_token": "browser-access",
+            "phone_bound": True,
+            "auth_action": "register",
+        }
+        phone_provider = Mock()
+        with (
+            patch.object(worker, "_prepare_register_proxy", return_value={"register": "", "mode": "direct"}),
+            patch.object(worker, "_combined_phone_provider", return_value=phone_provider) as phone_allocator,
+            patch.object(worker, "login_or_register_protocol", return_value=protocol_session) as protocol_executor,
+            patch.object(worker, "login_or_register", return_value=completed_session) as browser_executor,
+        ):
+            ok, result = worker._run_one(db, "sunny_phone_register", payload, mailbox(), 1, 1)
+
+        self.assertTrue(ok)
+        self.assertTrue(result["stage_complete"])
+        self.assertEqual(result["completed_status"], "已接码")
+        phone_allocator.assert_called_once()
+        protocol_executor.assert_called_once()
+        browser_executor.assert_called_once()
+        self.assertIs(browser_executor.call_args.kwargs["phone_provider"], phone_provider)
+        self.assertFalse(browser_executor.call_args.kwargs["require_refresh_token"])
+        self.assertEqual(browser_executor.call_args.kwargs["execution_mode"], "protocol_post_stage")
+        self.assertIs(browser_executor.call_args.kwargs["existing_session"], protocol_session)
+
     def test_manual_rt_acquire_persists_token_to_account_mailbox_and_session(self):
         db = FakeDB()
         payload = {"registration_stage": worker.CODEX_PHONE_BIND, "execution_mode": "background"}

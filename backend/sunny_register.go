@@ -6047,13 +6047,20 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 	if typ == "sunny_register" || typ == "sunny_phone_register" {
 		if typ == "sunny_phone_register" {
 			body["identity"] = "system"
-			body["registration_stage"] = "codex_phone_bind"
+			// Phone registration only creates the ChatGPT account and Session.
+			// Codex OAuth/RT acquisition is submitted through its own task.
+			body["registration_stage"] = "register_only"
 			if len(uintSlice(body["mailbox_ids"])) == 0 {
 				writeError(w, http.StatusBadRequest, "手机注册必须先选择邮箱")
 				return
 			}
 			provider := strings.ToLower(strings.TrimSpace(text(body["sms_provider"])))
 			validProviders := map[string]bool{"local": true, "luban": true, "smsbower": true, "smspool": true, "firefox": true, "grizzlysms": true, "hero_sms": true}
+			mailboxes, err := s.sunnyMailboxesForRegisterTask(body)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 			if !validProviders[provider] {
 				writeError(w, http.StatusBadRequest, "请选择有效的接码平台")
 				return
@@ -6084,48 +6091,9 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 				writeError(w, http.StatusBadRequest, "请选择注册国家")
 				return
 			}
-			if boolValue(body["rebind_after_registration"], false) {
-				category := strings.ToLower(strings.TrimSpace(text(body["rebind_mailbox_category"])))
-				if category == "" {
-					writeError(w, http.StatusBadRequest, "请选择注册后换绑邮箱类目")
-					return
-				}
-				rawTargets, ok := body["target_mailboxes"].([]any)
-				if !ok || len(rawTargets) < len(uintSlice(body["mailbox_ids"])) {
-					writeError(w, http.StatusBadRequest, "所选换绑邮箱数量不足")
-					return
-				}
-				validatedTargets := make([]map[string]any, 0, len(rawTargets))
-				for _, raw := range rawTargets {
-					item, ok := raw.(map[string]any)
-					if !ok {
-						continue
-					}
-					email, api := strings.TrimSpace(text(item["email"])), strings.TrimSpace(text(item["mailbox_api"]))
-					typ := normalizeSunnyMailboxType(text(item["mailbox_type"]))
-					channel := normalizeSunnyMailboxChannel(typ, text(item["mailbox_channel"]))
-					itemCategory := typ
-					if typ == "apple" && channel == "url_api" && !strings.HasSuffix(strings.ToLower(email), "@icloud.com") {
-						itemCategory = "generic"
-					}
-					if itemCategory != category {
-						continue
-					}
-					if email == "" || api == "" {
-						continue
-					}
-					if err := validateImportedRebindMailbox(api, email, typ, channel); err != nil {
-						writeError(w, http.StatusBadRequest, err.Error())
-						return
-					}
-					validatedTargets = append(validatedTargets, map[string]any{"email": email, "mailbox_api": api, "mailbox_type": typ, "mailbox_channel": channel})
-				}
-				if len(validatedTargets) < len(uintSlice(body["mailbox_ids"])) {
-					writeError(w, http.StatusBadRequest, "所选换绑邮箱没有有效取件凭证")
-					return
-				}
-				body["target_mailboxes"] = validatedTargets
-				body["rebind_mailbox_category"] = category
+			if err := prepareSunnyPostRegistrationEmailBind(body, len(mailboxes)); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
 			}
 		}
 		identity := strings.ToLower(strings.TrimSpace(text(body["identity"])))

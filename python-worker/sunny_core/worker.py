@@ -34,6 +34,7 @@ from .smspool import SMSPOOL_CODE_TIMEOUT_SECONDS, SMSPoolClient
 from .grizzly_sms import GrizzlySMSClient
 from .hero_sms import HeroSMSClient
 from .rebind import rebind_one
+from .post_registration_email_bind import email_bind_requested, run_post_registration_email_bind
 
 REGISTER_ONLY = "register_only"
 CODEX_PHONE_BIND = "codex_phone_bind"
@@ -292,21 +293,20 @@ def _emit_registration_progress(
     setup_login_secret: bool = False,
 ) -> None:
     base_total = _registration_stage_total(stage)
-    rebind_after_registration = False
-    if stage == CODEX_PHONE_BIND:
-        try:
-            task_reader = getattr(db, "task", None)
-            task_row = task_reader() if callable(task_reader) else {}
-            task_payload = json.loads(str((task_row or {}).get("payload_json") or "{}"))
-            rebind_after_registration = task_payload.get("rebind_after_registration") is True
-        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-            rebind_after_registration = False
-    total = base_total + (5 if setup_login_secret else 0) + (2 if rebind_after_registration else 0)
+    email_bind_after_registration = False
+    try:
+        task_reader = getattr(db, "task", None)
+        task_row = task_reader() if callable(task_reader) else {}
+        task_payload = json.loads(str((task_row or {}).get("payload_json") or "{}"))
+        email_bind_after_registration = email_bind_requested(task_payload)
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        email_bind_after_registration = False
+    total = base_total + (5 if setup_login_secret else 0) + (2 if email_bind_after_registration else 0)
     if setup_login_secret and checkpoint.startswith("login_secret_"):
         current = base_total + min(5, max(0, _REGISTRATION_PROGRESS_STEPS.get(checkpoint, 0)))
-    elif checkpoint == "rebind_started" and rebind_after_registration:
+    elif checkpoint == "email_bind_started" and email_bind_after_registration:
         current = base_total + (5 if setup_login_secret else 0) + 1
-    elif checkpoint == "rebind_completed" and rebind_after_registration:
+    elif checkpoint == "email_bind_completed" and email_bind_after_registration:
         current = base_total + (5 if setup_login_secret else 0) + 2
     else:
         current = min(base_total, max(0, _REGISTRATION_PROGRESS_STEPS.get(checkpoint, 0)))
@@ -1929,20 +1929,21 @@ def _run_one_impl(
             ),
         )
 
+    phone_registration = task_type == "sunny_phone_register"
     wants_rt = stage in {CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY} or explicit_rt_acquire
     phone_provider = None
     require_refresh_token = False
     phone_skipped_reason = ""
-    if wants_rt:
+    if wants_rt or phone_registration:
         sms_cfg = db.get_config("phone")
         db.event(
             f"[{email}] [接码] 接码资源检查：自建号池可用 {db.usable_phone_count()} 个，LubanSMS={'启用' if _provider_is_available(db, 'luban') else '不可用'}，SMSBower={'启用' if _provider_is_available(db, 'smsbower') else '不可用'}，SMSPool={'启用' if _provider_is_available(db, 'smspool') else '不可用'}，FireFox={'启用' if _provider_is_available(db, 'firefox') else '不可用'}，GrizzlySMS={'启用' if _provider_is_available(db, 'grizzlysms') else '不可用'}，HeroSMS={'启用' if _provider_is_available(db, 'hero_sms') else '不可用'}",
             detail={"email": email, "scope": "selected", "sms_provider": "resource_check", "phone_config": {"pool_enabled": sms_cfg.get("pool_enabled"), "luban_enabled": sms_cfg.get("luban_enabled"), "smsbower_enabled": sms_cfg.get("smsbower_enabled"), "smspool_enabled": sms_cfg.get("smspool_enabled"), "firefox_enabled": sms_cfg.get("firefox_enabled")}},
         )
-        if account.openai_rt:
+        if wants_rt and account.openai_rt:
             require_refresh_token = True
             db.event(f"[{email}] [接码] 邮箱记录已有 OpenAI RT，将直接刷新 Session", detail={"email": email, "scope": "selected"})
-        else:
+        elif phone_registration or not account.openai_rt:
             phone_provider = _combined_phone_provider(
                 db,
                 email,
@@ -1953,14 +1954,18 @@ def _run_one_impl(
             )
         if phone_provider:
             require_refresh_token = True
-            db.event(f"[{email}] [接码] 已启用组合接码策略：外部供应商随机尝试，自建手机号池作为兜底", detail={"email": email, "scope": "selected", "sms_provider": "combined"})
+            if phone_registration:
+                require_refresh_token = False
+                db.event(f"[{email}] [接码] 手机注册流程已启用接码供应商，仅用于完成 ChatGPT 注册手机号验证；RT 由独立 Codex 任务获取", detail={"email": email, "scope": "selected", "sms_provider": "combined", "rt_stage": "separate_codex_task"})
+            else:
+                db.event(f"[{email}] [接码] 已启用组合接码策略：外部供应商随机尝试，自建手机号池作为兜底", detail={"email": email, "scope": "selected", "sms_provider": "combined"})
         elif explicit_rt_acquire:
             require_refresh_token = True
             db.event(
                 f"[{email}] [Session] 账户没有已保存 RT，将通过已有账户登录态发起 Codex OAuth 授权；若上游要求手机号验证，则联动当前接码配置",
                 detail={"email": email, "scope": "selected", "explicit_rt_acquire": True},
             )
-        elif not account.openai_rt:
+        elif not account.openai_rt and not phone_registration:
             phone_skipped_reason = "无可用手机号：自建手机号池无可用号码，且 LubanSMS/SMSBower/SMSPool/FireFox 均未启用或未完成配置。本账号只执行 ChatGPT 注册/登录，不进行接码，也不会获取 Refresh Token。"
             db.event(f"[{email}] [接码] {phone_skipped_reason}", "warning", detail={"email": email, "scope": "selected"})
     elif stage == AGENT_IDENTITY_REVERSE_PROXY:
@@ -2145,10 +2150,14 @@ def _run_one_impl(
                 if protocol_batch_policy is not None:
                     protocol_batch_policy.record_success()
                 protocol_session = session
-                if wants_rt and require_refresh_token:
+                # A phone-registration task uses the browser continuation to
+                # complete ChatGPT phone verification, but deliberately skips
+                # Codex OAuth and Refresh Token acquisition.
+                if (wants_rt and require_refresh_token) or phone_registration:
+                    continuation_label = "手机号验证" if phone_registration else "接码和 Refresh Token 获取"
                     db.event(
-                        f"[{email}] [认证] 协议注册/登录已完成，复用当前登录态进入后台 OAuth 续段以完成接码和 Refresh Token 获取",
-                        detail={"email": email, "scope": "selected", "execution_mode": "protocol_post_stage"},
+                        f"[{email}] [认证] 协议注册/登录已完成，复用当前登录态进入后台浏览器续段以完成{continuation_label}",
+                        detail={"email": email, "scope": "selected", "execution_mode": "protocol_post_stage", "phone_registration": phone_registration},
                     )
                     try:
                         session = login_or_register(
@@ -2158,7 +2167,7 @@ def _run_one_impl(
                             lambda m: db.event(m, detail={"email": email, "scope": "selected"}),
                             phone_provider=phone_provider,
                             existing_account=True,
-                            require_refresh_token=True,
+                            require_refresh_token=require_refresh_token,
                             should_cancel=db.cancel_requested,
                             execution_mode="protocol_post_stage",
                             on_progress=save_progress,
@@ -2176,9 +2185,10 @@ def _run_one_impl(
                         if _is_cancel_exception(exc):
                             raise
                         session = protocol_session
-                        session["post_registration_error"] = f"协议注册已完成，但后续接码/OAuth 阶段失败: {exc}"
+                        continuation_label = "手机号验证" if phone_registration else "接码/OAuth 阶段"
+                        session["post_registration_error"] = f"协议注册已完成，但后续{continuation_label}失败: {exc}"
                         db.event(
-                            f"[{email}] [接码] 协议注册已完成，后续接码/OAuth 阶段失败，账号保留为已注册: {exc}",
+                            f"[{email}] [接码] 协议注册已完成，后续{continuation_label}失败，账号保留为已注册: {exc}",
                             "warning",
                             detail={"email": email, "scope": "selected", "execution_mode": "protocol_post_stage"},
                         )
@@ -2526,50 +2536,33 @@ def _run_one_impl(
         elif setup_login_secret_enabled:
             result["stage_complete"] = False
 
-        # Phone registration can optionally continue into the existing rebind
-        # workflow. The registration result is already persisted above, so a
-        # rebind failure only marks the post-registration stage incomplete.
-        if task_type == "sunny_phone_register" and payload.get("rebind_after_registration") is True and base_stage_complete:
-            targets = payload.get("target_mailboxes")
-            target = None
-            if isinstance(targets, list) and targets:
-                candidate = targets[(max(1, int(index)) - 1) % len(targets)]
-                if isinstance(candidate, dict):
-                    target = candidate
-            if not target:
+        # SunnyRegister phone registration owns a dedicated post-registration
+        # email-binding phase. Its payload and progress checkpoints are kept
+        # separate from the generic sunny_rebind task contract.
+        if task_type == "sunny_phone_register" and email_bind_requested(payload) and base_stage_complete:
+            bind_result = run_post_registration_email_bind(
+                db,
+                payload,
+                account_id=account_id,
+                source_email=str(email),
+                index=index,
+                bind_with_proxy_rotation=lambda bind_payload, account, bind_index: _rebind_with_proxy_rotation(
+                    db, bind_payload, account, bind_index
+                ),
+                emit_progress=lambda checkpoint, state, error: _emit_registration_progress(
+                    db,
+                    str(email),
+                    stage,
+                    checkpoint,
+                    state=state,
+                    error=error,
+                    setup_login_secret=setup_login_secret_enabled,
+                ),
+            )
+            result.update(bind_result)
+            if not bind_result.get("email_bind_complete"):
                 result["stage_complete"] = False
-                result["rebind_error"] = "没有可分配的注册后换绑邮箱"
-                result["stage_error"] = result["rebind_error"]
-                db.event(f"[{email}] [换绑] 注册已完成，但没有可分配的目标邮箱", "error", detail={"email": email, "scope": "selected", "operation": "post_registration_rebind"})
-                _emit_registration_progress(db, str(email), stage, "rebind_started", setup_login_secret=setup_login_secret_enabled)
-                _emit_registration_progress(db, str(email), stage, "rebind_completed", state="abnormal", error=result["rebind_error"], setup_login_secret=setup_login_secret_enabled)
-            else:
-                target_email = str(target.get("email") or "").strip()
-                target_api = str(target.get("mailbox_api") or "").strip()
-                target_type = str(target.get("mailbox_type") or "").strip().lower()
-                target_channel = str(target.get("mailbox_channel") or "").strip().lower()
-                _emit_registration_progress(db, str(email), stage, "rebind_started", setup_login_secret=setup_login_secret_enabled)
-                db.event(f"[{email}] [换绑] 注册完成，开始分配目标邮箱 {target_email}", detail={"email": email, "scope": "selected", "operation": "post_registration_rebind", "target_mailbox_type": target_type, "target_mailbox_channel": target_channel})
-                try:
-                    account_rows = db.fetch_accounts([account_id])
-                    if not account_rows:
-                        raise RuntimeError("注册账户记录不存在")
-                    account_for_rebind = dict(account_rows[0])
-                    account_for_rebind.update({"_rebind_target_email": target_email, "_rebind_target_api": target_api, "_rebind_target_type": target_type, "_rebind_target_channel": target_channel})
-                    rebind_payload = dict(payload)
-                    rebind_payload.update({"rebind_source": "imported", "target_email": target_email, "target_mailbox_api": target_api, "target_mailbox_type": target_type, "target_mailbox_channel": target_channel})
-                    rebind_result = _rebind_with_proxy_rotation(db, rebind_payload, account_for_rebind, max(0, int(index) - 1))
-                    result["rebind"] = rebind_result
-                    result["rebind_complete"] = True
-                    db.event(f"[{email}] [换绑] 注册后邮箱换绑完成：{rebind_result.get('new_email') or target_email}", detail={"email": email, "scope": "selected", "operation": "post_registration_rebind", "rebind_complete": True})
-                    _emit_registration_progress(db, str(email), stage, "rebind_completed", setup_login_secret=setup_login_secret_enabled)
-                except Exception as exc:
-                    result["stage_complete"] = False
-                    result["rebind_complete"] = False
-                    result["rebind_error"] = str(exc)
-                    result["stage_error"] = str(exc)
-                    db.event(f"[{email}] [换绑] 注册已完成，但注册后邮箱换绑失败，已保留账号结果：{exc}", "error", detail={"email": email, "scope": "selected", "operation": "post_registration_rebind", "rebind_complete": False})
-                    _emit_registration_progress(db, str(email), stage, "rebind_completed", state="abnormal", error=str(exc), setup_login_secret=setup_login_secret_enabled)
+                result["stage_error"] = str(bind_result.get("email_bind_error") or bind_result.get("stage_error") or "注册后绑定邮箱失败")
         result["has_access_token"] = bool(result.pop("access_token", ""))
         result["has_refresh_token"] = bool(result.pop("refresh_token", ""))
         terminal_checkpoint = {
@@ -2579,6 +2572,9 @@ def _run_one_impl(
             AGENT_IDENTITY_REVERSE_PROXY: "agent_identity_imported",
         }.get(stage, "registered")
         terminal_checkpoint = (
+            "email_bind_completed"
+            if email_bind_requested(payload) and result.get("email_bind_complete") is True and result.get("stage_complete")
+            else
             "login_secret_completed"
             if setup_login_secret_enabled and result.get("stage_complete")
             else "login_secret_failed"
