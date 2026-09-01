@@ -146,6 +146,11 @@ class ChangeEmailClient:
         request_suffix = f"，request_id={request_id}" if request_id else ""
         self.log(f"[换绑接口] {method} {path} -> HTTP {response.status_code}（耗时 {time.monotonic() - started:.1f}s{request_suffix}）")
         if response.status_code < 200 or response.status_code >= 300:
+            if "email_change_account_too_new" in body.lower():
+                raise RebindError(
+                    "上游仍判定账号处于注册后的邮箱换绑冷却期（email_change_account_too_new）；"
+                    "当前账号暂不能换绑，请等待上游冷却结束后重试"
+                )
             if response.status_code in {401, 403} or "reauth" in body.lower() or "recent" in body.lower():
                 raise RebindError(f"换绑接口需要重新认证：HTTP {response.status_code} {body}")
             raise RebindError(f"换绑接口 {path} 失败：HTTP {response.status_code} {body}")
@@ -240,7 +245,7 @@ def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str, 
 
 def _login_flow(account: MailAccount, proxy: str, log: Callable[[str], None], *, keep_session: bool, should_cancel: Callable[[], bool] | None = None) -> tuple[ProtocolRegistrationFlow, dict[str, Any]]:
     if not account.has_login_secret:
-        log("[认证] 未检测到完整 LS，直接使用 Camoufox 邮箱验证码登录")
+        log("[认证] 未检测到完整 LS，直接使用邮箱验证码建立全新认证事务")
         return _browser_mailbox_fallback(
             account,
             proxy,
@@ -304,6 +309,29 @@ def _login_flow(account: MailAccount, proxy: str, log: Callable[[str], None], *,
         if isinstance(protocol_traffic, dict):
             result["protocol_traffic"] = protocol_traffic
         log("[认证] 邮箱换绑的后台无头浏览器登录已完成，继续执行换绑接口")
+    except Exception as exc:
+        if should_cancel and should_cancel():
+            raise
+        if not _should_use_mailbox_browser_fallback(exc):
+            raise
+        log(
+            "[认证] 协议登录的授权事务连续失效，正在使用邮箱凭证建立全新认证事务："
+            f"{str(exc)[:220]}"
+        )
+        try:
+            if flow.reader:
+                flow.reader.close()
+            if flow.session:
+                flow.session.close()
+        except Exception:
+            pass
+        return _browser_mailbox_fallback(
+            account,
+            proxy,
+            log,
+            keep_session=keep_session,
+            should_cancel=should_cancel,
+        )
     flow._last_access_token = str(result.get("access_token") or "")
     return flow, result
 
@@ -382,6 +410,9 @@ def _should_use_mailbox_browser_fallback(error: Exception) -> bool:
             "interactive anti-bot challenge",
             "upstream html challenge",
             "requires an interactive",
+            "invalid_auth_step",
+            "invalid authorization step",
+            "认证步骤不匹配",
         )
     )
 
@@ -394,18 +425,19 @@ def _browser_mailbox_fallback(
     keep_session: bool,
     should_cancel: Callable[[], bool] | None,
 ) -> tuple[ProtocolRegistrationFlow, dict[str, Any]]:
-    """Retry an LS failure through the full Camoufox mailbox OTP flow.
+    """Retry an LS failure with a fresh mailbox-only auth transaction.
 
-    Clearing only the ChatGPT password/TOTP fields forces the browser login
-    state machine to use the mailbox credentials while preserving the account
-    identity. This path must remain browser-backed because an OTP login can
-    still require Turnstile or a device challenge.
+    Clearing only the ChatGPT password/TOTP fields forces the login state
+    machine to use the mailbox credentials while preserving the account
+    identity. Start with a fresh protocol transaction because the current
+    password page may not expose an email-code switch. Camoufox remains the
+    fallback for Turnstile and device challenges.
     """
     mailbox_account = replace(account, chatgpt_password="", totp_secret="")
     if account.has_login_secret:
-        log("[认证] LS 浏览器登录未完成，改用 Camoufox 邮箱验证码登录重试；保留当前账户邮箱凭证")
+        log("[认证] LS 登录未完成，改用邮箱验证码登录重试；保留当前账户邮箱凭证")
     else:
-        log("[认证] 使用 Camoufox 邮箱验证码登录；保留当前账户邮箱凭证")
+        log("[认证] 使用邮箱验证码登录；保留当前账户邮箱凭证")
     flow = ProtocolRegistrationFlow(
         mailbox_account,
         proxy,
@@ -416,6 +448,45 @@ def _browser_mailbox_fallback(
         keep_session=keep_session,
         skip_mailbox=False,
     )
+    try:
+        result = flow.run()
+    except Exception as protocol_exc:
+        if should_cancel and should_cancel():
+            raise
+        if not _should_use_mailbox_browser_fallback(protocol_exc) and any(
+            marker in str(protocol_exc or "").lower()
+            for marker in (
+                "account_deactivated",
+                "account disabled",
+                "account banned",
+                "account suspended",
+                "账号已封禁",
+                "账户已封禁",
+                "账户已停用",
+            )
+        ):
+            raise
+        log(
+            "[认证] 邮箱凭证协议登录仍需浏览器挑战，正在切换浏览器全新会话："
+            f"{str(protocol_exc)[:220]}"
+        )
+        try:
+            reader = getattr(flow, "reader", None)
+            if reader:
+                reader.close()
+            session = getattr(flow, "session", None)
+            if session:
+                session.close()
+        except Exception:
+            pass
+        flow.session = None
+    else:
+        flow._last_access_token = str(result.get("access_token") or "")
+        result["requested_execution_mode"] = "protocol"
+        result["execution_mode"] = "protocol"
+        result["protocol_fallback"] = "mailbox_protocol"
+        log("[认证] 全新邮箱凭证协议登录完成，继续执行邮箱换绑")
+        return flow, result
     result = None
     for attempt in range(2):
         try:
@@ -444,7 +515,7 @@ def _browser_mailbox_fallback(
     _hydrate_protocol_flow_from_browser(flow, result)
     result["execution_mode"] = "protocol_headless_fallback"
     result["protocol_fallback"] = "mailbox_browser"
-    log("[认证] Camoufox 邮箱验证码登录完成，继续执行邮箱换绑")
+    log("[认证] 浏览器邮箱验证码登录完成，继续执行邮箱换绑")
     return flow, result
 
 

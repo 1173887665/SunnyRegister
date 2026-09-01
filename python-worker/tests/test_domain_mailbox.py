@@ -5,6 +5,8 @@ import sqlite3
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 from sunny_core import mailbox as mailbox_module
 from sunny_core import domain_mail_cleanup as cleanup_module
 from sunny_core import rebind as rebind_module
@@ -467,6 +469,32 @@ def test_rebind_client_observation_header_matches_web_format():
     assert re.fullmatch(r"v1\.r\.p\.[A-Za-z0-9_-]{16}", header)
 
 
+def test_rebind_client_reports_account_cooldown_clearly():
+    class Response:
+        status_code = 400
+        text = '{"detail":{"code":"email_change_account_too_new"}}'
+        headers = {}
+
+        @staticmethod
+        def json():
+            return {"detail": {"code": "email_change_account_too_new"}}
+
+    class Session:
+        cookies = type("Cookies", (), {"jar": []})()
+
+        @staticmethod
+        def request(*_args, **_kwargs):
+            return Response()
+
+    flow = type("Flow", (), {"session": Session(), "device_id": "device-id", "_last_access_token": "access-token"})()
+    client = rebind_module.ChangeEmailClient(flow, "account-id")
+
+    with pytest.raises(rebind_module.RebindError, match="email_change_account_too_new") as exc_info:
+        client.begin("replacement@example.com")
+
+    assert "换绑冷却期" in str(exc_info.value)
+
+
 def test_rebind_login_falls_back_to_headless_browser_after_sentinel_challenge(monkeypatch):
     account = account_from_row({
         "email": "original@example.com",
@@ -582,7 +610,54 @@ def test_rebind_login_falls_back_to_browser_mailbox_after_browser_ls_failure(mon
     assert result["access_token"] == "mailbox-access-token"
     assert result["execution_mode"] == "protocol_headless_fallback"
     assert result["protocol_fallback"] == "mailbox_browser"
-    assert any("Camoufox 邮箱验证码登录" in message for message in logs)
+    assert any("浏览器邮箱验证码登录" in message for message in logs)
+
+
+def test_rebind_login_rebuilds_stale_auth_with_mailbox_protocol(monkeypatch):
+    account = account_from_row({
+        "email": "original@example.com",
+        "raw": "original@example.com----mail-password----client-id----refresh-token",
+        "chatgpt_password": "chatgpt-password",
+        "totp_secret": "JBSWY3DPEHPK3PXP",
+    })
+    created = []
+
+    class Session:
+        def __init__(self):
+            self.cookies = type("Cookies", (), {"jar": []})()
+
+        def close(self):
+            return None
+
+    class FakeFlow:
+        def __init__(self, flow_account, proxy_url, log, **kwargs):
+            self.account = flow_account
+            self.proxy_url = proxy_url
+            self.log = log
+            self.kwargs = kwargs
+            self.session = Session()
+            self.reader = None
+            self.device_id = "device-id"
+            self._last_access_token = ""
+            created.append(self)
+
+        def run(self):
+            if self.account.has_login_secret:
+                raise RuntimeError("Send email verification code failed: invalid_auth_step")
+            return {"access_token": "mailbox-protocol-token", "account_id": "account-id"}
+
+    browser_calls = []
+    monkeypatch.setattr(rebind_module, "ProtocolRegistrationFlow", FakeFlow)
+    monkeypatch.setattr(rebind_module, "login_or_register", lambda *args, **kwargs: browser_calls.append((args, kwargs)))
+
+    flow, result = rebind_module._login_flow(account, "", lambda _message: None, keep_session=True)
+
+    assert len(created) == 2
+    assert flow is created[1]
+    assert flow.account.has_login_secret is False
+    assert result["access_token"] == "mailbox-protocol-token"
+    assert result["protocol_fallback"] == "mailbox_protocol"
+    assert browser_calls == []
 
 
 def test_rebind_login_does_not_mailbox_retry_when_account_is_deactivated():
