@@ -11,6 +11,7 @@ import PublicLanding from "@/pages/PublicLanding";
 import AuditLogPage from "@/pages/AuditLogPage";
 import CheckoutManager from "@/pages/CheckoutManager";
 import PaymentManagement from "@/pages/PaymentManagement";
+import LinkWorkbench from "@/pages/LinkWorkbench";
 
 function words(language: string) {
   return language === "en-US"
@@ -25,8 +26,8 @@ function TopBar({ theme, setTheme, onLogout }: { theme: string; setTheme: (v: st
   const headerRef = useRef<HTMLElement | null>(null);
   useTopBarGsap(headerRef, `${location.pathname}:${language}`);
   const menus = language === "en-US"
-    ? [["/", "Workbench"], ["/mailbox", "Mailbox"], ["/phone", "SMS"], ["/sub2api", "Reverse"], ["/proxy", "Proxy"], ["/session", "Account Management"], ["/checkout", "Checkout Links"], ["/payments", "Payments"], ["/audit", "Audit Logs"]]
-    : [["/", "工作台"], ["/mailbox", "邮箱配置"], ["/phone", "接码配置"], ["/sub2api", "反代配置"], ["/proxy", "代理配置"], ["/session", "账户管理"], ["/checkout", "提链管理"], ["/payments", "支付管理"], ["/audit", "日志管理"]];
+    ? [["/", "Workbench"], ["/mailbox", "Mailbox"], ["/phone", "SMS"], ["/sub2api", "Reverse"], ["/proxy", "Proxy"], ["/session", "Account Management"], ["/link-workbench", "Link Workbench"], ["/checkout", "Checkout Links"], ["/payments", "Payments"], ["/audit", "Audit Logs"]]
+    : [["/", "工作台"], ["/mailbox", "邮箱配置"], ["/phone", "接码配置"], ["/sub2api", "反代配置"], ["/proxy", "代理配置"], ["/session", "账户管理"], ["/link-workbench", "提链工作台"], ["/checkout", "提链管理"], ["/payments", "支付管理"], ["/audit", "日志管理"]];
   const navClass = (active: boolean) => cn("inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition-all", active ? "bg-[var(--accent)] text-white shadow-[var(--shadow-glow)]" : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]");
   return (
     <header ref={headerRef} className="sticky top-0 z-[300] border-b border-[var(--border)] bg-[var(--bg-shell)]/80 backdrop-blur-2xl">
@@ -51,10 +52,11 @@ function TopBar({ theme, setTheme, onLogout }: { theme: string; setTheme: (v: st
   );
 }
 
-type ShellPage = "sunny" | "checkout" | "payments" | "audit";
+type ShellPage = "sunny" | "link-workbench" | "checkout" | "payments" | "audit";
 
 function shellPage(pathname: string): ShellPage {
   if (pathname.startsWith("/audit")) return "audit";
+  if (pathname.startsWith("/link-workbench")) return "link-workbench";
   if (pathname.startsWith("/checkout")) return "checkout";
   if (pathname.startsWith("/payments")) return "payments";
   return "sunny";
@@ -74,6 +76,7 @@ function CachedShellPages() {
   return (
     <main className="app-shell mx-auto py-6 md:py-8">
       <CachedPage active={activePage === "sunny"}>{visitedPages.has("sunny") && <SunnyRegister />}</CachedPage>
+      <CachedPage active={activePage === "link-workbench"}>{visitedPages.has("link-workbench") && <LinkWorkbench />}</CachedPage>
       <CachedPage active={activePage === "checkout"}>{visitedPages.has("checkout") && <CheckoutManager />}</CachedPage>
       <CachedPage active={activePage === "payments"}>{visitedPages.has("payments") && <PaymentManagement />}</CachedPage>
       <CachedPage active={activePage === "audit"}>{visitedPages.has("audit") && <AuditLogPage />}</CachedPage>

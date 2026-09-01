@@ -784,6 +784,11 @@ class SunnyDB:
         mailbox["email"] = rebind_email
         mailbox["access_key"] = rebind_api
         mailbox["raw"] = f"{rebind_email}----{rebind_api}"
+        if str(mailbox.get("mailbox_type") or "").strip().lower() == "microsoft":
+            parts = [part.strip() for part in rebind_api.split("----")]
+            if len(parts) == 3 and all(parts):
+                mailbox.update({"password": parts[0], "client_id": parts[1], "refresh_token": parts[2]})
+                mailbox["raw"] = "----".join([rebind_email, *parts])
         try:
             detected_kind = _infer_rebind_mailbox_kind(rebind_api, rebind_email)
         except ValueError:
@@ -843,6 +848,10 @@ class SunnyDB:
         if not isinstance(storage_state, str):
             storage_state = json.dumps(storage_state, ensure_ascii=False)
         raw = f"{new_email}----{new_mailbox_api}"
+        if str(mailbox_type or "").strip().lower() == "microsoft":
+            parts = [part.strip() for part in str(new_mailbox_api).split("----")]
+            if len(parts) == 3 and all(parts):
+                raw = "----".join([new_email, *parts])
         with self.conn:
             pending = self.conn.execute(
                 "select id from sunny_mailboxes where lower(email)=lower(?) and pickup_token_hash=? limit 1",

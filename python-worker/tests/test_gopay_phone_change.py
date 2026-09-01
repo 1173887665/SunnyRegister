@@ -99,6 +99,35 @@ def test_phone_change_pool_failure_releases_reserved_row(monkeypatch, tmp_path):
     assert "申请失败" in failed["message"]
 
 
+def test_phone_change_pool_imports_replacement_sms_url(monkeypatch, tmp_path):
+    accounts_path = tmp_path / "accounts.json"
+    pool_path = tmp_path / "pool.json"
+    monkeypatch.setenv("OPAI_GOPAY_ACCOUNTS_FILE", str(accounts_path))
+    accounts_path.write_text(json.dumps([{"phone": "+6281234567890", "local": "81234567890"}]), encoding="utf-8")
+    pool_path.write_text("[]", encoding="utf-8")
+
+    from opai.core.payment_inbox import _PhoneChangeManager
+
+    fake = FakeClient()
+    manager = _PhoneChangeManager(pool_path=pool_path, client_factory=lambda account, phone: fake)
+    created = manager.start(
+        phone="+6281234567890",
+        source="pool",
+        replacement_phone="+6281234567891",
+        replacement_sms_url="https://sms.example.test/messages/1",
+    )
+    _wait_for(manager, created["id"], "waiting_otp")
+    manager.submit_otp(created["id"], "654321")
+    _wait_for(manager, created["id"], "success")
+
+    pool = json.loads(pool_path.read_text(encoding="utf-8"))
+    assert pool == [{
+        "phone": "+6281234567891",
+        "sms_url": "https://sms.example.test/messages/1",
+        "status": "registered",
+    }]
+
+
 def test_phone_change_provider_source_auto_reads_configured_sms(monkeypatch, tmp_path):
     accounts_path = tmp_path / "accounts.json"
     monkeypatch.setenv("OPAI_GOPAY_ACCOUNTS_FILE", str(accounts_path))

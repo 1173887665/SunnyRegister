@@ -111,7 +111,8 @@ class GoPayPayment:
 
     @property
     def profile_id(self) -> str:
-        return str(self.payment_fingerprint.get("profile_id") or "")
+        fingerprint = getattr(self, "payment_fingerprint", {})
+        return str(fingerprint.get("profile_id") or "") if isinstance(fingerprint, dict) else ""
 
     def _request_headers(self, extra: Optional[dict] = None) -> dict:
         headers = {**self._headers}
@@ -177,7 +178,7 @@ class GoPayPayment:
         except Exception:
             return {"status": r.status_code, "body": {"raw": r.text[:500]}}
 
-    def _midtrans_post(self, path: str, body: dict, timeout: int = 15, auth_snap: str = "") -> dict:
+    def _midtrans_post(self, path: str, body: dict, timeout: int = 15, auth_snap: str = "", captcha_token: str = "") -> dict:
         url = f"{MIDTRANS_BASE}{path}"
         extra = {
             "Content-Type": "application/json",
@@ -186,6 +187,10 @@ class GoPayPayment:
         }
         if auth_snap:
             extra["Authorization"] = "Basic " + base64.b64encode(f"{auth_snap}:".encode()).decode()
+        # Midtrans now requires the short-lived browser challenge token for
+        # GoPay linking.  Keep it scoped to the linking request only.
+        if captcha_token:
+            extra["X-Captcha-Token"] = captcha_token
         r = self._session.post(
             url,
             headers=self._request_headers(extra),
@@ -263,6 +268,7 @@ class GoPayPayment:
         wait_otp: Callable[[str, int], Optional[str]] = None,
         progress: Callable[[str], None] | None = None,
         midtrans_client_key: str = "",
+        midtrans_captcha_token: str = "",
     ) -> dict:
         """
         执行完整的 GoPay 支付流程。
@@ -290,6 +296,12 @@ class GoPayPayment:
         if not m:
             return {"success": False, "detail": "invalid midtrans URL"}
         snap = m.group(1)
+        captcha_token = str(midtrans_captcha_token or os.environ.get("OPAI_MIDTRANS_CAPTCHA_TOKEN", "")).strip()
+        if not captcha_token:
+            return {
+                "success": False,
+                "detail": "缺少 Midtrans 验证令牌，请先在支付页完成验证并填写 X-Captcha-Token",
+            }
         log.info("[pay] snap=%s phone=%s%s profile_id=%s", snap[:12], country_code, phone, self.profile_id)
 
         # === Phase A: Linking ===
@@ -307,6 +319,7 @@ class GoPayPayment:
                 f"/snap/v3/accounts/{snap}/linking",
                 link_body,
                 auth_snap=midtrans_client_key or snap,
+                captcha_token=captcha_token,
             )
             if link_r["status"] in (200, 201):
                 break

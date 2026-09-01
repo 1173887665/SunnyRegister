@@ -402,7 +402,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request, rest string
 				writeJSON(w, 200, serializeTask(task))
 				return
 			}
-			isRegistrationTask := task.Type == "sunny_register" || task.Type == "sunny_login"
+			isRegistrationTask := task.Type == "sunny_register" || task.Type == "sunny_phone_register" || task.Type == "sunny_login"
 			cancelMessage := "用户已停止任务"
 			requestMessage := "Task cancel requested"
 			if task.Type == "sunny_refresh_session" {
@@ -810,7 +810,7 @@ func (s *Server) executeTask(taskID string) {
 func pythonWorkerTypes() map[string]bool {
 	raw := strings.TrimSpace(os.Getenv("PYTHON_TASK_TYPES"))
 	if raw == "" {
-		raw = "sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt,sunny_rebind,sunny_add_ls,sunny_sub2_import,register,account_check,account_check_all,platform_action,phone_bind,codex_oauth,get_rt,get_rt_bypass,gopay_pay_chatgpt,gopay_register_account"
+		raw = "sunny_register,sunny_phone_register,sunny_login,sunny_refresh_session,sunny_acquire_rt,sunny_rebind,sunny_add_ls,sunny_sub2_import,register,account_check,account_check_all,platform_action,phone_bind,codex_oauth,get_rt,get_rt_bypass,gopay_pay_chatgpt,gopay_register_account"
 	}
 	out := map[string]bool{}
 	for _, item := range strings.Split(raw, ",") {
@@ -822,6 +822,7 @@ func pythonWorkerTypes() map[string]bool {
 	// SunnyRegister 的核心注册/登录/换绑任务必须始终允许派发给本项目 Python Worker。
 	// 这样即使用户系统环境变量里残留了旧的 PYTHON_TASK_TYPES，也不会把注册机流程误判为不支持。
 	out["sunny_register"] = true
+	out["sunny_phone_register"] = true
 	out["sunny_login"] = true
 	out["sunny_refresh_session"] = true
 	out["sunny_acquire_rt"] = true

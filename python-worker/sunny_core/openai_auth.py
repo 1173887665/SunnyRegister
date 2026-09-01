@@ -2420,9 +2420,32 @@ class OpenAIEmailRegisterFlow:
                 "年齢", "何歳", "何才", "生年月日", "姓名", "年龄", "出生日期",
             ]):
                 return False
-            return len(self._visible_inputs(page, ['input', 'textarea', '[contenteditable="true"]'])) >= 2
+            return len(self._visible_profile_controls(page)) >= 2
         except Exception:
             return False
+
+    def _visible_profile_controls(self, page):
+        """Return visible profile fields in DOM order, including native selects."""
+        controls = []
+        try:
+            locator = page.locator('input, textarea, select, [contenteditable="true"]')
+            for index in range(min(locator.count(), 30)):
+                control = locator.nth(index)
+                try:
+                    if control.is_visible():
+                        controls.append(control)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        if not controls:
+            # Keep compatibility with lightweight test doubles and older page
+            # adapters that only implement the selector-based helper.
+            try:
+                controls = self._visible_inputs(page, ['input', 'textarea', '[contenteditable="true"]'])
+            except Exception:
+                controls = []
+        return controls
 
     def _fill_about_you(self, page) -> None:
         self.auth_action = "register"
@@ -2433,7 +2456,7 @@ class OpenAIEmailRegisterFlow:
         second_kind = self._about_you_second_field_kind_from_context(second_context)
         second_value = self._about_you_second_field_value(second_kind, birth_year, age, birthdate, second_context)
         self.log(f"[认证] 填写基础资料: {name} / birthdate={birthdate} / birth_year={birth_year} / age={age} / field={second_kind} / value={second_value}")
-        controls = self._visible_inputs(page, ['input', 'textarea', '[contenteditable="true"]'])
+        controls = self._visible_profile_controls(page)
         if len(controls) < 2:
             raise RuntimeError("Profile page missing name/age inputs")
         self._force_fill(controls[0], name)
@@ -2519,7 +2542,7 @@ class OpenAIEmailRegisterFlow:
                         const s = getComputedStyle(el);
                         return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
                     };
-                    const controls = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]')).filter(visible);
+                    const controls = Array.from(document.querySelectorAll('input, textarea, select, [contenteditable="true"]')).filter(visible);
                     const el = controls[1];
                     if (!el) return document.body?.innerText || document.title || '';
                     const parts = [
@@ -2610,6 +2633,21 @@ class OpenAIEmailRegisterFlow:
 
     def _force_fill(self, locator, value: str) -> None:
         try:
+            if str(locator.evaluate("el => el.tagName") or "").upper() == "SELECT":
+                text = str(value)
+                for option in (text, text.lstrip("0") or "0"):
+                    try:
+                        locator.select_option(value=option, timeout=5000)
+                        return
+                    except Exception:
+                        try:
+                            locator.select_option(label=option, timeout=5000)
+                            return
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        try:
             locator.scroll_into_view_if_needed(timeout=3000)
             locator.fill(value, timeout=5000)
             return
@@ -2626,10 +2664,10 @@ class OpenAIEmailRegisterFlow:
 
     def _about_you_current_values_ok(self, page) -> bool:
         try:
-            controls = self._visible_inputs(page, ['input', 'textarea', '[contenteditable="true"]'])
+            controls = self._visible_profile_controls(page)
             values = [self._about_you_control_value(control) for control in controls]
             if not any(values):
-                values = [str(x or "").strip() for x in page.evaluate("""() => Array.from(document.querySelectorAll('input,textarea,[contenteditable="true"]')).filter(el => { const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden'; }).map(el => el.isContentEditable ? el.textContent : el.value)""")]
+                values = [str(x or "").strip() for x in page.evaluate("""() => Array.from(document.querySelectorAll('input,textarea,select,[contenteditable="true"]')).filter(el => { const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden'; }).map(el => el.isContentEditable ? el.textContent : el.value)""")]
             nonempty = [x for x in values if x]
             if len(nonempty) < 2:
                 return False

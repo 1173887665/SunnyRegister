@@ -1737,6 +1737,12 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .sr-concurrency-input:focus { border-color:#2dd4bf; box-shadow:0 0 0 3px rgba(45,212,191,.18); }
 .sr-register-account-list { grid-column:1 / -1; max-height:82px; overflow:auto; border-top:1px solid #e5e7eb; padding-top:8px; color:#334155; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size:12px; line-height:1.7; }
 .sr-proxy-picker { margin-top:16px; display:flex; flex-wrap:wrap; align-items:center; gap:12px; min-height:48px; padding:10px 14px; border:1px solid #e5e7eb; border-radius:12px; background:#fff; color:#64748b; font-size:13px; }
+.sr-phone-register-options { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-top:16px; padding:14px; border:1px solid #dbeafe; border-radius:14px; background:#f8fbff; }
+.sr-phone-register-field { min-width:0; }
+.sr-phone-register-rebind { display:flex; flex-direction:column; gap:8px; }
+.sr-phone-register-rebind label { display:flex; align-items:center; gap:8px; min-height:24px; color:#334155; font-size:13px; font-weight:600; }
+.sr-phone-register-rebind small { color:#64748b; font-size:12px; }
+@media (max-width: 760px) { .sr-phone-register-options { grid-template-columns:1fr; } }
 .sr-proxy-picker b { color:#334155; font-size:13px; }
 .sr-proxy-select { min-width:140px; height:34px; border:1px solid var(--border); border-radius:9px; background:var(--bg-card); padding:0 10px; color:var(--text-main); font-weight:700; outline:none; }
 .sr-proxy-select:focus { border-color:#2dd4bf; box-shadow:0 0 0 3px rgba(45,212,191,.18); }

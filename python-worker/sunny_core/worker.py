@@ -292,9 +292,22 @@ def _emit_registration_progress(
     setup_login_secret: bool = False,
 ) -> None:
     base_total = _registration_stage_total(stage)
-    total = base_total + (5 if setup_login_secret else 0)
+    rebind_after_registration = False
+    if stage == CODEX_PHONE_BIND:
+        try:
+            task_reader = getattr(db, "task", None)
+            task_row = task_reader() if callable(task_reader) else {}
+            task_payload = json.loads(str((task_row or {}).get("payload_json") or "{}"))
+            rebind_after_registration = task_payload.get("rebind_after_registration") is True
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            rebind_after_registration = False
+    total = base_total + (5 if setup_login_secret else 0) + (2 if rebind_after_registration else 0)
     if setup_login_secret and checkpoint.startswith("login_secret_"):
         current = base_total + min(5, max(0, _REGISTRATION_PROGRESS_STEPS.get(checkpoint, 0)))
+    elif checkpoint == "rebind_started" and rebind_after_registration:
+        current = base_total + (5 if setup_login_secret else 0) + 1
+    elif checkpoint == "rebind_completed" and rebind_after_registration:
+        current = base_total + (5 if setup_login_secret else 0) + 2
     else:
         current = min(base_total, max(0, _REGISTRATION_PROGRESS_STEPS.get(checkpoint, 0)))
     db.event(
@@ -459,6 +472,7 @@ def _proxy_pool_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
     raw_ids = payload.get("proxy_ids")
     proxy_ids = raw_ids if isinstance(raw_ids, list) else []
     candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for index, item in enumerate(pool_items):
         stored_address = build_proxy("", str(item or "")).url
         if not stored_address:
@@ -467,10 +481,17 @@ def _proxy_pool_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
             proxy_id = max(0, int(proxy_ids[index])) if index < len(proxy_ids) else 0
         except (TypeError, ValueError):
             proxy_id = 0
+        register_address = _container_host_proxy(stored_address)
+        # A task snapshot can contain one row per mailbox while many rows
+        # point to the same endpoint. Keep one candidate per endpoint so a
+        # failed route is not probed hundreds of times.
+        if register_address in seen:
+            continue
+        seen.add(register_address)
         candidates.append({
             "id": proxy_id,
             "address": stored_address,
-            "register": _container_host_proxy(stored_address),
+            "register": register_address,
         })
     return candidates
 
@@ -544,7 +565,7 @@ def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, sl
         fallbacks = candidates[1:]
         random.SystemRandom().shuffle(fallbacks)
         candidates = candidates[:1] + fallbacks
-    else:
+    elif not excluded:
         candidates = [{"id": 0, "address": proxy, "register": proxy}]
 
     failures: list[str] = []
@@ -1105,7 +1126,25 @@ def _hero_provider(db: SunnyDB, email: str, proxy_url: str = "", country_overrid
     return _api_phone_provider(db, email, "HeroSMS", client, _sms_country_metadata(db, option, resolved))
 
 
-def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = "", execution_mode: str = "protocol"):
+def _combined_phone_provider(db: SunnyDB, email: str, proxy_url: str = "", execution_mode: str = "protocol", provider_override: str = "", country_override: str = ""):
+    forced = str(provider_override or "").strip().lower()
+    if forced:
+        factories = {
+            "local": ("自建手机号池", lambda: _phone_provider(db, email)),
+            "luban": ("LubanSMS", lambda: _luban_provider(db, email, proxy_url)),
+            "smsbower": ("SMSBower", lambda: _smsbower_provider(db, email, proxy_url, country_override)),
+            "smspool": ("SMSPool", lambda: _smspool_provider(db, email, proxy_url, country_override)),
+            "firefox": ("FireFox", lambda: _firefox_provider(db, email, proxy_url, country_override)),
+            "grizzlysms": ("GrizzlySMS", lambda: _grizzly_provider(db, email, proxy_url, country_override)),
+            "hero_sms": ("HeroSMS", lambda: _hero_provider(db, email, proxy_url, country_override)),
+        }
+        selected = factories.get(forced)
+        if selected is None or (forced == "local" and db.usable_phone_count() <= 0) or (forced != "local" and not _provider_is_available(db, forced)):
+            raise RuntimeError(f"指定接码平台不可用：{forced}")
+        name, factory = selected
+        provider = factory()
+        db.event(f"[{email}] [接码] 已锁定指定平台 {name}" + (f"，国家 {country_override}" if country_override else ""), detail={"email": email, "scope": "selected", "sms_provider": forced, "country": country_override, "provider_override": True})
+        return provider
     background_us_only = str(execution_mode or "").strip().lower() == "background"
     candidates: list[tuple[str, Any]] = []
     if _provider_is_available(db, "luban"):
@@ -1763,7 +1802,7 @@ def _run_one_impl(
                 str(email),
                 mailbox_id,
                 int(snapshot.get("total_bytes") or 0),
-                registration_attempt=task_type == "sunny_register" and not is_registered_mailbox,
+                registration_attempt=task_type in {"sunny_register", "sunny_phone_register"} and not is_registered_mailbox,
                 registration_succeeded=registration_succeeded,
             )
             host_summary = ", ".join(
@@ -1790,7 +1829,7 @@ def _run_one_impl(
         metadata_json=json.dumps(
             {
                 "task_id": db.task_id,
-                "source": "sunny_register",
+                "source": task_type,
                 "checkpoint": "task_started",
                 "completed_status": original_completed_status,
             },
@@ -1807,7 +1846,7 @@ def _run_one_impl(
     elif headless:
         mode_label = (
             "无头浏览器注册（直接使用协议降级 Camoufox 流程，不预执行协议请求）"
-            if task_type == "sunny_register"
+            if task_type in {"sunny_register", "sunny_phone_register"}
             else "后台浏览器自动（Camoufox Headless，无窗口）"
         )
     else:
@@ -1904,7 +1943,14 @@ def _run_one_impl(
             require_refresh_token = True
             db.event(f"[{email}] [接码] 邮箱记录已有 OpenAI RT，将直接刷新 Session", detail={"email": email, "scope": "selected"})
         else:
-            phone_provider = _combined_phone_provider(db, email, auxiliary_proxy, execution_mode)
+            phone_provider = _combined_phone_provider(
+                db,
+                email,
+                auxiliary_proxy,
+                execution_mode,
+                str(payload.get("sms_provider") or "") if task_type == "sunny_phone_register" else "",
+                str(payload.get("sms_country") or "") if task_type == "sunny_phone_register" else "",
+            )
         if phone_provider:
             require_refresh_token = True
             db.event(f"[{email}] [接码] 已启用组合接码策略：外部供应商随机尝试，自建手机号池作为兜底", detail={"email": email, "scope": "selected", "sms_provider": "combined"})
@@ -2136,7 +2182,7 @@ def _run_one_impl(
                             "warning",
                             detail={"email": email, "scope": "selected", "execution_mode": "protocol_post_stage"},
                         )
-        elif execution_mode == "background" and task_type == "sunny_register":
+        elif execution_mode == "background" and task_type in {"sunny_register", "sunny_phone_register"}:
             db.event(
                 f"[{email}] [认证] 无头浏览器注册直接使用协议模式的 Camoufox 降级流程；不预执行协议注册请求",
                 detail={
@@ -2471,14 +2517,59 @@ def _run_one_impl(
             db.upsert_account(identity_email, mailbox_id=mailbox_id, status=_account_status_for_mailbox(mailbox_status), last_error=stage_error)
             db.mark_mailbox(mailbox_id, mailbox_status, stage_error, openai_rt=rt_value)
             db.event(f"[{email}] [接码] 后续接码阶段未完成，账号保留为{mailbox_status}: {stage_error}", "warning", detail={"email": email, "scope": "selected", "completed_status": mailbox_status})
+        base_stage_complete = bool(result.get("stage_complete"))
         if login_secret_result is not None:
             # LS is an optional post-registration phase. Keep the account and its
             # base registration result, but mark the task progress partial when
             # either password or TOTP setup did not finish.
-            base_stage_complete = bool(result.get("stage_complete"))
             result["stage_complete"] = bool(result.get("stage_complete") and login_secret_result.get("complete"))
         elif setup_login_secret_enabled:
             result["stage_complete"] = False
+
+        # Phone registration can optionally continue into the existing rebind
+        # workflow. The registration result is already persisted above, so a
+        # rebind failure only marks the post-registration stage incomplete.
+        if task_type == "sunny_phone_register" and payload.get("rebind_after_registration") is True and base_stage_complete:
+            targets = payload.get("target_mailboxes")
+            target = None
+            if isinstance(targets, list) and targets:
+                candidate = targets[(max(1, int(index)) - 1) % len(targets)]
+                if isinstance(candidate, dict):
+                    target = candidate
+            if not target:
+                result["stage_complete"] = False
+                result["rebind_error"] = "没有可分配的注册后换绑邮箱"
+                result["stage_error"] = result["rebind_error"]
+                db.event(f"[{email}] [换绑] 注册已完成，但没有可分配的目标邮箱", "error", detail={"email": email, "scope": "selected", "operation": "post_registration_rebind"})
+                _emit_registration_progress(db, str(email), stage, "rebind_started", setup_login_secret=setup_login_secret_enabled)
+                _emit_registration_progress(db, str(email), stage, "rebind_completed", state="abnormal", error=result["rebind_error"], setup_login_secret=setup_login_secret_enabled)
+            else:
+                target_email = str(target.get("email") or "").strip()
+                target_api = str(target.get("mailbox_api") or "").strip()
+                target_type = str(target.get("mailbox_type") or "").strip().lower()
+                target_channel = str(target.get("mailbox_channel") or "").strip().lower()
+                _emit_registration_progress(db, str(email), stage, "rebind_started", setup_login_secret=setup_login_secret_enabled)
+                db.event(f"[{email}] [换绑] 注册完成，开始分配目标邮箱 {target_email}", detail={"email": email, "scope": "selected", "operation": "post_registration_rebind", "target_mailbox_type": target_type, "target_mailbox_channel": target_channel})
+                try:
+                    account_rows = db.fetch_accounts([account_id])
+                    if not account_rows:
+                        raise RuntimeError("注册账户记录不存在")
+                    account_for_rebind = dict(account_rows[0])
+                    account_for_rebind.update({"_rebind_target_email": target_email, "_rebind_target_api": target_api, "_rebind_target_type": target_type, "_rebind_target_channel": target_channel})
+                    rebind_payload = dict(payload)
+                    rebind_payload.update({"rebind_source": "imported", "target_email": target_email, "target_mailbox_api": target_api, "target_mailbox_type": target_type, "target_mailbox_channel": target_channel})
+                    rebind_result = _rebind_with_proxy_rotation(db, rebind_payload, account_for_rebind, max(0, int(index) - 1))
+                    result["rebind"] = rebind_result
+                    result["rebind_complete"] = True
+                    db.event(f"[{email}] [换绑] 注册后邮箱换绑完成：{rebind_result.get('new_email') or target_email}", detail={"email": email, "scope": "selected", "operation": "post_registration_rebind", "rebind_complete": True})
+                    _emit_registration_progress(db, str(email), stage, "rebind_completed", setup_login_secret=setup_login_secret_enabled)
+                except Exception as exc:
+                    result["stage_complete"] = False
+                    result["rebind_complete"] = False
+                    result["rebind_error"] = str(exc)
+                    result["stage_error"] = str(exc)
+                    db.event(f"[{email}] [换绑] 注册已完成，但注册后邮箱换绑失败，已保留账号结果：{exc}", "error", detail={"email": email, "scope": "selected", "operation": "post_registration_rebind", "rebind_complete": False})
+                    _emit_registration_progress(db, str(email), stage, "rebind_completed", state="abnormal", error=str(exc), setup_login_secret=setup_login_secret_enabled)
         result["has_access_token"] = bool(result.pop("access_token", ""))
         result["has_refresh_token"] = bool(result.pop("refresh_token", ""))
         terminal_checkpoint = {
@@ -2615,10 +2706,59 @@ def _run_one_isolated(
     """
     worker_db = SunnyDB(task_id, ensure_schema=False)
     try:
-        ok, result = _run_one(worker_db, task_type, payload, mailbox, index, total, protocol_batch_policy)
+        ok, result = _run_one_with_proxy_retry(worker_db, task_type, payload, mailbox, index, total, protocol_batch_policy)
         return index, ok, result
     finally:
         worker_db.close()
+
+
+def _run_one_with_proxy_retry(
+    db: SunnyDB,
+    task_type: str,
+    payload: dict[str, Any],
+    mailbox: dict[str, Any],
+    index: int,
+    total: int,
+    protocol_batch_policy: _ProtocolBatchPolicy | None = None,
+) -> tuple[bool, dict[str, Any] | str]:
+    """Retry one registration only when the failure identifies a bad route."""
+    candidates = _proxy_pool_candidates(payload) if payload.get("proxy_enabled") is not False else []
+    max_attempts = min(3, len(candidates)) if candidates else 1
+    excluded = {
+        str(value or "").strip()
+        for value in (payload.get("_excluded_register_proxies") or [])
+        if str(value or "").strip()
+    }
+    last_result: tuple[bool, dict[str, Any] | str] = (False, "")
+    email = str(mailbox.get("email") or f"mailbox-{index}")
+    for attempt in range(max_attempts):
+        db.ensure_not_cancelled()
+        current_payload = dict(payload)
+        if excluded:
+            current_payload["_excluded_register_proxies"] = sorted(excluded)
+        selected_before = _proxy_snapshot(current_payload, max(0, index - 1)).get("register", "")
+        last_result = _run_one(db, task_type, current_payload, mailbox, index, total, protocol_batch_policy)
+        ok, result = last_result
+        if ok:
+            return last_result
+        failure = classify_auth_failure(result)
+        if not (failure.retryable and failure.rotate_proxy and selected_before and attempt + 1 < max_attempts):
+            return last_result
+        excluded.add(str(selected_before).strip())
+        db.event(
+            f"[{email}] [代理] 当前注册链路属于 {failure.category}，已排除当前出口并建立新上下文重试（{attempt + 2}/{max_attempts}）",
+            "warning",
+            detail={
+                "email": email,
+                "scope": "selected",
+                "proxy_rotation": True,
+                "proxy_error_category": failure.category,
+                "proxy_attempt": attempt + 1,
+                "proxy_max_attempts": max_attempts,
+            },
+        )
+        _interruptible_delay(db, failure.delay_seconds or 1)
+    return last_result
 
 
 def _interruptible_delay(db: SunnyDB, seconds: float) -> None:
@@ -3923,7 +4063,7 @@ def run_sunny_task(task_id: str) -> None:
                             break
                 else:
                     idx, mailbox = entry
-                ok, result = _run_one(db, task_type, payload, mailbox, idx, total, protocol_batch_policy)
+                ok, result = _run_one_with_proxy_retry(db, task_type, payload, mailbox, idx, total, protocol_batch_policy)
                 db.ensure_not_cancelled()
                 record_result(ok, result)
         else:

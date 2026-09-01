@@ -89,14 +89,18 @@ def hero_get_number() -> tuple[str | None, str | None]:
         payload["maxPrice"] = float(cfg["max_price"])
         payload["fixedPrice"] = True
     body = _request("POST", "/activations", timeout=45, json=payload)
-    data = body.get("data", body) if isinstance(body, dict) else {}
-    aid = str(data.get("id") or data.get("activationId") or data.get("activation_id") or "").strip()
-    phone = str(data.get("phoneNumber") or data.get("phone") or data.get("number") or data.get("phone_number") or "").strip()
-    if phone and not phone.startswith("+"):
-        phone = "+" + phone
-    if not aid or not phone:
-        raise RuntimeError(str(body))
-    return phone, aid
+    data = body.get("data", body) if isinstance(body, dict) else body
+    records = data if isinstance(data, list) else [data]
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        aid = str(record.get("id") or record.get("activationId") or record.get("activation_id") or "").strip()
+        phone = str(record.get("phoneNumber") or record.get("phone") or record.get("number") or record.get("phone_number") or "").strip()
+        if phone and not phone.startswith("+"):
+            phone = "+" + phone
+        if aid and phone:
+            return phone, aid
+    raise RuntimeError(str(body))
 
 
 def hero_wait_code(activation_id: str, timeout: int = 180, *, ignore_code_hashes: Collection[str] | None = None) -> str | None:

@@ -531,6 +531,40 @@ def _login_rebound_account(
     raise RebindError("换绑后新邮箱登录未返回结果")
 
 
+def _rebind_target_account(email: str, api: str, mailbox_type: str, mailbox_channel: str, source: MailAccount) -> MailAccount:
+    """Build a mailbox reader account from an imported target credential."""
+    normalized_type = str(mailbox_type or "domain").strip().lower()
+    normalized_channel = str(mailbox_channel or "").strip().lower()
+    raw = f"{email}----{api}"
+    if normalized_type == "microsoft":
+        parts = [part.strip() for part in str(api or "").split("----")]
+        if len(parts) != 3 or not all(parts):
+            raise RebindError("微软换绑邮箱凭证必须为 password----client_id----refresh_token")
+        return MailAccount(
+            email=email,
+            password=parts[0],
+            client_id=parts[1],
+            refresh_token=parts[2],
+            raw=raw,
+            mailbox_type="microsoft",
+            mailbox_channel="outlook",
+            chatgpt_password=source.chatgpt_password,
+            totp_secret=source.totp_secret,
+        )
+    return MailAccount(
+        email=email,
+        password="",
+        client_id="",
+        refresh_token="",
+        raw=raw,
+        mailbox_type=normalized_type,
+        mailbox_channel=normalized_channel or ("domain_api" if normalized_type == "domain" else "url_api" if normalized_type == "apple" else "remail_api"),
+        access_key=api,
+        chatgpt_password=source.chatgpt_password,
+        totp_secret=source.totp_secret,
+    )
+
+
 def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callable[[str], None]) -> dict[str, Any]:
     old_email = str(account_row.get("email") or "").strip()
     if not old_email:
@@ -602,9 +636,9 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             new_email, new_api, new_api_token_hash = _domain_mailbox(db, log)
         # Register the one-time pickup credential before ChatGPT sends the verification mail.
         # The public pickup endpoint validates the token against this database row.
-        target_channel = imported_channel or ("domain_api" if imported_type == "domain" else "url_api" if imported_type == "apple" else "remail_api")
+        target_channel = imported_channel or ("outlook" if imported_type == "microsoft" else "domain_api" if imported_type == "domain" else "url_api" if imported_type == "apple" else "remail_api")
         db.persist_rebind_pending(new_email, new_api, new_api_token_hash, imported_type, target_channel)
-        reader_account = MailAccount(email=new_email, password="", client_id="", refresh_token="", raw=f"{new_email}----{new_api}", mailbox_type=imported_type, mailbox_channel=imported_channel or ("domain_api" if imported_type == "domain" else "url_api" if imported_type == "apple" else "remail_api"), access_key=new_api)
+        reader_account = _rebind_target_account(new_email, new_api, imported_type, target_channel, account)
         reader = create_mailbox_reader(reader_account, log)
         try:
             reader.connect()
@@ -637,7 +671,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             old_email, new_email, new_api, new_api_token_hash, imported_type, target_channel
         )
         log(f"[{old_email}] 已保存上游换绑验证断点，后续登录失败可直接恢复")
-        new_account = MailAccount(email=new_email, password="", client_id="", refresh_token="", raw=f"{new_email}----{new_api}", mailbox_type=imported_type, mailbox_channel=imported_channel or ("domain_api" if imported_type == "domain" else "url_api" if imported_type == "apple" else "remail_api"), access_key=new_api, chatgpt_password=account.chatgpt_password, totp_secret=account.totp_secret)
+        new_account = _rebind_target_account(new_email, new_api, imported_type, target_channel, account)
         new_flow, new_result = _login_rebound_account(
             new_account, proxy, log, should_cancel=db.cancel_requested
         )

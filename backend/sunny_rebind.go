@@ -119,6 +119,12 @@ func (s *Server) createSunnyRebindTask(body map[string]any) (Task, error) {
 
 func validateImportedRebindMailbox(api, email, mailboxType, mailboxChannel string) error {
 	switch {
+	case mailboxType == "microsoft":
+		parts := strings.Split(strings.TrimSpace(api), "----")
+		if len(parts) != 3 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" || strings.TrimSpace(parts[2]) == "" {
+			return fmt.Errorf("微软邮箱换绑凭证格式必须为 password----client_id----refresh_token")
+		}
+		return nil
 	case mailboxType == "domain":
 		return validateDomainMailboxAccessKey(api, email)
 	case mailboxType == "apple" && mailboxChannel == "url_api":

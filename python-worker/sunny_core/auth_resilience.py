@@ -45,6 +45,8 @@ def classify_auth_failure(error: Any, *, http_status: int = 0) -> AuthFailure:
         "rate_limit_exceeded", "rate limit", "too many requests", "请求过多",
     )):
         return AuthFailure("rate_limited", retryable=True, rotate_proxy=True, fresh_context=True, delay_seconds=20)
+    if "407" in text or "proxy authentication required" in text or "proxy authentication failed" in text:
+        return AuthFailure("proxy_authentication", retryable=True, rotate_proxy=True, delay_seconds=2)
     if any(marker in text for marker in (
         "cloudflare", "upstream edge", "上游边缘", "proxy connect failed", "https 隧道",
         # Browser TLS failures are commonly caused by a dead or intercepting

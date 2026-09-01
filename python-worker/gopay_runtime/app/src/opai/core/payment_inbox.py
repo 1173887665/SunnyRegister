@@ -4690,8 +4690,11 @@ class _PhoneChangeManager:
                 job["status"] = status
             job["updated_at"] = _now_iso()
 
-    def _reserve_pool_phone(self, requested: str = "") -> dict[str, Any]:
+    def _reserve_pool_phone(self, requested: str = "", sms_url: str = "") -> dict[str, Any]:
         target = _digits(requested)
+        supplied_url = str(sms_url or "").strip()
+        if supplied_url and not supplied_url.lower().startswith(("http://", "https://")):
+            raise ValueError("号码池短信接口必须是 HTTP(S) URL")
         with self._pool_lock:
             rows = self._load_pool()
             selected: dict[str, Any] | None = None
@@ -4706,7 +4709,16 @@ class _PhoneChangeManager:
                     selected = row
                     break
             if not selected:
-                raise ValueError("号码池没有可用的替换号码")
+                if not target or not supplied_url:
+                    if supplied_url:
+                        raise ValueError("号码池没有可用的替换号码或短信接口")
+                    raise ValueError("号码池没有可用的替换号码")
+                selected = {"phone": str(requested).strip(), "sms_url": supplied_url, "status": "available"}
+                rows.append(selected)
+            elif supplied_url:
+                # The shared SunnyRegister pool is authoritative for the
+                # reader URL; copy it into the worker pool before reserving.
+                selected["sms_url"] = supplied_url
             selected["status"] = "reserved"
             selected["reserved_at"] = _now_iso()
             self._write_pool(rows)
@@ -4753,6 +4765,7 @@ class _PhoneChangeManager:
         phone: str,
         source: str = "pool",
         replacement_phone: str = "",
+        replacement_sms_url: str = "",
         provider: str = "",
         proxy: str = "",
         pin: str = "",
@@ -4770,7 +4783,7 @@ class _PhoneChangeManager:
         activation_id = ""
         new_phone = ""
         if source == "pool":
-            pool_row = self._reserve_pool_phone(replacement_phone)
+            pool_row = self._reserve_pool_phone(replacement_phone, replacement_sms_url)
             new_phone = str(pool_row.get("phone") or "").strip()
         else:
             provider = source
@@ -4859,7 +4872,9 @@ class _PhoneChangeManager:
         if not url:
             return ""
         try:
-            body = urllib.request.urlopen(url, timeout=8).read().decode("utf-8", "ignore")
+            # Keep manual OTP submission responsive even when a pool URL is
+            # offline or slow; the condition is checked after each poll.
+            body = urllib.request.urlopen(url, timeout=3).read().decode("utf-8", "ignore")
         except Exception:
             return ""
         codes = re.findall(r"(?<!\d)(\d{4,6})(?!\d)", body)

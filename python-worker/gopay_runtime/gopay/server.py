@@ -662,6 +662,7 @@ class Handler(BaseHTTPRequestHandler):
                     phone=str(data.get("phone") or "").strip(),
                     source=str(data.get("source") or "pool").strip(),
                     replacement_phone=str(data.get("replacement_phone") or data.get("new_phone") or "").strip(),
+                    replacement_sms_url=str(data.get("replacement_sms_url") or data.get("sms_url") or "").strip(),
                     provider=str(data.get("provider") or "").strip(),
                     proxy=str(data.get("proxy") or "").strip(),
                     pin=str(data.get("pin") or "").strip(),

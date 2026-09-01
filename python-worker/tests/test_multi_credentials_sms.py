@@ -4,6 +4,7 @@ import base64
 from unittest.mock import Mock, patch
 
 import pytest
+import requests
 
 import sunny_core.mailbox as mailbox_module
 from sunny_core.auth_challenges import generate_totp, normalize_totp_secret
@@ -374,6 +375,26 @@ def test_url_api_account_row_distinguishes_password_from_mail_url() -> None:
     })
     assert with_url.access_key == "https://mail.example.test/latest"
     assert with_url.totp_secret == "JBSWY3DPEHPK3PXP"
+
+
+def test_url_api_proxy_failures_fall_back_to_direct_request() -> None:
+    account = MailAccount(
+        email="alias@icloud.com", password="", client_id="", refresh_token="",
+        raw="alias@icloud.com----https://mail.example.test/latest",
+        mailbox_type="apple", mailbox_channel="url_api",
+        access_key="https://mail.example.test/latest",
+    )
+    response = Mock(
+        ok=True, status_code=200, url=account.access_key,
+        text="<html><h2>ChatGPT</h2><p>Code 123456</p></html>",
+    )
+    reader = URLAPIICloudReader(account, None, "http://proxy.example.test:8080")
+    failures = [requests.RequestException("proxy tunnel timed out") for _ in range(3)]
+    with patch("sunny_core.mailbox.requests.get", side_effect=[*failures, response]) as request_get:
+        message = reader.latest_message()
+    assert message["otp"] == "123456"
+    assert request_get.call_count == 4
+    assert request_get.call_args.kwargs["proxies"] is None
 
 
 def test_luban_sms_lifecycle_and_error_classification() -> None:

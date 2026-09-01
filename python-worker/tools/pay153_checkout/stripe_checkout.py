@@ -609,9 +609,14 @@ def update_tax_region(http, session_id: str, pk: str, version: str, ctx: dict, b
     except Exception:
         return {}
     total = data_resp.get("total_summary") or {}
-    amount = total.get("total")
+    # `due` is the amount payable today (after promotion/tax).  `total` is
+    # the recurring subscription total and must not replace the current due
+    # amount, otherwise a free trial can be reported as non-zero.
+    amount = total.get("due")
     if amount is None:
-        amount = total.get("due")
+        amount = total.get("total")
+        if amount is not None:
+            log("[stripe] tax_region 响应缺少 total_summary.due，暂以周期总额作为回退诊断")
     if amount is not None:
         ctx["checkout_amount"] = amount
     tax = data_resp.get("tax") or {}

@@ -150,6 +150,10 @@ function ResizableDataTable({ tableKey, columns, headers, className="", children
 }
 type LogEntry = { id: number | string; time: string; level: string; module: string; action?: string; scope?: string; operationId?: string; message: string; email?: string; rawMessage?: string; detail?: AnyObj };
 type RegisterStage = "register_only" | "codex_phone_bind" | "import_reverse_proxy" | "agent_identity_reverse_proxy";
+type RegisterIdentity = "system" | "domain" | "remail" | "google" | "microsoft" | "phone";
+type SMSProvider = "local" | "luban" | "smsbower" | "smspool" | "firefox" | "grizzlysms" | "hero_sms";
+type RebindMailboxCategory = "microsoft" | "apple" | "domain" | "generic" | "remail";
+type PhoneRegisterOptions = { smsProvider: SMSProvider; smsCountry: string; rebindAfterRegistration: boolean; rebindMailboxCategory: RebindMailboxCategory; targetMailboxes?: AnyObj[] };
 type ProtocolChallengeStrategy = "native_headless" | "sentinel_protocol";
 type RegistrationProgressState = "pending" | "running" | "completed" | "abnormal";
 type AccountRegistrationProgress = {
@@ -166,6 +170,7 @@ type RegistrationTaskProgress = {
   taskId: string;
   stage: RegisterStage;
   setupLoginSecret: boolean;
+  rebindAfterRegistration?: boolean;
   accounts: Record<string, AccountRegistrationProgress>;
   order: string[];
 };
@@ -174,18 +179,19 @@ const CODEX_PHONE_BIND: RegisterStage = "codex_phone_bind";
 const IMPORT_REVERSE_PROXY: RegisterStage = "import_reverse_proxy";
 const AGENT_IDENTITY_REVERSE_PROXY: RegisterStage = "agent_identity_reverse_proxy";
 
-function registrationStageTotal(stage: RegisterStage, setupLoginSecret = false): number {
+function registrationStageTotal(stage: RegisterStage, setupLoginSecret = false, rebindAfterRegistration = false): number {
   const base = stage === IMPORT_REVERSE_PROXY ? 12 : stage === CODEX_PHONE_BIND ? 10 : stage === AGENT_IDENTITY_REVERSE_PROXY ? 9 : 7;
-  return base + (setupLoginSecret ? 5 : 0);
+  return base + (setupLoginSecret ? 5 : 0) + (rebindAfterRegistration ? 2 : 0);
 }
 
-function createRegistrationTaskProgress(taskId: string, stage: RegisterStage, emails: string[], setupLoginSecret = false): RegistrationTaskProgress {
+function createRegistrationTaskProgress(taskId: string, stage: RegisterStage, emails: string[], setupLoginSecret = false, rebindAfterRegistration = false): RegistrationTaskProgress {
   const normalized = Array.from(new Set(emails.map((email) => String(email || "").trim()).filter(Boolean)));
-  const total = registrationStageTotal(stage, setupLoginSecret);
+  const total = registrationStageTotal(stage, setupLoginSecret, rebindAfterRegistration);
   return {
     taskId,
     stage,
     setupLoginSecret,
+    rebindAfterRegistration,
     order: normalized,
     accounts: Object.fromEntries(normalized.map((email) => [email.toLowerCase(), {
       email,
@@ -786,8 +792,8 @@ const zh: AnyObj = new Proxy(Object.assign({
   register: "注册或登录", refresh: "刷新", import: "导入", save: "保存", export: "导出", copy: "复制", close: "关闭", copySuccess: "复制成功", secretKeyUnavailable: "该邮箱凭证信息不完整，无法复制 SK", newGroup: "新建分组", move: "迁移到分组",
   mailboxTip: "微软邮箱支持 OAuth 四段凭证；Apple iCloud 邮箱按所选渠道使用 API 查询邮件与验证码。",
   domainMailboxIdentity: "域名邮箱", domainMailboxIdentityDesc: "使用自建域名邮箱池生成邮箱并通过 API 收取验证码",
-  mailboxPoolName: "自建邮箱池", mailboxPoolGlobalSwitch: "使用自建邮箱池", mailboxPoolSwitchTip: "关闭后，注册机不会从自建邮箱池分配邮箱。", domainMailboxTitle: "自建域名邮箱池", domainMailboxDesc: "通过 CloudMail/CF Worker API 生成多个域名邮箱并收取验证码。", domainMailboxRegistration: "用于账户注册", domainMailboxRebinding: "用于邮箱换绑", domainMailboxApiURL: "CloudMail API 地址", domainMailboxPickupURL: "取件 API 公网地址", domainMailboxToken: "PUBLIC_API_TOKEN", domainMailboxSitePassword: "CloudMail 站点密码（PASSWORDS）", domainMailboxDomain: "邮箱域名（每行一个）", domainMailboxLength: "邮箱前缀长度", domainMailboxAutoAdd: "自动创建邮箱用户", domainMailboxSave: "保存域名邮箱配置", domainMailboxCheck: "测试连接", domainMailboxGenerate: "生成测试邮箱", domainMailboxConfigured: "自建域名邮箱已配置", domainMailboxNotConfigured: "请先配置并启用自建域名邮箱", mailboxOverviewTotal: "邮箱总数", mailboxOverviewPending: "待注册", mailboxOverviewRegistered: "已注册", mailboxOverviewPhoneBound: "已接码", mailboxOverviewReversed: "已反代", mailboxOverviewBanned: "已封禁", mailboxOverviewNeeds2FA: "待二验", mailboxOverviewRefreshing: "登录刷新", mailboxOverviewFailed: "失败",
-  phoneTip: "格式：+手机号----接码链接。成功后冷却 5 小时，最多 3 次。", phonePool: "自建手机号池", phonePoolGlobalSwitch: "使用自建手机号池", importPhones: "导入手机号", phonePoolSwitchTip: "关闭后，注册机不会从自建手机号池分配号码；后续可切换为外部接码平台。", phonePoolOn: "可用于接码", phonePoolOff: "不用于接码", phoneImportHelp: "每行一个长效接码：第一个字符必须是 +，手机号与接码链接之间必须使用四个中横线 ---- 连接。", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "手机号导入格式错误", phoneSearch: "搜索手机号...", phoneNumber: "手机号", smsLink: "接码链接", usedCount: "已用次数", countFilter: "次数筛选", allCount: "全部次数", lastUsedAt: "最近使用时间", phoneEdit: "编辑手机号", phoneStatusEnabled: "启用", phoneStatusDisabled: "停用", phoneConfirmDelete: "确认删除该手机号？此操作不可撤销。", phoneConfirmBatchDelete: "确认删除选中的手机号？此操作不可撤销。",
+  mailboxPoolName: "自建邮箱池", mailboxPoolGlobalSwitch: "使用自建邮箱池", mailboxPoolSwitchTip: "关闭后，注册机不会从自建邮箱池分配邮箱。", domainMailboxTitle: "自建域名邮箱池", domainMailboxDesc: "通过 CloudMail/CF Worker API 生成多个域名邮箱并收取验证码。", domainMailboxRegistration: "用于账户注册", domainMailboxRebinding: "用于邮箱换绑", domainMailboxApiURL: "CloudMail API 地址", domainMailboxPickupURL: "取件 API 公网地址", domainMailboxToken: "PUBLIC_API_TOKEN", domainMailboxSitePassword: "CloudMail 站点密码（PASSWORDS，可选）", domainMailboxDomain: "邮箱域名（每行一个）", domainMailboxLength: "邮箱前缀长度", domainMailboxAutoAdd: "自动创建邮箱用户", domainMailboxSave: "保存域名邮箱配置", domainMailboxCheck: "测试连接", domainMailboxGenerate: "生成测试邮箱", domainMailboxConfigured: "自建域名邮箱已配置", domainMailboxNotConfigured: "请先配置并启用自建域名邮箱", mailboxOverviewTotal: "邮箱总数", mailboxOverviewPending: "待注册", mailboxOverviewRegistered: "已注册", mailboxOverviewPhoneBound: "已接码", mailboxOverviewReversed: "已反代", mailboxOverviewBanned: "已封禁", mailboxOverviewNeeds2FA: "待二验", mailboxOverviewRefreshing: "登录刷新", mailboxOverviewFailed: "失败",
+  phoneTip: "格式：+手机号----接码链接。成功后冷却 5 小时，最多 3 次。", phonePool: "自建手机号池", phonePoolGlobalSwitch: "使用自建手机号池", importPhones: "导入手机号", phonePoolSwitchTip: "关闭后，注册机不会从自建手机号池分配号码；后续可切换为外部接码平台。", phonePoolOn: "可用于接码", phonePoolOff: "不用于接码", phoneImportHelp: "每行一个长效接码：第一个字符必须是 +，手机号与接码链接之间必须使用四个中横线 ---- 连接。", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "手机号导入格式错误", phoneSearch: "搜索手机号...", phoneNumber: "手机号", smsLink: "接码链接", usedCount: "已用次数", countFilter: "次数筛选", allCount: "全部次数", lastUsedAt: "最近使用时间", phoneEdit: "编辑手机号", phoneStatusEnabled: "启用", phoneStatusDisabled: "停用", phoneConfirmDelete: "确认删除该手机号？此操作不可撤销。", phoneConfirmBatchDelete: "确认删除选中的手机号？此操作不可撤销。", phoneRegister: "手机注册", phoneRegisterDesc: "使用已选系统邮箱完成注册，并强制通过指定接码平台和国家完成手机验证", phoneRegisterUnavailable: "请先选择邮箱并启用接码平台", smsPlatform: "接码平台", smsCountry: "注册国家", selectCountry: "选择国家", phoneAutoRebind: "注册完成后自动换绑邮箱", phoneRebindPool: "可用换绑邮箱 {count} 个", phoneRebindOff: "未启用自动换绑", phoneStageLocked: "手机注册固定执行 Codex 接码绑定", startPhoneRegister: "开始手机注册", genericMailbox: "通用邮箱 URL",
   lubanProvider: "LubanSMS 接码供应商", lubanDesc: "通过供应商编号从 LubanSMS 获取一次性手机号并自动轮询验证码。", lubanSwitch: "启用 LubanSMS", lubanApiKey: "API Key", lubanServiceId: "供应商编号", lubanBaseURL: "接口地址", lubanCheck: "检测连接", lubanChecked: "LubanSMS 连接正常", lubanSaved: "LubanSMS 配置已保存",
   grizzlyProvider: "GrizzlySMS 接码供应商", grizzlyDesc: "通过 GrizzlySMS API 自动申请手机号并轮询验证码。", grizzlySwitch: "启用 GrizzlySMS", grizzlyApiKey: "API Key", grizzlyCountry: "默认国家", grizzlyService: "默认服务", grizzlyMaxPrice: "最大价格", grizzlyBaseURL: "接口地址", grizzlyCheck: "检测余额", grizzlySaved: "GrizzlySMS 配置已保存",
   heroProvider: "HeroSMS 接码供应商", heroDesc: "通过 HeroSMS REST API 自动申请手机号并轮询验证码。", heroSwitch: "启用 HeroSMS", heroApiKey: "API Key", heroCountry: "默认国家", heroService: "默认服务", heroMaxPrice: "最大价格", heroBaseURL: "接口地址", heroCheck: "检测连接", heroSaved: "HeroSMS 配置已保存",
@@ -796,7 +802,7 @@ const zh: AnyObj = new Proxy(Object.assign({
   firefoxProvider: "FireFox 接码供应商", firefoxDesc: "FireFox 临时号码平台。使用 API 密钥 Token 直接取号，每 5 秒轮询验证码，不可用号码将在 35 秒后自动释放。", firefoxSwitch: "启用 FireFox", firefoxReady: "FireFox 已配置", firefoxApiToken: "API 密钥 Token", firefoxCountry: "默认国家", firefoxService: "默认服务", firefoxMaxPrice: "单号最高价格", firefoxBaseURL: "接口地址", firefoxCheck: "检测余额", firefoxBalance: "余额：{balance}", firefoxSaved: "FireFox 配置已保存", firefoxMaxPriceRequired: "FireFox 单号最高价格必须大于 0",
   proxyTip: "管理出站代理用途。注册任务使用注册/登录代理；试用、Checkout 和支付方式检测使用账户检测代理。", proxyPool: "代理池", proxyEnabled: "启用", proxyDisabled: "停用", proxyAvailable: "失效", proxySearch: "搜索代理地址...", proxyCountry: "国家", proxyAllCountry: "全部国家", proxyAddress: "代理地址", proxyPurpose: "用途", proxyPurposeRegister: "注册/登录", proxyPurposeCommerce: "账户检测", proxyPurposeAll: "全部用途", proxyPurposeKeep: "留空保持原用途", proxyBatchCheck: "批量检测", proxyBatchDelete: "批量删除", proxyBatchEdit: "批量修改", proxyAdd: "新增代理", proxyEdit: "编辑代理", proxyCheckDone: "代理检测完成", proxyNoData: "暂无代理", proxyNoDataDesc: "请先新增代理地址，再对启用代理进行批量检测。", proxyStatusEnabled: "启用", proxyStatusDisabled: "停用", proxyStatusInvalid: "失效", proxyLastChecked: "上次检测", proxyLatency: "延迟", proxyCountryPlaceholder: "例如 US / HK / JP / Brazil", proxyCountryKeep: "留空保持各代理原国家不变", proxyAddressPlaceholder: "每行一个代理，例如 http://user:pass@host:port 或 socks5://host:port", proxyConfirmDelete: "确认删除该代理？此操作不可撤销。", proxyConfirmBatchDelete: "确认删除选中的代理？此操作不可撤销。", proxyTrafficSwitch: "注册流量代理", proxyTrafficOn: "代理开启", proxyTrafficOff: "代理关闭", proxyTrafficOnHint: "注册/登录请求走代理池", proxyTrafficOffHint: "使用服务器系统网络出口", proxySwitchSaved: "代理出口设置已更新", allTrafficProxyPool: "全流程使用代理池", allTrafficProxyPoolTip: "默认关闭：只有 ChatGPT 官方注册/登录使用代理池；邮箱读取、接码、试用和其他外部 API 由服务器直接访问。勾选后，整个注册任务统一使用代理池出口。",
   selected: "已选", selectedItems: "已选 {count} 项", selectAll: "全选", selectAllDone: "已选中当前筛选结果中的 {count} 条记录", clearSelection: "清除选择", globalLogs: "全局日志", selectedLogs: "当前邮箱日志", registrationTaskProgress: "注册任务进度", accountRegistrationProgress: "账户注册进度", clearLogs: "清除", logAll: "全部模块", logErrorsOnly: "只看异常", latest: "查询最近邮件", done: "操作完成", failed: "操作失败", batchProgress: "进度", batchSuccess: "成功", batchFailed: "失败", batchTrialProgress: "试用检测进度", batchCheckoutProgress: "Checkout进度", batchPaymentProgress: "支付探测进度", batchAddLSProgress: "添加LS进度", batchATRenewalProgress: "AT续期进度", batchATCheckProgress: "AT检测进度", batchHealthProgress: "测活进度", batchSubscriptionProgress: "订阅检测进度", batchRebindProgress: "换绑进度", batchReverseProxyProgress: "反代进度", file: "选择文件", status: "状态", prev: "上一页", next: "下一页", pageSize: "每页", pageInfo: "第 {page} / {pages} 页", pageRange: "显示 {from} 至 {to} 共 {total} 条结果", noLogs: "暂无日志", noRegistrationTask: "暂无注册任务", noAccountProgress: "暂无正在处理的邮箱账户", taskTotal: "任务总数", taskCompleted: "当前完成", completedAccounts: "已完成注册", pendingAccounts: "未完成注册", abnormalAccounts: "注册状态异常", currentStep: "当前步骤", total: "总计", yes: "是", no: "否", step: "步骤",
-  progressSteps: { queued: "等待任务调度", initializing: "初始化邮箱任务", proxy_ready: "代理与出口准备完成", browser_started: "启动隔离浏览器", protocol_started: "建立纯协议注册会话", email_submitted: "提交注册邮箱", email_verified: "完成邮箱验证码验证", auth_completed: "完成注册或登录认证", registered: "保存 ChatGPT Session", phone_started: "分配手机号并开始接码", phone_code_received: "收到并提交手机验证码", phone_bound: "完成 Codex 接码绑定", reverse_importing: "正在导入反代平台", reverse_imported: "完成反代平台导入", agent_identity_importing: "正在创建 Agent Identity 并导入反代平台", agent_identity_imported: "完成 Agent Identity 反代导入", stage_incomplete: "目标阶段未完成", cancelled: "任务已由用户中断", failed: "注册流程异常" },
+  progressSteps: { queued: "等待任务调度", initializing: "初始化邮箱任务", proxy_ready: "代理与出口准备完成", browser_started: "启动隔离浏览器", protocol_started: "建立纯协议注册会话", email_submitted: "提交注册邮箱", email_verified: "完成邮箱验证码验证", auth_completed: "完成注册或登录认证", registered: "保存 ChatGPT Session", phone_started: "分配手机号并开始接码", phone_code_received: "收到并提交手机验证码", phone_bound: "完成 Codex 接码绑定", rebind_started: "开始注册后邮箱换绑", rebind_completed: "注册后邮箱换绑完成", reverse_importing: "正在导入反代平台", reverse_imported: "完成反代平台导入", agent_identity_importing: "正在创建 Agent Identity 并导入反代平台", agent_identity_imported: "完成 Agent Identity 反代导入", stage_incomplete: "目标阶段未完成", cancelled: "任务已由用户中断", failed: "注册流程异常" },
   logProxy: "代理", logMailbox: "邮箱", logPhone: "手机", logSession: "Session", logAuth: "认证", logSystem: "系统",
   defaultGroup: "默认分组", allGroups: "全部分组", mailboxGroup: "所属分组", groupSearch: "搜索邮箱分组...", groupNoResults: "没有匹配的邮箱分组", importMailboxes: "导入邮箱", manualImport: "手动导入", fileImport: "文件导入", dragFile: "拖拽邮箱文件到这里，或点击选择文件", importToGroup: "导入到分组", addGroup: "新建分组", editGroup: "编辑分组名", deleteGroup: "删除分组", enterGroup: "输入分组名后回车", groupCreated: "邮箱分组新建成功", groupRenamed: "邮箱分组名称修改成功", groupDeleted: "邮箱分组删除成功", groupNotEmpty: "该邮箱分组下存在邮箱账户，请移除后再删除分组", defaultGroupCannotDelete: "默认分组不能删除", groupNameConflict: "邮箱分组名称已存在", confirmDeleteGroup: "确认删除该邮箱分组？", mailboxCount: "邮箱数量", validationOk: "校验通过", validationFailed: "校验失败", mailboxList: "邮箱列表", enabled: "启用", trafficUsage: "流量消耗", trafficUsageTip: "ChatGPT 账户注册流量 / 邮箱账户历史代理交互总流量", updatedAt: "更新时间", actions: "操作", queryMailbox: "搜索邮箱或换绑邮箱...", allStatus: "全部状态", allPlanTypes: "全部套餐", edit: "编辑", delete: "删除", batchDelete: "批量删除", batchEdit: "批量编辑", confirmDeleteMailbox: "确认删除该邮箱记录？此操作不可撤销。", confirmBatchDeleteMailbox: "确认删除选中的邮箱记录？此操作不可撤销。", queryMail: "邮件查询", currentMailbox: "当前邮箱", getMail: "获取邮件", mailFetchCount: "查询数量", mailFetchCountSuffix: "封", mailList: "邮件列表", sender: "发件人", receiver: "收件人", time: "时间", subject: "主题", content: "邮件内容", emptyMail: "暂无邮件", mailboxName: "邮箱名", password: "密码", chatgptPassword: "ChatGPT 密码", totpSecret: "2FA 密钥", keepCredential: "留空则保持现有凭证", clearCredential: "清除现有凭证", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "批量编辑邮箱", applyToSelected: "应用到选中的邮箱", mailboxType: "邮箱类型", microsoftMailbox: "微软邮箱", appleMailbox: "苹果邮箱", channelType: "渠道类型", xbovoChannel: "xbovo", xbovoChannelTip: "验证码查询入口：https://icloud.xbovo.online/code", urlAPIChannel: "url_api", urlAPIChannelTip: "通过邮箱专属取码 URL 查询最新邮件，单次响应最长约 30 秒", icloudAccessKey: "查询 Key", icloudQueryURL: "取码 URL", urlAPIBrowser: "URL API 邮件浏览器", browserBack: "后退", browserForward: "前进", browserReload: "刷新页面", browserLoading: "正在加载邮件页面", browserGetOnly: "当前预览仅支持网页链接和 GET 表单跳转",
   autoRegister: "自动注册", interruptTask: "停止", interruptingTask: "停止中...", interruptTaskTip: "停止整批注册任务，包括提交、排队、Worker 启动和邮箱执行阶段。", interruptTaskRequested: "已请求停止整批注册任务，正在关闭任务进程、浏览器与邮箱读取资源", interruptTaskFailed: "停止任务失败", registerTaskRunning: "当前注册任务正在执行，请等待任务结束或先停止任务", manualNew: "手动新增", searchAccount: "搜索账号邮箱...", refreshQuota: "刷新额度", refreshList: "刷新列表", refreshDone: "列表已刷新", loadingData: "正在更新数据...", refreshStatus: "刷新账号状态", statusChangedAt: "状态变更时间", planType: "套餐类型", email: "邮箱", trialLink: "试用链接", registeredAt: "注册时间", operation: "操作", noData: "暂无数据", noDataDesc: "当前平台没有找到任何账号记录。请先到邮箱配置中导入邮箱，然后选择邮箱进行自动注册。", chooseMailbox: "请选择邮箱", createTaskLog: "创建 ChatGPT 注册任务，数量", taskSubmitted: "注册任务已提交，正在开始执行", taskCreated: "自动注册任务已创建", taskDone: "任务完成", taskFailed: "任务失败", taskPollRecovered: "检测到上次注册任务仍在进行，已恢复日志轮询", taskPollLost: "任务状态轮询暂时失败，将继续等待任务状态：{error}", taskPollTimeout: "任务状态轮询时间较长，仍将继续等待；可使用停止按钮中断任务", importDone: "导入完成", exportDone: "导出完成", manualNewTip: "请到邮箱配置中手动新增邮箱", autoRegisterTitle: "自动注册 ChatGPT", step1Title: "选择注册身份", step1Desc: "当前优先使用自建 Outlook/Hotmail 邮箱池进行邮箱验证。", systemMailbox: "系统邮箱", systemMailboxPoolDisabled: "系统邮箱池功能未启用，请先启用邮箱池功能", smsConfigDisabled: "请前往接码配置页面启用接码配置", registerStageUnavailable: "请先启用至少一种邮箱注册方式", googleMailboxDisabled: "Google 邮箱功能未启用，请先启用对应的邮箱功能", microsoftMailboxDisabled: "Microsoft 邮箱功能未启用，请先启用对应的邮箱功能", systemMailboxDesc: "使用邮箱池自动收取验证码并完成注册", googleDesc: "预留身份，后续接入 Google 账号", microsoftDesc: "预留身份，后续接入 Microsoft 账号", step2Title: "选择执行方式", step2Desc: "支持后台浏览器自动与可视浏览器自动；后台模式不显示窗口，更适合批量执行。", protocolMode: "协议模式", protocolDesc: "占位能力，暂未开放选择", protocolChallengeStrategy: "浏览器挑战策略", protocolNativeChallenge: "原生无头接管", protocolNativeChallengeDesc: "遇到挑战时由完整后台浏览器接管注册流程", protocolSentinelChallenge: "Sentinel 协议运行时", protocolSentinelChallengeDesc: "注册请求保持协议模式，仅用窄范围 Camoufox 生成浏览器证明", backgroundMode: "后台浏览器自动", backgroundDesc: "无窗口 Headless 执行，仍使用隔离无痕浏览器上下文自动注册", visibleMode: "可视浏览器自动", visibleDesc: "会打开浏览器窗口，适合排查人机验证或页面异常", registerCount: "注册数量", concurrency: "并发数", identityLabel: "注册身份", modeLabel: "执行方式", registerAccounts: "注册账号", remailMailboxCount: "获取邮箱", remailOrderHint: "Remail 将按并发槽位逐个下单，总下单量为 {count}", verifyStrategy: "验证策略：自动识别 Outlook/Hotmail Graph API 或 IMAP/XOAUTH2 并读取验证码", step3Title: "选择注册阶段", step3Desc: "控制本次任务执行到哪个阶段，默认仅完成 ChatGPT 注册/登录与 Session 存储。", registerOnly: "仅注册 ChatGPT", registerOnlyDesc: "注册或登录成功后，只读取并保存 ChatGPT Session 信息", codexPhoneBind: "Codex接码绑定", codexPhoneBindDesc: "注册/登录后继续使用接码配置完成手机验证并获取 Refresh Token", importReverseProxy: "导入反代平台", importReverseProxyDesc: "完成账号 Session/RT 后导入已配置的 sub2api 反代平台", agentIdentityReverseProxy: "绕过接码导入反代平台", agentIdentityReverseProxyDesc: "注册/登录后使用 Access Token 创建 Agent Identity，跳过手机号绑定并直接导入 sub2api", stageLabel: "注册阶段", startAutoRegister: "开始自动注册", cancel: "取消", noMailbox: "暂无邮箱", noMailboxDesc: "请点击右上角“导入邮箱”添加自建 Outlook/Hotmail 邮箱池。", inbox: "收件箱", fillOrChooseMailboxFile: "请先填写或选择邮箱文件",
@@ -818,14 +824,14 @@ const en = Object.assign({
   title: "SunnyRegister Console", desc: "Register/login GPT accounts with a self-managed mailbox pool, then manage account status, sessions, RTs and logs.",
   register: "Register / Login", refresh: "Refresh", import: "Import", save: "Save", export: "Export", copy: "Copy", close: "Close", copySuccess: "Copied", secretKeyUnavailable: "This mailbox credential is incomplete and its SK cannot be copied", newGroup: "New Group", move: "Move Group",
   mailboxTip: "Microsoft mailboxes use four-part OAuth credentials. Apple iCloud mailboxes use the selected channel API for mail and OTP queries.", mailboxPoolName: "Self-managed Mailbox Pool", mailboxPoolGlobalSwitch: "Use Self-managed Mailbox Pool", mailboxPoolSwitchTip: "When disabled, SunnyRegister will not allocate mailboxes from the self-managed pool.", mailboxOverviewTotal: "Total Mailboxes", mailboxOverviewPending: "Pending", mailboxOverviewRegistered: "Registered", mailboxOverviewPhoneBound: "Phone Bound", mailboxOverviewReversed: "Reverse Proxied", mailboxOverviewBanned: "Banned", mailboxOverviewNeeds2FA: "Needs 2FA", mailboxOverviewRefreshing: "Login Refresh", mailboxOverviewFailed: "Failed",
-  domainMailboxTitle: "Self-hosted Domain Mailbox Pool", domainMailboxDesc: "Generate mailboxes across multiple domains through the CloudMail/CF Worker API and receive verification codes.", domainMailboxRegistration: "Use for account registration", domainMailboxRebinding: "Use for mailbox rebinding", domainMailboxApiURL: "CloudMail API URL", domainMailboxPickupURL: "Public Pickup API URL", domainMailboxToken: "PUBLIC_API_TOKEN", domainMailboxSitePassword: "CloudMail Site Password (PASSWORDS)", domainMailboxDomain: "Mailbox domains (one per line)", domainMailboxLength: "Local-part length", domainMailboxAutoAdd: "Create mailbox users automatically", domainMailboxSave: "Save Domain Mailbox Config", domainMailboxCheck: "Test Connection", domainMailboxGenerate: "Generate Test Mailbox", domainMailboxConfigured: "Domain mailbox is configured", domainMailboxNotConfigured: "Configure and enable the domain mailbox first", domainMailboxIdentity: "Domain Mailbox", domainMailboxIdentityDesc: "Generate mailboxes from the self-hosted domain pool and receive OTPs through its API",
-  phoneTip: "Format: +phone----SMS URL. Cooldown 5 hours after success, max 3 successes.",
+  domainMailboxTitle: "Self-hosted Domain Mailbox Pool", domainMailboxDesc: "Generate mailboxes across multiple domains through the CloudMail/CF Worker API and receive verification codes.", domainMailboxRegistration: "Use for account registration", domainMailboxRebinding: "Use for mailbox rebinding", domainMailboxApiURL: "CloudMail API URL", domainMailboxPickupURL: "Public Pickup API URL", domainMailboxToken: "PUBLIC_API_TOKEN", domainMailboxSitePassword: "CloudMail Site Password (PASSWORDS, optional)", domainMailboxDomain: "Mailbox domains (one per line)", domainMailboxLength: "Local-part length", domainMailboxAutoAdd: "Create mailbox users automatically", domainMailboxSave: "Save Domain Mailbox Config", domainMailboxCheck: "Test Connection", domainMailboxGenerate: "Generate Test Mailbox", domainMailboxConfigured: "Domain mailbox is configured", domainMailboxNotConfigured: "Configure and enable the domain mailbox first", domainMailboxIdentity: "Domain Mailbox", domainMailboxIdentityDesc: "Generate mailboxes from the self-hosted domain pool and receive OTPs through its API",
+  phoneTip: "Format: +phone----SMS URL. Cooldown 5 hours after success, max 3 successes.", phoneRegister: "Phone Registration", phoneRegisterDesc: "Use the selected system mailboxes and force phone verification through the selected SMS provider and country", phoneRegisterUnavailable: "Select mailboxes and enable an SMS provider first", smsPlatform: "SMS Platform", smsCountry: "Registration Country", selectCountry: "Select country", phoneAutoRebind: "Rebind email after registration", phoneRebindPool: "{count} rebound mailboxes available", phoneRebindOff: "Automatic rebinding is off", phoneStageLocked: "Phone registration always runs Codex phone binding", startPhoneRegister: "Start Phone Registration", genericMailbox: "Generic Mailbox URL",
   lubanProvider: "LubanSMS Provider", lubanDesc: "Rent one-time phone numbers by LubanSMS service ID and poll verification codes automatically.", lubanSwitch: "Enable LubanSMS", lubanApiKey: "API Key", lubanServiceId: "Service ID", lubanBaseURL: "API URL", lubanCheck: "Check Connection", lubanChecked: "LubanSMS connection succeeded", lubanSaved: "LubanSMS config saved",
   phonePool: "Self-managed Phone Pool", phonePoolGlobalSwitch: "Use Self-managed Phone Pool", importPhones: "Import Phones", phonePoolSwitchTip: "When disabled, SunnyRegister will not allocate numbers from this phone pool. You can switch to external SMS providers later.", phonePoolOn: "Usable for SMS", phonePoolOff: "Not used for SMS", phoneImportHelp: "One long-lived SMS record per line. The first character must be +, and the phone number and SMS URL must be separated with exactly four hyphens: ----.", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "Invalid phone import format", phoneSearch: "Search phone number...", phoneNumber: "Phone Number", smsLink: "SMS Link", usedCount: "Used Count", countFilter: "Count", allCount: "All Counts", lastUsedAt: "Last Used", phoneEdit: "Edit Phone", phoneStatusEnabled: "Enabled", phoneStatusDisabled: "Disabled", phoneConfirmDelete: "Delete this phone number? This cannot be undone.", phoneConfirmBatchDelete: "Delete selected phone numbers? This cannot be undone.", smsbowerProvider: "SMSBower Provider", smsbowerDesc: "When the self-managed phone pool is unavailable or empty, SunnyRegister can use SMSBower API to rent a one-time number automatically.", smsbowerSwitch: "Enable SMSBower", smsbowerReady: "SMSBower configured", smsbowerApiKey: "API Key", smsbowerCountry: "Default Country", smsbowerService: "Default Service", smsbowerMaxPrice: "Max Price", smsbowerBaseURL: "API URL", smsbowerCheck: "Check Balance", smsbowerBalance: "Balance: {balance}", smsbowerSaved: "SMSBower config saved", smspoolProvider: "SMSPool Provider", smspoolDesc: "SMSPool is a temporary-number provider used when the self-managed phone pool and SMSBower are unavailable.", smspoolSwitch: "Enable SMSPool", smspoolReady: "SMSPool configured", smspoolApiKey: "API Key", smspoolCountry: "Default Country", smspoolService: "Default Service", refreshProviderOptions: "Fetch options", providerOptionSearch: "Search by ID, code, or name...", providerOptionNoResults: "No matching options", smspoolMaxPrice: "Max Price", smspoolBaseURL: "API URL", smspoolCheck: "Check Balance", smspoolBalance: "Balance: {balance}", smspoolSaved: "SMSPool config saved", firefoxProvider: "FireFox Provider", firefoxDesc: "FireFox temporary-number provider using a direct API Token. It polls every 5 seconds and releases rejected numbers after 35 seconds.", firefoxSwitch: "Enable FireFox", firefoxReady: "FireFox configured", firefoxApiToken: "API Token", firefoxCountry: "Default Country", firefoxService: "Default Service", firefoxMaxPrice: "Maximum Unit Price", firefoxBaseURL: "API URL", firefoxCheck: "Check Balance", firefoxBalance: "Balance: {balance}", firefoxSaved: "FireFox config saved", firefoxMaxPriceRequired: "FireFox maximum unit price must be greater than 0",
   proxyTip: "Manage outbound proxies by purpose. Registration uses register/login proxies; trial, Checkout and payment checks use account-check proxies.",
   proxyPool: "Proxy Pool", proxyEnabled: "Enabled", proxyAvailable: "Invalid", proxySearch: "Search proxy address...", proxyCountry: "Country", proxyAllCountry: "All Countries", proxyAddress: "Proxy Address", proxyPurpose: "Purpose", proxyPurposeRegister: "Register/Login", proxyPurposeCommerce: "Account Checks", proxyPurposeAll: "All Purposes", proxyPurposeKeep: "Leave blank to keep current purposes", proxyBatchCheck: "Batch Check", proxyBatchDelete: "Batch Delete", proxyBatchEdit: "Batch Edit", proxyAdd: "Add Proxy", proxyEdit: "Edit Proxy", proxyCheckDone: "Proxy check completed", proxyNoData: "No Proxies", proxyNoDataDesc: "Add proxy addresses first, then batch-check enabled proxies.", proxyStatusEnabled: "Enabled", proxyStatusDisabled: "Disabled", proxyStatusInvalid: "Invalid", proxyLastChecked: "Last Checked", proxyLatency: "Latency", proxyCountryPlaceholder: "e.g. US / HK / JP / Brazil", proxyCountryKeep: "Leave blank to keep each proxy's current country", proxyAddressPlaceholder: "One proxy per line, e.g. http://user:pass@host:port or socks5://host:port", proxyConfirmDelete: "Delete this proxy? This cannot be undone.", proxyConfirmBatchDelete: "Delete selected proxies? This cannot be undone.", proxyTrafficSwitch: "Register Traffic Proxy", proxyTrafficOn: "Proxy On", proxyTrafficOff: "Proxy Off", proxyTrafficOnHint: "Register/login requests use proxy pool", proxyTrafficOffHint: "Use server/system network", proxySwitchSaved: "Proxy outlet setting updated", allTrafficProxyPool: "Use proxy pool for all traffic", allTrafficProxyPoolTip: "Off by default: only ChatGPT registration/login uses the proxy pool; mail, SMS, trial checks and other external APIs use direct server egress. Turn this on to route the entire registration task through the proxy pool.",
   selected: "Selected", selectedItems: "{count} selected", selectAll: "Select All", selectAllDone: "Selected {count} records from the current filters", clearSelection: "Clear Selection", globalLogs: "Global Logs", selectedLogs: "Current Mailbox Logs", registrationTaskProgress: "Registration Progress", accountRegistrationProgress: "Account Progress", clearLogs: "Clear", logAll: "All Modules", logErrorsOnly: "Errors Only", latest: "Latest Mail", done: "Done", failed: "Failed", batchProgress: "Progress", batchSuccess: "Success", batchFailed: "Failed", batchTrialProgress: "Trial check progress", batchCheckoutProgress: "Checkout progress", batchPaymentProgress: "Payment probe progress", batchAddLSProgress: "Add LS progress", batchATRenewalProgress: "AT renewal progress", batchATCheckProgress: "AT check progress", batchHealthProgress: "Health check progress", batchSubscriptionProgress: "Subscription check progress", batchRebindProgress: "Rebind progress", batchReverseProxyProgress: "Reverse proxy progress", file: "Choose File", status: "Status", prev: "Prev", next: "Next", pageSize: "Per page", pageInfo: "Page {page} / {pages}", pageRange: "Showing {from} to {to} of {total} results", noLogs: "No logs", noRegistrationTask: "No registration task yet", noAccountProgress: "No mailbox account is being processed", taskTotal: "Task Total", taskCompleted: "Completed", completedAccounts: "Completed Accounts", pendingAccounts: "Pending Accounts", abnormalAccounts: "Abnormal Accounts", currentStep: "Current Step", total: "Total", yes: "Yes", no: "No", step: "STEP",
-  progressSteps: { queued: "Waiting for task scheduling", initializing: "Initializing mailbox task", proxy_ready: "Proxy and network outlet ready", browser_started: "Starting isolated browser", protocol_started: "Establishing protocol registration session", email_submitted: "Submitting registration email", email_verified: "Email verification completed", auth_completed: "Registration or login authenticated", registered: "ChatGPT Session saved", phone_started: "Allocating phone and starting SMS", phone_code_received: "Phone code received and submitted", phone_bound: "Codex phone binding completed", reverse_importing: "Importing to reverse proxy", reverse_imported: "Reverse proxy import completed", agent_identity_importing: "Creating Agent Identity and importing to reverse proxy", agent_identity_imported: "Agent Identity reverse proxy import completed", stage_incomplete: "Target stage incomplete", cancelled: "Task interrupted by user", failed: "Registration flow failed" },
+  progressSteps: { queued: "Waiting for task scheduling", initializing: "Initializing mailbox task", proxy_ready: "Proxy and network outlet ready", browser_started: "Starting isolated browser", protocol_started: "Establishing protocol registration session", email_submitted: "Submitting registration email", email_verified: "Email verification completed", auth_completed: "Registration or login authenticated", registered: "ChatGPT Session saved", phone_started: "Allocating phone and starting SMS", phone_code_received: "Phone code received and submitted", phone_bound: "Codex phone binding completed", rebind_started: "Starting post-registration email rebind", rebind_completed: "Post-registration email rebind completed", reverse_importing: "Importing to reverse proxy", reverse_imported: "Reverse proxy import completed", agent_identity_importing: "Creating Agent Identity and importing to reverse proxy", agent_identity_imported: "Agent Identity reverse proxy import completed", stage_incomplete: "Target stage incomplete", cancelled: "Task interrupted by user", failed: "Registration flow failed" },
   logProxy: "Proxy", logMailbox: "Mailbox", logPhone: "Phone", logSession: "Session", logAuth: "Auth", logSystem: "System",
   defaultGroup: "Default Group", allGroups: "All Groups", mailboxGroup: "Group", groupSearch: "Search mailbox groups...", groupNoResults: "No matching mailbox groups", importMailboxes: "Import Mailboxes", manualImport: "Manual", fileImport: "File", dragFile: "Drag mailbox file here, or click to choose a file", importToGroup: "Import to group", addGroup: "New Group", editGroup: "Rename Group", deleteGroup: "Delete Group", enterGroup: "Type group name and press Enter", groupCreated: "Mailbox group created", groupRenamed: "Mailbox group renamed", groupDeleted: "Mailbox group deleted", groupNotEmpty: "This mailbox group contains accounts. Move them before deleting the group.", defaultGroupCannotDelete: "The default group cannot be deleted", groupNameConflict: "A mailbox group with this name already exists", confirmDeleteGroup: "Delete this mailbox group?", mailboxCount: "Mailboxes", validationOk: "Validation passed", validationFailed: "Validation failed", mailboxList: "Mailbox List", enabled: "Enabled", trafficUsage: "Traffic Usage", trafficUsageTip: "ChatGPT registration traffic / mailbox lifetime proxy traffic", updatedAt: "Updated", actions: "Actions", queryMailbox: "Search mailbox or rebound mailbox...",
   allStatus: "All Status", allPlanTypes: "All Plans", edit: "Edit", delete: "Delete", batchDelete: "Batch Delete", batchEdit: "Batch Edit", confirmDeleteMailbox: "Delete this mailbox record? This cannot be undone.", confirmBatchDeleteMailbox: "Delete the selected mailbox records? This cannot be undone.", queryMail: "Mail Query", currentMailbox: "Current Mailbox", getMail: "Get Mail", mailFetchCount: "Count", mailFetchCountSuffix: "mails", mailList: "Mail List", sender: "Sender", receiver: "Receiver", time: "Time", subject: "Subject", content: "Mail Content", emptyMail: "No mails", mailboxName: "Mailbox", password: "Password", chatgptPassword: "ChatGPT Password", totpSecret: "2FA Secret", keepCredential: "Leave blank to keep the current credential", clearCredential: "Clear current credential", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "Batch Edit Mailboxes", applyToSelected: "Apply to selected mailboxes", mailboxType: "Mailbox Type", microsoftMailbox: "Microsoft Mailbox", appleMailbox: "Apple Mailbox", channelType: "Channel", xbovoChannel: "xbovo", xbovoChannelTip: "Verification code portal: https://icloud.xbovo.online/code", urlAPIChannel: "url_api", urlAPIChannelTip: "Read the newest mail from a mailbox-specific URL; one request may take up to about 30 seconds", icloudAccessKey: "Query Key", icloudQueryURL: "Code URL", urlAPIBrowser: "URL API Mail Browser", browserBack: "Back", browserForward: "Forward", browserReload: "Reload page", browserLoading: "Loading mail page", browserGetOnly: "This preview supports web links and GET form navigation only", remailMailboxCount: "Mailboxes", remailOrderHint: "Remail orders one mailbox per available slot, up to {count} total",
@@ -1040,7 +1046,7 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) { return <inp
 function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) { return <textarea {...props} className={cn("control-surface min-h-28", props.className)} />; }
 type SelectBoxOption = { value: string | number; label: React.ReactNode; searchText?: string };
 
-function SelectBox({ value, onChange, options, className, searchable = false, searchPlaceholder = "Search...", noResultsLabel = "No results", placeholder }: { value: string | number; onChange: (v: string | number) => void; options: SelectBoxOption[]; className?: string; searchable?: boolean; searchPlaceholder?: string; noResultsLabel?: string; placeholder?: string }) {
+function SelectBox({ value, onChange, options, className, searchable = false, searchPlaceholder = "Search...", noResultsLabel = "No results", placeholder, disabled = false }: { value: string | number; onChange: (v: string | number) => void; options: SelectBoxOption[]; className?: string; searchable?: boolean; searchPlaceholder?: string; noResultsLabel?: string; placeholder?: string; disabled?: boolean }) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -1106,7 +1112,7 @@ function SelectBox({ value, onChange, options, className, searchable = false, se
     setOpen(false);
     setSearchQuery("");
   };
-  const menu = open && menuRect ? <PagePortal><div ref={menuRef} role="listbox" className={cn("sr-custom-select-menu sr-custom-select-menu-portal", searchable && "sr-custom-select-menu-searchable", className?.includes("sr-page-size-select") && "sr-page-size-select-menu", className?.includes("sr-mailbox-group-select") && "sr-mailbox-group-select-menu")} style={{ position: "fixed", left: menuRect.left, top: menuRect.top, width: menuRect.width, maxHeight: menuRect.maxHeight, overflowY: "auto", right: "auto", zIndex: menuRect.zIndex }}>
+  const menu = !disabled && open && menuRect ? <PagePortal><div ref={menuRef} role="listbox" className={cn("sr-custom-select-menu sr-custom-select-menu-portal", searchable && "sr-custom-select-menu-searchable", className?.includes("sr-page-size-select") && "sr-page-size-select-menu", className?.includes("sr-mailbox-group-select") && "sr-mailbox-group-select-menu")} style={{ position: "fixed", left: menuRect.left, top: menuRect.top, width: menuRect.width, maxHeight: menuRect.maxHeight, overflowY: "auto", right: "auto", zIndex: menuRect.zIndex }}>
       {searchable && <div className="sr-custom-select-search" onMouseDown={(event)=>event.stopPropagation()}>
         <Search className="h-4 w-4" aria-hidden="true"/>
         <input ref={searchRef} value={searchQuery} onChange={(event)=>setSearchQuery(event.target.value)} placeholder={searchPlaceholder} aria-label={searchPlaceholder} onKeyDown={(event)=>{
@@ -1118,8 +1124,8 @@ function SelectBox({ value, onChange, options, className, searchable = false, se
       {filteredOptions.map((opt) => <button type="button" role="option" aria-selected={String(opt.value) === String(value)} key={String(opt.value)} className={cn("sr-custom-select-option", String(opt.value) === String(value) && "active")} onMouseDown={(e)=>e.preventDefault()} onClick={() => { onChange(opt.value); closeMenu(); }}>{opt.label}</button>)}
       {searchable && filteredOptions.length === 0 && <div className="sr-custom-select-empty" role="status">{noResultsLabel}</div>}
     </div></PagePortal> : null;
-  return <div ref={wrapRef} className={cn("sr-custom-select", className)}>
-    <button ref={triggerRef} type="button" aria-haspopup="listbox" aria-expanded={open} className={cn("sr-custom-select-trigger", open && "open")} onClick={() => { updateRect(); setSearchQuery(""); setOpen((v) => !v); }} onKeyDown={(event)=>{ if (event.key === "Escape" && open) closeMenu(); }}>
+  return <div ref={wrapRef} className={cn("sr-custom-select", className, disabled && "opacity-60")}>
+    <button ref={triggerRef} type="button" aria-haspopup="listbox" aria-expanded={open} disabled={disabled} className={cn("sr-custom-select-trigger", open && "open")} onClick={() => { updateRect(); setSearchQuery(""); setOpen((v) => !v); }} onKeyDown={(event)=>{ if (event.key === "Escape" && open) closeMenu(); }}>
       <span>{active?.label || placeholder || ""}</span><ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")} />
     </button>
     {menu}
@@ -1376,13 +1382,14 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const [autoOpen, setAutoOpen] = useCachedState("workbench.autoOpen", false);
   const [loginOpen, setLoginOpen] = useCachedState("workbench.loginOpen", false);
   const [modalConcurrency, setModalConcurrency] = useCachedState("workbench.concurrency", 1);
-  const [identity, setIdentity] = useCachedState<"system" | "domain" | "remail" | "google" | "microsoft">("workbench.identity", "system");
+  const [identity, setIdentity] = useCachedState<RegisterIdentity>("workbench.identity", "system");
   const [modalRegisterCount, setModalRegisterCount] = useCachedState("workbench.registerCount", 1);
   const [mode, setMode] = useCachedState<"protocol" | "background" | "visible">("workbench.mode", "protocol");
   const [protocolChallengeStrategy, setProtocolChallengeStrategy] = useCachedState<ProtocolChallengeStrategy>("workbench.protocolChallengeStrategy", "sentinel_protocol");
   const [stage, setStage] = useCachedState<RegisterStage>("workbench.stage", "register_only");
   const [setupLoginSecret, setSetupLoginSecret] = useCachedState("workbench.setupLoginSecret", false);
   const [allTrafficProxyPool, setAllTrafficProxyPool] = useState(false);
+  const [registerProxyCountries, setRegisterProxyCountries] = useState<string[]>([]);
   const [globalLogs, setGlobalLogs] = useCachedState<LogEntry[]>("workbench.globalLogs", []);
   const [selectedLogs, setSelectedLogs] = useCachedState<LogEntry[]>("workbench.selectedLogs", []);
   const [registrationProgress, setRegistrationProgress] = useCachedState<RegistrationTaskProgress | null>("workbench.registrationProgress", null);
@@ -1461,11 +1468,13 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   }, [mailboxes, selected]);
   useEffect(()=>{setPageNo(1)},[query, status, planFilter, trialFilter, groupFilter, pageSize, timeSort]);
   useEffect(()=>{if (pageNo !== safePageNo) setPageNo(safePageNo)},[pageNo, safePageNo]);
-  async function createRegisterTask(directIds?: number[]) {
+  async function createRegisterTask(directIds?: number[], proxyCountries: string[] = registerProxyCountries, phoneOptions?: PhoneRegisterOptions) {
     if (busy || activeTaskId) { notify("fail", t.registerTaskRunning); return; }
     const ids = directIds?.length ? directIds : selected;
-    if (identity === "system" && !ids.length) { notify("fail", t.chooseMailbox); return; }
-    const requestedCount = identity === "system" ? ids.length : Math.max(1, Number(modalRegisterCount) || 1);
+    const phoneRegistration = identity === "phone";
+    if ((identity === "system" || phoneRegistration) && !ids.length) { notify("fail", t.chooseMailbox); return; }
+    const requestedCount = identity === "system" || phoneRegistration ? ids.length : Math.max(1, Number(modalRegisterCount) || 1);
+    const taskStage = phoneRegistration ? CODEX_PHONE_BIND : stage;
     setBusy(true);
     setSubmittingTask(true);
     setStopRequested(false);
@@ -1473,18 +1482,19 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     setAutoOpen(false);
     const availableRows = [...rows, ...Object.values(selectedRowCache)];
     const taskEmails = ids.map((mailboxId) => String(availableRows.find((row) => Number(row.id) === mailboxId)?.email || "")).filter(Boolean);
-    const progressEmails = identity === "system" ? taskEmails : Array.from({length: requestedCount}, (_, index) => `${identity}-${index + 1}`);
-    setRegistrationProgress(createRegistrationTaskProgress("", stage, progressEmails, setupLoginSecret));
+    const progressEmails = identity === "system" || phoneRegistration ? taskEmails : Array.from({length: requestedCount}, (_, index) => `${identity}-${index + 1}`);
+    setRegistrationProgress(createRegistrationTaskProgress("", taskStage, progressEmails, setupLoginSecret, phoneOptions?.rebindAfterRegistration === true));
     const sep = batchSeparatorLog(`========= SunnyRegister ${t.autoRegister} · ${formatDateTime(new Date())} =========`);
     setGlobalLogs((old) => [localLog(`${t.createTaskLog} ${requestedCount}`), sep, ...old]);
     setSelectedLogs((old) => [sep, ...old]);
     try {
-      const res = await apiFetch("/sunny/tasks/register", { method: "POST", body: JSON.stringify({ mailbox_ids: identity === "system" ? ids : [], count: requestedCount, concurrency: Math.max(1, Math.min(Number(modalConcurrency) || 1, requestedCount)), identity, execution_mode: mode, protocol_challenge_strategy: protocolChallengeStrategy, registration_stage: stage, proxy_all_traffic: allTrafficProxyPool, setup_login_secret: setupLoginSecret }) });
+      const endpoint = phoneRegistration ? "/sunny/tasks/phone-register" : "/sunny/tasks/register";
+      const res = await apiFetch(endpoint, { method: "POST", body: JSON.stringify({ mailbox_ids: identity === "system" || phoneRegistration ? ids : [], count: requestedCount, concurrency: Math.max(1, Math.min(Number(modalConcurrency) || 1, requestedCount)), identity, execution_mode: mode, protocol_challenge_strategy: protocolChallengeStrategy, registration_stage: taskStage, proxy_all_traffic: allTrafficProxyPool, setup_login_secret: setupLoginSecret, proxy_countries: proxyCountries, sms_provider: phoneOptions?.smsProvider || "", sms_country: phoneOptions?.smsCountry || "", rebind_after_registration: phoneOptions?.rebindAfterRegistration === true, rebind_mailbox_category: phoneOptions?.rebindMailboxCategory || "", target_mailboxes: phoneOptions?.targetMailboxes || [] }) });
       notify("ok", t.taskSubmitted);
       setGlobalLogs((old) => [localLog(t.taskSubmitted), ...old].slice(0, 160));
       const taskId = String(res.id || res.task_id || "");
       if (!taskId) throw new Error(t.taskFailed);
-      setRegistrationProgress((old) => old ? { ...old, taskId } : createRegistrationTaskProgress(taskId, stage, progressEmails, setupLoginSecret));
+      setRegistrationProgress((old) => old ? { ...old, taskId } : createRegistrationTaskProgress(taskId, taskStage, progressEmails, setupLoginSecret, phoneOptions?.rebindAfterRegistration === true));
       taskEventCursorRef.current = { taskId, last: 0 };
       setTaskEventCursor(taskEventCursorRef.current);
       setActiveTaskId(taskId);
@@ -1582,14 +1592,14 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       const eventStage = ([REGISTER_ONLY, CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY, AGENT_IDENTITY_REVERSE_PROXY].includes(firstDetail.stage) ? firstDetail.stage : stage) as RegisterStage;
       const next: RegistrationTaskProgress = old && (!old.taskId || old.taskId === taskId)
         ? { ...old, taskId, accounts: { ...old.accounts }, order: [...old.order] }
-        : createRegistrationTaskProgress(taskId, eventStage, [], old?.setupLoginSecret ?? setupLoginSecret);
+        : createRegistrationTaskProgress(taskId, eventStage, [], old?.setupLoginSecret ?? setupLoginSecret, old?.rebindAfterRegistration ?? false);
       for (const event of events) {
         const detail = event.detail || {};
         const email = String(detail.email || event.email || "").trim();
         if (!email) continue;
         const key = email.toLowerCase();
         const accountStage = ([REGISTER_ONLY, CODEX_PHONE_BIND, IMPORT_REVERSE_PROXY, AGENT_IDENTITY_REVERSE_PROXY].includes(detail.stage) ? detail.stage : next.stage) as RegisterStage;
-        const total = Math.max(1, Number(detail.total || registrationStageTotal(accountStage, next.setupLoginSecret)));
+        const total = Math.max(1, Number(detail.total || registrationStageTotal(accountStage, next.setupLoginSecret, next.rebindAfterRegistration)));
         const previous = next.accounts[key] || { email, stage: accountStage, checkpoint: "queued", current: 0, total, state: "pending", updatedAt: 0 };
         const state = (["pending", "running", "completed", "abnormal"].includes(detail.state) ? detail.state : "running") as RegistrationProgressState;
         const current = state === "completed" ? total : Math.min(total, Math.max(Number(previous.current || 0), Number(detail.current || 0)));
@@ -1618,9 +1628,12 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
         const email = String(item.email || "").trim();
         if (!email) continue;
         const key = email.toLowerCase();
-        const previous = next.accounts[key] || { email, stage: next.stage, checkpoint: "queued", current: 0, total: registrationStageTotal(next.stage, next.setupLoginSecret), state: "pending", updatedAt: 0 };
+        const previous = next.accounts[key] || { email, stage: next.stage, checkpoint: "queued", current: 0, total: registrationStageTotal(next.stage, next.setupLoginSecret, next.rebindAfterRegistration), state: "pending", updatedAt: 0 };
         const complete = item.stage_complete !== false;
-        next.accounts[key] = { ...previous, email, state: complete ? "completed" : "abnormal", current: complete ? previous.total : previous.current, checkpoint: complete ? ({ register_only: "registered", codex_phone_bind: "phone_bound", import_reverse_proxy: "reverse_imported", agent_identity_reverse_proxy: "agent_identity_imported" }[previous.stage] || "registered") : "stage_incomplete", error: String(item.stage_error || previous.error || ""), updatedAt: Date.now() };
+        const rebindRequested = next.rebindAfterRegistration === true;
+        const rebindComplete = item.rebind_complete === true;
+        const rebindFailed = rebindRequested && item.rebind_complete === false;
+        next.accounts[key] = { ...previous, email, state: complete ? "completed" : "abnormal", current: complete ? previous.total : previous.current, checkpoint: rebindComplete ? "rebind_completed" : rebindFailed ? "rebind_completed" : complete ? ({ register_only: "registered", codex_phone_bind: "phone_bound", import_reverse_proxy: "reverse_imported", agent_identity_reverse_proxy: "agent_identity_imported" }[previous.stage] || "registered") : "stage_incomplete", error: String(item.stage_error || previous.error || ""), updatedAt: Date.now() };
         if (!next.order.some((value) => value.toLowerCase() === key)) next.order.push(email);
       }
       const errorTexts = Array.isArray(task.result?.errors) ? task.result.errors : [];
@@ -1872,7 +1885,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       <div className="sr-table-scroll"><ResizableDataTable tableKey="workbench" columns={DATA_TABLE_COLUMNS.workbench} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>selectCurrentPage(e.target.checked)}/>,t.email,t.rebindEmail,t.mailboxGroup,t.status,t.planType,t.trialEligibility,<SortTimeHeader label={t.statusChangedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.operation]}><tbody>{rows.length ? pagedRows.map((r) => { const operationsVisible = expandedOperationId === Number(r.id); return <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} onChange={(e)=>selectRow(r,e.target.checked)}/></td><td title={r.email}>{r.email}</td><td title={r.rebind_email || "-"}>{r.rebind_email || "-"}</td><td title={r.group_name || t.defaultGroup}>{r.group_name || t.defaultGroup}</td><td title={r.error || r.last_error || ""}><StatusBadge t={t} status={r.status || "未注册"} /></td><td><PlanTypeBadge value={r.account?.plan_type || r.plan_type} /></td><td><TrialEligibilityBadge t={t} row={r}/></td><td>{formatDateTime(r.status_changed_at)}</td><td><div className="sr-session-actions-shell"><button type="button" className="sr-session-actions-toggle" aria-label={operationsVisible ? "隐藏操作" : "显示操作"} aria-expanded={operationsVisible} title={operationsVisible ? "隐藏操作" : t.refreshStatus} onClick={()=>setExpandedOperationId((current)=>current===Number(r.id)?null:Number(r.id))}><MoreHorizontal className="h-5 w-5" /></button>{operationsVisible && <div className="sr-session-actions"><button className="sr-link inline-flex items-center gap-1" title={t.refreshStatus} disabled={busy} onClick={()=>refreshAccountStatus(r)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button></div>}</div></td></tr>; }) : <tr><td colSpan={9}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.noDataDesc}</p></div></td></tr>}</tbody></ResizableDataTable></div>
       <PaginationBar t={t} total={total} page={safePageNo} pageSize={pageSize} setPage={setPageNo} setPageSize={setPageSize} />
     </Card>
-    {autoOpen && <AutoRegisterModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} selectedNeedPhone={selectedRows.some((m)=>m.has_openai_rt !== true)} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} registerCount={modalRegisterCount} setRegisterCount={setModalRegisterCount} identity={identity} setIdentity={setIdentity} mode={mode} setMode={setMode} protocolChallengeStrategy={protocolChallengeStrategy} setProtocolChallengeStrategy={setProtocolChallengeStrategy} stage={stage} setStage={setStage} allTrafficProxyPool={allTrafficProxyPool} setAllTrafficProxyPool={setAllTrafficProxyPool} setupLoginSecret={setupLoginSecret} setSetupLoginSecret={setSetupLoginSecret} onClose={()=>setAutoOpen(false)} onStart={()=>createRegisterTask()} notify={notify} />}
+    {autoOpen && <AutoRegisterModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} selectedNeedPhone={selectedRows.some((m)=>m.has_openai_rt !== true)} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} registerCount={modalRegisterCount} setRegisterCount={setModalRegisterCount} identity={identity} setIdentity={setIdentity} mode={mode} setMode={setMode} protocolChallengeStrategy={protocolChallengeStrategy} setProtocolChallengeStrategy={setProtocolChallengeStrategy} stage={stage} setStage={setStage} allTrafficProxyPool={allTrafficProxyPool} setAllTrafficProxyPool={setAllTrafficProxyPool} setupLoginSecret={setupLoginSecret} setSetupLoginSecret={setSetupLoginSecret} onClose={()=>setAutoOpen(false)} onStart={(countries, phoneOptions)=>{ setRegisterProxyCountries(countries); void createRegisterTask(undefined, countries, phoneOptions); }} notify={notify} />}
     {loginOpen && <ExistingLoginModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} mode={mode} setMode={setMode} protocolChallengeStrategy={protocolChallengeStrategy} setProtocolChallengeStrategy={setProtocolChallengeStrategy} onClose={()=>setLoginOpen(false)} onStart={()=>createLoginTask()} />}
   </div>;
 }
@@ -1899,7 +1912,7 @@ function ExistingLoginModal({ t, busy, selectedEmails, concurrency, setConcurren
   </div></div>;
 }
 
-function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurrency, setConcurrency, registerCount, setRegisterCount, identity, setIdentity, mode, setMode, protocolChallengeStrategy, setProtocolChallengeStrategy, stage, setStage, allTrafficProxyPool, setAllTrafficProxyPool, setupLoginSecret, setSetupLoginSecret, onClose, onStart, notify }: { t: typeof zh; busy: boolean; selectedEmails: string[]; selectedNeedPhone: boolean; concurrency: number; setConcurrency: (v:number)=>void; registerCount: number; setRegisterCount: (v:number)=>void; identity: "system"|"domain"|"remail"|"google"|"microsoft"; setIdentity: (v:"system"|"domain"|"remail"|"google"|"microsoft")=>void; mode: "protocol"|"background"|"visible"; setMode:(v:"protocol"|"background"|"visible")=>void; protocolChallengeStrategy: ProtocolChallengeStrategy; setProtocolChallengeStrategy:(v:ProtocolChallengeStrategy)=>void; stage: RegisterStage; setStage:(v:RegisterStage)=>void; allTrafficProxyPool: boolean; setAllTrafficProxyPool: (v:boolean)=>void; setupLoginSecret: boolean; setSetupLoginSecret: (v:boolean)=>void; onClose:()=>void; onStart:()=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
+function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurrency, setConcurrency, registerCount, setRegisterCount, identity, setIdentity, mode, setMode, protocolChallengeStrategy, setProtocolChallengeStrategy, stage, setStage, allTrafficProxyPool, setAllTrafficProxyPool, setupLoginSecret, setSetupLoginSecret, onClose, onStart, notify }: { t: typeof zh; busy: boolean; selectedEmails: string[]; selectedNeedPhone: boolean; concurrency: number; setConcurrency: (v:number)=>void; registerCount: number; setRegisterCount: (v:number)=>void; identity: RegisterIdentity; setIdentity:(v:RegisterIdentity)=>void; mode: "protocol"|"background"|"visible"; setMode:(v:"protocol"|"background"|"visible")=>void; protocolChallengeStrategy: ProtocolChallengeStrategy; setProtocolChallengeStrategy:(v:ProtocolChallengeStrategy)=>void; stage: RegisterStage; setStage:(v:RegisterStage)=>void; allTrafficProxyPool: boolean; setAllTrafficProxyPool:(v:boolean)=>void; setupLoginSecret: boolean; setSetupLoginSecret:(v:boolean)=>void; onClose:()=>void; onStart:(countries:string[], phoneOptions?:PhoneRegisterOptions)=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
 	const mailboxVerificationDescription = t === zh
 		? "系统将按邮箱类型自动选择 OAuth、iCloud 或域名邮箱 API 渠道完成邮箱验证。"
 		: "The system automatically selects the OAuth, iCloud, or domain-mail API channel based on each mailbox type.";
@@ -1908,6 +1921,17 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
   const [mailboxCfg, setMailboxCfg] = useState<AnyObj>({ pool_enabled: true });
   const [remailCfg, setRemailCfg] = useState<AnyObj>({ enabled: false });
   const [domainCfg, setDomainCfg] = useState<AnyObj>({ enabled: true, enabled_for_registration: false });
+  const [proxyCountries, setProxyCountries] = useState<string[]>([]);
+  const [selectedProxyCountries, setSelectedProxyCountries] = useState<string[]>([]);
+  const [proxyMenuOpen, setProxyMenuOpen] = useState(false);
+  const [smsProvider, setSmsProvider] = useState<SMSProvider>("local");
+  const [smsProviderOptions, setSmsProviderOptions] = useState<Record<string, AnyObj[]>>({});
+  const [smsCountry, setSmsCountry] = useState("");
+  const [smsCountries, setSmsCountries] = useState<AnyObj[]>([]);
+  const [smsCountriesLoading, setSmsCountriesLoading] = useState(false);
+  const [rebindAfterRegistration, setRebindAfterRegistration] = useState(false);
+  const [rebindMailboxCategory, setRebindMailboxCategory] = useState<RebindMailboxCategory>("microsoft");
+  const [rebindMailboxOptions, setRebindMailboxOptions] = useState<AnyObj[]>([]);
   useEffect(() => {
     let alive = true;
     Promise.all([
@@ -1916,17 +1940,21 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
       apiFetch("/sunny/mailboxes/config").catch(() => ({})),
       apiFetch("/sunny/remail/config").catch(() => ({})),
       apiFetch("/sunny/domain-mail/config").catch(() => ({})),
-    ]).then(([phone, reverse, mailbox, remail, domain]) => {
+      apiFetch("/sunny/proxy-config/pool?page=1&page_size=100&purpose=register&status=enabled&sort_by=updated_at&sort_order=desc").catch(() => ({})),
+    ]).then(([phone, reverse, mailbox, remail, domain, proxy]) => {
       if (!alive) return;
       setPhoneCfg(phone || {});
       setReverseCfg(reverse || {});
       setMailboxCfg(mailbox || { pool_enabled: true });
       setRemailCfg(remail || { enabled: false });
       setDomainCfg(domain || { enabled: true, enabled_for_registration: false });
+      const registerItems = Array.isArray(proxy?.items) ? proxy.items : [];
+  const itemCountries: string[] = Array.from(new Set<string>(registerItems.map((item:any) => String(item.country || "").trim().toUpperCase()).filter(Boolean))).sort();
+      setProxyCountries(itemCountries);
     });
     return () => { alive = false; };
   }, []);
-  const identityText = identity === "system" ? t.systemMailbox : identity === "domain" ? t.domainMailboxIdentity : identity === "remail" ? "Remail" : identity === "google" ? "Google" : "Microsoft";
+  const identityText = identity === "system" ? t.systemMailbox : identity === "phone" ? t.phoneRegister : identity === "domain" ? t.domainMailboxIdentity : identity === "remail" ? "Remail" : identity === "google" ? "Google" : "Microsoft";
   const protocolCopy = t === en ? PROTOCOL_MODE_COPY.en : PROTOCOL_MODE_COPY.zh;
   const modeText = mode === "protocol" ? t.protocolMode : mode === "background" ? t.backgroundMode : t.visibleMode;
   const stageText = stage === CODEX_PHONE_BIND ? t.codexPhoneBind : stage === IMPORT_REVERSE_PROXY ? t.importReverseProxy : stage === AGENT_IDENTITY_REVERSE_PROXY ? t.agentIdentityReverseProxy : t.registerOnly;
@@ -1941,33 +1969,76 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
     && !!String(phoneCfg.firefox_default_country || "").trim()
     && !!String(phoneCfg.firefox_default_service || "").trim()
     && Number(phoneCfg.firefox_max_price || 0) > 0;
-  const phoneResourceReady = !selectedNeedPhone || poolPhoneReady || smsbowerReady || smspoolReady || firefoxReady;
+  const providerEntries: Array<{value:SMSProvider; label:string; enabled:boolean; countryKey?:string}> = [
+    {value:"local", label:t.phonePool, enabled:poolPhoneReady},
+    {value:"luban", label:t.lubanProvider, enabled:phoneCfg.luban_enabled === true && !!String(phoneCfg.luban_api_key || "").trim() && !!String(phoneCfg.luban_service_id || "").trim()},
+    {value:"smsbower", label:t.smsbowerProvider, enabled:smsbowerReady, countryKey:"smsbower_default_country"},
+    {value:"smspool", label:t.smspoolProvider, enabled:smspoolReady, countryKey:"smspool_default_country"},
+    {value:"firefox", label:t.firefoxProvider, enabled:firefoxReady, countryKey:"firefox_default_country"},
+    {value:"grizzlysms", label:t.grizzlyProvider, enabled:grizzlyReady, countryKey:"grizzlysms_default_country"},
+    {value:"hero_sms", label:t.heroProvider, enabled:heroReady, countryKey:"hero_sms_default_country"},
+  ];
+  const usableProviderEntries = providerEntries.filter((entry)=>entry.enabled);
+  useEffect(()=>{
+    if (identity !== "phone") return;
+    const first = usableProviderEntries[0]?.value;
+    if (first && !usableProviderEntries.some((entry)=>entry.value === smsProvider)) setSmsProvider(first);
+  }, [identity, usableProviderEntries.map((entry)=>entry.value).join(",")]);
+  useEffect(()=>{
+    if (identity !== "phone") return;
+    const entry = providerEntries.find((item)=>item.value === smsProvider);
+    if (!entry || !entry.countryKey) { setSmsCountries([]); setSmsCountry(""); return; }
+    const configured = String(phoneCfg[entry.countryKey] || "").trim();
+    const cached = smsProviderOptions[`${entry.value}_countries_all`] || [];
+    setSmsCountries(cached);
+    if (configured && !smsCountry) setSmsCountry(configured);
+    if (!cached.length) {
+      setSmsCountriesLoading(true);
+      const params = new URLSearchParams({provider:entry.value, kind:"countries"});
+      void apiFetch(`/sunny/phones/provider-options?${params.toString()}`).then((response)=>{
+        const items = Array.isArray(response?.items) ? response.items : [];
+        setSmsProviderOptions((old)=>({...old, [`${entry.value}_countries_all`]:items}));
+        setSmsCountries(items);
+      }).catch(()=>{}).finally(()=>setSmsCountriesLoading(false));
+    }
+  }, [identity, smsProvider, smsProviderOptions, phoneCfg.smsbower_default_country, phoneCfg.smspool_default_country, phoneCfg.firefox_default_country, phoneCfg.grizzlysms_default_country, phoneCfg.hero_sms_default_country]);
+  useEffect(()=>{
+    if (identity !== "phone" || !rebindAfterRegistration) return;
+    void apiFetch("/sunny/mailboxes/rebind-options").then((response)=>setRebindMailboxOptions(Array.isArray(response?.items) ? response.items : [])).catch(()=>setRebindMailboxOptions([]));
+  }, [identity, rebindAfterRegistration]);
+  const phoneResourceReady = !selectedNeedPhone || poolPhoneReady || smsbowerReady || smspoolReady || firefoxReady || grizzlyReady || heroReady || (phoneCfg.luban_enabled === true && !!String(phoneCfg.luban_api_key || "").trim() && !!String(phoneCfg.luban_service_id || "").trim());
   const sub2apiReady = reverseCfg.enabled !== false && !!String(reverseCfg.base_url || "").trim() && !!String(reverseCfg.admin_token || "").trim() && Array.isArray(reverseCfg.group_ids) && reverseCfg.group_ids.length > 0;
   const mailboxPoolReady = mailboxCfg.pool_enabled !== false && selectedEmails.length > 0;
   const remailReady = remailCfg.enabled === true && (remailCfg.api_key_configured === true || !!String(remailCfg.api_key || "").trim()) && Number(remailCfg.project_id || 0) > 0;
-  const domainReady = domainCfg.enabled !== false && domainCfg.enabled_for_registration === true && !!String(domainCfg.base_url || "").trim() && (domainCfg.auth_token_configured === true || !!String(domainCfg.auth_token || "").trim()) && (domainCfg.site_password_configured === true || !!String(domainCfg.site_password || "").trim()) && !!String(domainCfg.domain || "").trim();
+  const domainReady = domainCfg.enabled !== false && domainCfg.enabled_for_registration === true && !!String(domainCfg.base_url || "").trim() && (domainCfg.auth_token_configured === true || !!String(domainCfg.auth_token || "").trim()) && !!String(domainCfg.domain || "").trim();
   const googleMailboxReady = false;
   const microsoftMailboxReady = false;
-  const identityValid = (identity === "system" && mailboxPoolReady) || (identity === "domain" && domainReady) || (identity === "remail" && remailReady) || (identity === "google" && googleMailboxReady) || (identity === "microsoft" && microsoftMailboxReady);
+  const selectedPhoneProvider = usableProviderEntries.find((entry)=>entry.value === smsProvider);
+  const phoneProviderNeedsCountry = Boolean(selectedPhoneProvider?.countryKey);
+  const selectedEmailKeys = new Set(selectedEmails.map((email)=>String(email || "").trim().toLowerCase()));
+  const phoneRebindTargets = rebindMailboxOptions.filter((item)=>item.enabled !== false && getRebindMailboxCategory(item) === rebindMailboxCategory && !selectedEmailKeys.has(String(item.email || "").trim().toLowerCase()));
+  const phoneRebindCount = phoneRebindTargets.length;
+  const phoneIdentityReady = mailboxPoolReady && selectedEmails.length > 0 && Boolean(selectedPhoneProvider) && (!phoneProviderNeedsCountry || Boolean(smsCountry)) && (!rebindAfterRegistration || phoneRebindCount >= selectedEmails.length);
+  const identityValid = (identity === "system" && mailboxPoolReady) || (identity === "phone" && phoneIdentityReady) || (identity === "domain" && domainReady) || (identity === "remail" && remailReady) || (identity === "google" && googleMailboxReady) || (identity === "microsoft" && microsoftMailboxReady);
   const modeValid = mode === "visible" || mode === "background" || mode === "protocol";
-  const registerOnlyDisabled = !identityValid;
+  const registerOnlyDisabled = !identityValid || identity === "phone";
   const stageValid = identityValid && (stage !== CODEX_PHONE_BIND || phoneResourceReady);
   const startDisabled = busy || !identityValid || !modeValid || !stageValid;
   const phoneHint = t.linkedPhoneConfig + " · " + (!selectedNeedPhone ? t.existingRTReady : poolPhoneReady ? template(t.usablePhones, { count: usablePhones }) : smsbowerReady ? t.smsbowerReady : smspoolReady ? t.smspoolReady : grizzlyReady ? t.grizzlyProvider : heroReady ? t.heroProvider : firefoxReady ? t.firefoxReady : t.resourceMissing);
   const reverseHint = t.linkedReverseConfig + " · " + (sub2apiReady ? t.sub2apiReady : t.sub2apiMissing);
   const codexDisabled = !identityValid || !phoneResourceReady;
-  const importDisabled = !identityValid;
-  const agentIdentityDisabled = !identityValid;
-  const maxRegisterCount = identity === "system" ? Math.max(1, selectedEmails.length) : 200;
+  const importDisabled = !identityValid || identity === "phone";
+  const agentIdentityDisabled = !identityValid || identity === "phone";
+  const maxRegisterCount = identity === "system" || identity === "phone" ? Math.max(1, selectedEmails.length) : 200;
   const safeRegisterCount = Math.max(1, Math.min(Number(registerCount) || 1, maxRegisterCount));
   const safeConcurrency = Math.max(1, Math.min(Number(concurrency) || 1, safeRegisterCount));
   const mailboxHint = identity === "system" ? t.linkedMailboxConfig + " · " + (mailboxPoolReady ? t.resourceReady : t.resourceMissing) : identity === "domain" ? t.domainMailboxIdentityDesc : template(t.remailOrderHint, {count: safeRegisterCount});
   useEffect(() => {
-    if (identity === "system" && selectedEmails.length > 0) setRegisterCount(selectedEmails.length);
-    if (identity === "system" && selectedEmails.length === 0 && domainReady) setIdentity("domain");
+    if ((identity === "system" || identity === "phone") && selectedEmails.length > 0) setRegisterCount(selectedEmails.length);
+    if ((identity === "system" || identity === "phone") && selectedEmails.length === 0 && domainReady) setIdentity("domain");
     if (identity === "system" && selectedEmails.length === 0 && !domainReady && remailReady) setIdentity("remail");
-    if (identity !== "system" && !((identity === "domain" && domainReady) || (identity === "remail" && remailReady) || (identity === "google" && googleMailboxReady) || (identity === "microsoft" && microsoftMailboxReady))) setIdentity(domainReady ? "domain" : remailReady ? "remail" : selectedEmails.length ? "system" : "google");
-  }, [selectedEmails.length, remailReady, domainReady]);
+    if (identity !== "system" && identity !== "phone" && !((identity === "domain" && domainReady) || (identity === "remail" && remailReady) || (identity === "google" && googleMailboxReady) || (identity === "microsoft" && microsoftMailboxReady))) setIdentity(domainReady ? "domain" : remailReady ? "remail" : selectedEmails.length ? "system" : "google");
+  }, [selectedEmails.length, remailReady, domainReady, identity]);
   return <div className="sr-modal-mask"><div className="sr-modal sr-register-modal">
     <div className="sr-modal-head"><h3>{t.autoRegisterTitle}</h3><button onClick={onClose}><X className="h-5 w-5"/></button></div>
     <div className="sr-modal-body">
@@ -1975,11 +2046,17 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
 		<h4>{t.step1Title}</h4><p>{mailboxVerificationDescription}</p>
       <div className="sr-choice-grid two">
         <Choice disabled={!mailboxPoolReady} disabledMessage={t.systemMailboxPoolDisabled} active={mailboxPoolReady && identity==="system"} title={t.systemMailbox} desc={t.systemMailboxDesc} onClick={()=>{ setIdentity("system"); setStage(REGISTER_ONLY); }} onDisabledClick={(msg)=>notify("fail", msg)} />
+        <Choice disabled={!selectedEmails.length || !usableProviderEntries.length} disabledMessage={t.phoneRegisterUnavailable} active={identity==="phone"} title={t.phoneRegister} desc={t.phoneRegisterDesc} onClick={()=>{ setIdentity("phone"); setStage(CODEX_PHONE_BIND); }} onDisabledClick={(msg)=>notify("fail", msg)} />
         <Choice disabled={!domainReady} disabledMessage={t.domainMailboxNotConfigured} active={domainReady && identity==="domain"} title={t.domainMailboxIdentity} desc={t.domainMailboxIdentityDesc} onClick={()=>{ setIdentity("domain"); setStage(REGISTER_ONLY); }} onDisabledClick={(msg)=>notify("fail", msg)} />
         <Choice disabled={!remailReady} disabledMessage="请先在邮箱配置中启用 Remail" active={remailReady && identity==="remail"} title="Remail" desc="使用 Remail 第三方邮箱供应商下单并通过 API 收取验证码" onClick={()=>{ setIdentity("remail"); setStage(REGISTER_ONLY); }} onDisabledClick={(msg)=>notify("fail", msg)} />
         <Choice disabled disabledMessage={t.googleMailboxDisabled} active={false} title="Google" desc={t.googleDesc} onClick={()=>setIdentity("google")} onDisabledClick={(msg)=>notify("fail", msg)} />
         <Choice disabled disabledMessage={t.microsoftMailboxDisabled} active={false} title="Microsoft" desc={t.microsoftDesc} onClick={()=>setIdentity("microsoft")} onDisabledClick={(msg)=>notify("fail", msg)} />
       </div>
+      {identity === "phone" && <div className="sr-phone-register-options">
+        <div className="sr-phone-register-field"><Label>{t.smsPlatform}</Label><SelectBox value={smsProvider} onChange={(value)=>{ setSmsProvider(String(value) as SMSProvider); setSmsCountry(""); }} options={usableProviderEntries.map((entry)=>({value:entry.value,label:entry.label}))} /></div>
+        <div className="sr-phone-register-field"><Label>{t.smsCountry}</Label><ProviderOptionSelect value={smsCountry} onChange={setSmsCountry} options={smsCountries} placeholder={smsCountriesLoading ? t.loadingData : t.selectCountry} searchPlaceholder={t.providerOptionSearch} noResultsLabel={t.providerOptionNoResults} className="sr-provider-option-select" /></div>
+        <div className="sr-phone-register-field sr-phone-register-rebind"><label><input type="checkbox" checked={rebindAfterRegistration} onChange={(event)=>setRebindAfterRegistration(event.target.checked)} disabled={busy}/><span>{t.phoneAutoRebind}</span></label><SelectBox value={rebindMailboxCategory} onChange={(value)=>setRebindMailboxCategory(String(value) as RebindMailboxCategory)} disabled={!rebindAfterRegistration} options={[{value:"microsoft",label:t.microsoftMailbox},{value:"apple",label:t.appleMailbox},{value:"domain",label:t.domainMailboxIdentity},{value:"generic",label:t.genericMailbox},{value:"remail",label:"Remail"}]} /><small>{rebindAfterRegistration ? template(t.phoneRebindPool, {count:phoneRebindCount}) : t.phoneRebindOff}</small></div>
+      </div>}
       <div className="sr-step mt-7">{t.step} 2</div>
       <h4>{t.step2Title}</h4><p>{protocolCopy.step2Desc}</p>
       <div className="sr-choice-grid three">
@@ -1995,13 +2072,14 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
       <div className="sr-step mt-7">{t.step} 3</div>
       <h4>{t.step3Title}</h4><p>{t.step3Desc}</p>
       <div className="sr-choice-grid four">
-        <Choice disabled={registerOnlyDisabled} disabledMessage={t.registerStageUnavailable} active={identityValid && stage===REGISTER_ONLY} title={t.registerOnly} desc={t.registerOnlyDesc + "\n" + mailboxHint} onClick={()=>setStage(REGISTER_ONLY)} onDisabledClick={(msg)=>notify("fail", msg)} />
+        <Choice disabled={registerOnlyDisabled} disabledMessage={identity === "phone" ? t.phoneStageLocked : t.registerStageUnavailable} active={identityValid && stage===REGISTER_ONLY} title={t.registerOnly} desc={t.registerOnlyDesc + "\n" + mailboxHint} onClick={()=>setStage(REGISTER_ONLY)} onDisabledClick={(msg)=>notify("fail", msg)} />
         <Choice disabled={codexDisabled} disabledMessage={t.registerStageUnavailable} active={!codexDisabled && stage===CODEX_PHONE_BIND} title={t.codexPhoneBind} desc={t.codexPhoneBindDesc + "\n" + phoneHint + (codexDisabled ? " · " + t.stageDisabledTip : "")} onClick={()=>setStage(CODEX_PHONE_BIND)} onDisabledClick={(msg)=>notify("fail", msg)} />
         <Choice disabled={importDisabled} disabledMessage={t.registerStageUnavailable} active={!importDisabled && stage===IMPORT_REVERSE_PROXY} title={t.importReverseProxy} desc={t.importReverseProxyDesc + "\n" + phoneHint + "\n" + reverseHint + (importDisabled ? " · " + t.stageDisabledTip : "")} onClick={()=>setStage(IMPORT_REVERSE_PROXY)} onDisabledClick={(msg)=>notify("fail", msg)} />
         <Choice disabled={agentIdentityDisabled} disabledMessage={t.registerStageUnavailable} active={!agentIdentityDisabled && stage===AGENT_IDENTITY_REVERSE_PROXY} title={t.agentIdentityReverseProxy} desc={t.agentIdentityReverseProxyDesc + "\n" + reverseHint + (agentIdentityDisabled ? " · " + t.stageDisabledTip : "")} onClick={()=>setStage(AGENT_IDENTITY_REVERSE_PROXY)} onDisabledClick={(msg)=>notify("fail", msg)} />
       </div>
-      <div className="sr-summary sr-register-summary"><div><b>{t.identityLabel}</b><span>{identityText}</span></div><div><b>{t.modeLabel}</b><span>{modeText}</span></div><div><b>{t.stageLabel}</b><span>{stageText}</span></div><div><b>{identity === "remail" || identity === "domain" ? t.remailMailboxCount : t.registerAccounts}</b><input className="sr-concurrency-input" type="number" min={1} max={maxRegisterCount} disabled={identity === "system"} value={safeRegisterCount} onChange={(e)=>setRegisterCount(Math.max(1, Math.min(Number(e.target.value || 1), maxRegisterCount)))}/></div><div><b>{t.concurrency}</b><input className="sr-concurrency-input" type="number" min={1} max={safeRegisterCount} value={safeConcurrency} onChange={(e)=>setConcurrency(Math.max(1, Math.min(Number(e.target.value || 1), safeRegisterCount)))}/></div><div className="sr-register-account-list">{identity === "system" ? selectedEmails.map((email)=><div key={email}>{email}</div>) : <div>{identity === "domain" ? `${t.domainMailboxIdentity} · ${safeRegisterCount}` : template(t.remailOrderHint, {count:safeRegisterCount})}</div>}</div></div>
-      <div className="sr-register-actions"><label className="mr-3 flex min-h-12 items-center gap-2 whitespace-nowrap text-sm text-slate-600" title={t.allTrafficProxyPoolTip}><input type="checkbox" checked={allTrafficProxyPool} onChange={(e)=>setAllTrafficProxyPool(e.target.checked)} disabled={busy}/><span>{t.allTrafficProxyPool}</span></label><label className="mr-3 flex min-h-12 items-center gap-2 whitespace-nowrap text-sm text-slate-600"><input type="checkbox" checked={setupLoginSecret} onChange={(e)=>setSetupLoginSecret(e.target.checked)} disabled={busy}/><span>{t.addPassword2FA}</span></label><Button className="h-12 flex-1 rounded-xl bg-blue-600 text-lg text-white hover:bg-blue-700" disabled={startDisabled} onClick={onStart}>{busy ? <Loader2 className="mr-2 h-5 w-5 animate-spin"/> : null}{t.startAutoRegister}</Button><button className="sr-register-cancel" onClick={onClose}>{t.cancel}</button></div>
+      <div className="sr-proxy-picker"><b>代理池</b><div className="sr-proxy-dropdown"><button type="button" className="sr-proxy-select sr-proxy-trigger" onClick={()=>setProxyMenuOpen((open)=>!open)} disabled={busy}>{selectedProxyCountries.length ? selectedProxyCountries.join(", ") : "全部代理"}<span aria-hidden="true">▾</span></button>{proxyMenuOpen && <div className="sr-proxy-menu">{proxyCountries.length ? <>{proxyCountries.map((country)=><label key={country}><input type="checkbox" checked={selectedProxyCountries.includes(country)} onChange={(e)=>setSelectedProxyCountries((old)=>e.target.checked ? [...old, country] : old.filter((item)=>item!==country))}/>{country}</label>)}<button type="button" className="sr-proxy-clear" onClick={()=>setSelectedProxyCountries([])}>全部代理</button></> : <span>暂无可用国家代理</span>}</div>}</div><span>可多选国家，按所选国家随机使用代理</span></div>
+      <div className="sr-summary sr-register-summary"><div><b>{t.identityLabel}</b><span>{identityText}</span></div><div><b>{t.modeLabel}</b><span>{modeText}</span></div><div><b>{t.stageLabel}</b><span>{stageText}</span></div><div><b>{identity === "remail" || identity === "domain" ? t.remailMailboxCount : t.registerAccounts}</b><input className="sr-concurrency-input" type="number" min={1} max={maxRegisterCount} disabled={identity === "system" || identity === "phone"} value={safeRegisterCount} onChange={(e)=>setRegisterCount(Math.max(1, Math.min(Number(e.target.value || 1), maxRegisterCount)))}/></div><div><b>{t.concurrency}</b><input className="sr-concurrency-input" type="number" min={1} max={safeRegisterCount} value={safeConcurrency} onChange={(e)=>setConcurrency(Math.max(1, Math.min(Number(e.target.value || 1), safeRegisterCount)))}/></div><div className="sr-register-account-list">{identity === "system" || identity === "phone" ? selectedEmails.map((email)=><div key={email}>{email}</div>) : <div>{identity === "domain" ? `${t.domainMailboxIdentity} · ${safeRegisterCount}` : template(t.remailOrderHint, {count:safeRegisterCount})}</div>}</div></div>
+      <div className="sr-register-actions"><label className="mr-3 flex min-h-12 items-center gap-2 whitespace-nowrap text-sm text-slate-600" title={t.allTrafficProxyPoolTip}><input type="checkbox" checked={allTrafficProxyPool} onChange={(e)=>setAllTrafficProxyPool(e.target.checked)} disabled={busy}/><span>{t.allTrafficProxyPool}</span></label><label className="mr-3 flex min-h-12 items-center gap-2 whitespace-nowrap text-sm text-slate-600"><input type="checkbox" checked={setupLoginSecret} onChange={(e)=>setSetupLoginSecret(e.target.checked)} disabled={busy}/><span>{t.addPassword2FA}</span></label><Button className="h-12 flex-1 rounded-xl bg-blue-600 text-lg text-white hover:bg-blue-700" disabled={startDisabled} onClick={()=>onStart(selectedProxyCountries, identity === "phone" ? {smsProvider, smsCountry, rebindAfterRegistration, rebindMailboxCategory, targetMailboxes: phoneRebindTargets.map((item)=>({email:String(item.email || ""), mailbox_api:String(item.mailbox_api || ""), mailbox_type:String(item.mailbox_type || ""), mailbox_channel:String(item.mailbox_channel || "")}))} : undefined)}>{busy ? <Loader2 className="mr-2 h-5 w-5 animate-spin"/> : null}{identity === "phone" ? t.startPhoneRegister : t.startAutoRegister}</Button><button className="sr-register-cancel" onClick={onClose}>{t.cancel}</button></div>
     </div>
   </div></div>;
 }
@@ -2044,7 +2122,7 @@ function mailboxInvalidLineIndexes(lines: string, mailboxType: "microsoft" | "ap
   return invalid;
 }
 
-function rebindMailboxCategory(item: AnyObj): string {
+function getRebindMailboxCategory(item: AnyObj): string {
   const type = String(item.category || item.mailbox_type || "domain").toLowerCase();
   const channel = String(item.mailbox_channel || "").toLowerCase();
   const email = String(item.email || "").toLowerCase();
@@ -2422,7 +2500,7 @@ function DomainMailboxProviderConfig({ t, config, setConfig, notify }: { t: type
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <div><Label>{t.domainMailboxApiURL}</Label><Input value={config.base_url || ""} onChange={(e)=>update("base_url",e.target.value)} placeholder="https://mail.example.com"/></div>
         <div><Label>{t.domainMailboxToken}</Label><Input type="password" autoComplete="new-password" value={config.auth_token || ""} onChange={(e)=>update("auth_token",e.target.value)} placeholder={config.auth_token_configured ? "已配置，留空保持不变" : "请输入 Token"}/></div>
-        <div><Label>{t.domainMailboxSitePassword}</Label><Input type="password" autoComplete="new-password" value={config.site_password || ""} onChange={(e)=>update("site_password",e.target.value)} placeholder={config.site_password_configured ? "已配置，留空保持不变" : "请输入 CloudMail PASSWORDS"}/></div>
+        <div><Label>{t.domainMailboxSitePassword}</Label><Input type="password" autoComplete="new-password" value={config.site_password || ""} onChange={(e)=>update("site_password",e.target.value)} placeholder={config.site_password_configured ? "已配置，留空保持不变" : "没有 PASSWORDS 时可留空"}/></div>
         <div><Label>{t.domainMailboxDomain}</Label><Textarea className="min-h-24 rounded-xl" value={Array.isArray(config.domains) ? config.domains.join("\n") : String(config.domains || config.domain || "")} onChange={(e)=>update("domains",e.target.value)} placeholder="example.com\nexample.net"/></div>
         <div><Label>{t.domainMailboxPickupURL}</Label><Input value={config.pickup_base_url || ""} onChange={(e)=>update("pickup_base_url",e.target.value)} placeholder="https://sunny.example.com"/></div>
         <div><Label>{t.domainMailboxLength}</Label><Input type="number" min={6} max={32} value={config.random_local_length || 12} onChange={(e)=>update("random_local_length",Math.max(6,Math.min(32,Number(e.target.value || 12))))}/></div>
@@ -4159,6 +4237,41 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     try { await apiFetch(`/sunny/sessions/${row.id}`, { method:"DELETE" }); appendAccountOperationLog("delete", "result", `删除完成：${row.email || row.id}`, "info", row.email); notify("ok", t.done); setSelected((old)=>old.filter((id)=>id!==row.id)); void load(); }
     catch(e:any){ appendAccountOperationLog("delete", "result", `删除失败：${e.message || String(e)}`, "error", row.email); notify("fail", e.message || String(e)); }
   }
+  async function batchDeleteSessions() {
+    const targetIds = Array.from(new Set(selected.map(Number).filter((id)=>Number.isInteger(id) && id > 0)));
+    if (!targetIds.length) return;
+    const rowById = new Map(items.map((item)=>[Number(item.id), item]));
+    appendAccountOperationLog("delete", "process", `开始批量删除 ${targetIds.length} 个账户`, "info", undefined, { session_ids: targetIds });
+    const results = await Promise.allSettled(targetIds.map((id)=>apiFetch(`/sunny/sessions/${id}`, { method:"DELETE" })));
+    const failedIds: number[] = [];
+    let successCount = 0;
+    results.forEach((result, index)=>{
+      const id = targetIds[index];
+      const row = rowById.get(id);
+      const label = row?.email || id;
+      if (result.status === "fulfilled") {
+        successCount += 1;
+        appendAccountOperationLog("delete", "result", `删除完成：${label}`, "info", row?.email);
+      } else {
+        failedIds.push(id);
+        const message = result.reason instanceof Error ? result.reason.message : String(result.reason || t.failed);
+        appendAccountOperationLog("delete", "result", `删除失败：${label}：${message}`, "error", row?.email);
+      }
+    });
+    setSelected(failedIds);
+    try {
+      await load();
+    } catch (e: any) {
+      appendAccountOperationLog("delete", "result", `删除后刷新列表失败：${e.message || String(e)}`, "error");
+      notify("fail", e.message || String(e));
+      return;
+    }
+    if (failedIds.length) {
+      notify("fail", `${t.batchSuccess}: ${successCount}，${t.batchFailed}: ${failedIds.length}`);
+    } else {
+      notify("ok", t.done);
+    }
+  }
   async function refreshSessionList() {
     try { await load(); notify("ok", t.refreshDone); }
     catch(e:any){ notify("fail", e.message || String(e)); }
@@ -4399,7 +4512,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
   }
   async function confirmRebind() {
     if (!rebindDialog) return;
-    const targets = importedDomainMailboxes.filter((item)=>selectedImportedDomainMailboxes.includes(String(item.email)) && rebindMailboxCategory(item) === rebindCategory);
+    const targets = importedDomainMailboxes.filter((item)=>selectedImportedDomainMailboxes.includes(String(item.email)) && getRebindMailboxCategory(item) === rebindCategory);
     if (rebindCategory !== "self" && !targets.length) { notify("fail", "请选择已导入邮箱"); return; }
     const first = targets[0];
     const options = rebindCategory !== "self" ? {
@@ -4590,6 +4703,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
       <SelectBox className="sr-select-like" value={checkoutKind} onChange={(v)=>setCheckoutKind(String(v))} options={[{value:"",label:t.allCheckoutKinds},{value:"oaics",label:t.checkoutOAICS},{value:"cs_live",label:t.checkoutCSLive},{value:"cs_test",label:t.checkoutCSTest},{value:"unknown",label:t.checkoutUnknown}]} />
       <PaymentMethodFilter t={t} value={paymentMethods} options={paymentMethodOptions} onChange={setPaymentMethods}/>
       <SelectionSummary t={t} count={selected.length} total={total} selectingAll={selectingAll} onSelectAll={selectAllFiltered} onClear={()=>setSelected([])}/>
+      {selected.length > 0 && <ConfirmBubble message={t === zh ? "确认删除选中的账户记录？此操作不可撤销。" : "Delete selected account records? This cannot be undone."} detail={`${selected.length} ${t.selected}`} onConfirm={batchDeleteSessions}><button type="button" className="sr-clear-selection inline-flex items-center gap-1 text-red-500 hover:text-red-600"><Trash2 className="h-3.5 w-3.5"/>{t.batchDelete} ({selected.length})</button></ConfirmBubble>}
       <div className="sr-batch-progress-slot" aria-live="polite">
         {batchProgressItems.map(([label, value], index)=><BatchTaskProgress key={index} t={t} label={label} value={value}/>)}
       </div>
@@ -4645,7 +4759,7 @@ function SessionManager({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fa
     {failureDetail && <FailureDetailModal t={t} value={failureDetail} onClose={()=>setFailureDetail(null)}/>}
     {trialCountryDialog && <CountryProbeModal title={t.trialCountryTitle} hint={t.trialCountryHint} empty={t.trialCountryEmpty} start={t.trialStart} t={t} countries={trialCountries} selected={trialCountrySelection} loading={trialCountriesLoading} onToggle={(country)=>setTrialCountrySelection((old)=>old.includes(country)?old.filter((value)=>value!==country):[...old,country])} onSelectAll={()=>setTrialCountrySelection(trialCountries)} onClear={()=>setTrialCountrySelection([])} onClose={()=>setTrialCountryDialog(null)} onConfirm={confirmTrialCountries}/>}
     {paymentProbeDialog && <PaymentProbeCountryModal t={t} countries={paymentProbeCountries} selected={paymentProbeCountrySelection} loading={paymentProbeCountriesLoading} onToggle={(country)=>setPaymentProbeCountrySelection((old)=>old.includes(country)?old.filter((value)=>value!==country):[...old,country])} onSelectAll={()=>setPaymentProbeCountrySelection(paymentProbeCountries)} onClear={()=>setPaymentProbeCountrySelection([])} onClose={()=>setPaymentProbeDialog(null)} onConfirm={confirmPaymentProbeCountries}/>}
-    {rebindDialog && <PagePortal><div className="sr-modal-mask"><div className="sr-modal sr-mailbox-modal"><div className="sr-modal-head"><h3>选择换绑邮箱来源</h3><button type="button" onClick={()=>setRebindDialog(null)}><X className="h-5 w-5"/></button></div><div className="sr-modal-body space-y-4"><div className="sr-import-tabs">{([['self','自建域名邮箱'],['microsoft','微软邮箱'],['apple','苹果邮箱'],['domain','域名邮箱'],['generic','通用邮箱 URL'],['remail','Remail']] as const).map(([value,label])=><button key={value} type="button" className={cn(rebindCategory===value&&"active")} onClick={()=>{setRebindCategory(value);setSelectedImportedDomainMailboxes([])}}>{label}</button>)}</div>{rebindCategory==="self" ? <p className="text-sm text-slate-500">使用邮箱配置中已启用换绑的自建域名邮箱池生成新邮箱。</p> : <div><div className="flex items-center justify-between gap-3"><Label>选择已导入邮箱（可多选）</Label>{(() => { const available=importedDomainMailboxes.filter((item)=>rebindMailboxCategory(item)===rebindCategory); const allSelected=selectedImportedDomainMailboxes.length>0; return <button type="button" className="sr-text-btn" disabled={!available.length} onClick={()=>setSelectedImportedDomainMailboxes(allSelected ? [] : available.map((item)=>String(item.email)))}>{allSelected ? "清除选择" : "全选"}</button>; })()}</div><div className="sr-rebind-mailbox-options">{rebindMailboxesLoading ? <div className="text-sm text-slate-500">正在加载邮箱配置...</div> : (() => { const available=importedDomainMailboxes.filter((item)=>rebindMailboxCategory(item)===rebindCategory); return available.length ? available.map((item)=><label key={String(item.email)} className="sr-rebind-mailbox-option"><input type="checkbox" checked={selectedImportedDomainMailboxes.includes(String(item.email))} onChange={()=>setSelectedImportedDomainMailboxes((old)=>old.includes(String(item.email)) ? old.filter((email)=>email!==String(item.email)) : [...old,String(item.email)])}/><span title={String(item.email)}>{String(item.email)}</span></label>) : <div className="text-sm text-slate-500">该类目暂无可用邮箱，请先在邮箱配置中导入并启用。</div>; })()}</div><div className="text-xs text-slate-500">已选择 {selectedImportedDomainMailboxes.length} 个邮箱，将作为本次批量换绑的邮箱池。</div></div>}</div><div className="sr-modal-foot"><button type="button" onClick={()=>setRebindDialog(null)}>取消</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={rebindMailboxesLoading || (rebindCategory!=="self" && !selectedImportedDomainMailboxes.length)} onClick={()=>void confirmRebind()}><RotateCw className="mr-2 h-4 w-4"/>开始换绑</Button></div></div></div></PagePortal>}
+    {rebindDialog && <PagePortal><div className="sr-modal-mask"><div className="sr-modal sr-mailbox-modal"><div className="sr-modal-head"><h3>选择换绑邮箱来源</h3><button type="button" onClick={()=>setRebindDialog(null)}><X className="h-5 w-5"/></button></div><div className="sr-modal-body space-y-4"><div className="sr-import-tabs">{([['self','自建域名邮箱'],['microsoft','微软邮箱'],['apple','苹果邮箱'],['domain','域名邮箱'],['generic','通用邮箱 URL'],['remail','Remail']] as const).map(([value,label])=><button key={value} type="button" className={cn(rebindCategory===value&&"active")} onClick={()=>{setRebindCategory(value);setSelectedImportedDomainMailboxes([])}}>{label}</button>)}</div>{rebindCategory==="self" ? <p className="text-sm text-slate-500">使用邮箱配置中已启用换绑的自建域名邮箱池生成新邮箱。</p> : <div><div className="flex items-center justify-between gap-3"><Label>选择已导入邮箱（可多选）</Label>{(() => { const available=importedDomainMailboxes.filter((item)=>getRebindMailboxCategory(item)===rebindCategory); const allSelected=selectedImportedDomainMailboxes.length>0; return <button type="button" className="sr-text-btn" disabled={!available.length} onClick={()=>setSelectedImportedDomainMailboxes(allSelected ? [] : available.map((item)=>String(item.email)))}>{allSelected ? "清除选择" : "全选"}</button>; })()}</div><div className="sr-rebind-mailbox-options">{rebindMailboxesLoading ? <div className="text-sm text-slate-500">正在加载邮箱配置...</div> : (() => { const available=importedDomainMailboxes.filter((item)=>getRebindMailboxCategory(item)===rebindCategory); return available.length ? available.map((item)=><label key={String(item.email)} className="sr-rebind-mailbox-option"><input type="checkbox" checked={selectedImportedDomainMailboxes.includes(String(item.email))} onChange={()=>setSelectedImportedDomainMailboxes((old)=>old.includes(String(item.email)) ? old.filter((email)=>email!==String(item.email)) : [...old,String(item.email)])}/><span title={String(item.email)}>{String(item.email)}</span></label>) : <div className="text-sm text-slate-500">该类目暂无可用邮箱，请先在邮箱配置中导入并启用。</div>; })()}</div><div className="text-xs text-slate-500">已选择 {selectedImportedDomainMailboxes.length} 个邮箱，将作为本次批量换绑的邮箱池。</div></div>}</div><div className="sr-modal-foot"><button type="button" onClick={()=>setRebindDialog(null)}>取消</button><Button className="ml-3 rounded-xl bg-emerald-600 px-6 !text-white hover:bg-emerald-700" disabled={rebindMailboxesLoading || (rebindCategory!=="self" && !selectedImportedDomainMailboxes.length)} onClick={()=>void confirmRebind()}><RotateCw className="mr-2 h-4 w-4"/>开始换绑</Button></div></div></div></PagePortal>}
     <AccountLogFloat t={t} open={accountLogOpen} kind={accountLogKind} logs={accountLogs[accountLogKind] || []} canCancel={cancellableAccountLogTasks.length > 0} cancelling={terminatingAccountLog} onCancel={()=>void terminateAccountLogTasks()} onToggle={()=>setAccountLogOpen((value)=>!value)} onKindChange={setAccountLogKind} onClear={()=>publishAccountLogs({ ...accountLogSnapshot, [accountLogKind]: [] })} />
   </Card>;
 }

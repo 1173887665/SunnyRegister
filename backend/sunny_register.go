@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"math/rand"
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
@@ -707,6 +708,9 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			mailboxType := normalizeSunnyMailboxType(row.MailboxType)
 			mailboxChannel := normalizeSunnyMailboxChannel(row.MailboxType, row.MailboxChannel)
 			credential := strings.TrimSpace(row.AccessKey)
+			if mailboxType == "microsoft" && strings.TrimSpace(row.Password) != "" && strings.TrimSpace(row.ClientID) != "" && strings.TrimSpace(row.RefreshToken) != "" {
+				credential = strings.Join([]string{row.Password, row.ClientID, row.RefreshToken}, "----")
+			}
 			if credential == "" {
 				parts := strings.SplitN(strings.TrimSpace(row.Raw), "----", 2)
 				if len(parts) == 2 {
@@ -6034,13 +6038,96 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 		return
 	}
 	body, _ := parseBody(r)
-	typemap := map[string]string{"register": "sunny_register", "login": "sunny_login", "refresh-session": "sunny_refresh_session", "acquire-rt": "sunny_acquire_rt", "add-ls": "sunny_add_ls", "sub2-import": "sunny_sub2_import"}
+	typemap := map[string]string{"register": "sunny_register", "phone-register": "sunny_phone_register", "login": "sunny_login", "refresh-session": "sunny_refresh_session", "acquire-rt": "sunny_acquire_rt", "add-ls": "sunny_add_ls", "sub2-import": "sunny_sub2_import"}
 	typ := typemap[parts[0]]
 	if typ == "" {
 		writeError(w, 404, "not found")
 		return
 	}
-	if typ == "sunny_register" {
+	if typ == "sunny_register" || typ == "sunny_phone_register" {
+		if typ == "sunny_phone_register" {
+			body["identity"] = "system"
+			body["registration_stage"] = "codex_phone_bind"
+			if len(uintSlice(body["mailbox_ids"])) == 0 {
+				writeError(w, http.StatusBadRequest, "手机注册必须先选择邮箱")
+				return
+			}
+			provider := strings.ToLower(strings.TrimSpace(text(body["sms_provider"])))
+			validProviders := map[string]bool{"local": true, "luban": true, "smsbower": true, "smspool": true, "firefox": true, "grizzlysms": true, "hero_sms": true}
+			if !validProviders[provider] {
+				writeError(w, http.StatusBadRequest, "请选择有效的接码平台")
+				return
+			}
+			cfg := s.sunnyGetConfig(sunnyCfgPhone, defaultPhoneConfig())
+			available := false
+			switch provider {
+			case "local":
+				available = s.sunnyUsablePhoneCount() > 0
+			case "luban":
+				available = boolValue(cfg["luban_enabled"], false) && strings.TrimSpace(text(cfg["luban_api_key"])) != "" && strings.TrimSpace(text(cfg["luban_service_id"])) != ""
+			case "smsbower":
+				available = boolValue(cfg["smsbower_enabled"], false) && strings.TrimSpace(text(cfg["smsbower_api_key"])) != ""
+			case "smspool":
+				available = boolValue(cfg["smspool_enabled"], false) && strings.TrimSpace(text(cfg["smspool_api_key"])) != ""
+			case "firefox":
+				available = boolValue(cfg["firefox_enabled"], false) && fireFoxAPIToken(cfg) != ""
+			case "grizzlysms":
+				available = boolValue(cfg["grizzlysms_enabled"], false) && strings.TrimSpace(text(cfg["grizzlysms_api_key"])) != ""
+			case "hero_sms":
+				available = boolValue(cfg["hero_sms_enabled"], false) && strings.TrimSpace(text(cfg["hero_sms_api_key"])) != ""
+			}
+			if !available {
+				writeError(w, http.StatusBadRequest, "所选接码平台未启用或配置不完整")
+				return
+			}
+			if provider != "local" && provider != "luban" && strings.TrimSpace(text(body["sms_country"])) == "" {
+				writeError(w, http.StatusBadRequest, "请选择注册国家")
+				return
+			}
+			if boolValue(body["rebind_after_registration"], false) {
+				category := strings.ToLower(strings.TrimSpace(text(body["rebind_mailbox_category"])))
+				if category == "" {
+					writeError(w, http.StatusBadRequest, "请选择注册后换绑邮箱类目")
+					return
+				}
+				rawTargets, ok := body["target_mailboxes"].([]any)
+				if !ok || len(rawTargets) < len(uintSlice(body["mailbox_ids"])) {
+					writeError(w, http.StatusBadRequest, "所选换绑邮箱数量不足")
+					return
+				}
+				validatedTargets := make([]map[string]any, 0, len(rawTargets))
+				for _, raw := range rawTargets {
+					item, ok := raw.(map[string]any)
+					if !ok {
+						continue
+					}
+					email, api := strings.TrimSpace(text(item["email"])), strings.TrimSpace(text(item["mailbox_api"]))
+					typ := normalizeSunnyMailboxType(text(item["mailbox_type"]))
+					channel := normalizeSunnyMailboxChannel(typ, text(item["mailbox_channel"]))
+					itemCategory := typ
+					if typ == "apple" && channel == "url_api" && !strings.HasSuffix(strings.ToLower(email), "@icloud.com") {
+						itemCategory = "generic"
+					}
+					if itemCategory != category {
+						continue
+					}
+					if email == "" || api == "" {
+						continue
+					}
+					if err := validateImportedRebindMailbox(api, email, typ, channel); err != nil {
+						writeError(w, http.StatusBadRequest, err.Error())
+						return
+					}
+					validatedTargets = append(validatedTargets, map[string]any{"email": email, "mailbox_api": api, "mailbox_type": typ, "mailbox_channel": channel})
+				}
+				if len(validatedTargets) < len(uintSlice(body["mailbox_ids"])) {
+					writeError(w, http.StatusBadRequest, "所选换绑邮箱没有有效取件凭证")
+					return
+				}
+				body["target_mailboxes"] = validatedTargets
+				body["rebind_mailbox_category"] = category
+			}
+		}
 		identity := strings.ToLower(strings.TrimSpace(text(body["identity"])))
 		if identity == "remail" {
 			if err := s.validateRemailRegistration(body); err != nil {
@@ -6186,6 +6273,9 @@ func sunnyMailboxListSortClause(sortBy string, sortOrder string) string {
 }
 
 func (s *Server) sunnyValidateRegisterStageResources(body map[string]any) error {
+	if err := s.sunnyValidateSelectedRegisterProxyCountries(body); err != nil {
+		return err
+	}
 	identity := strings.ToLower(strings.TrimSpace(text(body["identity"])))
 	if identity == "remail" || identity == "domain" || identity == "domain_mailbox" || identity == "自建域名邮箱" {
 		return s.sunnyValidateProxyForRegisterTask()
@@ -6228,6 +6318,62 @@ func (s *Server) sunnyValidateProxyForRegisterTask() error {
 		return fmt.Errorf("proxy config is enabled but no checked usable proxy is available: total=%d enabled=%d disabled=%d invalid=%d", stats["total"], stats["enabled"], stats["disabled"], stats["invalid"])
 	}
 	return nil
+}
+
+func (s *Server) sunnyValidateSelectedRegisterProxyCountries(body map[string]any) error {
+	countries := sunnyRegisterProxyCountries(body)
+	ids := sunnyRegisterProxyIDs(body)
+	if len(countries) == 0 && len(ids) == 0 {
+		return nil
+	}
+	query := s.db.Model(&SunnyProxy{}).
+		Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
+		Where("(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%")
+	if len(ids) > 0 {
+		query = query.Where("id IN ?", ids)
+	}
+	if len(countries) > 0 {
+		query = query.Where("UPPER(TRIM(country)) IN ?", countries)
+	}
+	var count int64
+	query.Count(&count)
+	if count == 0 {
+		label := strings.Join(countries, ", ")
+		if label == "" {
+			label = "selected proxy IDs"
+		}
+		return fmt.Errorf("selected registration proxies have no checked usable entries: %s", label)
+	}
+	return nil
+}
+
+func sunnyRegisterProxyIDs(body map[string]any) []uint {
+	raw := uintSlice(body["proxy_ids"])
+	seen := map[uint]bool{}
+	out := make([]uint, 0, len(raw))
+	for _, id := range raw {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+func sunnyRegisterProxyCountries(body map[string]any) []string {
+	raw := stringSlice(body["proxy_countries"])
+	seen := map[string]bool{}
+	out := make([]string, 0, len(raw))
+	for _, value := range raw {
+		country := strings.ToUpper(strings.TrimSpace(value))
+		if country == "" || seen[country] {
+			continue
+		}
+		seen[country] = true
+		out = append(out, country)
+	}
+	return out
 }
 
 func (s *Server) sunnyMailboxesForRegisterTask(body map[string]any) ([]SunnyMailbox, error) {
@@ -6364,10 +6510,26 @@ func (s *Server) sunnyTaskProxySnapshot(payload map[string]any) map[string]any {
 	}
 	next["system_proxy"] = localProxy
 	registerProxy := normalizeSunnyProxyAddress(text(cfg["register_proxy"]))
+	selectedCountries := sunnyRegisterProxyCountries(payload)
+	selectedIDs := sunnyRegisterProxyIDs(payload)
 	var proxies []SunnyProxy
 	s.db.Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
 		Where("(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%").
+		Scopes(func(db *gorm.DB) *gorm.DB {
+			if len(selectedIDs) > 0 {
+				db = db.Where("id IN ?", selectedIDs)
+			}
+			if len(selectedCountries) == 0 {
+				return db
+			}
+			return db.Where("UPPER(TRIM(country)) IN ?", selectedCountries)
+		}).
 		Order("updated_at desc, id asc").Find(&proxies)
+	if len(proxies) > 1 {
+		rand.New(rand.NewSource(time.Now().UnixNano())).Shuffle(len(proxies), func(i, j int) {
+			proxies[i], proxies[j] = proxies[j], proxies[i]
+		})
+	}
 	proxyPool := make([]string, 0, len(proxies))
 	proxyIDs := make([]uint, 0, len(proxies))
 	for _, p := range proxies {
@@ -6383,6 +6545,9 @@ func (s *Server) sunnyTaskProxySnapshot(payload map[string]any) map[string]any {
 		next["proxy_pool"] = proxyPool
 		next["proxy_ids"] = proxyIDs
 		next["proxy_pool_size"] = len(proxyPool)
+	}
+	if len(selectedCountries) > 0 {
+		next["proxy_countries"] = selectedCountries
 	}
 	next["local_proxy"] = localProxy
 	next["register_proxy"] = registerProxy

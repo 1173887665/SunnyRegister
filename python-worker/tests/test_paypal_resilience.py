@@ -333,6 +333,60 @@ class FakeResponse:
         return self.payload
 
 
+def test_tax_region_keeps_today_due_instead_of_recurring_total() -> None:
+    class FakeHttp:
+        def post(self, _url: str, **_kwargs):
+            return FakeResponse({
+                "total_summary": {"due": 0, "total": 199900},
+                "tax": {"status": "complete"},
+            })
+
+    ctx = {"checkout_amount": 199900, "currency": "usd", "elements_session_id": "es_test"}
+    billing = {
+        "address": {
+            "country": "US",
+            "line1": "1 Main St",
+            "city": "Austin",
+            "postal_code": "78701",
+        },
+    }
+
+    payload = stripe_checkout.update_tax_region(
+        FakeHttp(),
+        "cs_live_test",
+        "pk_test",
+        stripe_checkout.STRIPE_VERSION_BASE,
+        ctx,
+        billing,
+        stripe_checkout._profile("US"),
+        lambda _message: None,
+    )
+
+    assert payload["total_summary"] == {"due": 0, "total": 199900}
+    assert ctx["checkout_amount"] == 0
+
+
+def test_tax_region_falls_back_to_recurring_total_only_without_due() -> None:
+    class FakeHttp:
+        def post(self, _url: str, **_kwargs):
+            return FakeResponse({"total_summary": {"total": 199900}})
+
+    ctx = {"checkout_amount": 0, "currency": "usd", "elements_session_id": "es_test"}
+    payload = stripe_checkout.update_tax_region(
+        FakeHttp(),
+        "cs_live_test",
+        "pk_test",
+        stripe_checkout.STRIPE_VERSION_BASE,
+        ctx,
+        {"address": {"country": "US"}},
+        stripe_checkout._profile("US"),
+        lambda _message: None,
+    )
+
+    assert payload["total_summary"]["total"] == 199900
+    assert ctx["checkout_amount"] == 199900
+
+
 def test_manual_approval_reuses_checkout_device_id() -> None:
     captured: dict = {}
 

@@ -332,6 +332,13 @@ def account_from_row(row: dict[str, Any]) -> MailAccount:
         row.get("client_id", ""),
         row.get("refresh_token", ""),
     ])
+    # Rebind targets may carry Microsoft OAuth credentials as
+    # password----client_id----refresh_token without repeating the email.
+    if mailbox_type == "microsoft" and str(row.get("_rebind_target_api") or "").strip():
+        target_api = str(row.get("_rebind_target_api") or "").strip()
+        target_parts = [part.strip() for part in target_api.split("----")]
+        if len(target_parts) == 3 and all(target_parts):
+            raw = "----".join([str(row.get("email") or "").strip(), *target_parts])
     account = parse_account_line(raw)
     account.openai_rt = row.get("openai_rt") or account.openai_rt
     account.account_type = row.get("account_type") or account.account_type
