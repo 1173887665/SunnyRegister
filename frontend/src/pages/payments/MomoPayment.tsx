@@ -268,11 +268,18 @@ function MomoSettings({ settings, busy, run }: { settings: Row; busy: string; ru
       return result;
     }, "MoMo 系统配置已保存");
   }
-  async function checkSettings() { await run("momo-settings-check", async () => { const result = await post("/settings/check", buildPayload()); setCheck(result); return result; }, "MoMo 配置检测完成"); }
+  async function checkSettings() {
+    await run("momo-settings-check", async () => {
+      const result = await post("/settings/check", buildPayload());
+      setCheck(result);
+      return result;
+    }, "MoMo 配置检测完成");
+  }
   const source = String(values.phone_source || "pool");
   const authMode = String(values.protocol_auth_mode || "none");
+  const legacyWorker = Boolean(settings && !settings.runtime_version);
   return <div className="gopay-view">
-    <div className="gopay-section-title"><div><h2>MoMo 系统配置</h2><p>Worker 内置协议直连手机号、短信、账号与支付接口，不再经过外置适配器</p></div></div>
+    <div className="gopay-section-title"><div><h2>MoMo 系统配置</h2><p>Worker 内置协议直连手机号、短信、账号与支付接口，不再经过外置适配器</p>{legacyWorker && <div className="gopay-warning"><Activity />当前 Worker 返回的是旧版配置接口；磁盘代码已更新为直连协议，重启 Worker 后检测项会显示为 momo_protocol。</div>}</div></div>
     <Panel title="MoMo 直连协议与手机号">
       <form className="gopay-form" onSubmit={submit}>
         <h4>直连协议</h4>
@@ -312,6 +319,6 @@ function MomoSettings({ settings, busy, run }: { settings: Row; busy: string; ru
         <div className="gopay-row-actions"><Button type="submit" disabled={busy !== ""}><Settings2 className="mr-2 h-4 w-4" />保存全部配置</Button><Button type="button" variant="outline" disabled={busy !== ""} onClick={() => void checkSettings()}><Activity className="mr-2 h-4 w-4" />检测配置</Button></div>
       </form>
     </Panel>
-    {check && <Panel title="配置检测结果"><div className="gopay-activity">{(check.checks || []).map((item: Row) => <div key={item.name}><Status value={item.ok ? "success" : "failed"} /><span><strong>{item.name}</strong><small>{item.message}</small></span></div>)}</div></Panel>}
+    {check && <Panel title="配置检测结果"><div className="gopay-activity">{(check.checks || []).map((item: Row) => <div key={item.name}><Status value={item.ok ? "success" : "failed"} /><span><strong>{item.name}</strong><small>{item.message}</small></span></div>)}{!check.runtime_version && <div className="gopay-warning"><Activity /><span><strong>旧版 Worker 响应</strong><small>检测结果来自未加载直连协议代码的 Worker；请重启 Worker 后再检测。</small></span></div>}</div></Panel>}
   </div>;
 }

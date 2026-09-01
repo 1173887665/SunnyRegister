@@ -201,6 +201,9 @@ def test_manager_migrates_saved_adapter_fields_to_direct_protocol(tmp_path: Path
     assert settings["protocol_base_url"] == "https://protocol.example/api"
     assert settings["protocol_headers_configured"] is True
     assert "api_base_url" not in settings
+    assert settings["runtime_version"] == "direct-protocol-v1"
+    assert manager.check_settings()["runtime_version"] == "direct-protocol-v1"
+    assert all(item["name"] != "momo_adapter" for item in manager.check_settings()["checks"])
 
 
 def test_manager_masks_direct_protocol_credentials_and_checks_auth(tmp_path: Path) -> None:

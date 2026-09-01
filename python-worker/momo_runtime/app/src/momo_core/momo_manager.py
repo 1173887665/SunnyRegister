@@ -24,6 +24,7 @@ from .momo_worker import MomoTaskWorker
 ROOT = Path(__file__).resolve().parents[5]
 DATA_ROOT = Path(os.getenv("SUNNY_DATA_DIR") or ("/app/data" if Path("/app/data").is_dir() else ROOT / "data"))
 MOMO_ROOT = DATA_ROOT / "momo"
+MOMO_RUNTIME_VERSION = "direct-protocol-v1"
 
 
 def _now() -> str:
@@ -406,6 +407,7 @@ class MomoManager:
     def get_settings(self) -> dict[str, Any]:
         with self.lock:
             result = {
+                "runtime_version": MOMO_RUNTIME_VERSION,
                 "protocol_base_url": self.settings.get("protocol_base_url", ""),
                 "mock_mode": _as_bool(self.settings.get("mock_mode"), False),
                 "live_mode": not _as_bool(self.settings.get("mock_mode"), False),
@@ -621,7 +623,7 @@ class MomoManager:
             checks.append({"name": "sms_api_key", "ok": bool(str(snapshot.get("sms_api_key") or "").strip()), "message": "短信平台 API Key 已配置" if snapshot.get("sms_api_key") else "短信平台 API Key 未配置"})
         proxy_check = self.check_proxy_pool(proxy_pool)
         checks.append({"name": "proxy_pool", "ok": proxy_check["unavailable"] == 0 and (not _as_bool(snapshot.get("proxy_required"), False) or proxy_check["available"] > 0), "message": f"可用 {proxy_check['available']} / {proxy_check['total']}"})
-        return {"ok": all(item["ok"] for item in checks), "live_mode": live, "checks": checks, "proxy": proxy_check}
+        return {"ok": all(item["ok"] for item in checks), "live_mode": live, "runtime_version": MOMO_RUNTIME_VERSION, "checks": checks, "proxy": proxy_check}
 
     def _ensure_provider_ready(self) -> None:
         """Reject task creation when the live direct-protocol boundary is absent."""
