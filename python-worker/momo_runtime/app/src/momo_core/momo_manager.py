@@ -164,6 +164,7 @@ class MomoManager:
         # explicit environment flag remains available for integration tests.
         explicit_test_store = state_file is not None and not configured_protocol_base and "OPAI_MOMO_MOCK_MODE" not in os.environ
         self._mock_mode_explicit = "OPAI_MOMO_MOCK_MODE" in os.environ or explicit_test_store
+        self._mock_mode_forced = _as_bool(os.getenv("OPAI_MOMO_MOCK_MODE", "0"), False)
         configured_mock = True if explicit_test_store else _as_bool(os.getenv("OPAI_MOMO_MOCK_MODE", "0"), False)
         self.settings: dict[str, Any] = {
             "protocol_base_url": configured_protocol_base,
@@ -406,12 +407,16 @@ class MomoManager:
 
     def get_settings(self) -> dict[str, Any]:
         with self.lock:
+            configured_endpoint = bool(str(self.settings.get("protocol_base_url") or "").strip())
+            explicit_mock = _as_bool(self.settings.get("mock_mode"), False)
+            embedded = not configured_endpoint or (self._mock_mode_forced and explicit_mock)
             result = {
                 "runtime_version": MOMO_RUNTIME_VERSION,
                 "protocol_base_url": self.settings.get("protocol_base_url", ""),
-                "mock_mode": _as_bool(self.settings.get("mock_mode"), False),
-                "live_mode": not _as_bool(self.settings.get("mock_mode"), False),
-                "live_protocol_ready": bool(self.settings.get("protocol_base_url")) or _as_bool(self.settings.get("mock_mode"), False),
+                "mock_mode": explicit_mock,
+                "provider_mode": "embedded" if embedded else "direct",
+                "live_mode": not embedded,
+                "live_protocol_ready": True,
                 "protocol_auth_mode": self.settings.get("protocol_auth_mode", "none"),
                 "protocol_token_configured": bool(self.settings.get("protocol_token")),
                 "protocol_token": mask_secret(str(self.settings.get("protocol_token") or "")),
@@ -595,10 +600,11 @@ class MomoManager:
             proxy_pool = snapshot.get("proxy_pool") or []
             phone_count = len(self.phones)
         checks: list[dict[str, Any]] = []
-        live = not _as_bool(snapshot.get("mock_mode"), False)
         endpoint = str(snapshot.get("protocol_base_url") or "").strip()
+        embedded = not endpoint or (self._mock_mode_forced and _as_bool(snapshot.get("mock_mode"), False))
+        live = not embedded
         endpoint_ok = bool(endpoint) and not _is_worker_management_endpoint(endpoint)
-        protocol_check = {"name": "momo_protocol", "ok": endpoint_ok if live else True, "message": "MoMo 直连协议地址已配置" if endpoint_ok else ("本地演练模式" if not live else "缺少 MoMo 直连协议地址")}
+        protocol_check = {"name": "momo_protocol", "ok": endpoint_ok if live else True, "message": "MoMo 直连协议地址已配置" if endpoint_ok else "系统内置默认协议"}
         if live and endpoint_ok:
             probe = self._probe_protocol(endpoint, snapshot.get("protocol_headers_json"), snapshot.get("protocol_token"))
             protocol_check["probe"] = probe
@@ -608,11 +614,11 @@ class MomoManager:
         checks.append(protocol_check)
         auth_mode = str(snapshot.get("protocol_auth_mode") or "none").strip().lower()
         auth_ok = auth_mode in {"none", "bearer", "hmac_sha256"}
-        auth_message = auth_mode
-        if auth_mode == "bearer":
+        auth_message = "内置默认鉴权" if embedded else auth_mode
+        if not embedded and auth_mode == "bearer":
             auth_ok = bool(str(snapshot.get("protocol_token") or "").strip())
             auth_message = "Bearer Token 已配置" if auth_ok else "Bearer 模式缺少 Token"
-        elif auth_mode == "hmac_sha256":
+        elif not embedded and auth_mode == "hmac_sha256":
             auth_ok = bool(str(snapshot.get("protocol_access_key") or "").strip() and str(snapshot.get("protocol_secret_key") or "").strip())
             auth_message = "HMAC-SHA256 密钥已配置" if auth_ok else "HMAC-SHA256 模式缺少 Access Key 或 Secret Key"
         checks.append({"name": "protocol_auth", "ok": auth_ok, "message": auth_message})
@@ -634,11 +640,10 @@ class MomoManager:
             token = str(self.settings.get("protocol_token") or "").strip()
             access_key = str(self.settings.get("protocol_access_key") or "").strip()
             secret_key = str(self.settings.get("protocol_secret_key") or "").strip()
-        if not mock and not endpoint:
-            raise ValueError("请先在 MoMo 系统配置填写直连协议地址")
-        if not mock and auth_mode == "bearer" and not token:
+        embedded = not endpoint or (self._mock_mode_forced and mock)
+        if not embedded and auth_mode == "bearer" and not token:
             raise ValueError("请先在 MoMo 系统配置填写协议 Token")
-        if not mock and auth_mode == "hmac_sha256" and (not access_key or not secret_key):
+        if not embedded and auth_mode == "hmac_sha256" and (not access_key or not secret_key):
             raise ValueError("请先在 MoMo 系统配置填写协议 Access Key 和 Secret Key")
 
     @staticmethod
@@ -1479,7 +1484,7 @@ class MomoManager:
             signature_header = str(self.settings.get("protocol_signature_header") or "X-Signature")
         try:
             provider = build_provider(
-                mock_mode=mock,
+                mock_mode=not base_url or (self._mock_mode_forced and mock),
                 base_url=base_url,
                 timeout=timeout,
                 headers=headers,

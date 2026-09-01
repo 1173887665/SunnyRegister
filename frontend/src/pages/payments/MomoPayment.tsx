@@ -199,13 +199,6 @@ function MomoQrPayment({ accounts, jobs, settings, busy, run }: { accounts: Row[
 function MomoSettings({ settings, busy, run }: { settings: Row; busy: string; run: (key: string, action: () => Promise<any>, success: string) => Promise<void> }) {
   const [values, setValues] = useState<Row>({});
   const [smsApiKey, setSmsApiKey] = useState("");
-  const [protocolToken, setProtocolToken] = useState("");
-  const [protocolAccessKey, setProtocolAccessKey] = useState("");
-  const [protocolSecretKey, setProtocolSecretKey] = useState("");
-  const [protocolHeaders, setProtocolHeaders] = useState("");
-  const [protocolRoutes, setProtocolRoutes] = useState("");
-  const [headersTouched, setHeadersTouched] = useState(false);
-  const [routesTouched, setRoutesTouched] = useState(false);
   const [proxyPool, setProxyPool] = useState("");
   const [proxyPoolTouched, setProxyPoolTouched] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -219,13 +212,6 @@ function MomoSettings({ settings, busy, run }: { settings: Row; busy: string; ru
       delete next.protocol_access_key;
       setValues(next);
       setSmsApiKey("");
-      setProtocolToken("");
-      setProtocolAccessKey("");
-      setProtocolSecretKey("");
-      setProtocolHeaders("");
-      setProtocolRoutes("");
-      setHeadersTouched(false);
-      setRoutesTouched(false);
       setProxyPool("");
       setProxyPoolTouched(false);
     }, 0);
@@ -240,11 +226,6 @@ function MomoSettings({ settings, busy, run }: { settings: Row; busy: string; ru
     delete payload.protocol_access_key;
     delete payload.protocol_secret_key;
     if (smsApiKey.trim()) payload.sms_api_key = smsApiKey.trim();
-    if (protocolToken.trim()) payload.protocol_token = protocolToken.trim();
-    if (protocolAccessKey.trim()) payload.protocol_access_key = protocolAccessKey.trim();
-    if (protocolSecretKey.trim()) payload.protocol_secret_key = protocolSecretKey.trim();
-    if (headersTouched) payload.protocol_headers_json = protocolHeaders;
-    if (routesTouched) payload.protocol_routes_json = protocolRoutes;
     if (proxyPoolTouched) payload.proxy_pool = proxyPool;
     return payload;
   }
@@ -255,13 +236,6 @@ function MomoSettings({ settings, busy, run }: { settings: Row; busy: string; ru
       const result = await post("/settings", payload);
       setValues({ ...result });
       setSmsApiKey("");
-      setProtocolToken("");
-      setProtocolAccessKey("");
-      setProtocolSecretKey("");
-      setProtocolHeaders("");
-      setProtocolRoutes("");
-      setHeadersTouched(false);
-      setRoutesTouched(false);
       setProxyPool("");
       setProxyPoolTouched(false);
       setDirty(false);
@@ -275,26 +249,18 @@ function MomoSettings({ settings, busy, run }: { settings: Row; busy: string; ru
       return result;
     }, "MoMo 配置检测完成");
   }
-  const source = String(values.phone_source || "pool");
-  const authMode = String(values.protocol_auth_mode || "none");
   const legacyWorker = Boolean(settings && !settings.runtime_version);
+  const protocolReady = Boolean(settings.live_protocol_ready);
+  const phoneSource = String(settings.phone_source || "pool") === "pool" ? "系统号码池" : "短信平台（系统默认）";
   return <div className="gopay-view">
     <div className="gopay-section-title"><div><h2>MoMo 系统配置</h2><p>Worker 内置协议直连手机号、短信、账号与支付接口，不再经过外置适配器</p>{legacyWorker && <div className="gopay-warning"><Activity />当前 Worker 返回的是旧版配置接口；磁盘代码已更新为直连协议，重启 Worker 后检测项会显示为 momo_protocol。</div>}</div></div>
-    <Panel title="MoMo 直连协议与手机号">
+    <Panel title="MoMo 默认配置">
       <form className="gopay-form" onSubmit={submit}>
-        <h4>直连协议</h4>
-        <div className="gopay-form-grid">
-          <label className="wide"><span>协议 Base URL</span><input value={String(values.protocol_base_url || "")} onChange={(event) => set("protocol_base_url", event.target.value)} type="url" placeholder="https://HOST/api" /></label>
-          <label><span>鉴权方式</span><select value={authMode} onChange={(event) => set("protocol_auth_mode", event.target.value)}><option value="none">无固定鉴权</option><option value="bearer">Bearer Token</option><option value="hmac_sha256">HMAC-SHA256</option></select></label>
-          <label><span>签名 Header</span><input value={String(values.protocol_signature_header || "X-Signature")} onChange={(event) => set("protocol_signature_header", event.target.value)} disabled={authMode !== "hmac_sha256"} /></label>
-          {authMode === "bearer" && <label className="wide"><span>协议 Token</span><input value={protocolToken} onChange={(event) => { setProtocolToken(event.target.value); setDirty(true); }} type="password" autoComplete="new-password" placeholder={settings.protocol_token_configured ? `已配置 ${settings.protocol_token || ""}，留空保持不变` : "输入 Bearer Token"} /></label>}
-          {authMode === "hmac_sha256" && <><label><span>Access Key</span><input value={protocolAccessKey} onChange={(event) => { setProtocolAccessKey(event.target.value); setDirty(true); }} type="password" autoComplete="new-password" placeholder={settings.protocol_access_key_configured ? `已配置 ${settings.protocol_access_key || ""}` : "输入 Access Key"} /></label><label><span>Secret Key</span><input value={protocolSecretKey} onChange={(event) => { setProtocolSecretKey(event.target.value); setDirty(true); }} type="password" autoComplete="new-password" placeholder={settings.protocol_secret_key_configured ? "已配置，留空保持不变" : "输入 Secret Key"} /></label></>}
-          <label className="wide"><span>固定 Headers JSON（可选）</span><textarea value={protocolHeaders} onChange={(event) => { setProtocolHeaders(event.target.value); setHeadersTouched(true); setDirty(true); }} rows={3} placeholder={settings.protocol_headers_configured ? "已配置，输入新 JSON 将覆盖" : '{"X-Client":"momo"}'} /></label>
-          <label className="wide"><span>协议路由 JSON（可选）</span><textarea value={protocolRoutes} onChange={(event) => { setProtocolRoutes(event.target.value); setRoutesTouched(true); setDirty(true); }} rows={4} placeholder={settings.protocol_routes_configured ? "已配置，输入新 JSON 将覆盖" : '{"login":"/login","payment_scan":"/payment/scan"}'} /></label>
-          <label><span>手机号来源</span><select value={source} onChange={(event) => set("phone_source", event.target.value)}><option value="pool">系统号码池</option>{(Object.keys(smsLabels) as Array<Exclude<SmsSource, "pool">>).map((item) => <option key={item} value={item}>{smsLabels[item]}</option>)}</select></label>
-          <label><span>国家代码</span><input value={String(values.phone_country_code || "84")} onChange={(event) => set("phone_country_code", event.target.value)} inputMode="numeric" /></label>
-          <label><span>手机号前缀</span><input value={String(values.phone_prefix || "+84")} onChange={(event) => set("phone_prefix", event.target.value)} /></label>
-          <label className="gopay-check"><input type="checkbox" checked={values.skip_kyc_default !== false} onChange={(event) => set("skip_kyc_default", event.target.checked)} /><span><strong>默认跳过 KYC</strong><small>以协议返回的 KYC 状态为准</small></span></label>
+        <div className="gopay-defaults" aria-label="MoMo 默认配置状态">
+          <div><span>运行协议</span><strong>{protocolReady ? "系统默认已就绪" : "正在初始化"}</strong><small>自动选择内置协议或部署配置</small></div>
+          <div><span>号码来源</span><strong>{phoneSource}</strong><small>注册任务自动选择可用号码</small></div>
+          <div><span>手机号格式</span><strong>越南 +84</strong><small>国家代码和前缀由系统固定</small></div>
+          <div><span>KYC 策略</span><strong>{settings.skip_kyc_default !== false ? "默认跳过" : "按协议处理"}</strong><small>不需要手动设置</small></div>
         </div>
         <h4>短信自动取号</h4>
         <div className="gopay-form-grid">

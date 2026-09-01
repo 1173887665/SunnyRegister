@@ -230,3 +230,20 @@ def test_manager_rejects_manual_registration_phone_when_sms_source_is_external(t
         assert "系统配置" in str(exc)
     else:
         raise AssertionError("manual phone must not bypass external SMS source")
+
+
+def test_manager_uses_embedded_protocol_when_endpoint_is_not_configured(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPAI_MOMO_MOCK_MODE", "0")
+    manager = MomoManager(state_file=str(tmp_path / "state.json"), pool_file=str(tmp_path / "pool.json"))
+    settings = manager.get_settings()
+    assert settings["provider_mode"] == "embedded"
+    assert settings["live_protocol_ready"] is True
+    check = manager.check_settings()
+    protocol = next(item for item in check["checks"] if item["name"] == "momo_protocol")
+    assert protocol == {"name": "momo_protocol", "ok": True, "message": "系统内置默认协议"}
+
+    manager.import_phones("+84901234567----https://example.test/sms/1")
+    registration = manager.start_register(pin="1234")
+    _wait(manager, registration["id"], {"waiting_otp"})
+    manager.submit_otp(registration["id"], "123456")
+    assert _wait(manager, registration["id"], {"success"})["status"] == "success"

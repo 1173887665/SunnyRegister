@@ -3572,6 +3572,11 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
 .gopay-quick-actions small { color:var(--text-muted); font-size:10px; }
 .gopay-form { display:flex; flex-direction:column; gap:14px; padding:14px; }
 .gopay-form-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+.gopay-defaults { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+.gopay-defaults > div { display:flex; min-width:0; min-height:82px; flex-direction:column; justify-content:center; gap:4px; border:1px solid var(--border); border-radius:8px; background:var(--bg-input); padding:11px 12px; }
+.gopay-defaults span { color:var(--text-muted); font-size:11px; font-weight:750; }
+.gopay-defaults strong { overflow:hidden; color:var(--text-primary); font-size:13px; text-overflow:ellipsis; white-space:nowrap; }
+.gopay-defaults small { color:var(--text-muted); font-size:10px; line-height:1.4; }
 .gopay-form label { display:flex; min-width:0; flex-direction:column; gap:5px; color:var(--text-secondary); font-size:11px; font-weight:750; }
 .gopay-form label.wide { grid-column:span 2; }
 .gopay-form input,.gopay-form select,.gopay-form textarea,.gopay-search input,.gopay-panel-actions select,.gopay-otp-inline input { width:100%; border:1px solid var(--border); border-radius:8px; background:var(--bg-input); color:var(--text-primary); outline:none; }
@@ -3690,6 +3695,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   .gopay-summary > div { min-height:64px; padding:11px; }
   .gopay-summary strong { font-size:21px; }
   .gopay-two-column,.gopay-quick-actions { grid-template-columns:1fr; }
+  .gopay-defaults { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .gopay-form-grid { grid-template-columns:1fr; }
   .gopay-form label.wide { grid-column:auto; }
   .gopay-section-title { align-items:flex-start; flex-direction:column; }
@@ -3706,4 +3712,7 @@ button:not(:disabled):active { transform: translateY(0) scale(.985); }
   .direct-card-toolbar > button { flex:1 1 calc(50% - 8px); justify-content:center; }
   .direct-card-toolbar > label { flex:0 0 auto; }
   .direct-card-view .gopay-panel > header .gopay-row-actions { width:100%; flex-wrap:wrap; padding:0; }
+}
+@media (max-width:460px) {
+  .gopay-defaults { grid-template-columns:1fr; }
 }
