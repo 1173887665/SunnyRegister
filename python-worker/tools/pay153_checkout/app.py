@@ -2892,6 +2892,12 @@ class JobStore:
                 # the same account was just probed successfully.
                 current["checkout_ui_mode"] = "redirect"
                 current["promo_on_create"] = False
+            # Respect the per-project checkout mode when one is configured.
+            # AUTO keeps the established provider-specific strategy above.
+            configured_mode = str(current.get("checkout_mode") or "auto").strip().lower()
+            if configured_mode in {"host_inline", "host_no_inline", "cust_inline", "cust_no_inline"}:
+                current["checkout_ui_mode"] = "redirect" if configured_mode.startswith("host_") else "custom"
+                current["promo_on_create"] = configured_mode.endswith("_inline") and bool(current.get("use_promo"))
             if current.get("link_type") == "pix" and current.get("pix_tax_id_auto"):
                 auto_kind = current.get("pix_auto_kind") or "cpf"
                 kind = ("cpf" if attempt % 2 else "cnpj") if auto_kind == "mixed" else auto_kind

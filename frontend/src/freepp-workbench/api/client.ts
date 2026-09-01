@@ -13,12 +13,22 @@ export async function api<T = any>(
   method: string = "GET",
   body?: any
 ): Promise<T> {
+  // The workbench is embedded in SunnyRegister. Its branch configuration has
+  // a dedicated namespace so it does not collide with SunnyRegister's generic
+  // /api/config endpoint.
+  const integratedPath = path === "/api/config"
+    ? "/api/freepp/config"
+    : path === "/api/config/branch"
+      ? "/api/freepp/config/branch"
+      : path === "/api/billing/templates"
+        ? "/api/freepp/billing/templates"
+        : path;
   const opts: RequestInit = {
     method,
     headers: { "Content-Type": "application/json" },
   };
   if (body) opts.body = JSON.stringify(body);
-  const r = await fetch(path, opts);
+  const r = await fetch(integratedPath, { ...opts, credentials: "include" });
   const text = await r.text();
   if (!r.ok) {
     // 优先透出后端 JSON 错误信息, 否则给可读的状态码错误

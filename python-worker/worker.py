@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 os.environ.setdefault("PYTHONUTF8", "1")
 
@@ -211,6 +211,8 @@ class CheckoutRequest(BaseModel):
     ideal_bank: str = ""
     pix_tax_id: str = ""
     pix_auto_kind: str = "cpf"
+    checkout_mode: str = "auto"
+    chain_config: dict = Field(default_factory=dict)
 
 
 @app.get("/health")

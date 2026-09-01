@@ -44,11 +44,17 @@ def start_checkout(payload: dict[str, Any]) -> str:
         "gopay": ("ID", "IDR"),
         "blik": ("PL", "PLN"),
     }.get(link_type, ("US", "USD"))
+    chain_config = dict(payload.get("chain_config") or {})
+    stages = dict(chain_config.get("stages") or {})
+    provider_stage = dict(stages.get("provider") or {})
+    approve_stage = dict(stages.get("approve") or {})
     options = {
         "token_raw": str(payload.get("token") or ""),
         "plan": str(payload.get("plan") or "plus"),
         "link_type": link_type,
         "checkout_kind": checkout_kind,
+        "checkout_mode": str(payload.get("checkout_mode") or "auto").strip().lower(),
+        "chain_config": chain_config,
         "paypal_checkout_mode": paypal_mode,
         # OAICS and unknown accounts stay in the Python workflow so the
         # created session can select OAICS or Stripe automatically. Known
@@ -80,6 +86,12 @@ def start_checkout(payload: dict[str, Any]) -> str:
         "paired_proxy_rotation": True,
         "use_sen": True,
         "use_so": True,
+        # Existing provider implementations expose these knobs under
+        # provider-specific names. Map the shared project-stage settings once
+        # at the adapter boundary so every project uses its own values.
+        "gopay_cs_live_attempts": max(1, int(provider_stage.get("retry") or retry_count or 1)),
+        "gopay_confirm_retries": max(0, int(approve_stage.get("retry") or 2)),
+        "momo_confirm_retries": max(0, int(approve_stage.get("retry") or 2)),
         "entry_proxy_country": str(payload.get("promo_country") or payload.get("country") or default_country).upper(),
         "exit_proxy_country": str(payload.get("country") or default_country).upper(),
     }

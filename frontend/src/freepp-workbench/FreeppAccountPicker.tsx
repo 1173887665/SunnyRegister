@@ -12,15 +12,16 @@ import {
   Search,
   Upload,
 } from "lucide-react";
-import { apiDownload, apiFetch, triggerBrowserDownload } from "@/lib/utils";
+import { API_BASE, apiDownload, apiFetch, triggerBrowserDownload } from "@/lib/utils";
 import { useStore } from "./store/useStore";
 import { getRuntimeSnapshot, setRuntimeSelection, useRuntime } from "./integration/runtime";
 import { CHAIN_PROJECT_BRANCH } from "./views/FlowWorkspaceView";
+import { api } from "./api/client";
 
 type Session = Record<string, any>;
 type BusyAction = "access-token-check" | "refresh-at" | "health-check" | "subscription-check" | "trial-check" | "checkout-probe" | "payment-probe" | "add-ls" | "rebind" | "sub2-import" | "export" | "acquire-rt" | "chain-start" | null;
-type ProgressChain = { chain_id?: string; email?: string; token_sub?: string; status?: string; stages?: Record<string, any>; reasonText?: string; reason?: string };
-type ChainProgress = { visible: boolean; branch: string; branchIndex: number; branchTotal: number; total: number; done: number; success: number; failure: number; status: "idle" | "running" | "success" | "failed"; chains: ProgressChain[] };
+type ProgressChain = { chain_id: string; branch: string; email?: string; account_id?: number; index?: number; progress: number; current_log?: string; status: "pending" | "running" | "succeeded" | "failed"; stages?: Record<string, any>; reasonText?: string; reason?: string };
+type ChainProgress = { visible: boolean; branch: string; branchIndex: number; branchTotal: number; total: number; done: number; percent: number; success: number; failure: number; status: "idle" | "running" | "success" | "failed"; chains: ProgressChain[] };
 
 const PAGE_SIZES = [10, 20, 50, 100];
 const STATUS_OPTIONS = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "注册中", "登录刷新", "失败", "已取消", "禁用"];
@@ -29,6 +30,48 @@ const TRIAL_OPTIONS = ["unknown", "eligible", "ineligible"];
 const CHECKOUT_OPTIONS = ["unknown", "oaics", "cs_live", "cs_test"];
 const BOOLEAN_FILTER_OPTIONS = ["present", "missing"];
 const TRIAL_COUNTRY_OPTIONS = ["US", "GB", "AU", "VN", "BR", "NL", "IN", "KR", "PL", "CH", "ES", "ID", "PH", "JP"];
+const COUNTRY_CURRENCIES: Record<string, string> = {
+  AE: "AED", AU: "AUD", BR: "BRL", CA: "CAD", CH: "CHF", ES: "EUR", GB: "GBP",
+  ID: "IDR", IN: "INR", JP: "JPY", KR: "KRW", MX: "MXN", NL: "EUR", PH: "PHP",
+  PL: "PLN", TH: "THB", TW: "TWD", US: "USD", VN: "VND",
+};
+
+function configuredCountries(value: any): string[] {
+  const rows = Array.isArray(value) ? value : [];
+  return Array.from(new Set(rows.map((item) => String(item || "").trim().toUpperCase()).filter((item) => item && item !== "AUTO")));
+}
+
+function chainExecutionSettings(config: Session, branch: string) {
+  const branchConfig = config?.chain?.branches?.[branch] || {};
+  const checkoutCountries = configuredCountries(branchConfig?.stages?.checkout?.countries);
+  const promotionCountries = configuredCountries(
+    branchConfig?.stages?.update?.countries
+      || branchConfig?.stages?.init?.countries,
+  );
+  const configuredBilling = String(branchConfig.billing_country || "auto").trim().toUpperCase();
+  const country = configuredBilling && configuredBilling !== "AUTO" ? configuredBilling : checkoutCountries[0];
+  if (!country) throw new Error(`${branch} 未设置账单国家或 Checkout 出口国家`);
+  const currency = String(branchConfig.billing_currency || COUNTRY_CURRENCIES[country] || "").trim().toUpperCase();
+  if (!currency) throw new Error(`${branch} 的账单国家 ${country} 没有对应币种`);
+  // UI 的“总尝试”包含首次执行；SunnyRegister/Worker 的 retry_count
+  // 表示首次失败后的追加轮数，因此这里转换为 attempts - 1。
+  const configuredAttempts = Number(branchConfig.attempts);
+  const retry = Number.isFinite(configuredAttempts) && configuredAttempts > 0
+    ? Math.max(0, Math.min(50, Math.trunc(configuredAttempts) - 1))
+    : Math.max(0, Math.min(50, Math.trunc(Number(branchConfig?.stages?.checkout?.retry || 3))));
+  const checkoutRouteCountries = checkoutCountries.length ? checkoutCountries : [country];
+  const promotionRouteCountries = promotionCountries.length ? promotionCountries : checkoutRouteCountries;
+  return {
+    country,
+    currency,
+    retry,
+    checkoutCountries: checkoutRouteCountries,
+    promotionCountries: promotionRouteCountries,
+    usePromo: branchConfig.require_zero !== false,
+    checkoutMode: String(branchConfig.checkout_mode || "auto").trim().toLowerCase(),
+    chainConfig: branchConfig,
+  };
+}
 
 function hasAccessToken(session: Session) {
   if (session.has_access_token === true || Number(session.has_access_token) === 1) return true;
@@ -117,8 +160,91 @@ function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+/**
+ * The task API historically returned progress as a `current/total` label,
+ * while newer workers may return a numeric percentage or progress_detail.
+ * Keep the UI tolerant of all three forms so malformed/missing values never
+ * turn the progress bar into NaN.
+ */
+function taskProgressPercent(task: Session) {
+  const detail = task?.progress_detail;
+  const detailCurrent = Number(detail?.current);
+  const detailTotal = Number(detail?.total);
+  if (Number.isFinite(detailCurrent) && Number.isFinite(detailTotal) && detailTotal > 0) {
+    return Math.max(0, Math.min(100, detailCurrent / detailTotal * 100));
+  }
+
+  const raw = task?.progress;
+  if (typeof raw === "string") {
+    const match = raw.trim().match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
+    if (match) {
+      const current = Number(match[1]);
+      const total = Number(match[2]);
+      if (Number.isFinite(current) && Number.isFinite(total) && total > 0) {
+        return Math.max(0, Math.min(100, current / total * 100));
+      }
+    }
+  }
+
+  const numeric = Number(raw);
+  return Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : 0;
+}
+
+function isTerminalTask(task: Session) {
+  const status = String(task?.status || "").trim().toLowerCase();
+  return Boolean(task?.terminal) || ["succeeded", "success", "done", "failed", "error", "cancelled", "canceled", "interrupted"].includes(status);
+}
+
 function normalizedEmail(value: any) {
   return String(value || "").trim().toLowerCase();
+}
+
+function checkoutEventDetail(item: Session) {
+  return item?.detail && typeof item.detail === "object" ? item.detail : {};
+}
+
+function checkoutEventIdentity(item: Session) {
+  const detail = checkoutEventDetail(item);
+  return {
+    email: normalizedEmail(item.email || detail.email || detail.result?.email),
+    accountId: Number(item.account_id || detail.account_id || detail.result?.account_id || 0),
+    index: Number(detail.index ?? detail.result?.index ?? -1),
+  };
+}
+
+function progressChainMatches(chain: ProgressChain, identity: { email: string; accountId: number; index: number }) {
+  if (identity.accountId > 0 && Number(chain.account_id || 0) === identity.accountId) return true;
+  if (identity.email && normalizedEmail(chain.email) === identity.email) return true;
+  return identity.index >= 0 && Number(chain.index ?? -1) === identity.index;
+}
+
+function summarizeProgressChains(chains: ProgressChain[]) {
+  const done = chains.filter((chain) => chain.status === "succeeded" || chain.status === "failed").length;
+  const success = chains.filter((chain) => chain.status === "succeeded").length;
+  const failure = chains.filter((chain) => chain.status === "failed").length;
+  const percent = chains.length
+    ? Math.round(chains.reduce((sum, chain) => sum + Math.max(0, Math.min(100, Number(chain.progress) || 0)), 0) / chains.length)
+    : 0;
+  return { done, success, failure, percent };
+}
+
+function sessionChainProgress(session: Session, progress: ChainProgress) {
+  const identity = { email: normalizedEmail(session.email || session.mailbox), accountId: Number(session.id || session.account_id || 0), index: -1 };
+  const chains = progress.chains.filter((chain) => progressChainMatches(chain, identity));
+  if (!chains.length) return null;
+  const percent = Math.round(chains.reduce((sum, chain) => sum + Math.max(0, Math.min(100, Number(chain.progress) || 0)), 0) / chains.length);
+  const active = chains.find((chain) => chain.branch === progress.branch && chain.status === "running")
+    || [...chains].reverse().find((chain) => chain.status === "failed")
+    || [...chains].reverse().find((chain) => chain.status !== "pending")
+    || chains[0];
+  const status = chains.some((chain) => chain.status === "running")
+    ? "running"
+    : chains.every((chain) => chain.status === "succeeded")
+      ? "succeeded"
+      : chains.some((chain) => chain.status === "failed")
+        ? "failed"
+        : "pending";
+  return { progress: percent, message: active.current_log || "等待提链任务", status };
 }
 
 function tokenSessionId(token: Session) {
@@ -170,7 +296,7 @@ export default function FreeppAccountPicker() {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<BusyAction>(null);
   const [message, setMessage] = useState("");
-  const [chainProgress, setChainProgress] = useState<ChainProgress>({ visible: false, branch: "", branchIndex: 0, branchTotal: 0, total: 0, done: 0, success: 0, failure: 0, status: "idle", chains: [] });
+  const [chainProgress, setChainProgress] = useState<ChainProgress>({ visible: false, branch: "", branchIndex: 0, branchTotal: 0, total: 0, done: 0, percent: 0, success: 0, failure: 0, status: "idle", chains: [] });
   const runtime = useRuntime();
 
   const load = useCallback(async () => {
@@ -352,15 +478,109 @@ export default function FreeppAccountPicker() {
   }
 
   async function waitForSunnyCheckout(taskId: string, branch: string, branchIndex: number, branchTotal: number, accountTotal: number) {
-    for (let attempt = 0; attempt < 300; attempt += 1) {
-      const task = await apiFetch(`/tasks/${encodeURIComponent(taskId)}`);
-      const progress = Math.max(0, Math.min(100, Number(task?.progress || 0)));
-      const done = Math.min(branchTotal * accountTotal, branchIndex * accountTotal + Math.round(accountTotal * progress / 100));
-      setChainProgress((current) => ({ ...current, visible: true, branch, branchIndex, branchTotal, total: branchTotal * accountTotal, done, status: task?.terminal ? (String(task.status).toLowerCase() === "succeeded" ? "success" : "failed") : "running" }));
-      if (task?.terminal) return task;
-      await wait(700);
+    let eventCursor = 0;
+    const processedEventIds = new Set<number>();
+    let stream: EventSource | null = null;
+
+    const applyEvents = (events: Session[]) => {
+      const ordered = [...events].sort((left, right) => Number(left?.id || 0) - Number(right?.id || 0));
+      const fresh = ordered.filter((item) => {
+        const eventId = Number(item?.id || 0);
+        if (eventId <= 0) return true;
+        if (processedEventIds.has(eventId)) return false;
+        processedEventIds.add(eventId);
+        eventCursor = Math.max(eventCursor, eventId);
+        return true;
+      });
+      if (!fresh.length) return;
+      setChainProgress((current) => {
+        const chains = [...current.chains];
+        for (const item of fresh) {
+          if (item.type !== "checkout_progress" && item.type !== "checkout_result") continue;
+          const detail = checkoutEventDetail(item);
+          const identity = checkoutEventIdentity(item);
+          const chainIndex = chains.findIndex((chain) => chain.branch === branch && progressChainMatches(chain, identity));
+          if (chainIndex < 0) continue;
+          const previous = chains[chainIndex];
+          if (item.type === "checkout_progress" && (previous.status === "succeeded" || previous.status === "failed")) continue;
+          const result = detail.result && typeof detail.result === "object" ? detail.result : {};
+          const resultStatus = String(result.status || "").trim().toLowerCase();
+          const succeeded = ["succeeded", "success", "done"].includes(resultStatus);
+          const eventProgress = item.type === "checkout_result" ? 100 : Math.max(0, Math.min(100, Number(detail.progress ?? item.progress ?? 0) || 0));
+          const terminalLog = item.type === "checkout_result"
+            ? String(result.error || result.reason || result.message || item.message || (succeeded ? "提链成功" : "提链失败"))
+            : "";
+          const currentLog = String(
+            detail.current_log
+              || terminalLog
+              || item.message
+              || previous.current_log
+              || (succeeded ? "提链成功" : "提链处理中"),
+          );
+          chains[chainIndex] = {
+            ...previous,
+            progress: Math.max(previous.progress, eventProgress),
+            current_log: currentLog,
+            status: item.type === "checkout_result" ? (succeeded ? "succeeded" : "failed") : "running",
+            reason: item.type === "checkout_result" && !succeeded ? currentLog : previous.reason,
+          };
+        }
+        const summary = summarizeProgressChains(chains);
+        return { ...current, ...summary, visible: true, branch, branchIndex, branchTotal, total: branchTotal * accountTotal, status: "running", chains };
+      });
+    };
+
+    const readEvents = async () => {
+      let readCursor = eventCursor;
+      const collected: Session[] = [];
+      for (let eventPage = 0; eventPage < 5; eventPage += 1) {
+        const data = await apiFetch(`/tasks/${encodeURIComponent(taskId)}/events?since=${readCursor}&limit=200`);
+        const next = Array.isArray(data?.items) ? data.items as Session[] : [];
+        if (!next.length) break;
+        collected.push(...next);
+        readCursor = Number(next[next.length - 1]?.id || readCursor);
+        if (next.length < 200) break;
+      }
+      applyEvents(collected);
+    };
+
+    try {
+      const apiBase = String(API_BASE || "/api").replace(/\/$/, "");
+      stream = new EventSource(`${apiBase}/tasks/${encodeURIComponent(taskId)}/logs/stream?since=0`, { withCredentials: true });
+      stream.onmessage = (message) => {
+        try {
+          const payload = JSON.parse(message.data || "{}");
+          if (!payload.done) applyEvents([payload]);
+        } catch { /* polling below remains the fallback */ }
+      };
+      stream.onerror = () => { stream?.close(); stream = null; };
+
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        const task = await apiFetch(`/tasks/${encodeURIComponent(taskId)}`);
+        await readEvents().catch(() => {});
+        if (isTerminalTask(task)) {
+          await readEvents().catch(() => {});
+          const results = Array.isArray(task?.result?.items) ? task.result.items as Session[] : [];
+          applyEvents(results.map((result) => ({
+            type: "checkout_result",
+            email: result.email,
+            account_id: result.account_id,
+            detail: { email: result.email, account_id: result.account_id, index: result.index, progress: 100, result },
+          })));
+          setChainProgress((current) => {
+            const chains = current.chains.map((chain) => chain.branch === branch && (chain.status === "pending" || chain.status === "running")
+              ? { ...chain, progress: 100, current_log: String(task?.error || "任务结束但未返回账号结果"), status: "failed" as const, reason: String(task?.error || "任务结束但未返回账号结果") }
+              : chain);
+            return { ...current, ...summarizeProgressChains(chains), chains };
+          });
+          return task;
+        }
+        await wait(700);
+      }
+      throw new Error("提链任务状态等待超时，请到提链管理查看");
+    } finally {
+      stream?.close();
     }
-    throw new Error("提链任务状态等待超时，请到提链管理查看");
   }
 
   async function startSelectedChains() {
@@ -383,46 +603,101 @@ export default function FreeppAccountPicker() {
     const failures: string[] = [];
     let started = 0;
     try {
-      const sessionIds = selectedSessions.map((session) => Number(session.id)).filter((id) => Number.isFinite(id) && id > 0);
+      const checkoutSessions = selectedSessions.filter((session) => Number.isFinite(Number(session.id)) && Number(session.id) > 0);
+      const sessionIds = checkoutSessions.map((session) => Number(session.id));
       if (!sessionIds.length) {
         setMessage("所选账号没有可用会话，无法启动提链");
         return;
       }
-      const proxyPool = runtime.proxies.filter((proxy) => proxy.enabled && proxy.address).map((proxy) => proxy.address).join("\n");
-      if (!proxyPool) {
+      const enabledProxies = runtime.proxies.filter((proxy) => proxy.enabled && proxy.address);
+      if (!enabledProxies.length) {
         setMessage("代理池为空，请先在代理配置中启用代理");
         return;
       }
+      const projectConfig = await api<Session>("/api/config");
+      const initialChains = branches.flatMap((branch) => checkoutSessions.map((session, index) => ({
+        chain_id: `${branch}:${String(session.id)}`,
+        branch,
+        email: String(session.email || session.mailbox || ""),
+        account_id: Number(session.id || 0),
+        index,
+        progress: 0,
+        current_log: "等待提链任务",
+        status: "pending" as const,
+      })));
+      setChainProgress({
+        visible: true,
+        branch: branches[0],
+        branchIndex: 0,
+        branchTotal: branches.length,
+        total: initialChains.length,
+        done: 0,
+        percent: 0,
+        success: 0,
+        failure: 0,
+        status: "running",
+        chains: initialChains,
+      });
       setMessage(`正在启动 ${branches.length} 个提链项目（${sessionIds.length} 个账号）...`);
-      for (const branch of branches) {
+      for (const [branchIndex, branch] of branches.entries()) {
         try {
-          setChainProgress((current) => ({ ...current, visible: true, branch, branchIndex: started, branchTotal: branches.length, total: branches.length * sessionIds.length, done: started * sessionIds.length, status: "running" }));
+          const execution = chainExecutionSettings(projectConfig, branch);
+          const checkoutProxies = enabledProxies.filter((proxy) => execution.checkoutCountries.includes(String(proxy.country || "").trim().toUpperCase()));
+          const promotionProxies = enabledProxies.filter((proxy) => execution.promotionCountries.includes(String(proxy.country || "").trim().toUpperCase()));
+          if (!checkoutProxies.length) {
+            throw new Error(`${branch} 配置要求 Checkout 出口 ${execution.checkoutCountries.join("/")}，但代理池中没有对应国家的已启用代理`);
+          }
+          if (!promotionProxies.length) {
+            throw new Error(`${branch} 配置要求 Promotion 出口 ${execution.promotionCountries.join("/")}，但代理池中没有对应国家的已启用代理`);
+          }
+          const checkoutPool = checkoutProxies.map((proxy) => proxy.address).join("\n");
+          const promotionPool = promotionProxies.map((proxy) => proxy.address).join("\n");
+          setChainProgress((current) => ({
+            ...current,
+            visible: true,
+            branch,
+            branchIndex,
+            branchTotal: branches.length,
+            status: "running",
+            chains: current.chains.map((chain) => chain.branch === branch && chain.status === "pending" ? { ...chain, current_log: "正在创建提链任务" } : chain),
+          }));
           const result = await apiFetch("/sunny/checkout", { method: "POST", body: JSON.stringify({
             system_at: true,
             session_ids: sessionIds,
             external_ats: [],
             checkout_kinds: [],
-            checkout_proxies: proxyPool,
-            promotion_proxies: proxyPool,
+            checkout_proxies: checkoutPool,
+            promotion_proxies: promotionPool,
             plan: "plus",
             link_type: branch,
-            country: "US",
-            currency: "USD",
-            retry_count: 3,
+            country: execution.country,
+            currency: execution.currency,
+            retry_count: execution.retry,
             concurrency: Math.min(10, sessionIds.length),
-            use_promo: false,
+            use_promo: execution.usePromo,
+            promo_country: execution.promotionCountries[0] || execution.country,
+            checkout_mode: execution.checkoutMode,
+            chain_config: execution.chainConfig,
           }) });
           if (result?.error) throw new Error(String(result.error));
           const taskId = String(result?.id || result?.task_id || "");
-          if (taskId) await waitForSunnyCheckout(taskId, branch, started, branches.length, sessionIds.length);
+          if (!taskId) throw new Error("提链任务未返回任务编号");
+          await waitForSunnyCheckout(taskId, branch, branchIndex, branches.length, sessionIds.length);
           started += 1;
           pushLog(`${branch} 提链启动：${sessionIds.length} 个账号`, "ok");
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
           failures.push(`${branch}: ${reason}`);
+          setChainProgress((current) => {
+            const chains = current.chains.map((chain) => chain.branch === branch && (chain.status === "pending" || chain.status === "running")
+              ? { ...chain, progress: 100, current_log: reason, reason, status: "failed" as const }
+              : chain);
+            return { ...current, ...summarizeProgressChains(chains), chains };
+          });
           pushLog(`${branch} 提链启动失败：${reason}`, "err");
         }
       }
+      setChainProgress((current) => ({ ...current, status: current.failure > 0 ? "failed" : "success" }));
       const skipped = unsupported.length ? `，已跳过 ${unsupported.length} 个非提链项目` : "";
       setMessage(`已启动 ${started}/${branches.length} 个提链项目${skipped}${failures.length ? `；失败：${failures.join("；")}` : ""}`);
       if (unsupported.length) pushLog(`已跳过 ${unsupported.length} 个支付授权项目`, "info");
@@ -571,9 +846,9 @@ export default function FreeppAccountPicker() {
       {runtime.lastError && <div className="freepp-account-message">代理池同步提示：{runtime.lastError}</div>}
       {message && <div className="freepp-account-message">{message}</div>}
       {chainProgress.visible && <div className={`freepp-chain-progress ${chainProgress.status}`}>
-        <div className="freepp-chain-progress-head"><span>{chainProgress.status === "running" ? "提链进行中" : chainProgress.status === "success" ? "提链完成" : "提链结束"} · {chainProgress.branch || "本地任务"}</span><strong>{chainProgress.total ? Math.round(chainProgress.done / chainProgress.total * 100) : 0}%</strong></div>
-        <div className="freepp-chain-progress-track"><span style={{ width: `${chainProgress.total ? Math.round(chainProgress.done / chainProgress.total * 100) : 0}%` }} /></div>
-        <small>{chainProgress.done} / {chainProgress.total} 个账号</small>
+        <div className="freepp-chain-progress-head"><span>{chainProgress.status === "running" ? "提链进行中" : chainProgress.status === "success" ? "提链完成" : "提链结束"} · {chainProgress.branch || "本地任务"}{chainProgress.branchTotal > 1 ? `（${chainProgress.branchIndex + 1}/${chainProgress.branchTotal}）` : ""}</span><strong>{chainProgress.percent}%</strong></div>
+        <div className="freepp-chain-progress-track"><span style={{ width: `${Math.max(0, Math.min(100, chainProgress.percent))}%` }} /></div>
+        <small>完成 {chainProgress.done} / {chainProgress.total} · 成功 {chainProgress.success} · 失败 {chainProgress.failure}</small>
       </div>}
       <div className="freepp-account-table-wrap">
         <table className="freepp-account-table">
@@ -584,9 +859,10 @@ export default function FreeppAccountPicker() {
               const selectedRow = selected.includes(id);
               const atAvailable = hasAccessToken(session);
               const payments = Array.isArray(session.payment_methods) ? session.payment_methods : [];
+              const liveChain = chainProgress.visible ? sessionChainProgress(session, chainProgress) : null;
               return <tr key={id} className={selectedRow ? "selected" : ""}>
                 <td><input type="checkbox" checked={selectedRow} disabled={operationBusy} onChange={() => toggle(session)} aria-label={`选择 ${session.email || id}`} /></td>
-                <td title={String(session.email || "")}>{session.email || `会话 #${id}`}</td>
+                <td className="freepp-email-column" title={String(session.email || "")}><div className="freepp-email-cell"><span className="freepp-email-value">{session.email || `会话 #${id}`}</span>{liveChain && <div className={`freepp-account-chain-live ${liveChain.status}`} title={liveChain.message}><div className="freepp-account-chain-label"><span>{liveChain.message}</span><strong>{liveChain.progress}%</strong></div><div className="freepp-account-chain-track"><span style={{ width: `${Math.max(0, Math.min(100, liveChain.progress))}%` }} /></div></div>}</div></td>
                 <td title={String(session.rebind_email || "-")}>{session.rebind_email || "-"}</td>
                 <td>{session.group_name || "默认分组"}</td>
                 <td><span className={`freepp-status freepp-status-${statusLabel(session.status) === "已注册" ? "ok" : statusLabel(session.status) === "失败" ? "error" : "info"}`}>{statusLabel(session.status)}</span></td>

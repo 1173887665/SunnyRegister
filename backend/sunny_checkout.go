@@ -51,30 +51,32 @@ var checkoutCountryCurrency = map[string]string{
 }
 
 type sunnyCheckoutRequest struct {
-	SystemAT         bool     `json:"system_at"`
-	SessionIDs       []uint   `json:"session_ids"`
-	ExternalATs      []string `json:"external_ats"`
-	CheckoutProxies  string   `json:"checkout_proxies"`
-	PromotionProxies string   `json:"promotion_proxies"`
-	CheckoutKinds    []string `json:"checkout_kinds"`
-	Plan             string   `json:"plan"`
-	LinkType         string   `json:"link_type"`
-	Country          string   `json:"country"`
-	Currency         string   `json:"currency"`
-	RetryCount       int      `json:"retry_count"`
-	Concurrency      int      `json:"concurrency"`
-	UsePromo         bool     `json:"use_promo"`
-	PromoCampaign    string   `json:"promo_campaign"`
-	PromoCode        string   `json:"promo_code"`
-	WorkspaceName    string   `json:"workspace_name"`
-	WorkspaceID      string   `json:"workspace_id"`
-	SeatQuantity     int      `json:"seat_quantity"`
-	PriceInterval    string   `json:"price_interval"`
-	CreditQuantity   int      `json:"credit_quantity"`
-	PixTaxID         string   `json:"pix_tax_id"`
-	PixAutoKind      string   `json:"pix_auto_kind"`
-	IdealBank        string   `json:"ideal_bank"`
-	PromoCountry     string   `json:"promo_country"`
+	SystemAT         bool           `json:"system_at"`
+	SessionIDs       []uint         `json:"session_ids"`
+	ExternalATs      []string       `json:"external_ats"`
+	CheckoutProxies  string         `json:"checkout_proxies"`
+	PromotionProxies string         `json:"promotion_proxies"`
+	CheckoutKinds    []string       `json:"checkout_kinds"`
+	Plan             string         `json:"plan"`
+	LinkType         string         `json:"link_type"`
+	Country          string         `json:"country"`
+	Currency         string         `json:"currency"`
+	RetryCount       int            `json:"retry_count"`
+	Concurrency      int            `json:"concurrency"`
+	UsePromo         bool           `json:"use_promo"`
+	PromoCampaign    string         `json:"promo_campaign"`
+	PromoCode        string         `json:"promo_code"`
+	WorkspaceName    string         `json:"workspace_name"`
+	WorkspaceID      string         `json:"workspace_id"`
+	SeatQuantity     int            `json:"seat_quantity"`
+	PriceInterval    string         `json:"price_interval"`
+	CreditQuantity   int            `json:"credit_quantity"`
+	PixTaxID         string         `json:"pix_tax_id"`
+	PixAutoKind      string         `json:"pix_auto_kind"`
+	IdealBank        string         `json:"ideal_bank"`
+	PromoCountry     string         `json:"promo_country"`
+	CheckoutMode     string         `json:"checkout_mode"`
+	ChainConfig      map[string]any `json:"chain_config"`
 }
 
 type sunnyCheckoutPrecheckRequest struct {
@@ -391,7 +393,7 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 		s.checkoutMu.Lock()
 		s.checkoutCreds[id] = checkoutSecret{Tokens: values, Checkout: checkout, Promotion: promotion}
 		s.checkoutMu.Unlock()
-		payload := map[string]any{"credential_id": id, "credentials": make([]map[string]any, len(creds)), "plan": body.Plan, "link_type": body.LinkType, "country": body.Country, "currency": body.Currency, "retry_count": body.RetryCount, "concurrency": body.Concurrency, "use_promo": body.UsePromo, "promo_campaign": body.PromoCampaign, "promo_country": body.PromoCountry, "promo_code": body.PromoCode, "workspace_name": body.WorkspaceName, "workspace_id": body.WorkspaceID, "seat_quantity": body.SeatQuantity, "price_interval": body.PriceInterval, "credit_quantity": body.CreditQuantity, "pix_tax_id": body.PixTaxID, "pix_auto_kind": body.PixAutoKind, "ideal_bank": body.IdealBank}
+		payload := map[string]any{"credential_id": id, "credentials": make([]map[string]any, len(creds)), "plan": body.Plan, "link_type": body.LinkType, "country": body.Country, "currency": body.Currency, "retry_count": body.RetryCount, "concurrency": body.Concurrency, "use_promo": body.UsePromo, "promo_campaign": body.PromoCampaign, "promo_country": body.PromoCountry, "promo_code": body.PromoCode, "workspace_name": body.WorkspaceName, "workspace_id": body.WorkspaceID, "seat_quantity": body.SeatQuantity, "price_interval": body.PriceInterval, "credit_quantity": body.CreditQuantity, "pix_tax_id": body.PixTaxID, "pix_auto_kind": body.PixAutoKind, "ideal_bank": body.IdealBank, "checkout_mode": body.CheckoutMode, "chain_config": body.ChainConfig}
 		items := payload["credentials"].([]map[string]any)
 		for i, c := range creds {
 			items[i] = map[string]any{"index": i, "email": c.Email, "checkout_kind": c.CheckoutKind, "session_id": c.SessionID, "external": c.External}
@@ -672,7 +674,7 @@ func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, ch
 		"checkout_kind": checkoutKind,
 		"plan":          payload["plan"], "link_type": payload["link_type"], "country": payload["country"], "currency": payload["currency"],
 		"retry_count": payload["retry_count"], "use_promo": payload["use_promo"], "promo_campaign": payload["promo_campaign"], "promo_country": payload["promo_country"],
-		"promo_code": payload["promo_code"], "workspace_name": payload["workspace_name"], "workspace_id": payload["workspace_id"], "seat_quantity": payload["seat_quantity"],
+		"promo_code": payload["promo_code"], "workspace_name": payload["workspace_name"], "workspace_id": payload["workspace_id"], "seat_quantity": payload["seat_quantity"], "checkout_mode": payload["checkout_mode"], "chain_config": payload["chain_config"],
 		"price_interval": payload["price_interval"], "credit_quantity": payload["credit_quantity"], "ideal_bank": payload["ideal_bank"], "pix_tax_id": payload["pix_tax_id"], "pix_auto_kind": payload["pix_auto_kind"],
 	}
 	data, _ := json.Marshal(body)

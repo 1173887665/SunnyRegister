@@ -404,6 +404,8 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleAccounts(w, r, strings.TrimPrefix(p, "/accounts"))
 	case strings.HasPrefix(p, "/tasks"):
 		s.handleTasks(w, r, strings.TrimPrefix(p, "/tasks"))
+	case strings.HasPrefix(p, "/freepp"):
+		s.handleFreePPConfig(w, r, strings.TrimPrefix(p, "/freepp"))
 	case strings.HasPrefix(p, "/config"):
 		s.handleConfig(w, r, strings.TrimPrefix(p, "/config"))
 	case strings.HasPrefix(p, "/provider-definitions"):
