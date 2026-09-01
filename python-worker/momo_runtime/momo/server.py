@@ -52,6 +52,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"jobs": manager.list_jobs("payment")})
         if path == "/api/settings":
             return self.send_json(200, manager.get_settings())
+        if path == "/api/settings/check":
+            return self.send_json(200, manager.check_settings())
         if path.startswith("/api/register-jobs/"):
             job = manager.get_job(_job_id(path, "/api/register-jobs/"))
             return self.send_json(200, job) if job else self.send_json(404, {"error": "momo_register_job_not_found"})
@@ -66,26 +68,39 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/register":
                 count = min(100, max(1, int(data.get("count") or 1)))
+                login_existing = data.get("login_existing") is True or str(data.get("login_existing") or "").strip().lower() in {"1", "true", "yes", "on"}
+                if login_existing and count != 1:
+                    raise ValueError("登录已有账号一次只能提交一个手机号")
                 jobs = []
                 for index in range(count):
                     jobs.append(manager.start_register(
                         phone=str(data.get("phone") or "") if index == 0 else "",
                         source=str(data.get("source") or "pool"),
                         pin=str(data.get("pin") or ""),
-                        login_existing=bool(data.get("login_existing")),
+                        login_existing=login_existing,
                         skip_kyc=data.get("skip_kyc"),
                         proxy=str(data.get("proxy") or ""),
+                        profile=data.get("profile") if isinstance(data.get("profile"), dict) else None,
                     ))
                 return self.send_json(201, jobs[0] if count == 1 else {"id": f"batch-{jobs[0].get('id')}", "status": "running", "jobs": jobs, "count": count})
             if path.startswith("/api/register-jobs/") and path.endswith("/otp"):
                 job = manager.submit_otp(_job_id(path[:-4], "/api/register-jobs/"), str(data.get("code") or data.get("value") or ""))
                 return self.send_json(200, job) if job else self.send_json(400, {"error": "任务不在等待 OTP 状态"})
+            if path.startswith("/api/register-jobs/") and path.endswith("/cancel"):
+                job = manager.cancel_job(_job_id(path[:-7], "/api/register-jobs/"))
+                return self.send_json(200, job) if job else self.send_json(400, {"error": "注册任务已结束或不存在"})
             if path == "/api/payment":
                 job = manager.start_payment(phone=str(data.get("phone") or ""), qr_payload=str(data.get("qr_payload") or ""), amount=str(data.get("amount") or ""), pin=str(data.get("pin") or ""), proxy=str(data.get("proxy") or ""))
                 return self.send_json(201, job)
             if path.startswith("/api/payment-jobs/") and path.endswith("/otp"):
                 job = manager.submit_otp(_job_id(path[:-4], "/api/payment-jobs/"), str(data.get("code") or data.get("value") or ""))
                 return self.send_json(200, job) if job else self.send_json(400, {"error": "支付任务不在等待 OTP 状态"})
+            if path.startswith("/api/payment-jobs/") and path.endswith("/confirm"):
+                job = manager.confirm_payment(_job_id(path[:-8], "/api/payment-jobs/"))
+                return self.send_json(202, job) if job else self.send_json(400, {"error": "支付任务不在等待确认状态"})
+            if path.startswith("/api/payment-jobs/") and path.endswith("/cancel"):
+                job = manager.cancel_job(_job_id(path[:-7], "/api/payment-jobs/"))
+                return self.send_json(200, job) if job else self.send_json(400, {"error": "支付任务已结束或不存在"})
             if path == "/api/phone-pool/import":
                 return self.send_json(201, manager.import_phones(str(data.get("text") or "")))
             if path == "/api/phone-pool/clear":
@@ -97,6 +112,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, {"ok": True, "phone": phone})
             if path == "/api/settings":
                 return self.send_json(200, manager.update_settings(data))
+            if path == "/api/settings/check":
+                return self.send_json(200, manager.check_settings(data))
             if path.startswith("/api/accounts/") and path.endswith("/relogin"):
                 phone = unquote(path[len("/api/accounts/"):-len("/relogin")].strip("/"))
                 return self.send_json(201, manager.relogin(phone))

@@ -9,6 +9,9 @@ from typing import Any
 class MomoProfile:
     phone: str
     display_name: str = ""
+    email: str = ""
+    date_of_birth: str = ""
+    address: str = ""
     country: str = "VN"
     skip_kyc: bool = True
 
