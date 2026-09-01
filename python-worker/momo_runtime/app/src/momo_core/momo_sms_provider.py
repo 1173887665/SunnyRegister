@@ -124,6 +124,14 @@ class SmsBowerProvider(MomoSmsProvider):
     name = "smsbower"
     default_url = "https://smsbower.page/stubs/handler_api.php"
 
+    _service_aliases = {"momo": "hc"}
+    _country_aliases = {"84": "10", "vn": "10", "vietnam": "10", "viet nam": "10"}
+
+    def __init__(self, settings: dict[str, Any]) -> None:
+        super().__init__(settings)
+        self.service = self._service_aliases.get(self.service.lower(), self.service)
+        self.country = self._country_aliases.get(self.country.lower(), self.country)
+
     def _call(self, action: str, **params: Any) -> Any:
         payload = {"api_key": self.api_key, "action": action, **params}
         return _request_json("GET", str(self.settings.get("sms_api_base_url") or self.default_url).rstrip("/"), params=payload, timeout=45, proxy=self.proxy)
@@ -138,6 +146,10 @@ class SmsBowerProvider(MomoSmsProvider):
         aid = next((item for item in values if re.fullmatch(r"\d+", item)), "")
         phone = next((item for item in values if len(re.sub(r"\D", "", item)) >= 9 and item != aid), "")
         if not aid or not phone:
+            if text.strip().upper() in {"WRONG_SERVICE", "BAD_SERVICE"}:
+                raise RuntimeError(f"SMSBower 服务代码无效: {self.service}")
+            if text.strip().upper() in {"WRONG_COUNTRY", "BAD_COUNTRY"}:
+                raise RuntimeError(f"SMSBower 国家代码无效: {self.country}")
             raise RuntimeError(f"SMSBower returned no phone: {str(body)[:240]}")
         return SmsLease(self.name, _normalize_phone(phone), aid, self.api_key)
 

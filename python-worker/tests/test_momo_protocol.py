@@ -11,7 +11,7 @@ from pathlib import Path
 from momo_runtime.app.src.momo_core.momo_manager import MomoManager
 from momo_runtime.app.src.momo_core.momo_protocol import DirectMomoProvider
 from momo_runtime.app.src.momo_core import momo_manager as momo_manager_module
-from momo_runtime.app.src.momo_core.momo_sms_provider import SmsLease
+from momo_runtime.app.src.momo_core.momo_sms_provider import SmsBowerProvider, SmsLease
 
 
 class _ProtocolHandler(BaseHTTPRequestHandler):
@@ -271,3 +271,17 @@ def test_sms_supplier_control_plane_does_not_inherit_wallet_proxy(tmp_path: Path
     lease = manager._acquire_sms_lease("smsbower")
     assert lease.phone == "+84901234567"
     assert captured[0].get("sms_proxy", "") == ""
+
+
+def test_smsbower_maps_momo_display_defaults_to_supplier_codes(monkeypatch) -> None:
+    captured: dict = {}
+    provider = SmsBowerProvider({"sms_api_key": "key-1", "sms_service_code": "momo", "sms_country_code": "84"})
+
+    def fake_call(action: str, **params):
+        captured.update({"action": action, **params})
+        return "ACCESS_NUMBER:activation-1:84901234567"
+
+    monkeypatch.setattr(provider, "_call", fake_call)
+    lease = provider.acquire()
+    assert lease.phone == "+84901234567"
+    assert captured == {"action": "getNumber", "service": "hc", "country": "10"}
