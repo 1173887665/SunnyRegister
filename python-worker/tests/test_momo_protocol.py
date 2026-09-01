@@ -10,6 +10,8 @@ from pathlib import Path
 
 from momo_runtime.app.src.momo_core.momo_manager import MomoManager
 from momo_runtime.app.src.momo_core.momo_protocol import DirectMomoProvider
+from momo_runtime.app.src.momo_core import momo_manager as momo_manager_module
+from momo_runtime.app.src.momo_core.momo_sms_provider import SmsLease
 
 
 class _ProtocolHandler(BaseHTTPRequestHandler):
@@ -247,3 +249,25 @@ def test_manager_uses_embedded_protocol_when_endpoint_is_not_configured(tmp_path
     _wait(manager, registration["id"], {"waiting_otp"})
     manager.submit_otp(registration["id"], "123456")
     assert _wait(manager, registration["id"], {"success"})["status"] == "success"
+
+
+def test_sms_supplier_control_plane_does_not_inherit_wallet_proxy(tmp_path: Path, monkeypatch) -> None:
+    captured: list[dict] = []
+
+    class _SmsProvider:
+        def acquire(self) -> SmsLease:
+            return SmsLease("smsbower", "+84901234567", "activation-1", "key-1")
+
+    def fake_provider(settings: dict) -> _SmsProvider:
+        captured.append(dict(settings))
+        return _SmsProvider()
+
+    monkeypatch.setattr(momo_manager_module, "build_sms_provider", fake_provider)
+    manager = MomoManager(state_file=str(tmp_path / "state.json"), pool_file=str(tmp_path / "pool.json"))
+    manager.update_settings({"phone_source": "smsbower", "sms_api_key": "key-1"})
+    with manager.lock:
+        manager.settings["sms_proxy"] = "http://wallet-proxy.example:8080"
+
+    lease = manager._acquire_sms_lease("smsbower")
+    assert lease.phone == "+84901234567"
+    assert captured[0].get("sms_proxy", "") == ""

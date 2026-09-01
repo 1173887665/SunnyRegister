@@ -733,12 +733,17 @@ class MomoManager:
 
     def _sms_settings_snapshot(self) -> dict[str, Any]:
         with self.lock:
-            return dict(self.settings)
+            snapshot = dict(self.settings)
+        # The configured task proxy is a wallet egress and may reject the SMS
+        # supplier control plane (number purchase/status APIs).  Keep those
+        # requests direct so a healthy supplier is not made unavailable by an
+        # unrelated MoMo/VN proxy.  The wallet task still receives its proxy.
+        snapshot.pop("sms_proxy", None)
+        return snapshot
 
-    def _acquire_sms_lease(self, source: str, proxy: str = "") -> SmsLease:
+    def _acquire_sms_lease(self, source: str) -> SmsLease:
         settings = self._sms_settings_snapshot()
         settings["phone_source"] = source
-        settings["sms_proxy"] = proxy
         api_key = str(settings.get("sms_api_key") or "").strip()
         if not api_key:
             raise ValueError(f"{source} API Key 未配置，请先到 MoMo 系统配置保存")
@@ -751,6 +756,7 @@ class MomoManager:
     @staticmethod
     def _close_lease(lease: SmsLease, snapshot: dict[str, Any], *, success: bool) -> None:
         config = dict(snapshot)
+        config.pop("sms_proxy", None)
         config["phone_source"] = lease.provider
         config["sms_api_key"] = lease.api_key or config.get("sms_api_key", "")
         provider = build_sms_provider(config)
@@ -1067,7 +1073,7 @@ class MomoManager:
             phone_pool_reserved = True
         else:
             selected_proxy = self._select_proxy(proxy)
-            lease = self._acquire_sms_lease(effective_source, selected_proxy)
+            lease = self._acquire_sms_lease(effective_source)
             normalized = _normalize_phone(lease.phone)
             if not normalized:
                 try:
@@ -1078,7 +1084,6 @@ class MomoManager:
         if not selected_proxy:
             selected_proxy = self._select_proxy(proxy)
         sms_config = self._sms_settings_snapshot()
-        sms_config["sms_proxy"] = selected_proxy
         try:
             with self.lock:
                 existing = self.accounts.get(normalized)
@@ -1202,7 +1207,6 @@ class MomoManager:
             snapshot = self._sms_settings_snapshot()
             snapshot["phone_source"] = source
             snapshot["sms_api_key"] = str(job.get("_sms_api_key") or snapshot.get("sms_api_key") or "")
-            snapshot["sms_proxy"] = proxy
             provider = build_sms_provider(snapshot)
             lease = SmsLease(source, phone, str(job.get("sms_activation_id") or ""), str(job.get("_sms_api_key") or ""))
         ignored: set[str] = set()
