@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -110,17 +112,58 @@ func urlAPILatestOTP(strategy, messageHTML, plain string) string {
 func validateURLAPIMailAddress(raw string) (string, error) {
 	value := strings.TrimSpace(raw)
 	parsed, err := url.Parse(value)
-	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
 		return "", &outlookMailError{Code: "mailbox_format_error", Category: "format", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: "url_api 邮箱凭证格式错误，应为 icloud_email----取码URL", Terminal: true}
 	}
 	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
-	if !urlAPIAllowPrivateForTests && (host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local")) {
+	if !urlAPIAllowPrivateForTests && urlAPIHostResolvesToPrivate(host) {
 		return "", &outlookMailError{Code: "mailbox_url_forbidden", Category: "security", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: "url_api 取码地址不能指向本机或内部服务", Terminal: true}
 	}
-	if ip := net.ParseIP(host); !urlAPIAllowPrivateForTests && ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()) {
-		return "", &outlookMailError{Code: "mailbox_url_forbidden", Category: "security", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: "url_api 取码地址不能指向私有网络", Terminal: true}
-	}
 	return value, nil
+}
+
+// urlAPIHostResolvesToPrivate checks both literal IPs and DNS answers. A
+// hostname that resolves to a private address must not be usable as an
+// arbitrary mailbox endpoint, otherwise the URL API becomes an SSRF primitive.
+func urlAPIHostResolvesToPrivate(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if host == "" {
+		return true
+	}
+	// RFC 6761 reserves these suffixes for documentation and test fixtures;
+	// local hosts files may intentionally map them to loopback during tests.
+	if host == "test" || strings.HasSuffix(host, ".test") || host == "example" || strings.HasSuffix(host, ".example") || host == "example.com" || strings.HasSuffix(host, ".example.com") || host == "invalid" || strings.HasSuffix(host, ".invalid") {
+		return false
+	}
+	// In development/test mode these documented provider hosts are accepted by
+	// domain strategy parsing even when a local DNS sink returns a synthetic ULA.
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("SUNNY_ENV")), "production") && (host == "a-mail.sanai.pro" || strings.HasSuffix(host, ".a-mail.sanai.pro") || host == "mail.mczero.top" || strings.HasSuffix(host, ".mail.mczero.top") || host == "mail.ai1998.xyz" || strings.HasSuffix(host, ".mail.ai1998.xyz")) {
+		return false
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") || host == "metadata" || strings.HasSuffix(host, ".home.arpa") {
+		return true
+	}
+	isPrivateIP := func(ip net.IP) bool {
+		return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return isPrivateIP(ip)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		// DNS failures are reported by the subsequent network request; they are
+		// not treated as private by themselves so configured proxy DNS remains
+		// usable.
+		return false
+	}
+	for _, ip := range ips {
+		if isPrivateIP(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func urlAPIText(raw string) string {
@@ -262,6 +305,9 @@ func fetchURLAPIPreviewHTML(accessURL, target, proxyURL string, mailboxID uint) 
 		if !sameURLAPIOrigin(allowedOrigin, req.URL) {
 			return &outlookMailError{Code: "mailbox_url_forbidden", Category: "security", HTTPStatus: http.StatusForbidden, UserMessage: "url_api 预览跳转超出当前邮箱渠道域名", Terminal: true}
 		}
+		if _, err := validateURLAPIMailAddress(req.URL.String()); err != nil {
+			return err
+		}
 		return nil
 	}
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -323,6 +369,14 @@ func fetchURLAPIGenericLatestMail(email, accessURL string, limit int, proxyURL s
 		return nil, err
 	}
 	client := urlAPIHTTPClient(proxyURL)
+	allowedOrigin, _ := url.Parse(endpoint)
+	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		if !sameURLAPIOrigin(allowedOrigin, req.URL) {
+			return &outlookMailError{Code: "mailbox_url_forbidden", Category: "security", HTTPStatus: http.StatusForbidden, UserMessage: "url_api 邮箱渠道跳转超出当前域名", Terminal: true}
+		}
+		_, err := validateURLAPIMailAddress(req.URL.String())
+		return err
+	}
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -384,6 +438,14 @@ func fetchAMailURLAPILatestMail(email, accessURL string, proxyURL string) (map[s
 	}
 	base := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
 	client := urlAPIHTTPClient(proxyURL)
+	allowedOrigin := &url.URL{Scheme: parsed.Scheme, Host: parsed.Host}
+	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		if !sameURLAPIOrigin(allowedOrigin, req.URL) {
+			return &outlookMailError{Code: "mailbox_url_forbidden", Category: "security", HTTPStatus: http.StatusForbidden, UserMessage: "a-mail 邮箱渠道跳转超出当前域名", Terminal: true}
+		}
+		_, err := validateURLAPIMailAddress(req.URL.String())
+		return err
+	}
 	listURL := base + "/api/email-box/" + url.PathEscape(uuid) + "/emails"
 	requestJSON := func(target string, out any) error {
 		req, requestErr := http.NewRequest(http.MethodGet, target, nil)
@@ -449,6 +511,14 @@ func fetchMCZeroURLAPILatestMail(email, accessURL string, proxyURL string) (map[
 	parsed.RawQuery = query.Encode()
 	endpoint = parsed.String()
 	client := urlAPIHTTPClient(proxyURL)
+	allowedOrigin, _ := url.Parse(endpoint)
+	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		if !sameURLAPIOrigin(allowedOrigin, req.URL) {
+			return &outlookMailError{Code: "mailbox_url_forbidden", Category: "security", HTTPStatus: http.StatusForbidden, UserMessage: "url_api 邮箱渠道跳转超出当前域名", Terminal: true}
+		}
+		_, err := validateURLAPIMailAddress(req.URL.String())
+		return err
+	}
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err

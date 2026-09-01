@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -379,9 +381,26 @@ func toAccountRecord(a Account, graph map[string]any) AccountRecord {
 	}
 }
 
-func persistGraph(db *gorm.DB, a *Account, lifecycle string, summary map[string]any, credentialUpdates map[string]any, primaryToken string, providerAccounts []map[string]any, providerResources []map[string]any, replacePA, replacePR bool) {
+func persistGraph(db *gorm.DB, a *Account, lifecycle string, summary map[string]any, credentialUpdates map[string]any, primaryToken string, providerAccounts []map[string]any, providerResources []map[string]any, replacePA, replacePR bool) (err error) {
+	if db == nil || a == nil || a.ID == 0 {
+		return fmt.Errorf("account graph requires a persisted account")
+	}
+	tx := db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback().Error
+		}
+	}()
+	db = tx
+
 	var current AccountOverview
-	db.Where("account_id = ?", a.ID).First(&current)
+	if queryErr := db.Where("account_id = ?", a.ID).First(&current).Error; queryErr != nil && !errors.Is(queryErr, gorm.ErrRecordNotFound) {
+		return queryErr
+	}
 	base := jsonMap(current.SummaryJSON)
 	for k, v := range summary {
 		base[k] = v
@@ -404,10 +423,14 @@ func persistGraph(db *gorm.DB, a *Account, lifecycle string, summary map[string]
 		ov.CreatedAt = current.CreatedAt
 		ov.CheckedAt = current.CheckedAt
 	}
-	db.Save(&ov)
+	if err := db.Save(&ov).Error; err != nil {
+		return err
+	}
 
 	existing := []AccountCredential{}
-	db.Where("account_id = ? AND scope = ?", a.ID, "platform").Find(&existing)
+	if err := db.Where("account_id = ? AND scope = ?", a.ID, "platform").Find(&existing).Error; err != nil {
+		return err
+	}
 	merged := map[string]AccountCredential{}
 	for _, c := range existing {
 		merged[c.Key] = c
@@ -426,7 +449,9 @@ func persistGraph(db *gorm.DB, a *Account, lifecycle string, summary map[string]
 		merged[key] = AccountCredential{AccountID: a.ID, Scope: "platform", ProviderName: a.Platform, CredentialType: "token", Key: key, Value: primaryToken, IsPrimary: true, Source: "accounts.api", MetadataJSON: "{}"}
 	}
 	if len(merged) > 0 {
-		db.Where("account_id = ? AND scope = ?", a.ID, "platform").Delete(&AccountCredential{})
+		if err := db.Where("account_id = ? AND scope = ?", a.ID, "platform").Delete(&AccountCredential{}).Error; err != nil {
+			return err
+		}
 		keys := make([]string, 0, len(merged))
 		for key := range merged {
 			keys = append(keys, key)
@@ -459,33 +484,48 @@ func persistGraph(db *gorm.DB, a *Account, lifecycle string, summary map[string]
 			if c.MetadataJSON == "" {
 				c.MetadataJSON = "{}"
 			}
-			db.Create(&c)
+			if err := db.Create(&c).Error; err != nil {
+				return err
+			}
 		}
 	}
 	if providerAccounts != nil {
 		if replacePA {
-			db.Where("account_id = ?", a.ID).Delete(&ProviderAccount{})
+			if err := db.Where("account_id = ?", a.ID).Delete(&ProviderAccount{}).Error; err != nil {
+				return err
+			}
 		}
 		for _, item := range providerAccounts {
-			db.Create(&ProviderAccount{
+			if err := db.Create(&ProviderAccount{
 				AccountID: a.ID, ProviderType: fallback(text(item["provider_type"]), "mailbox"), ProviderName: text(item["provider_name"]),
 				LoginIdentifier: text(item["login_identifier"]), DisplayName: text(item["display_name"]),
 				CredentialsJSON: dumpJSON(item["credentials"]), MetadataJSON: dumpJSON(item["metadata"]),
-			})
+			}).Error; err != nil {
+				return err
+			}
 		}
 	}
 	if providerResources != nil {
 		if replacePR {
-			db.Where("account_id = ?", a.ID).Delete(&ProviderResource{})
+			if err := db.Where("account_id = ?", a.ID).Delete(&ProviderResource{}).Error; err != nil {
+				return err
+			}
 		}
 		for _, item := range providerResources {
-			db.Create(&ProviderResource{
+			if err := db.Create(&ProviderResource{
 				AccountID: a.ID, ProviderType: fallback(text(item["provider_type"]), "mailbox"), ProviderName: text(item["provider_name"]),
 				ResourceType: fallback(text(item["resource_type"]), "resource"), ResourceIdentifier: text(item["resource_identifier"]),
 				Handle: text(item["handle"]), DisplayName: text(item["display_name"]), MetadataJSON: dumpJSON(item["metadata"]),
-			})
+			}).Error; err != nil {
+				return err
+			}
 		}
 	}
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func fallback(v, d string) string {
@@ -532,6 +572,11 @@ func (s *Server) listAccountRecords(platform, status, email string, page, pageSi
 		}
 	}
 	total := len(all)
+	// Avoid integer overflow when a client supplies an extreme page number.
+	maxInt := int(^uint(0) >> 1)
+	if page > maxInt/pageSize+1 {
+		return total, []AccountRecord{}
+	}
 	start := (page - 1) * pageSize
 	if start >= total {
 		return total, []AccountRecord{}
@@ -563,7 +608,10 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request, rest str
 				writeError(w, 400, "platform/email 涓嶈兘涓虹┖")
 				return
 			}
-			s.db.Create(&a)
+			if err := s.db.Create(&a).Error; err != nil {
+				writeError(w, http.StatusConflict, "账号已存在或无法保存")
+				return
+			}
 			summary := map[string]any{}
 			for k, v := range mapFromAny(body["overview"]) {
 				summary[k] = v
@@ -577,7 +625,10 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request, rest str
 			if intValue(body["trial_end_time"], 0) > 0 {
 				summary["trial_end_time"] = intValue(body["trial_end_time"], 0)
 			}
-			persistGraph(s.db, &a, fallback(text(body["lifecycle_status"]), "registered"), summary, mapFromAny(body["credentials"]), text(body["primary_token"]), listMapFromAny(body["provider_accounts"]), listMapFromAny(body["provider_resources"]), true, true)
+			if err := persistGraph(s.db, &a, fallback(text(body["lifecycle_status"]), "registered"), summary, mapFromAny(body["credentials"]), text(body["primary_token"]), listMapFromAny(body["provider_accounts"]), listMapFromAny(body["provider_resources"]), true, true); err != nil {
+				writeError(w, http.StatusInternalServerError, "账号关联数据保存失败")
+				return
+			}
 			graph := loadAccountGraphs(s.db, []uint{a.ID})[a.ID]
 			writeJSON(w, 200, toAccountRecord(a, graph))
 		default:
@@ -622,7 +673,11 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request, rest str
 		return
 	}
 	if rest == "/import" && r.Method == http.MethodPost {
-		body, _ := parseBody(r)
+		body, err := parseBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		platform := text(body["platform"])
 		lines := stringSlice(body["lines"])
 		created := 0
@@ -667,7 +722,11 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request, rest str
 				continue
 			}
 			a := Account{Platform: platform, Email: email, Password: password}
-			s.db.Create(&a)
+			if err := s.db.Create(&a).Error; err != nil {
+				// Duplicate/invalid rows must not flow into persistGraph with ID 0;
+				// otherwise credentials could be attached to an unrelated record.
+				continue
+			}
 			extra := map[string]any{}
 			if strings.TrimSpace(extraRaw) != "" {
 				if json.Unmarshal([]byte(extraRaw), &extra) != nil {
@@ -691,7 +750,11 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request, rest str
 		return
 	}
 	if rest == "/ctf-gpt-plus/export-status" && r.Method == http.MethodPost {
-		body, _ := parseBody(r)
+		body, err := parseBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		ids := uintSlice(body["ids"])
 		exported := boolValue(body["exported"], true)
 		for _, id := range ids {
@@ -722,7 +785,11 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request, rest str
 				return
 			}
 			if parts[2] == "complete" && r.Method == http.MethodPost {
-				body, _ := parseBody(r)
+				body, err := parseBody(r)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
 				persistGraph(s.db, &a, "", map[string]any{"codex_oauth_callback_url": text(body["callback_url"]), "codex_oauth_completed": true}, nil, "", nil, nil, false, false)
 				writeJSON(w, 200, map[string]any{"ok": true})
 				return
@@ -733,14 +800,21 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request, rest str
 			graph := loadAccountGraphs(s.db, []uint{a.ID})[a.ID]
 			writeJSON(w, 200, toAccountRecord(a, graph))
 		case http.MethodPatch:
-			body, _ := parseBody(r)
+			body, err := parseBody(r)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 			if _, ok := body["password"]; ok {
 				a.Password = text(body["password"])
 			}
 			if _, ok := body["user_id"]; ok {
 				a.UserID = text(body["user_id"])
 			}
-			s.db.Save(&a)
+			if err := s.db.Save(&a).Error; err != nil {
+				writeError(w, http.StatusInternalServerError, "账号保存失败")
+				return
+			}
 			summary := mapFromAny(body["overview"])
 			if _, ok := body["cashier_url"]; ok {
 				summary["cashier_url"] = text(body["cashier_url"])
@@ -751,7 +825,10 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request, rest str
 			if _, ok := body["trial_end_time"]; ok {
 				summary["trial_end_time"] = intValue(body["trial_end_time"], 0)
 			}
-			persistGraph(s.db, &a, text(body["lifecycle_status"]), summary, mapFromAny(body["credentials"]), text(body["primary_token"]), listMapPtr(body["provider_accounts"]), listMapPtr(body["provider_resources"]), boolValue(body["replace_provider_accounts"], false), boolValue(body["replace_provider_resources"], false))
+			if err := persistGraph(s.db, &a, text(body["lifecycle_status"]), summary, mapFromAny(body["credentials"]), text(body["primary_token"]), listMapPtr(body["provider_accounts"]), listMapPtr(body["provider_resources"]), boolValue(body["replace_provider_accounts"], false), boolValue(body["replace_provider_resources"], false)); err != nil {
+				writeError(w, http.StatusInternalServerError, "账号关联数据保存失败")
+				return
+			}
 			graph := loadAccountGraphs(s.db, []uint{a.ID})[a.ID]
 			writeJSON(w, 200, toAccountRecord(a, graph))
 		case http.MethodDelete:
@@ -985,7 +1062,11 @@ func (s *Server) sub2APIAccountNotes(item AccountRecord) string {
 }
 
 func (s *Server) handleBatchExport(w http.ResponseWriter, r *http.Request, format string) {
-	body, _ := parseBody(r)
+	body, err := parseBody(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	items := s.selectedAccounts(body, "chatgpt")
 	switch format {
 	case "csv":
@@ -1041,7 +1122,10 @@ func (s *Server) handleBatchExport(w http.ResponseWriter, r *http.Request, forma
 		for _, item := range kiroItems {
 			accounts = append(accounts, map[string]any{"id": randomID("kiro"), "email": item.Email, "nickname": strings.Split(item.Email, "@")[0], "accessToken": credentialValue(item, "accessToken", "access_token", "legacy_token"), "refreshToken": credentialValue(item, "refreshToken", "refresh_token"), "clientId": credentialValue(item, "clientId", "client_id"), "clientSecret": credentialValue(item, "clientSecret", "client_secret"), "authMethod": "idc", "provider": "BuilderId", "region": "us-east-1", "startUrl": "https://view.awsapps.com/start", "expiresAt": time.Now().Unix() + 3600, "machineId": randomID("machine"), "weight": 0, "enabled": true})
 		}
-		writeTextFile(w, timestampName("kiro_go_config", "json"), "application/json", []byte(dumpJSONPretty(map[string]any{"password": "changeme", "port": 8080, "host": "0.0.0.0", "requireApiKey": false, "accounts": accounts})))
+		writeTextFile(w, timestampName("kiro_go_config", "json"), "application/json", []byte(dumpJSONPretty(map[string]any{
+			"password": generatedExportSecret("KIRO_EXPORT_PASSWORD", "kiro"), "port": 8080, "host": "0.0.0.0", "requireApiKey": true,
+			"accounts": accounts,
+		})))
 	case "any2api":
 		writeTextFile(w, timestampName("any2api_admin", "json"), "application/json", []byte(dumpJSONPretty(s.any2apiConfig(items))))
 	case "cpa":
@@ -1087,5 +1171,16 @@ func (s *Server) any2apiConfig(items []AccountRecord) map[string]any {
 	if len(grok) > 0 {
 		providers["grokTokens"] = grok
 	}
-	return map[string]any{"settings": map[string]any{"adminPassword": "changeme", "apiKey": "0000", "defaultProvider": "kiro"}, "providers": providers}
+	return map[string]any{"settings": map[string]any{
+		"adminPassword":   generatedExportSecret("ANY2API_EXPORT_ADMIN_PASSWORD", "any2api-admin"),
+		"apiKey":          generatedExportSecret("ANY2API_EXPORT_API_KEY", "any2api-api"),
+		"defaultProvider": "kiro",
+	}, "providers": providers}
+}
+
+func generatedExportSecret(envKey, prefix string) string {
+	if value := strings.TrimSpace(os.Getenv(envKey)); value != "" {
+		return value
+	}
+	return randomID(prefix)
 }

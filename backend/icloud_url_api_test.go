@@ -166,6 +166,26 @@ func TestURLAPIPreviewRejectsCrossOriginNavigation(t *testing.T) {
 	}
 }
 
+func TestValidateURLAPIMailAddressRejectsPrivateTargets(t *testing.T) {
+	for _, raw := range []string{
+		"http://127.0.0.1/inbox",
+		"http://10.0.0.5/inbox",
+		"http://[::1]/inbox",
+		"http://service.local/inbox",
+		"http://metadata/inbox",
+	} {
+		if _, err := validateURLAPIMailAddress(raw); err == nil {
+			t.Fatalf("private URL %q was accepted", raw)
+		}
+	}
+}
+
+func TestValidateURLAPIMailAddressRejectsURLCredentials(t *testing.T) {
+	if _, err := validateURLAPIMailAddress("https://user:pass@example.test/inbox"); err == nil {
+		t.Fatal("URL userinfo must not be accepted as a mailbox credential")
+	}
+}
+
 func TestSanitizeURLAPIPreviewHTMLKeepsLayoutAndAddsNavigationBridge(t *testing.T) {
 	raw := `<html><head><style>.mail{color:blue}</style><script>alert("bad")</script></head><body onclick="bad()"><iframe src="https://evil.test"></iframe><a href="/all">All mail</a><form action="/search" method="get"><input name="q" value="otp"><button>Search</button></form></body></html>`
 	page := sanitizeURLAPIPreviewHTML(raw, "https://mail.example.test/inbox/key", 42)

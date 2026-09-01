@@ -87,3 +87,23 @@ func TestHandlePaymentsRejectsPathTraversal(t *testing.T) {
 		}
 	}
 }
+
+func TestHandlePaymentsRejectsOversizedBodyWithoutForwarding(t *testing.T) {
+	forwarded := false
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer worker.Close()
+	t.Setenv("PYTHON_WORKER_URL", worker.URL)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/payments/gopay/payment", strings.NewReader(`{"payload":"`+strings.Repeat("x", paymentRequestBodyLimit)+`"}`))
+	recorder := httptest.NewRecorder()
+	(&Server{}).handlePayments(recorder, req, "/gopay/payment")
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusRequestEntityTooLarge)
+	}
+	if forwarded {
+		t.Fatal("oversized payment request was forwarded")
+	}
+}

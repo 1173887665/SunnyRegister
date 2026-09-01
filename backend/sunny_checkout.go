@@ -264,7 +264,7 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 	}
 	if len(parts) == 1 && parts[0] == "precheck" && r.Method == http.MethodPost {
 		var body sunnyCheckoutPrecheckRequest
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		if err := decodeJSONBody(r, 1<<20, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "请求格式无效")
 			return
 		}
@@ -329,7 +329,7 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 	}
 	if len(parts) == 0 && r.Method == http.MethodPost {
 		var body sunnyCheckoutRequest
-		if err := json.NewDecoder(io.LimitReader(r.Body, 2<<20)).Decode(&body); err != nil {
+		if err := decodeJSONBody(r, 2<<20, &body); err != nil {
 			writeError(w, 400, "请求格式无效")
 			return
 		}
@@ -436,7 +436,17 @@ func (s *Server) proxySunnyGcashOrder(w http.ResponseWriter, r *http.Request, pa
 	target.RawQuery = r.URL.RawQuery
 	var body io.Reader
 	if r.Method == http.MethodPost {
-		body = io.LimitReader(r.Body, 1<<20)
+		defer r.Body.Close()
+		raw, readErr := io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
+		if readErr != nil {
+			writeError(w, http.StatusBadRequest, "读取提链回调请求失败")
+			return
+		}
+		if len(raw) > 1<<20 {
+			writeError(w, http.StatusRequestEntityTooLarge, "提链回调请求体超过 1048576 字节限制")
+			return
+		}
+		body = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), body)
 	if err != nil {
@@ -538,21 +548,31 @@ func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
 	}
 	result := map[string]any{"requested": len(rows), "success": 0, "failed": 0, "items": []any{}, "errors": []any{}}
 	var mu sync.Mutex
-	sem := make(chan struct{}, intValue(payload["concurrency"], 3))
+	concurrency := intValue(payload["concurrency"], 3)
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if concurrency > 100 {
+		concurrency = 100
+	}
+	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for idx, row := range rows {
 		idx, row := idx, row
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-time.After(500 * time.Millisecond):
-				if s.taskCancelled(task) {
-					return
+			for {
+				select {
+				case sem <- struct{}{}:
+					goto acquired
+				case <-time.After(500 * time.Millisecond):
+					if s.checkoutTaskCancelRequested(task.ID) {
+						return
+					}
 				}
-				sem <- struct{}{}
 			}
+		acquired:
 			defer func() { <-sem }()
 			token := s.checkoutCredential(credentialID, intValue(row["index"], idx))
 			email := text(row["email"])
@@ -708,7 +728,7 @@ func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, ch
 	workerLogSequence := 0
 	s.appendCheckoutProgress(task, email, accountID, rowIndex, 8, "已提交提链引擎")
 	for poll := 0; poll < 800; poll++ {
-		if sCancelled := task != nil && task.ID != "" && task.Status == TaskCancelled; sCancelled || (task != nil && s.taskCancelled(task)) {
+		if task != nil && task.ID != "" && s.checkoutTaskCancelRequested(task.ID) {
 			_ = cancelSunnyCheckoutWorkerJob(ctx, workerURL, jobID)
 			return nil, fmt.Errorf("任务已取消")
 		}
@@ -753,6 +773,21 @@ func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, ch
 	}
 	_ = cancelSunnyCheckoutWorkerJob(context.Background(), workerURL, jobID)
 	return nil, fmt.Errorf("提链引擎执行超时")
+}
+
+// checkoutTaskCancelRequested only observes cancellation state. Checkout
+// attempts run concurrently, so they must not call taskCancelled, which
+// mutates the shared Task value and can race with progress persistence.
+func (s *Server) checkoutTaskCancelRequested(taskID string) bool {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" || s == nil || s.db == nil {
+		return false
+	}
+	var current Task
+	if err := s.db.Select("status").Where("id = ?", taskID).First(&current).Error; err != nil {
+		return false
+	}
+	return current.Status == TaskCancelRequested || current.Status == TaskCancelled
 }
 
 func minInt(left, right int) int {

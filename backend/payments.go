@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -63,7 +65,17 @@ func (s *Server) proxyPaymentWorker(w http.ResponseWriter, r *http.Request, prov
 	target.RawQuery = r.URL.RawQuery
 	var body io.Reader
 	if r.Method == http.MethodPost {
-	body = io.LimitReader(r.Body, paymentRequestBodyLimit)
+		defer r.Body.Close()
+		raw, readErr := io.ReadAll(io.LimitReader(r.Body, paymentRequestBodyLimit+1))
+		if readErr != nil {
+			writeError(w, http.StatusBadRequest, "读取支付请求失败")
+			return
+		}
+		if len(raw) > paymentRequestBodyLimit {
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("支付请求体超过 %d 字节限制", paymentRequestBodyLimit))
+			return
+		}
+		body = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), body)
 	if err != nil {

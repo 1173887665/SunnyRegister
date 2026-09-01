@@ -109,3 +109,29 @@ func TestCrossOriginMutationRejected(t *testing.T) {
 		t.Fatalf("cross-origin status = %d", rec.Code)
 	}
 }
+
+func TestSameHostOriginMustMatchRequestScheme(t *testing.T) {
+	s := newAuthTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{}`))
+	req.Host = "register.example.com"
+	req.Header.Set("Origin", "https://register.example.com")
+	rec := httptest.NewRecorder()
+	s.serveHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("scheme-mismatched origin status = %d", rec.Code)
+	}
+}
+
+func TestTrustedProxyProtoAllowsConfiguredHttpsOrigin(t *testing.T) {
+	t.Setenv("SUNNY_TRUST_PROXY_HEADERS", "1")
+	s := newAuthTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{}`))
+	req.Host = "register.example.com"
+	req.Header.Set("Origin", "https://register.example.com")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec := httptest.NewRecorder()
+	s.serveHTTP(rec, req)
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("trusted proxy https origin was rejected: %s", rec.Body.String())
+	}
+}

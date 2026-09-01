@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
@@ -68,11 +69,45 @@ TASK_IDLE_TIMEOUT_SECONDS = max(60, int(os.getenv("SUNNY_TASK_IDLE_TIMEOUT_SECON
 TASK_WATCH_INTERVAL_SECONDS = max(5, int(os.getenv("SUNNY_TASK_WATCH_INTERVAL_SECONDS", "15")))
 
 app = FastAPI(title="SunnyRegister Python Automation Worker", version="1.0.0")
+MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
+MAX_UPSTREAM_RESPONSE_BYTES = 8 * 1024 * 1024
 _state_lock = threading.Lock()
 _running: set[str] = set()
 _processes: dict[str, subprocess.Popen] = {}
 _gopay_server = None
 _momo_server = None
+
+
+@app.middleware("http")
+async def limit_request_body(request: Request, call_next):
+    """Bound request bodies before FastAPI/Pydantic or proxy handlers consume them."""
+    if request.method in {"POST", "PUT", "PATCH"}:
+        raw_length = request.headers.get("content-length", "").strip()
+        if raw_length:
+            try:
+                if int(raw_length) > MAX_REQUEST_BODY_BYTES:
+                    return JSONResponse({"detail": "request body too large"}, status_code=413)
+            except ValueError:
+                return JSONResponse({"detail": "invalid content-length"}, status_code=400)
+        body = bytearray()
+        try:
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > MAX_REQUEST_BODY_BYTES:
+                    return JSONResponse({"detail": "request body too large"}, status_code=413)
+        except Exception as exc:
+            # Keep malformed/disconnected requests from reaching endpoint code
+            # with a partially consumed body.
+            return JSONResponse({"detail": f"request body read failed: {exc}"}, status_code=400)
+        request._body = bytes(body)
+    return await call_next(request)
+
+
+def _read_upstream_body(stream, limit: int = MAX_UPSTREAM_RESPONSE_BYTES) -> bytes:
+    data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(status_code=502, detail="upstream response too large")
+    return data
 
 
 def _check_token(auth: str | None) -> None:
@@ -116,9 +151,9 @@ async def gopay_proxy(path: str, request: Request, authorization: str | None = H
     def send() -> Response:
         try:
             with urllib.request.urlopen(upstream, timeout=300) as result:
-                return Response(content=result.read(), status_code=result.status, media_type="application/json")
+                return Response(content=_read_upstream_body(result), status_code=result.status, media_type="application/json")
         except urllib.error.HTTPError as exc:
-            return Response(content=exc.read(), status_code=exc.code, media_type="application/json")
+            return Response(content=_read_upstream_body(exc), status_code=exc.code, media_type="application/json")
         except OSError as exc:
             raise HTTPException(status_code=502, detail=f"GoPay service unavailable: {exc}") from exc
 
@@ -145,9 +180,9 @@ async def momo_proxy(path: str, request: Request, authorization: str | None = He
     def send() -> Response:
         try:
             with urllib.request.urlopen(upstream, timeout=300) as result:
-                return Response(content=result.read(), status_code=result.status, media_type="application/json")
+                return Response(content=_read_upstream_body(result), status_code=result.status, media_type="application/json")
         except urllib.error.HTTPError as exc:
-            return Response(content=exc.read(), status_code=exc.code, media_type="application/json")
+            return Response(content=_read_upstream_body(exc), status_code=exc.code, media_type="application/json")
         except OSError as exc:
             raise HTTPException(status_code=502, detail=f"MoMo service unavailable: {exc}") from exc
 

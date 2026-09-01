@@ -236,16 +236,48 @@ func stringSlice(v any) []string {
 	return out
 }
 
-func parseBody(r *http.Request) (map[string]any, error) {
+const maxJSONBodySize = 2 << 20
+
+func decodeJSONBody(r *http.Request, limit int64, destination any) error {
+	if r == nil || r.Body == nil {
+		return io.EOF
+	}
 	defer r.Body.Close()
-	dec := json.NewDecoder(r.Body)
+	if limit <= 0 {
+		limit = maxJSONBodySize
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil {
+		return fmt.Errorf("read request body: %w", err)
+	}
+	if int64(len(raw)) > limit {
+		return fmt.Errorf("request body exceeds %d bytes", limit)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
+	if err := dec.Decode(destination); err != nil {
+		return err
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("request body contains multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
+func parseBody(r *http.Request) (map[string]any, error) {
+	if r == nil || r.Body == nil {
+		return map[string]any{}, nil
+	}
 	var body map[string]any
-	if err := dec.Decode(&body); err != nil {
+	if err := decodeJSONBody(r, maxJSONBodySize, &body); err != nil {
 		if err == io.EOF {
 			return map[string]any{}, nil
 		}
-		return nil, err
+		return map[string]any{}, err
 	}
 	if body == nil {
 		body = map[string]any{}

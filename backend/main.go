@@ -321,14 +321,27 @@ func (s *Server) validRequestOrigin(r *http.Request) bool {
 		return true
 	}
 	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return false
 	}
-	if strings.EqualFold(u.Host, r.Host) {
+	requestScheme := "http"
+	if r.TLS != nil {
+		requestScheme = "https"
+	}
+	if raw := strings.TrimSpace(os.Getenv("SUNNY_TRUST_PROXY_HEADERS")); raw == "1" || strings.EqualFold(raw, "true") {
+		if forwarded := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])); forwarded == "http" || forwarded == "https" {
+			requestScheme = forwarded
+		}
+	}
+	if strings.EqualFold(u.Host, r.Host) && strings.EqualFold(u.Scheme, requestScheme) {
 		return true
 	}
 	publicOrigin := strings.TrimRight(strings.TrimSpace(os.Getenv("SUNNY_PUBLIC_ORIGIN")), "/")
-	return publicOrigin != "" && strings.EqualFold(strings.TrimRight(origin, "/"), publicOrigin)
+	if publicOrigin == "" {
+		return false
+	}
+	configured, parseErr := url.Parse(publicOrigin)
+	return parseErr == nil && configured.Host != "" && strings.EqualFold(configured.Scheme, u.Scheme) && strings.EqualFold(configured.Host, u.Host)
 }
 
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
