@@ -181,6 +181,10 @@ def checkout_status(job_id: str) -> dict[str, Any] | None:
         "progress": int(job.get("percent") or 0),
         "message": str(job.get("text") or ""),
         "error": _safe_error(job.get("error")),
+        "queue_position": int(job.get("queue_position") or 0),
+        "dispatched": bool(job.get("dispatched")),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
         "logs": [
             {
                 "sequence": int(item.get("sequence") or sequence),

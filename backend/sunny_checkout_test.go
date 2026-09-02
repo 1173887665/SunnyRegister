@@ -1,9 +1,35 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestSunnyCheckoutTimeoutConfigIsBounded(t *testing.T) {
+	original, hadOriginal := os.LookupEnv("SUNNY_CHECKOUT_TIMEOUT_SECONDS")
+	t.Cleanup(func() {
+		if hadOriginal {
+			_ = os.Setenv("SUNNY_CHECKOUT_TIMEOUT_SECONDS", original)
+		} else {
+			_ = os.Unsetenv("SUNNY_CHECKOUT_TIMEOUT_SECONDS")
+		}
+	})
+
+	_ = os.Setenv("SUNNY_CHECKOUT_TIMEOUT_SECONDS", "10")
+	if got := sunnyCheckoutTimeout(); got != 5*time.Minute {
+		t.Fatalf("minimum timeout = %s, want 5m", got)
+	}
+	_ = os.Setenv("SUNNY_CHECKOUT_TIMEOUT_SECONDS", "999999")
+	if got := sunnyCheckoutTimeout(); got != 2*time.Hour {
+		t.Fatalf("maximum timeout = %s, want 2h", got)
+	}
+	_ = os.Setenv("SUNNY_CHECKOUT_TIMEOUT_SECONDS", "invalid")
+	if got := sunnyCheckoutTimeout(); got != 30*time.Minute {
+		t.Fatalf("invalid timeout = %s, want 30m default", got)
+	}
+}
 
 func TestSplitCheckoutPoolNormalizesAndLimits(t *testing.T) {
 	items, err := splitCheckoutPool("http://127.0.0.1:8000\nhttp://127.0.0.1:8000\n")

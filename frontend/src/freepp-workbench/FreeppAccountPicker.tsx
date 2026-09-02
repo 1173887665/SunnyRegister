@@ -22,6 +22,7 @@ type Session = Record<string, any>;
 type BusyAction = "access-token-check" | "refresh-at" | "health-check" | "subscription-check" | "trial-check" | "checkout-probe" | "payment-probe" | "add-ls" | "rebind" | "sub2-import" | "export" | "acquire-rt" | "chain-start" | null;
 type ProgressChain = { chain_id: string; branch: string; email?: string; account_id?: number; index?: number; progress: number; current_log?: string; status: "pending" | "running" | "succeeded" | "failed"; stages?: Record<string, any>; reasonText?: string; reason?: string };
 type ChainProgress = { visible: boolean; branch: string; branchIndex: number; branchTotal: number; total: number; done: number; percent: number; success: number; failure: number; status: "idle" | "running" | "success" | "failed"; chains: ProgressChain[] };
+type ChainTaskMeta = { taskId: string; branch: string; branchIndex: number; branchTotal: number; accountTotal: number };
 
 const PAGE_SIZES = [10, 20, 50, 100];
 const STATUS_OPTIONS = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "注册中", "登录刷新", "失败", "已取消", "禁用"];
@@ -30,6 +31,9 @@ const TRIAL_OPTIONS = ["unknown", "eligible", "ineligible"];
 const CHECKOUT_OPTIONS = ["unknown", "oaics", "cs_live", "cs_test"];
 const BOOLEAN_FILTER_OPTIONS = ["present", "missing"];
 const TRIAL_COUNTRY_OPTIONS = ["US", "GB", "AU", "VN", "BR", "NL", "IN", "KR", "PL", "CH", "ES", "ID", "PH", "JP"];
+const CHECKOUT_POLL_HARD_TIMEOUT_MS = 25 * 60 * 1000;
+const CHECKOUT_POLL_IDLE_TIMEOUT_MS = 3 * 60 * 1000;
+const CHAIN_TASK_STORAGE_KEY = "sunnyregister.chainTasks.v1";
 const COUNTRY_CURRENCIES: Record<string, string> = {
   AE: "AED", AU: "AUD", BR: "BRL", CA: "CAD", CH: "CHF", ES: "EUR", GB: "GBP",
   ID: "IDR", IN: "INR", JP: "JPY", KR: "KRW", MX: "MXN", NL: "EUR", PH: "PHP",
@@ -193,7 +197,13 @@ function summarizeProgressChains(chains: ProgressChain[]) {
   const success = chains.filter((chain) => chain.status === "succeeded").length;
   const failure = chains.filter((chain) => chain.status === "failed").length;
   const percent = chains.length
-    ? Math.round(chains.reduce((sum, chain) => sum + Math.max(0, Math.min(100, Number(chain.progress) || 0)), 0) / chains.length)
+    ? Math.round(chains.reduce((sum, chain) => {
+      // A progress event can reach 100 before its result event. Keep the
+      // aggregate below 100 while the account is still running so the UI
+      // cannot show a completed bar followed by a timeout warning.
+      const value = Math.max(0, Math.min(chain.status === "pending" || chain.status === "running" ? 99 : 100, Number(chain.progress) || 0));
+      return sum + value;
+    }, 0) / chains.length)
     : 0;
   return { done, success, failure, percent };
 }
@@ -202,7 +212,7 @@ function sessionChainProgress(session: Session, progress: ChainProgress) {
   const identity = { email: normalizedEmail(session.email || session.mailbox), accountId: Number(session.id || session.account_id || 0), index: -1 };
   const chains = progress.chains.filter((chain) => progressChainMatches(chain, identity));
   if (!chains.length) return null;
-  const percent = Math.round(chains.reduce((sum, chain) => sum + Math.max(0, Math.min(100, Number(chain.progress) || 0)), 0) / chains.length);
+  const percent = Math.round(chains.reduce((sum, chain) => sum + Math.max(0, Math.min(chain.status === "pending" || chain.status === "running" ? 99 : 100, Number(chain.progress) || 0)), 0) / chains.length);
   const active = chains.find((chain) => chain.branch === progress.branch && chain.status === "running")
     || [...chains].reverse().find((chain) => chain.status === "failed")
     || [...chains].reverse().find((chain) => chain.status !== "pending")
@@ -267,7 +277,21 @@ export default function FreeppAccountPicker() {
   const [busy, setBusy] = useState<BusyAction>(null);
   const [message, setMessage] = useState("");
   const [chainProgress, setChainProgress] = useState<ChainProgress>({ visible: false, branch: "", branchIndex: 0, branchTotal: 0, total: 0, done: 0, percent: 0, success: 0, failure: 0, status: "idle", chains: [] });
+  const [chainTasks, setChainTasks] = useState<Record<string, ChainTaskMeta>>(() => {
+    try {
+      const raw = window.localStorage.getItem(CHAIN_TASK_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch { return {}; }
+  });
+  const [chainRecoveryBusy, setChainRecoveryBusy] = useState(false);
   const runtime = useRuntime();
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CHAIN_TASK_STORAGE_KEY, JSON.stringify(chainTasks));
+    } catch { /* local storage is optional; server state remains authoritative */ }
+  }, [chainTasks]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -438,19 +462,41 @@ export default function FreeppAccountPicker() {
   }
 
   async function pollTask(taskId: string) {
-    for (let attempt = 0; attempt < 180; attempt += 1) {
-      const task = await apiFetch(`/tasks/${encodeURIComponent(taskId)}`);
-      const status = String(task.status || "").toLowerCase();
-      if (task.terminal || ["succeeded", "failed", "cancelled", "canceled", "interrupted"].includes(status)) return task;
-      await wait(700);
+    const startedAt = Date.now();
+    let delay = 500;
+    let failures = 0;
+    let lastTask: Session = {};
+    while (Date.now() - startedAt < 10 * 60 * 1000) {
+      try {
+        const task = await apiFetch(`/tasks/${encodeURIComponent(taskId)}`);
+        lastTask = task;
+        failures = 0;
+        if (isTerminalTask(task)) return task;
+        delay = Math.min(2500, Math.round(delay * 1.2));
+      } catch (error) {
+        failures += 1;
+        if (failures >= 8 && Date.now() - startedAt > 30_000) {
+          throw new Error(`任务状态暂时不可读（${error instanceof Error ? error.message : String(error)}），任务编号 ${taskId} 已保留，请稍后继续查询`);
+        }
+        delay = Math.min(5000, Math.round(delay * 1.8));
+      }
+      await wait(delay);
     }
-    throw new Error("任务仍在后台执行，请稍后刷新查看结果");
+    if (lastTask && !isTerminalTask(lastTask)) {
+      throw new Error(`任务仍在后台处理，任务编号 ${taskId} 已保留，请稍后继续查询`);
+    }
+    throw new Error(`任务状态等待结束，任务编号 ${taskId} 已保留，请稍后继续查询`);
   }
 
   async function waitForSunnyCheckout(taskId: string, branch: string, branchIndex: number, branchTotal: number, accountTotal: number) {
     let eventCursor = 0;
     const processedEventIds = new Set<number>();
     let stream: EventSource | null = null;
+    const startedAt = Date.now();
+    let lastActivityAt = startedAt;
+    let lastSignature = "";
+    let lastTask: Session = {};
+    let consecutiveFailures = 0;
 
     const applyEvents = (events: Session[]) => {
       const ordered = [...events].sort((left, right) => Number(left?.id || 0) - Number(right?.id || 0));
@@ -469,7 +515,21 @@ export default function FreeppAccountPicker() {
           if (item.type !== "checkout_progress" && item.type !== "checkout_result") continue;
           const detail = checkoutEventDetail(item);
           const identity = checkoutEventIdentity(item);
-          const chainIndex = chains.findIndex((chain) => chain.branch === branch && progressChainMatches(chain, identity));
+          let chainIndex = chains.findIndex((chain) => chain.branch === branch && progressChainMatches(chain, identity));
+          if (chainIndex < 0 && (identity.email || identity.accountId > 0 || identity.index >= 0)) {
+            const key = identity.email || (identity.accountId > 0 ? String(identity.accountId) : String(identity.index));
+            chains.push({
+              chain_id: `${branch}:${key}`,
+              branch,
+              email: identity.email,
+              account_id: identity.accountId || undefined,
+              index: identity.index >= 0 ? identity.index : undefined,
+              progress: 0,
+              current_log: "已恢复提链任务",
+              status: "pending",
+            });
+            chainIndex = chains.length - 1;
+          }
           if (chainIndex < 0) continue;
           const previous = chains[chainIndex];
           if (item.type === "checkout_progress" && (previous.status === "succeeded" || previous.status === "failed")) continue;
@@ -525,9 +585,28 @@ export default function FreeppAccountPicker() {
       };
       stream.onerror = () => { stream?.close(); stream = null; };
 
-      for (let attempt = 0; attempt < 300; attempt += 1) {
-        const task = await apiFetch(`/tasks/${encodeURIComponent(taskId)}`);
+      let delay = 500;
+      while (Date.now() - startedAt < CHECKOUT_POLL_HARD_TIMEOUT_MS) {
+        let task: Session;
+        try {
+          task = await apiFetch(`/tasks/${encodeURIComponent(taskId)}`);
+          lastTask = task;
+          consecutiveFailures = 0;
+        } catch {
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= 8 && Date.now() - lastActivityAt >= CHECKOUT_POLL_IDLE_TIMEOUT_MS) {
+            return { ...lastTask, id: taskId, task_id: taskId, status: "running", detached: true, error: `状态接口连续异常，已保留任务 ${taskId}` };
+          }
+          delay = Math.min(5000, Math.round(delay * 1.8));
+          await wait(delay);
+          continue;
+        }
         await readEvents().catch(() => {});
+        const signature = `${String(task.updated_at || "")}|${String(task.progress || "")}|${eventCursor}|${String(task.status || "")}`;
+        if (signature !== lastSignature) {
+          lastSignature = signature;
+          lastActivityAt = Date.now();
+        }
         if (isTerminalTask(task)) {
           await readEvents().catch(() => {});
           const results = Array.isArray(task?.result?.items) ? task.result.items as Session[] : [];
@@ -543,11 +622,20 @@ export default function FreeppAccountPicker() {
               : chain);
             return { ...current, ...summarizeProgressChains(chains), chains };
           });
+          setChainTasks((current) => {
+            const next = { ...current };
+            delete next[taskId];
+            return next;
+          });
           return task;
         }
-        await wait(700);
+        if (Date.now() - lastActivityAt >= CHECKOUT_POLL_IDLE_TIMEOUT_MS) {
+          return { ...task, id: taskId, task_id: taskId, detached: true, error: `任务连续 ${Math.round(CHECKOUT_POLL_IDLE_TIMEOUT_MS / 60000)} 分钟无状态更新，已保留后台任务 ${taskId}` };
+        }
+        delay = Math.min(3000, Math.round(delay * 1.2));
+        await wait(delay);
       }
-      throw new Error("提链任务状态等待超时，请到提链管理查看");
+      return { ...lastTask, id: taskId, task_id: taskId, status: "running", detached: true, error: `提链任务仍在后台处理，已保留任务 ${taskId}` };
     } finally {
       stream?.close();
     }
@@ -652,7 +740,12 @@ export default function FreeppAccountPicker() {
           if (result?.error) throw new Error(String(result.error));
           const taskId = String(result?.id || result?.task_id || "");
           if (!taskId) throw new Error("提链任务未返回任务编号");
-          await waitForSunnyCheckout(taskId, branch, branchIndex, branches.length, sessionIds.length);
+          setChainTasks((current) => ({ ...current, [taskId]: { taskId, branch, branchIndex, branchTotal: branches.length, accountTotal: sessionIds.length } }));
+          const completedTask = await waitForSunnyCheckout(taskId, branch, branchIndex, branches.length, sessionIds.length);
+          if (completedTask?.detached) {
+            pushLog(`${branch} 提链任务仍在后台运行，任务编号 ${taskId}；可点击“继续查询”`, "info");
+            setMessage(`${branch} 提链仍在后台运行（任务 ${taskId}），当前页面已停止等待，可继续查询`);
+          }
           started += 1;
           pushLog(`${branch} 提链启动：${sessionIds.length} 个账号`, "ok");
         } catch (error) {
@@ -667,7 +760,14 @@ export default function FreeppAccountPicker() {
           pushLog(`${branch} 提链启动失败：${reason}`, "err");
         }
       }
-      setChainProgress((current) => ({ ...current, status: current.failure > 0 ? "failed" : "success" }));
+      setChainProgress((current) => ({
+        ...current,
+        // Detached tasks remain visible as running. Only mark the batch
+        // complete when every account reached a terminal result.
+        status: current.chains.some((chain) => chain.status === "pending" || chain.status === "running")
+          ? "running"
+          : current.failure > 0 ? "failed" : "success",
+      }));
       const skipped = unsupported.length ? `，已跳过 ${unsupported.length} 个非提链项目` : "";
       setMessage(`已启动 ${started}/${branches.length} 个提链项目${skipped}${failures.length ? `；失败：${failures.join("；")}` : ""}`);
       if (unsupported.length) pushLog(`已跳过 ${unsupported.length} 个支付授权项目`, "info");
@@ -769,6 +869,56 @@ export default function FreeppAccountPicker() {
     await runTask("rebind", "/sunny/sessions/rebind", selected, body);
   }
 
+  async function recoverChainTasks() {
+    const entries = Object.values(chainTasks);
+    if (!entries.length || chainRecoveryBusy) return;
+    setChainRecoveryBusy(true);
+    try {
+      let detachedCount = 0;
+      const first = entries[0];
+      setChainProgress((current) => current.visible ? current : {
+        ...current,
+        visible: true,
+        branch: first.branch,
+        branchIndex: first.branchIndex,
+        branchTotal: first.branchTotal,
+        total: first.branchTotal * first.accountTotal,
+        status: "running",
+      });
+      for (const meta of entries) {
+        const task = await waitForSunnyCheckout(meta.taskId, meta.branch, meta.branchIndex, meta.branchTotal, meta.accountTotal);
+        if (task?.detached) {
+          detachedCount += 1;
+        } else {
+          setChainTasks((current) => {
+            const next = { ...current };
+            delete next[meta.taskId];
+            return next;
+          });
+        }
+      }
+      setChainProgress((current) => {
+        const summary = summarizeProgressChains(current.chains);
+        const hasActiveChains = current.chains.some((chain) => chain.status === "pending" || chain.status === "running");
+        return {
+          ...current,
+          ...summary,
+          status: hasActiveChains || detachedCount > 0
+            ? "running"
+            : summary.failure > 0 ? "failed" : "success",
+        };
+      });
+      await load();
+      setMessage(detachedCount
+        ? `已刷新后台提链任务状态；${detachedCount} 个任务仍在后台运行，可稍后继续查询`
+        : "已刷新后台提链任务状态");
+    } catch (error) {
+      setMessage(`继续查询失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setChainRecoveryBusy(false);
+    }
+  }
+
   const operationBusy = busy !== null;
   const selectedCount = Math.max(selected.length, selectedTokenIds.size);
   return (
@@ -818,8 +968,9 @@ export default function FreeppAccountPicker() {
       {chainProgress.visible && <div className={`freepp-chain-progress ${chainProgress.status}`}>
         <div className="freepp-chain-progress-head"><span>{chainProgress.status === "running" ? "提链进行中" : chainProgress.status === "success" ? "提链完成" : "提链结束"} · {chainProgress.branch || "本地任务"}{chainProgress.branchTotal > 1 ? `（${chainProgress.branchIndex + 1}/${chainProgress.branchTotal}）` : ""}</span><strong>{chainProgress.percent}%</strong></div>
         <div className="freepp-chain-progress-track"><span style={{ width: `${Math.max(0, Math.min(100, chainProgress.percent))}%` }} /></div>
-        <small>完成 {chainProgress.done} / {chainProgress.total} · 成功 {chainProgress.success} · 失败 {chainProgress.failure}</small>
+        <small>完成 {chainProgress.done} / {chainProgress.total} · 成功 {chainProgress.success} · 失败 {chainProgress.failure}{Object.keys(chainTasks).length ? <button className="btn btn-sm" type="button" onClick={() => void recoverChainTasks()} disabled={chainRecoveryBusy}>{chainRecoveryBusy ? "查询中..." : "继续查询"}</button> : null}</small>
       </div>}
+      {!chainProgress.visible && Object.keys(chainTasks).length > 0 && <div className="freepp-account-message">检测到 {Object.keys(chainTasks).length} 个后台提链任务仍在运行。<button className="btn btn-sm" type="button" onClick={() => void recoverChainTasks()} disabled={chainRecoveryBusy}>{chainRecoveryBusy ? "查询中..." : "继续查询"}</button></div>}
       <div className="freepp-account-table-wrap">
         <table className="freepp-account-table">
           <thead><tr><th><input type="checkbox" aria-label="选择当前页账号" checked={pageSelected} onChange={togglePage} disabled={!items.length || operationBusy} /></th><th>邮箱</th><th>换绑邮箱</th><th>所属分组</th><th>状态</th><th>套餐类型</th><th>LS</th><th>SK</th><th>AT</th><th>RT</th><th>试用资格</th><th>Checkout</th><th>支付方式</th><th>AT 过期时间</th><th>最近测活</th><th>检测记录</th></tr></thead>
