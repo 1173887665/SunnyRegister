@@ -74,7 +74,7 @@ def classify_auth_failure(error: Any, *, http_status: int = 0) -> AuthFailure:
         return AuthFailure("edge_blocked", retryable=True, rotate_proxy=True, delay_seconds=2)
     if status in {500, 502, 503, 504} or any(marker in text for marker in (
         "connection reset", "connection refused", "timed out", "timeout", "curl: (28)",
-        "curl: (35)", "unexpected eof", "tls", "temporary failure", "network is unreachable",
+        "curl: (7)", "curl: (35)", "unexpected eof", "tls", "temporary failure", "network is unreachable",
     )):
         return AuthFailure("transient_transport", retryable=True, rotate_proxy=True, delay_seconds=2)
     return AuthFailure("unknown")

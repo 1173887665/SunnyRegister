@@ -37,7 +37,7 @@ class ProxySnapshotTests(unittest.TestCase):
             calls.append(current_payload)
             if current_payload.get("_excluded_register_proxies"):
                 return True, {"proxy": "http://two.example:2000"}
-            return False, "proxy CONNECT failed: HTTP/1.1 407 Proxy Authentication Required"
+            return False, "Failed to perform, curl: (7) CONNECT tunnel failed, response 502"
 
         with patch("sunny_core.worker._run_one", side_effect=run_one), patch(
             "sunny_core.worker._interruptible_delay"
