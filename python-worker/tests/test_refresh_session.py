@@ -315,6 +315,17 @@ class RefreshSessionTests(unittest.TestCase):
             "",
         )
 
+    def test_url_api_mailbox_always_uses_selected_task_proxy(self):
+        proxies = {"register": "http://proxy.example:8080"}
+        self.assertEqual(
+            worker._mailbox_proxy_for_task({}, proxies, "", "apple", "url_api"),
+            "http://proxy.example:8080",
+        )
+        self.assertEqual(
+            worker._mailbox_proxy_for_task({}, {"register": ""}, "", "apple", "url_api"),
+            "",
+        )
+
     def test_failed_renewal_does_not_duplicate_email_prefix(self):
         db = FakeRefreshDB()
         with (

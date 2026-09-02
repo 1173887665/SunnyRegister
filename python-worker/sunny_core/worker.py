@@ -538,7 +538,15 @@ def _mailbox_proxy_for_task(
     proxies: dict[str, Any],
     auxiliary_proxy: str,
     mailbox_type: str,
+    mailbox_channel: str = "",
 ) -> str:
+    # URL API mailboxes are external HTTP endpoints. Keep their OTP reads on
+    # the same task-selected proxy as the registration flow so the mailbox
+    # request uses the configured proxy-pool network rather than the worker's
+    # direct egress. Other mailbox channels retain the existing all-traffic
+    # switch and iCloud renewal behavior.
+    if str(mailbox_channel or "").strip().lower() == "url_api":
+        return str(proxies.get("register") or "")
     if auxiliary_proxy:
         return auxiliary_proxy
     if payload.get("access_token_renewal") is True and str(mailbox_type or "").strip().lower() == "apple":
@@ -1774,12 +1782,24 @@ def _run_one_impl(
     if protocol_challenge_strategy not in {"native_headless", "sentinel_protocol"}:
         protocol_challenge_strategy = "native_headless"
     account = account_from_row(mailbox)
-    mailbox_proxy_url = _mailbox_proxy_for_task(payload, proxies, auxiliary_proxy, account.mailbox_type)
+    mailbox_proxy_url = _mailbox_proxy_for_task(
+        payload,
+        proxies,
+        auxiliary_proxy,
+        account.mailbox_type,
+        account.mailbox_channel,
+    )
     if mailbox_proxy_url and not auxiliary_proxy:
-        db.event(
-            f"[{email}] [邮箱] AT续期的 iCloud 邮箱 API 将复用当前认证代理，避免服务器直连不可达",
-            detail={"email": email, "scope": "selected", "mailbox_proxy": redact_proxy_url(mailbox_proxy_url), "renewal_mailbox_proxy_fallback": True},
-        )
+        if str(account.mailbox_channel or "").strip().lower() == "url_api":
+            db.event(
+                f"[{email}] [邮箱] URL API 取码请求将复用本任务选中的代理池出口，不使用服务器直连",
+                detail={"email": email, "scope": "selected", "mailbox_proxy": redact_proxy_url(mailbox_proxy_url), "mailbox_proxy_route": "task_proxy_pool", "direct_fallback": False},
+            )
+        elif payload.get("access_token_renewal") is True and str(account.mailbox_type or "").strip().lower() == "apple":
+            db.event(
+                f"[{email}] [邮箱] AT续期的 iCloud 邮箱 API 将复用当前认证代理，避免服务器直连不可达",
+                detail={"email": email, "scope": "selected", "mailbox_proxy": redact_proxy_url(mailbox_proxy_url), "renewal_mailbox_proxy_fallback": True},
+            )
     mailbox_id = max(0, int(mailbox.get("id") or 0))
     is_registered_mailbox = bool(account.openai_rt) or str(mailbox.get("status") or "") in {"registered", "已注册", "phone_bound", "已接码", "已反代", "reverse_proxied", "登录刷新"}
     traffic_meter = ProxyTrafficMeter(

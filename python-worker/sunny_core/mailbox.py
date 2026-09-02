@@ -1930,28 +1930,13 @@ class URLAPIICloudReader:
                     if attempt >= 2:
                         break
                     time.sleep(0.4 * (attempt + 1) + random.uniform(0, 0.4))
-            # Mailbox URL endpoints are independent from the OpenAI browser
-            # session.  A dead/overloaded proxy must not prevent OTP pickup;
-            # after the bounded proxy retries, try the endpoint once directly.
-            # This keeps proxy use as the default while recovering transient
-            # proxy tunnel timeouts and remote disconnects seen in task logs.
-            if self.proxies:
-                try:
-                    direct_response = requests.get(
-                        target,
-                        headers=headers,
-                        timeout=request_timeout,
-                        proxies=None,
-                        allow_redirects=allow_redirects,
-                        stream=stream,
-                    )
-                    self.log(f"[{self.account.email}] url_api 代理重试失败，已切换直连取件")
-                    return direct_response
-                except requests.RequestException as direct_exc:
-                    last_error = direct_exc
+            # A configured task proxy is an explicit routing decision. Do not
+            # silently fall back to direct egress after it fails: that would
+            # make the mailbox request leave through a different network and
+            # can expose the endpoint or produce region-dependent results.
             raise MailboxAccessError(
                 "mailbox_network_error",
-                "url_api 邮箱渠道连接超时或网络不可达，请检查取码 URL、服务器出网与代理配置",
+                "url_api 邮箱渠道经指定代理连接失败，请检查代理池可用性、取码 URL 与目标网络",
                 str(last_error or "request failed"),
             ) from last_error
         finally:
