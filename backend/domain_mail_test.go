@@ -306,6 +306,37 @@ func TestDomainMailAddUserAcceptsPlainTextSuccess(t *testing.T) {
 	}
 }
 
+func TestDomainMailSendMessageUsesExternalAPIKey(t *testing.T) {
+	var gotKey, gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey, gotPath = r.Header.Get("X-API-Key"), r.URL.Path
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode send body: %v", err)
+		}
+		if body["from"] != "Sunny <sender@example.com>" || body["subject"] != "Smoke" {
+			t.Errorf("unexpected send body: %#v", body)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"code": 200, "data": map[string]any{"emailId": 42, "status": "sent"}})
+	}))
+	defer server.Close()
+	client := &domainMailClient{baseURL: server.URL, externalAPIKey: "external-test-key", client: server.Client()}
+	result, err := client.sendMessage(context.Background(), "Sunny <sender@example.com>", []string{"recipient@example.com"}, "Smoke", "<p>hello</p>", "hello")
+	if err != nil {
+		t.Fatalf("sendMessage failed: %v", err)
+	}
+	if gotKey != "external-test-key" || gotPath != "/api/external/send" || text(result["emailId"]) != "42" {
+		t.Fatalf("unexpected send request/result key=%q path=%q result=%#v", gotKey, gotPath, result)
+	}
+}
+
+func TestDomainMailSendMessageRequiresExternalAPIKey(t *testing.T) {
+	client := &domainMailClient{baseURL: "https://mail.example", client: http.DefaultClient}
+	if _, err := client.sendMessage(context.Background(), "sender@example.com", []string{"recipient@example.com"}, "Smoke", "", "hello"); err == nil || !strings.Contains(err.Error(), "External API Key") {
+		t.Fatalf("expected missing external API key error, got %v", err)
+	}
+}
+
 func TestDomainMailDeleteUserAcceptsPublicDeleteExtension(t *testing.T) {
 	var method string
 	var path string

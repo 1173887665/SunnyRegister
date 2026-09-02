@@ -67,3 +67,40 @@ func TestValidateImportedRebindMailboxRejectsIncompleteMicrosoftOAuthCredential(
 		t.Fatal("expected incomplete Microsoft target credential to be rejected")
 	}
 }
+
+func TestSunnyPhoneRegisterAllocatesMailboxWhenSelectionIsEmpty(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	s.sunnySaveConfig(sunnyCfgPhone, mergeConfig(defaultPhoneConfig(), map[string]any{
+		"luban_enabled": true, "luban_api_key": "test-key", "luban_service_id": "openai",
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/phone-register", strings.NewReader(`{"count":1,"sms_provider":"luban","sms_country":""}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.sunnyTasks(rec, req, []string{"phone-register"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("phone register without explicit selection status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var task Task
+	if err := s.db.Order("created_at desc").First(&task).Error; err != nil {
+		t.Fatalf("load created task: %v", err)
+	}
+	payload := jsonMap(task.PayloadJSON)
+	if got := intValue(payload["count"], 0); got != 1 {
+		t.Fatalf("allocated phone register count = %d, want 1", got)
+	}
+}
+
+func TestSunnyPhoneRegisterDoesNotRequireMailboxPoolSwitch(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	s.sunnySaveConfig(sunnyCfgMailbox, mergeConfig(defaultMailboxConfig(), map[string]any{"pool_enabled": false}))
+	s.sunnySaveConfig(sunnyCfgPhone, mergeConfig(defaultPhoneConfig(), map[string]any{
+		"luban_enabled": true, "luban_api_key": "test-key", "luban_service_id": "openai",
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/phone-register", strings.NewReader(`{"count":1,"sms_provider":"luban"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.sunnyTasks(rec, req, []string{"phone-register"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("phone register with mailbox pool switch off status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}

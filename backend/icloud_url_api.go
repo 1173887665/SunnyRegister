@@ -51,21 +51,55 @@ func urlAPIHTTPStatusError(resp *http.Response, provider string) error {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone {
-		return &outlookMailError{Code: "mailbox_credential_invalid", Category: "credential", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: provider + " 取码 URL 无效、已过期或无权访问", Detail: fmt.Sprintf("HTTP %d", resp.StatusCode), Terminal: true}
-	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	bodyText := strings.TrimSpace(strings.Join(strings.Fields(urlAPIText(string(body))), " "))
+	lowerBody := strings.ToLower(bodyText)
+	if resp.StatusCode == http.StatusForbidden {
+		detail := "HTTP 403"
+		if bodyText != "" {
+			detail += ": " + urlAPIStatusPreview(bodyText, 240)
+		}
+		switch {
+		case strings.Contains(lowerBody, "password"), strings.Contains(lowerBody, "密码"), strings.Contains(lowerBody, "authentication required"), strings.Contains(lowerBody, "temporary key"):
+			return &outlookMailError{Code: "mailbox_password_protected", Category: "credential", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: provider + " 取码 URL 需要密码或额外认证参数，请检查 URL 是否完整", Detail: detail, Terminal: true}
+		case strings.Contains(lowerBody, "expired"), strings.Contains(lowerBody, "过期"), strings.Contains(lowerBody, "invalid token"), strings.Contains(lowerBody, "token expired"):
+			return &outlookMailError{Code: "mailbox_credential_expired", Category: "credential", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: provider + " 取码 URL 的认证凭证已过期，请重新生成取码 URL", Detail: detail, Terminal: true}
+		case strings.Contains(lowerBody, "ip"), strings.Contains(lowerBody, "region"), strings.Contains(lowerBody, "location"), strings.Contains(lowerBody, "geo"):
+			return &outlookMailError{Code: "mailbox_ip_restricted", Category: "network", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: provider + " 取码服务限制了访问 IP 或地区，请检查代理配置", Detail: detail, Terminal: true}
+		default:
+			return &outlookMailError{Code: "mailbox_access_forbidden", Category: "credential", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: provider + " 取码 URL 无权访问，请检查认证参数或服务端访问限制", Detail: detail, Terminal: true}
+		}
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		detail := "HTTP 401"
+		if bodyText != "" {
+			detail += ": " + urlAPIStatusPreview(bodyText, 240)
+		}
+		return &outlookMailError{Code: "mailbox_unauthorized", Category: "credential", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: provider + " 取码 URL 未提供有效的认证信息，请检查 token 或 key 参数", Detail: detail, Terminal: true}
+	}
+	if resp.StatusCode == http.StatusGone {
+		return &outlookMailError{Code: "mailbox_gone", Category: "credential", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: provider + " 邮箱或取码 URL 已永久失效", Detail: "HTTP 410", Terminal: true}
+	}
 	if resp.StatusCode == http.StatusNotFound && urlAPIResponseIndicatesMissingMailbox(body) {
 		return &outlookMailError{Code: "mailbox_not_found", Category: "credential", HTTPStatus: http.StatusUnprocessableEntity, UserMessage: provider + " 邮箱或收件箱不存在", Detail: "HTTP 404 provider response confirms mailbox not found", Terminal: true}
 	}
 	detail := fmt.Sprintf("HTTP %d", resp.StatusCode)
-	if bodyText := strings.TrimSpace(strings.Join(strings.Fields(urlAPIText(string(body))), " ")); bodyText != "" {
-		if len([]rune(bodyText)) > 240 {
-			bodyText = string([]rune(bodyText)[:240])
-		}
-		detail += ": " + bodyText
+	if bodyText != "" {
+		detail += ": " + urlAPIStatusPreview(bodyText, 240)
 	}
 	return &outlookMailError{Code: "mailbox_provider_failed", Category: "service", HTTPStatus: http.StatusBadGateway, UserMessage: provider + " 邮箱渠道请求失败，请稍后重试", Detail: detail}
+}
+
+func urlAPIStatusPreview(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	if maxRunes < 1 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func urlAPIDomainStrategy(raw string) string {

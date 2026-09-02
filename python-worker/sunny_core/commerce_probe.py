@@ -48,22 +48,51 @@ def _safe_json(response: Any) -> tuple[dict[str, Any], str]:
 
 
 def _payment_methods(payload: dict[str, Any]) -> list[str]:
+    # Prefer fields that describe methods available for this checkout. Some
+    # revisions also include declarations, saved methods, or diagnostic specs
+    # alongside them; treating every field as available creates false positives
+    # (for example a wallet supported by the country but not by this account).
+    def extract(raw: Any) -> list[str]:
+        if not isinstance(raw, list):
+            return []
+        extracted: list[str] = []
+        for item in raw:
+            if isinstance(item, dict):
+                # APIs use any of these flags to hide an unavailable method.
+                if any(flag in item and item.get(flag) is False for flag in ("active", "enabled", "available", "is_available")):
+                    continue
+                method = str(item.get("type") or item.get("id") or item.get("name") or "").strip().lower()
+            else:
+                method = str(item).strip().lower()
+            if method and method not in extracted:
+                extracted.append(method)
+        return extracted
+
+    # An explicit available list is authoritative when present.
+    available = extract(payload.get("available_payment_methods") or [])
+    if available:
+        return available
     methods: list[str] = []
-    # Checkout revisions may expose standard methods and country-specific
-    # custom methods in separate fields. Keep both, including fields added by
-    # future API revisions, so the backend can persist and filter unknown ones.
-    for key in ("payment_method_types", "custom_payment_methods", "payment_methods", "available_payment_methods", "payment_method_specs"):
+    actual_seen = False
+    for key in ("payment_method_types", "custom_payment_methods", "payment_methods"):
         raw = payload.get(key) or []
         if not isinstance(raw, list):
             continue
-        for item in raw:
-            method = str(
-                (item.get("type") or item.get("id") or item.get("name") or "")
-                if isinstance(item, dict) else item
-            ).strip().lower()
-            if method and method not in methods:
+        actual_seen = True
+        for method in extract(raw):
+            if method not in methods:
                 methods.append(method)
-    return methods
+    if methods or actual_seen:
+        return methods
+    # Specs are a fallback only when the response has no actual-method field;
+    # they describe capabilities and are not always enabled for this account.
+    raw_specs = payload.get("payment_method_specs") or []
+    if not isinstance(raw_specs, list):
+        return []
+    return [
+        method
+        for method in _payment_methods({"payment_method_types": raw_specs})
+    ]
 
 
 def _merge_payment_methods(*groups: list[str]) -> list[str]:

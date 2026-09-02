@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,6 +64,27 @@ func TestFetchURLAPILatestMailNormalizesHTML(t *testing.T) {
 	items := payload["items"].([]map[string]any)
 	if len(items) != 1 || items[0]["otp"] != "123456" || items[0]["source"] != "url_api" {
 		t.Fatalf("unexpected normalized item: %#v", items)
+	}
+}
+
+func TestURLAPIHTTPStatusErrorClassifiesForbiddenBody(t *testing.T) {
+	tests := []struct {
+		name, body, code string
+	}{
+		{"password", "403 forbidden: temporary key file requires password", "mailbox_password_protected"},
+		{"expired", "token expired", "mailbox_credential_expired"},
+		{"ip", "access denied by ip region policy", "mailbox_ip_restricted"},
+		{"unknown", "access denied", "mailbox_access_forbidden"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "https://mail.example.test/inbox", nil)
+			err := urlAPIHTTPStatusError(&http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader(test.body)), Request: req}, "url_api")
+			mailErr, ok := err.(*outlookMailError)
+			if !ok || mailErr.Code != test.code || !mailErr.Terminal {
+				t.Fatalf("expected code %q, got %#v", test.code, err)
+			}
+		})
 	}
 }
 

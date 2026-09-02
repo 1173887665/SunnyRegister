@@ -331,6 +331,59 @@ func TestSunnySessionListFiltersRebindEmailPresence(t *testing.T) {
 	}
 }
 
+func TestSunnySessionListFiltersRegisteredAge(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	createSession := func(email string, registeredAt sql.NullTime) uint {
+		t.Helper()
+		mailbox := SunnyMailbox{
+			Email: email, Status: "已注册", AccountType: "free", Enabled: true, RegisteredAt: registeredAt,
+			CreatedAt: now, UpdatedAt: now,
+		}
+		if err := s.db.Create(&mailbox).Error; err != nil {
+			t.Fatalf("create mailbox %s: %v", email, err)
+		}
+		account := SunnyAccount{MailboxID: mailbox.ID, Email: email, Status: "registered", AccountType: "free", CreatedAt: now, UpdatedAt: now}
+		if err := s.db.Create(&account).Error; err != nil {
+			t.Fatalf("create account %s: %v", email, err)
+		}
+		session := SunnySession{AccountID: account.ID, Email: email, CreatedAt: now, UpdatedAt: now}
+		if err := s.db.Create(&session).Error; err != nil {
+			t.Fatalf("create session %s: %v", email, err)
+		}
+		return session.ID
+	}
+
+	oldID := createSession("older-than-24h@example.com", sql.NullTime{Time: now.Add(-25 * time.Hour), Valid: true})
+	createSession("under-24h@example.com", sql.NullTime{Time: now.Add(-23 * time.Hour), Valid: true})
+	createSession("missing-registered-at@example.com", sql.NullTime{})
+
+	request := func(query string) (items []map[string]any, ids []uint) {
+		rec := httptest.NewRecorder()
+		s.sunnySessions(rec, httptest.NewRequest(http.MethodGet, "/api/sunny/sessions?"+query, nil), nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("registered age filter status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Items []map[string]any `json:"items"`
+			IDs   []uint           `json:"ids"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode registered age filter: %v", err)
+		}
+		return payload.Items, payload.IDs
+	}
+
+	items, _ := request("page=1&page_size=10&registered_age=24h")
+	if len(items) != 1 || items[0]["email"] != "older-than-24h@example.com" || text(items[0]["registered_at"]) == "" {
+		t.Fatalf("24h filter result=%#v", items)
+	}
+	_, ids := request("selection=all&registered_age=24h")
+	if len(ids) != 1 || ids[0] != oldID {
+		t.Fatalf("24h selection ids=%v want [%d]", ids, oldID)
+	}
+}
+
 func TestSunnyMailboxListFiltersCredentialPresence(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	now := time.Now()

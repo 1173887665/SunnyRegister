@@ -254,7 +254,7 @@ func TestSunnyPaymentProbeTaskUsesSelectedCountries(t *testing.T) {
 	if err := json.Unmarshal([]byte(account.PaymentProbeMethodsJSON), &methods); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(methods, ","); got != "paypal,gcash" {
+	if got := strings.Join(methods, ","); got != "gcash" {
 		t.Fatalf("merged payment methods=%q", got)
 	}
 	if _, err := s.createSunnyPaymentProbeTask(map[string]any{"session_ids": []uint{session.ID}, "countries": []any{"NL"}}); err == nil || !strings.Contains(err.Error(), "NL") {
@@ -291,6 +291,21 @@ func TestSunnyPaymentProbeMergesCountrySnapshots(t *testing.T) {
 	ph = merged["PH"].(map[string]any)
 	if got := strings.Join(stringSlice(ph["methods"]), ","); got != "gcash" || text(ph["error"]) != "proxy timeout" {
 		t.Fatalf("PH previous methods were not preserved with latest error: %#v", ph)
+	}
+}
+
+func TestSunnyPaymentProbeSelectionExcludesFailedCurrentCountry(t *testing.T) {
+	existing := `{"JP":{"methods":["card"]},"PH":{"methods":["gcash"]}}`
+	merged, methods := mergeSunnyPaymentProbeResultsForSelection(existing, map[string]any{
+		"JP": map[string]any{"methods": []string{}, "http": 0, "error": "proxy timeout"},
+		"PH": map[string]any{"methods": []string{"momo"}, "http": 200},
+	}, []string{"JP", "PH"})
+	if got := strings.Join(methods, ","); got != "momo" {
+		t.Fatalf("current summary included stale methods: %q", got)
+	}
+	jp, _ := merged["JP"].(map[string]any)
+	if !boolValue(jp["stale"], false) || strings.Join(stringSlice(jp["methods"]), ",") != "card" {
+		t.Fatalf("failed snapshot metadata=%#v", jp)
 	}
 }
 

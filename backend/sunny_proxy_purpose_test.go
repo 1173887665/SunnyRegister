@@ -14,7 +14,7 @@ import (
 
 func TestNormalizeSunnyProxyPurposes(t *testing.T) {
 	got := normalizeSunnyProxyPurposes([]any{"trial", "register", "checkout", "payment", "unknown"})
-	if strings.Join(got, ",") != "commerce,register,payment_probe" {
+	if strings.Join(got, ",") != "commerce,register,checkout,payment_probe" {
 		t.Fatalf("purposes=%v", got)
 	}
 }

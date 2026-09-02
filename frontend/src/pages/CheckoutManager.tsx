@@ -30,9 +30,9 @@ const countryNames: Record<string, string> = {
 const currencyByCountry: Record<string, string> = { US: "USD", DE: "EUR", FR: "EUR", NL: "EUR", IN: "INR", ID: "IDR", BR: "BRL", VN: "VND", GB: "GBP", JP: "JPY", KR: "KRW", PH: "PHP", AU: "AUD", CA: "CAD", CH: "CHF", PL: "PLN" };
 const sessionStatuses = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "登录刷新", "失败"];
 const sessionPlans = ["free", "plus", "k12", "team", "pro"];
-const checkoutPreferencesStorageKey = "sunnyregister.checkout.preferences.v1";
+const checkoutPreferencesStorageKey = "sunnyregister.checkout.preferences.v2";
+const legacyCheckoutPreferencesStorageKey = "sunnyregister.checkout.preferences.v1";
 const checkoutTaskStorageKey = "sunnyregister.checkout.last-task-id.v1";
-const checkoutProxyPoolsStorageKey = "sunnyregister.checkout.proxy-pools-by-path.v1";
 const checkoutAccountTableWidthsStorageKey = "sunnyregister.checkout.account-table-widths.v1";
 
 type CheckoutTableColumn = { width: number; minWidth: number; maxWidth?: number };
@@ -101,12 +101,7 @@ function ResizableCheckoutAccountTable({ headers, children }: { headers: React.R
   </table>;
 }
 
-type ProxyPoolSnapshot = { checkout: string; promotion: string };
-type ProxyPoolsByPath = Record<string, ProxyPoolSnapshot>;
-
 type CheckoutPreferences = {
-  checkoutProxies?: string;
-  promotionProxies?: string;
   systemAT?: boolean;
   externalText?: string;
   query?: string;
@@ -283,32 +278,18 @@ function readBrowserText(key: string) {
 function readCheckoutPreferences(): CheckoutPreferences {
   if (typeof window === "undefined") return {};
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(checkoutPreferencesStorageKey) || "{}");
-    return parsed && typeof parsed === "object" ? parsed : {};
+    const current = window.localStorage.getItem(checkoutPreferencesStorageKey);
+    const raw = current || window.localStorage.getItem(legacyCheckoutPreferencesStorageKey) || "{}";
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    // v1 stored restrictive defaults (registered/free/eligible). Treat those
+    // legacy values as unset so existing users see the complete account list.
+    if (!current) {
+      const legacy = parsed as CheckoutPreferences;
+      return { ...legacy, status: undefined, planFilter: undefined, trialFilter: undefined };
+    }
+    return parsed as CheckoutPreferences;
   } catch { return {}; }
-}
-function readProxyPoolsByPath(): ProxyPoolsByPath {
-  if (typeof window === "undefined") return {};
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(checkoutProxyPoolsStorageKey) || "{}");
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.fromEntries(Object.entries(parsed).flatMap(([path, value]) => {
-      if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-      const snapshot = value as Record<string, unknown>;
-      return [[path, {
-        checkout: typeof snapshot.checkout === "string" ? snapshot.checkout : "",
-        promotion: typeof snapshot.promotion === "string" ? snapshot.promotion : "",
-      }]];
-    }));
-  } catch { return {}; }
-}
-function writeProxyPoolsForPath(path: string, checkout: string, promotion: string) {
-  if (typeof window === "undefined" || !path) return;
-  try {
-    const saved = readProxyPoolsByPath();
-    saved[path] = { checkout, promotion };
-    window.localStorage.setItem(checkoutProxyPoolsStorageKey, JSON.stringify(saved));
-  } catch { /* private browsing may disable local storage */ }
 }
 function savedNumber(value: unknown, fallback: number, minimum: number, maximum: number) {
   const parsed = Number(value);
@@ -443,15 +424,8 @@ export default function CheckoutManager() {
   const savedPreferences = useMemo(() => readCheckoutPreferences(), []);
   const savedTaskID = useMemo(() => readBrowserText(checkoutTaskStorageKey), []);
   const initialLinkType = savedPreferences.linkType ?? "hosted";
-  const savedProxyPools = useMemo(() => readProxyPoolsByPath(), []);
-  const initialProxyPools = savedProxyPools[initialLinkType] ?? {
-    checkout: savedPreferences.checkoutProxies ?? readBrowserText("pay153.proxy_pool_2"),
-    promotion: savedPreferences.promotionProxies ?? readBrowserText("pay153.proxy_pool_1"),
-  };
   const [providers, setProviders] = useState<Provider[]>(fallbackProviders);
   const [countries, setCountries] = useState<Record<string, string>>(currencyByCountry);
-  const [checkoutProxies, setCheckoutProxies] = useState(initialProxyPools.checkout);
-  const [promotionProxies, setPromotionProxies] = useState(initialProxyPools.promotion);
   const [systemAT, setSystemAT] = useState(savedPreferences.systemAT ?? true);
   const [sessions, setSessions] = useState<AnyRow[]>([]);
   const [groups, setGroups] = useState<AnyRow[]>([]);
@@ -460,9 +434,9 @@ export default function CheckoutManager() {
   const [selected, setSelected] = useState<number[]>([]);
   const [query, setQuery] = useState(savedPreferences.query ?? "");
   const [group, setGroup] = useState(savedPreferences.group ?? "");
-  const [status, setStatus] = useState(savedPreferences.status ?? "已注册");
-  const [planFilter, setPlanFilter] = useState(savedPreferences.planFilter ?? "free");
-  const [trialFilter, setTrialFilter] = useState(savedPreferences.trialFilter ?? "eligible");
+  const [status, setStatus] = useState(savedPreferences.status ?? "");
+  const [planFilter, setPlanFilter] = useState(savedPreferences.planFilter ?? "");
+  const [trialFilter, setTrialFilter] = useState(savedPreferences.trialFilter ?? "");
   const [rebindEmailFilter, setRebindEmailFilter] = useState<PresenceFilterValue>(savedPreferences.rebindEmailFilter ?? "");
   const [trialCountryFilters, setTrialCountryFilters] = useState<string[]>(() => Array.isArray(savedPreferences.trialCountryFilters) ? savedPreferences.trialCountryFilters : []);
   const [trialCountryOptions, setTrialCountryOptions] = useState<string[]>([]);
@@ -513,17 +487,14 @@ export default function CheckoutManager() {
   useEffect(() => {
     try {
       const preferences: CheckoutPreferences = {
-        checkoutProxies, promotionProxies, systemAT, externalText, query, group, status, planFilter, trialFilter,
+        systemAT, externalText, query, group, status, planFilter, trialFilter,
         checkoutFilter, paymentMethods, plan, linkType, country, currency, retryCount, concurrency, usePromo, promoCampaign,
         promoCode, promoCountry, idealBank, workspaceName, workspaceId, seatQuantity, priceInterval,
         creditQuantity, pixTaxID, pixAutoKind, pageSize, logOpen, sortBy, sortOrder, rebindEmailFilter, trialCountryFilters,
       };
       window.localStorage.setItem(checkoutPreferencesStorageKey, JSON.stringify(preferences));
-      // Keep the legacy keys synchronized for older SunnyRegister builds.
-      window.localStorage.setItem("pay153.proxy_pool_2", checkoutProxies);
-      window.localStorage.setItem("pay153.proxy_pool_1", promotionProxies);
     } catch { /* private browsing may disable local storage */ }
-  }, [checkoutFilter, checkoutProxies, concurrency, country, creditQuantity, currency, externalText, group, idealBank, linkType, logOpen, pageSize, paymentMethods, pixAutoKind, pixTaxID, plan, planFilter, priceInterval, promoCampaign, promoCode, promoCountry, promotionProxies, query, retryCount, seatQuantity, sortBy, sortOrder, status, systemAT, trialFilter, usePromo, workspaceId, workspaceName]);
+  }, [checkoutFilter, concurrency, country, creditQuantity, currency, externalText, group, idealBank, linkType, logOpen, pageSize, paymentMethods, pixAutoKind, pixTaxID, plan, planFilter, priceInterval, promoCampaign, promoCode, promoCountry, query, retryCount, seatQuantity, sortBy, sortOrder, status, systemAT, trialFilter, usePromo, workspaceId, workspaceName]);
   useEffect(() => {
     try {
       if (activeTaskID) window.localStorage.setItem(checkoutTaskStorageKey, activeTaskID);
@@ -736,13 +707,20 @@ export default function CheckoutManager() {
     setSystemAT(value);
     setSelected([]);
     setPage(1);
-    if (value) {
-      setStatus("已注册");
-      setPlanFilter("free");
-      setTrialFilter("eligible");
-    }
   }
   function changeFilter(setter: (value: string) => void, value: string) { setter(value); setPage(1); }
+  function clearAccountFilters() {
+    setQuery("");
+    setGroup("");
+    setStatus("");
+    setPlanFilter("");
+    setTrialFilter("");
+    setCheckoutFilter("");
+    setPaymentMethods([]);
+    setRebindEmailFilter("");
+    setTrialCountryFilters([]);
+    setPage(1);
+  }
   function toggleRow(row: AnyRow) {
     const key = checkoutSelectionKey(row, systemAT);
     setSelected((old) => old.includes(key) ? old.filter((value) => value !== key) : [...old, key]);
@@ -788,31 +766,16 @@ export default function CheckoutManager() {
       setSelectingAll(false);
     }
   }
-  function updateCheckoutProxies(value: string) {
-    setCheckoutProxies(value);
-    writeProxyPoolsForPath(linkType, value, promotionProxies);
-  }
-  function updatePromotionProxies(value: string) {
-    setPromotionProxies(value);
-    writeProxyPoolsForPath(linkType, checkoutProxies, value);
-  }
   function updatePath(value: string) {
-    if (value !== linkType) {
-      writeProxyPoolsForPath(linkType, checkoutProxies, promotionProxies);
-      const targetPools = readProxyPoolsByPath()[value] ?? { checkout: "", promotion: "" };
-      setCheckoutProxies(targetPools.checkout);
-      setPromotionProxies(targetPools.promotion);
-      setLinkType(value);
-    }
+    setLinkType(value);
     const provider = providers.find((item) => item.value === value);
     if (provider) { setCountry(provider.country); setCurrency(provider.currency); }
   }
   async function precheck() {
-    const effectivePromotionProxies = linkType === "gcash" ? checkoutProxies : promotionProxies;
-    if (!splitLines(checkoutProxies).length || !splitLines(effectivePromotionProxies).length || !selected.length) { setNotice(linkType === "gcash" ? "请先填写 PH Checkout 代理池并勾选账户" : "请先填写两个代理池并勾选账户"); return; }
+    if (!selected.length) { setNotice("请先勾选账户"); return; }
     setPrecheckBusy(true);
     try {
-      const data = await apiFetch("/sunny/checkout/precheck", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selected : [], external_ats: systemAT ? [] : selectedExternalRows.map((x) => x.token), checkout_proxies: checkoutProxies, promotion_proxies: effectivePromotionProxies }) });
+      const data = await apiFetch("/sunny/checkout/precheck", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selected : [], external_ats: systemAT ? [] : selectedExternalRows.map((x) => x.token), link_type: linkType, country, promo_country: linkType === "gcash" ? "PH" : promoCountry }) });
       const byEmail = new Map((data.items || []).map((item: AnyRow) => [item.email, item]));
       const apply = (old: AnyRow[]) => old.map((row) => {
         const found = byEmail.get(row.email) as AnyRow | undefined;
@@ -843,8 +806,6 @@ export default function CheckoutManager() {
     } catch (error: any) { setNotice(error.message || String(error)); } finally { setCancelBusy(false); }
   }
   async function start() {
-    const effectivePromotionProxies = linkType === "gcash" ? checkoutProxies : promotionProxies;
-    if (!splitLines(checkoutProxies).length || !splitLines(effectivePromotionProxies).length) { setNotice(linkType === "gcash" ? "GCash 必须填写 PH Checkout 代理池" : "Checkout 代理池和 Promotion 代理池都必须填写"); return; }
     if (!selected.length) { setNotice("请先勾选需要提链的账户"); return; }
     setCheckoutBusy(true); setTask(null); setTaskLogs([]); setCheckoutSuccesses([]); setSuccessListExpanded(false); setDetailKey(""); setLogOpen(true);
     setCheckoutLive((old) => {
@@ -854,7 +815,7 @@ export default function CheckoutManager() {
       return Object.fromEntries(Object.entries(old).filter(([key]) => !currentBatchKeys.has(key)));
     });
     try {
-      const response = await apiFetch("/sunny/checkout", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selected : [], external_ats: systemAT ? [] : selectedExternalRows.map((x) => x.token), checkout_kinds: systemAT ? [] : selectedExternalRows.map((x) => normalized(x.checkout_kind) || "unknown"), checkout_proxies: checkoutProxies, promotion_proxies: effectivePromotionProxies, plan, link_type: linkType, country, currency, retry_count: retryCount, concurrency, use_promo: usePromo, promo_campaign: promoCampaign, promo_country: linkType === "gcash" ? "PH" : promoCountry, promo_code: promoCode, ideal_bank: idealBank, workspace_name: workspaceName, workspace_id: workspaceId, seat_quantity: seatQuantity, price_interval: priceInterval, credit_quantity: creditQuantity, pix_tax_id: pixTaxID, pix_auto_kind: pixAutoKind }) });
+      const response = await apiFetch("/sunny/checkout", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selected : [], external_ats: systemAT ? [] : selectedExternalRows.map((x) => x.token), checkout_kinds: systemAT ? [] : selectedExternalRows.map((x) => normalized(x.checkout_kind) || "unknown"), plan, link_type: linkType, country, currency, retry_count: retryCount, concurrency, use_promo: usePromo, promo_campaign: promoCampaign, promo_country: linkType === "gcash" ? "PH" : promoCountry, promo_code: promoCode, ideal_bank: idealBank, workspace_name: workspaceName, workspace_id: workspaceId, seat_quantity: seatQuantity, price_interval: priceInterval, credit_quantity: creditQuantity, pix_tax_id: pixTaxID, pix_auto_kind: pixAutoKind }) });
       const taskID = String(response.id || response.task_id);
       setTask(response);
       setActiveTaskID(taskID);
@@ -869,8 +830,8 @@ export default function CheckoutManager() {
   const detailState = detailKey ? checkoutLive[detailKey] : undefined;
   return <div className="checkout-manager space-y-5">
     {notice && <div className="fixed right-5 top-20 z-[500] rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white shadow-xl">{notice}</div>}
-    <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5 shadow-sm"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--accent)]">PAYMENT ROUTER</p><h1 className="mt-1 text-2xl font-black">提链管理</h1><p className="mt-2 text-sm text-[var(--text-secondary)]">为已注册 ChatGPT 账户批量提取支付链接、跳转地址和支付二维码。</p></div><div className="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--text-muted)]">{statusLabel}</div></div></section>
-    <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5"><div className={`grid gap-4 ${linkType === "gcash" ? "md:grid-cols-1" : "md:grid-cols-2"}`}><label><span className="mb-2 block text-sm font-semibold">{linkType === "gcash" ? "PH Checkout 代理池" : "Checkout 代理池"} <b className="text-red-500">*</b></span><textarea className="min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)]" value={checkoutProxies} onChange={(e) => updateCheckoutProxies(e.target.value)} placeholder="每行一个代理，支持 http://、https://、socks5://" /></label>{linkType !== "gcash" && <label><span className="mb-2 block text-sm font-semibold">Promotion 代理池 <b className="text-red-500">*</b></span><textarea className="min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)]" value={promotionProxies} onChange={(e) => updatePromotionProxies(e.target.value)} placeholder="每行一个代理，支持 http://、https://、socks5://" /></label>}</div><p className="mt-3 text-xs text-[var(--text-muted)]">{linkType === "gcash" ? "GCash 每次尝试选用一个 PH 代理，并复用同一会话完成 Checkout、taxes、confirm 与 start。" : "每个代理池最多 500 条。每轮重试会重新选择代理组合；Checkout 创建与支付处理使用 Checkout 代理池，试用检查与优惠更新使用 Promotion 代理池。"}</p></section>
+    <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5 shadow-sm"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--accent)]">PAYMENT ROUTER</p><h1 className="mt-1 text-2xl font-black">提链管理</h1><p className="mt-2 text-sm text-[var(--text-secondary)]">为选中的 ChatGPT 账户批量提取支付链接、跳转地址和支付二维码。</p></div><div className="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--text-muted)]">{statusLabel}</div></div></section>
+    <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5"><div className="flex items-center justify-between gap-3"><div><h2 className="text-sm font-semibold">代理出口</h2><p className="mt-1 text-xs text-[var(--text-muted)]">提链任务统一使用程序代理池，按 Checkout / Promotion 国家自动匹配并随机选择已启用代理。</p></div><span className="rounded-full border border-emerald-300/60 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">程序代理池</span></div></section>
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5"><h2 className="mb-3 text-sm font-semibold">订阅 / 空间</h2><div className="grid grid-cols-2 gap-2 md:grid-cols-4">{planOptions.map((item) => <button key={item.value} type="button" onClick={() => setPlan(item.value)} className={`rounded-xl border p-3 text-left transition ${plan === item.value ? "border-[var(--accent)] bg-[var(--accent)]/10" : "border-[var(--border)] hover:border-[var(--accent)]/60"}`}><b className="block">{item.label}</b><small className="text-xs text-[var(--text-muted)]">{item.hint}</small></button>)}</div>{plan === "team" && <div className="mt-4 grid gap-3 md:grid-cols-4"><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} placeholder="空间名称" /><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} placeholder="已有空间 ID" /><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" type="number" min={2} value={seatQuantity} onChange={(e) => setSeatQuantity(Number(e.target.value))} placeholder="席位数量" /><select className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={priceInterval} onChange={(e) => setPriceInterval(e.target.value)}><option value="month">按月</option><option value="year">按年</option></select></div>}{plan === "codex_low" && <div className="mt-4 grid gap-3 md:grid-cols-2"><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} placeholder="Codex 空间名称" /><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" type="number" min={1} value={creditQuantity} onChange={(e) => setCreditQuantity(Number(e.target.value))} placeholder="积分数量" /></div>}</section>
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5">
       <h2 className="mb-3 text-sm font-semibold">支付路径</h2>
@@ -914,7 +875,7 @@ export default function CheckoutManager() {
           <select aria-label="Checkout 类型筛选" className="h-9 w-40 shrink-0 rounded-lg border border-[var(--border)] bg-[var(--bg-shell)] px-2 text-xs" value={checkoutFilter} onChange={(e) => changeFilter(setCheckoutFilter, e.target.value)}><option value="">全部 Checkout</option><option value="oaics">OAICS</option><option value="cs_live">CS Live</option><option value="cs_test">CS Test</option><option value="unknown">未检测</option></select>
           <PaymentMethodFilter value={paymentMethods} options={availablePaymentMethods} onChange={(value) => { setPaymentMethods(value); setPage(1); }} />
         </div>}
-        <div className="sr-selection-summary shrink-0" aria-live="polite"><button type="button" className="sr-select-all" disabled={selectingAll || listTotal <= 0} onClick={() => void selectAllRows()}>{selectingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ListChecks className="h-3.5 w-3.5" />}<span>全选</span></button>{selectedCount > 0 && <><span className="sr-selected-count">已选择 {selectedCount} 项</span><button type="button" className="sr-clear-selection" onClick={() => setSelected([])}>清除选择</button></>}</div>
+        <div className="sr-selection-summary shrink-0" aria-live="polite"><button type="button" className="sr-text-btn" onClick={clearAccountFilters} title="清空账户筛选"><Filter className="h-4 w-4" />清空筛选</button><button type="button" className="sr-select-all" disabled={selectingAll || listTotal <= 0} onClick={() => void selectAllRows()}>{selectingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ListChecks className="h-3.5 w-3.5" />}<span>全选</span></button>{selectedCount > 0 && <><span className="sr-selected-count">已选择 {selectedCount} 项</span><button type="button" className="sr-clear-selection" onClick={() => setSelected([])}>清除选择</button></>}</div>
         <button type="button" className="sr-text-btn ml-auto" disabled={listLoading} onClick={refreshRows}>{listLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}刷新列表</button>
       </div>
       <div className="checkout-account-table-scroll relative overflow-x-auto">{listLoading && <div className="absolute inset-0 z-30 flex items-center justify-center bg-[var(--bg-shell)]/70"><Loader2 className="h-5 w-5 animate-spin text-[var(--accent)]" /></div>}<ResizableCheckoutAccountTable headers={[<input type="checkbox" aria-label="本页全选" checked={allCurrentSelected} disabled={!rows.length} onChange={toggleCurrentPage} />, "邮箱", <CheckoutPresenceFilter label="换绑邮箱" value={rebindEmailFilter} onChange={(value) => { setRebindEmailFilter(value); setPage(1); }} title="筛选换绑邮箱" />, "分组", "状态", "套餐", <CheckoutTrialCountryFilter value={trialCountryFilters} options={trialCountryOptions} onChange={(value) => { setTrialCountryFilters(value); setPage(1); }} />, "Checkout 类型", "支付路径", "支付链接", "支付二维码", "操作"]}><tbody>{rows.length ? rows.map((row, index) => { const result = row.checkout_result || {}; const live = row.checkout_live as CheckoutLiveState | undefined; const link = resultDisplayLink(result); const error = resultError(result); const failed = normalized(result.status) === "failed"; const statusValue = row.at_status || row.status; const planValue = row.plan_type; const pathValue = result.link_type; const detail = [result.plan && `套餐 ${labelFor(result.plan, planLabels)}`, result.country && `地区 ${result.country}`, result.currency && `币种 ${result.currency}`, result.checkout_amount != null && `金额 ${result.checkout_amount}`, result.payment_methods?.length && `支付方式 ${result.payment_methods.join(", ")}`, result.checkout_session_id && `会话 ${result.checkout_session_id}`, result.promo_requested != null && `优惠 ${result.promo_applied === true ? "已生效" : result.promo_applied === false ? "未生效" : "待确认"}`].filter(Boolean).join(" · "); const qrImage = resultQrImage(result); const rowKey = checkoutSelectionKey(row, systemAT); return <tr key={`${row.id || row.index || index}`} className="border-b border-[var(--border)]/60"><td className="checkout-sticky checkout-sticky-left p-2"><input type="checkbox" checked={selected.includes(rowKey)} onChange={() => toggleRow(row)} /></td><td className="checkout-sticky checkout-sticky-left p-2" style={{ left: "var(--checkout-checkbox-width)" }}><div className="truncate" title={row.email}>{row.email || "未知邮箱"}</div>{live && <div className="mt-1 w-full"><div className="mb-0.5 flex justify-between gap-2 text-[10px] text-[var(--text-muted)]"><span className="truncate">{live.message || "提链处理中"}</span><span>{Math.round(live.progress)}%</span></div><div className="h-1 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700"><div className={`h-full rounded-full transition-[width] ${live.status === "failed" ? "bg-red-500" : live.status === "succeeded" ? "bg-emerald-500" : "bg-[var(--accent)]"}`} style={{ width: `${Math.max(0, Math.min(100, live.progress))}%` }} /></div></div>}</td><td className="p-2"><div className="truncate" title={row.rebind_email || "-"}>{row.rebind_email || "-"}</div></td><td className="p-2"><div className="truncate" title={row.group_name || "-"}>{row.group_name || "-"}</div></td><td className="p-2"><AccountStatusBadge value={statusValue} /></td><td className="p-2"><AccountPlanBadge value={planValue} /></td><td className="p-2"><AccountTrialValue row={row} /></td><td className="p-2"><AccountCheckoutValue row={row} /></td><td className="p-2">{pathValue ? <CompactBadge label={labelFor(pathValue, pathLabels)} tone={pathTone(pathValue)} /> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2">{link ? <button className="block w-full truncate text-left font-medium text-[var(--accent)] underline decoration-[var(--accent)]/40 underline-offset-2 hover:decoration-[var(--accent)]" title={`${link}\n${detail}\n点击复制支付链接`} onClick={() => void copy(link)}>{link}</button> : error || failed ? <div className="truncate font-medium text-red-600 dark:text-red-400" title={`提链失败：${error || "任务未返回支付链接"}`}>提链失败：{error || "任务未返回支付链接"}</div> : live?.status === "running" ? <span className="text-[var(--text-muted)]">提链中...</span> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="p-2">{qrImage ? <QRImageThumb src={qrImage} onClick={() => { setQrValue(result.qr_data || ""); setQrImage(qrImage); }} /> : result.qr_data ? <QRThumb value={result.qr_data} onClick={() => { setQrValue(result.qr_data); setQrImage(""); }} /> : <span className="text-[var(--text-muted)]">-</span>}</td><td className="checkout-sticky checkout-sticky-right p-2"><div className="flex items-center gap-1"><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="查看当前账户提链日志" onClick={() => setDetailKey(checkoutLiveKey(row))}><FileText className="h-3 w-3" />详情</button>{link && <><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="复制支付链接" onClick={() => void copy(link)}><Clipboard className="h-3 w-3" />复制</button><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="在新窗口打开支付链接" onClick={() => window.open(link, "_blank", "noopener,noreferrer")}><ExternalLink className="h-3 w-3" />打开</button></>}</div></td></tr>; }) : <tr><td colSpan={12} className="p-10 text-center text-sm text-[var(--text-muted)]">暂无账户，请先导入或选择 AT。</td></tr>}</tbody></ResizableCheckoutAccountTable></div>

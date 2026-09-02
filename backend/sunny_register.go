@@ -4135,14 +4135,17 @@ const (
 	sunnyProxyPurposeRegister = "register"
 	sunnyProxyPurposeCommerce = "commerce"
 	sunnyProxyPurposePayment  = "payment_probe"
+	sunnyProxyPurposeCheckout = "checkout"
 )
 
 func normalizeSunnyProxyPurpose(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "register", "registration", "login", "注册", "登录":
 		return sunnyProxyPurposeRegister
-	case "commerce", "trial", "checkout", "account_check", "账户检测", "商业检测":
+	case "commerce", "trial", "account_check", "账户检测", "商业检测":
 		return sunnyProxyPurposeCommerce
+	case "checkout", "checkout_link", "link", "提链", "提链代理":
+		return sunnyProxyPurposeCheckout
 	case "payment_probe", "payment", "payment_check", "支付探测", "支付检测":
 		return sunnyProxyPurposePayment
 	default:
@@ -4241,7 +4244,17 @@ func looksLikeProxyHost(value string) bool {
 		return true
 	}
 	lower := strings.ToLower(host)
-	return lower == "localhost" || strings.Contains(host, ".")
+	if lower == "localhost" || strings.Contains(host, ".") {
+		return true
+	}
+	// Accept simple hostnames used by local proxy pools (for example `host:8080`).
+	for _, r := range host {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func sunnyProxyDisplayStatus(p SunnyProxy) string {
@@ -4860,23 +4873,24 @@ type sunnySessionAccountSummary struct {
 }
 
 type sunnySessionMailboxSummary struct {
-	ID                      uint       `gorm:"column:id"`
-	Email                   string     `gorm:"column:email"`
-	RebindEmail             string     `gorm:"column:rebind_email"`
-	Status                  string     `gorm:"column:status"`
-	AccountType             string     `gorm:"column:account_type"`
-	TrialEligibility        string     `gorm:"column:trial_eligibility"`
-	TrialCountryResultsJSON string     `gorm:"column:trial_country_results_json"`
-	TrialCheckedAt          *time.Time `gorm:"column:trial_checked_at"`
-	HasSecretKey            int        `gorm:"column:has_secret_key"`
-	HasChatGPTPassword      int        `gorm:"column:has_chatgpt_password"`
-	HasTOTPSecret           int        `gorm:"column:has_totp_secret"`
-	ChatGPTPassword         string     `gorm:"column:chat_gpt_password"`
-	TOTPSecret              string     `gorm:"column:totp_secret"`
-	Raw                     string     `gorm:"column:raw"`
-	GroupID                 uint       `gorm:"column:group_id"`
-	GroupName               string     `gorm:"column:group_name"`
-	LastHealthCheckedAt     *time.Time `gorm:"column:last_health_checked_at"`
+	ID                      uint         `gorm:"column:id"`
+	Email                   string       `gorm:"column:email"`
+	RebindEmail             string       `gorm:"column:rebind_email"`
+	Status                  string       `gorm:"column:status"`
+	AccountType             string       `gorm:"column:account_type"`
+	TrialEligibility        string       `gorm:"column:trial_eligibility"`
+	TrialCountryResultsJSON string       `gorm:"column:trial_country_results_json"`
+	TrialCheckedAt          *time.Time   `gorm:"column:trial_checked_at"`
+	HasSecretKey            int          `gorm:"column:has_secret_key"`
+	HasChatGPTPassword      int          `gorm:"column:has_chatgpt_password"`
+	HasTOTPSecret           int          `gorm:"column:has_totp_secret"`
+	ChatGPTPassword         string       `gorm:"column:chat_gpt_password"`
+	TOTPSecret              string       `gorm:"column:totp_secret"`
+	Raw                     string       `gorm:"column:raw"`
+	GroupID                 uint         `gorm:"column:group_id"`
+	GroupName               string       `gorm:"column:group_name"`
+	LastHealthCheckedAt     *time.Time   `gorm:"column:last_health_checked_at"`
+	RegisteredAt            sql.NullTime `gorm:"column:registered_at"`
 }
 
 const sunnySessionListColumns = `id, account_id, email, access_token, access_token_status, access_token_error, access_token_checked_at, health_check_status, health_check_error, expires_at, updated_at,
@@ -4952,6 +4966,7 @@ func serializeSunnySessionList(row sunnySessionListRow, accounts map[string]sunn
 		"checkout_kind":         checkoutKind, "checkout_result": sunnyCheckoutResultJSON(account.CheckoutResultJSON), "payment_methods": paymentMethods, "payment_probe_results": paymentProbeResults,
 		"payment_probe_error": account.PaymentProbeError, "payment_probed_at": nullableTime(account.PaymentProbedAt != nil, pointerTime(account.PaymentProbedAt)), "commerce_check_error": account.CommerceCheckError,
 		"phone_bound":          sunnyPhoneBindingCompleted(account.PhoneNumber, account.Status, mailbox.Status),
+		"registered_at":        nullableTime(mailbox.RegisteredAt.Valid, mailbox.RegisteredAt.Time),
 		"rebind_email":         fallback(strings.TrimSpace(mailbox.RebindEmail), strings.TrimSpace(account.RebindEmail)),
 		"has_access_token":     row.HasAccessToken != 0 || account.HasAccessToken != 0,
 		"has_refresh_token":    row.HasRefreshToken != 0 || account.HasRefreshToken != 0,
@@ -5018,6 +5033,26 @@ func normalizeSunnyRebindEmailFilter(value string) string {
 	default:
 		return ""
 	}
+}
+
+func normalizeSunnyRegisteredAgeFilter(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "24h", "24", "24_hours", "24-hours", "满24h":
+		return "24h"
+	default:
+		return ""
+	}
+}
+
+func sunnyRegisteredAgeMatches(value any, filter string, now time.Time) bool {
+	if filter == "" {
+		return true
+	}
+	registeredAt, err := time.Parse(time.RFC3339, strings.TrimSpace(text(value)))
+	if err != nil || registeredAt.IsZero() {
+		return false
+	}
+	return !registeredAt.After(now) && now.Sub(registeredAt) >= 24*time.Hour
 }
 
 func sunnyHasAllEligibleTrialCountries(value any, required []string) bool {
@@ -5184,7 +5219,7 @@ func (s *Server) sunnySessionListSidecars(rows []sunnySessionListRow) (map[strin
 	}
 	var mailboxRows []sunnySessionMailboxSummary
 	mailboxQuery := s.db.Model(&SunnyMailbox{}).Select(`sunny_mailboxes.id, sunny_mailboxes.email, sunny_mailboxes.rebind_email, sunny_mailboxes.status, sunny_mailboxes.account_type, sunny_mailboxes.trial_eligibility, sunny_mailboxes.trial_country_results_json, sunny_mailboxes.trial_checked_at,
-		sunny_mailboxes.group_id, sunny_mailboxes.last_health_checked_at, sunny_mailbox_groups.name AS group_name, sunny_mailboxes.chat_gpt_password, sunny_mailboxes.totp_secret, sunny_mailboxes.raw,
+		 sunny_mailboxes.group_id, sunny_mailboxes.last_health_checked_at, sunny_mailboxes.registered_at, sunny_mailbox_groups.name AS group_name, sunny_mailboxes.chat_gpt_password, sunny_mailboxes.totp_secret, sunny_mailboxes.raw,
 		CASE
 			WHEN COALESCE(sunny_mailboxes.rebind_email, '') <> '' AND COALESCE(sunny_mailboxes.rebind_mailbox_api, '') <> '' THEN 1
 			WHEN COALESCE(sunny_mailboxes.raw, '') <> '' THEN 1
@@ -5317,10 +5352,11 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		paymentMethodFilter := normalizeSunnyPaymentMethodFilter(q.Get("payment_methods"))
 		loginSecretFilter := normalizeSunnyLoginSecretFilter(q.Get("login_secret"))
 		rebindEmailFilter := normalizeSunnyRebindEmailFilter(q.Get("rebind_email"))
+		registeredAgeFilter := normalizeSunnyRegisteredAgeFilter(q.Get("registered_age"))
 		trialCountryFilter := normalizeSunnyTrialCountryFilter(q.Get("trial_countries"))
 		groupFilter := uint(intValue(q.Get("group_id"), 0))
 		sortBy := strings.ToLower(strings.TrimSpace(q.Get("sort_by")))
-		if statusFilter == "" && planFilter == "" && trialFilter == "" && checkoutFilter == "" && len(paymentMethodFilter) == 0 && loginSecretFilter == "" && rebindEmailFilter == "" && len(trialCountryFilter) == 0 && sortBy != "rebind_email" {
+		if statusFilter == "" && planFilter == "" && trialFilter == "" && checkoutFilter == "" && len(paymentMethodFilter) == 0 && loginSecretFilter == "" && rebindEmailFilter == "" && registeredAgeFilter == "" && len(trialCountryFilter) == 0 && sortBy != "rebind_email" {
 			query := s.db.Model(&SunnySession{})
 			query = sunnyUniqueSessionIdentityScope(query)
 			if kw != "" {
@@ -5389,6 +5425,9 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 				continue
 			}
 			if rebindEmailFilter != "" && (rebindEmailFilter == "present") != (strings.TrimSpace(text(item["rebind_email"])) != "") {
+				continue
+			}
+			if !sunnyRegisteredAgeMatches(item["registered_at"], registeredAgeFilter, time.Now()) {
 				continue
 			}
 			if !sunnyHasAllEligibleTrialCountries(item["trial_country_results"], trialCountryFilter) {
@@ -6047,18 +6086,19 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 	if typ == "sunny_register" || typ == "sunny_phone_register" {
 		if typ == "sunny_phone_register" {
 			body["identity"] = "system"
+			body["phone_registration"] = true
 			// Phone registration only creates the ChatGPT account and Session.
 			// Codex OAuth/RT acquisition is submitted through its own task.
 			body["registration_stage"] = "register_only"
-			if len(uintSlice(body["mailbox_ids"])) == 0 {
-				writeError(w, http.StatusBadRequest, "手机注册必须先选择邮箱")
-				return
-			}
 			provider := strings.ToLower(strings.TrimSpace(text(body["sms_provider"])))
 			validProviders := map[string]bool{"local": true, "luban": true, "smsbower": true, "smspool": true, "firefox": true, "grizzlysms": true, "hero_sms": true}
 			mailboxes, err := s.sunnyMailboxesForRegisterTask(body)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if len(mailboxes) == 0 {
+				writeError(w, http.StatusBadRequest, "手机注册没有可用账号来源")
 				return
 			}
 			if s.sunnyMailboxesNeedPhone(mailboxes) {
@@ -6100,6 +6140,9 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
+			// Keep task progress aligned with the number of actual account sources.
+			// When no rows were selected, the Worker allocates up to `count` sources.
+			body["count"] = len(mailboxes)
 		} else {
 			normalizedIdentity, err := normalizeSunnyRegistrationIdentity(text(body["identity"]))
 			if err != nil {
@@ -6276,11 +6319,12 @@ func (s *Server) sunnyValidateRegisterStageResources(body map[string]any) error 
 		return err
 	}
 	identity := strings.ToLower(strings.TrimSpace(text(body["identity"])))
+	phoneRegistration := boolValue(body["phone_registration"], false)
 	if identity == "remail" || identity == "domain" || identity == "domain_mailbox" || identity == "自建域名邮箱" {
 		return s.sunnyValidateProxyForRegisterTask()
 	}
 	mailboxCfg := s.sunnyGetConfig(sunnyCfgMailbox, defaultMailboxConfig())
-	if !boolValue(mailboxCfg["pool_enabled"], true) {
+	if !phoneRegistration && !boolValue(mailboxCfg["pool_enabled"], true) {
 		return fmt.Errorf("mailbox config is unavailable: enable the self-managed mailbox pool first")
 	}
 	mailboxes, err := s.sunnyMailboxesForRegisterTask(body)
@@ -6288,6 +6332,9 @@ func (s *Server) sunnyValidateRegisterStageResources(body map[string]any) error 
 		return err
 	}
 	if len(mailboxes) == 0 {
+		if phoneRegistration {
+			return fmt.Errorf("手机注册没有可用账号来源")
+		}
 		return fmt.Errorf("mailbox config is unavailable: import and enable at least one mailbox first")
 	}
 	if err := s.sunnyValidateProxyForRegisterTask(); err != nil {

@@ -1472,6 +1472,18 @@ class DomainMailReader:
         return values
 
     @staticmethod
+    def _has_message_rows(payload: Any) -> bool:
+        message_keys = {
+            "id", "emailId", "messageId", "subject", "text", "body", "content",
+            "html", "bodyPreview", "body_preview", "verificationCode", "verification_code",
+            "otp", "code", "toEmail", "recipient", "to",
+        }
+        return any(
+            isinstance(item, dict) and bool(message_keys.intersection(item.keys()))
+            for item in DomainMailReader._nested(payload)
+        )
+
+    @staticmethod
     def _timestamp(value: Any) -> float:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             numeric = float(value)
@@ -1495,50 +1507,61 @@ class DomainMailReader:
             return 0.0
 
     def _request(self) -> Any:
-        self.request_count += 1
-        try:
-            if self.pickup_url:
-                response = requests.get(
-                    self.pickup_url,
-                    headers={"Accept": "application/json", "User-Agent": "SunnyRegister/1.0"},
-                    timeout=30,
-                    proxies=self.proxies,
-                )
-            else:
-                headers = {"Authorization": self.auth_token, "X-Auth-Token": self.auth_token, "Accept": "application/json", "User-Agent": "SunnyRegister/1.0"}
-                if self.site_password:
-                    headers["x-custom-auth"] = self.site_password
-                response = requests.post(
-                    self.base_url + "/api/public/emailList",
-                    json={"toEmail": self.account.email, "timeSort": "desc", "type": 0, "isDel": 0, "num": 1, "size": 20},
-                    headers=headers,
-                    timeout=30,
-                    proxies=self.proxies,
-                )
-        except requests.RequestException as exc:
-            self.last_error = str(exc)
-            if self.request_count == 1 or self.request_count % 10 == 0:
-                self.log(f"[{self.account.email}] 自建域名邮箱取件 API 网络请求失败（第 {self.request_count} 次）：{str(exc)[:220]}")
-            raise MailboxAccessError("domain_network_error", "自建域名邮箱接口连接失败", str(exc)) from exc
-        try:
-            self.last_status = int(response.status_code or 0)
-            if response.status_code in {401, 403}:
-                self.last_error = f"HTTP {response.status_code}"
-                self.log(f"[{self.account.email}] 自建域名邮箱取件 API 返回 HTTP {response.status_code}，凭证或邮箱状态校验失败")
-                raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱取件凭证无效或邮箱已停用", f"HTTP {response.status_code}", terminal=True)
-            if not response.ok:
-                self.last_error = f"HTTP {response.status_code}"
-                if self.request_count == 1 or self.request_count % 10 == 0:
-                    self.log(f"[{self.account.email}] 自建域名邮箱取件 API 返回 HTTP {response.status_code}（第 {self.request_count} 次）")
-                raise MailboxAccessError("domain_provider_failed", "自建域名邮箱接口请求失败", f"HTTP {response.status_code}")
+        # Some CloudMail deployments ignore the optional type/isDel filters and
+        # return an empty page when they are present. Retry once without those
+        # fields so registration/rebinding does not fail on an empty result.
+        queries = [
+            {"toEmail": self.account.email, "timeSort": "desc", "type": 0, "isDel": 0, "num": 1, "size": 20},
+            {"toEmail": self.account.email, "timeSort": "desc", "num": 1, "size": 20},
+        ] if not self.pickup_url else [None]
+        for query in queries:
+            self.request_count += 1
             try:
-                return response.json()
-            except ValueError as exc:
-                self.last_error = "invalid_json"
-                self.log(f"[{self.account.email}] 自建域名邮箱取件 API 返回内容不是有效 JSON（HTTP {response.status_code}）")
-                raise MailboxAccessError("domain_response_invalid", "自建域名邮箱接口返回了无法解析的 JSON", str(exc), terminal=True) from exc
-        finally:
-            response.close()
+                if self.pickup_url:
+                    response = requests.get(
+                        self.pickup_url,
+                        headers={"Accept": "application/json", "User-Agent": "SunnyRegister/1.0"},
+                        timeout=30,
+                        proxies=self.proxies,
+                    )
+                else:
+                    headers = {"Authorization": self.auth_token, "X-Auth-Token": self.auth_token, "Accept": "application/json", "User-Agent": "SunnyRegister/1.0"}
+                    if self.site_password:
+                        headers["x-custom-auth"] = self.site_password
+                    response = requests.post(
+                        self.base_url + "/api/public/emailList",
+                        json=query,
+                        headers=headers,
+                        timeout=30,
+                        proxies=self.proxies,
+                    )
+            except requests.RequestException as exc:
+                self.last_error = str(exc)
+                if self.request_count == 1 or self.request_count % 10 == 0:
+                    self.log(f"[{self.account.email}] 自建域名邮箱取件 API 网络请求失败（第 {self.request_count} 次）：{str(exc)[:220]}")
+                raise MailboxAccessError("domain_network_error", "自建域名邮箱接口连接失败", str(exc)) from exc
+            try:
+                self.last_status = int(response.status_code or 0)
+                if response.status_code in {401, 403}:
+                    self.last_error = f"HTTP {response.status_code}"
+                    self.log(f"[{self.account.email}] 自建域名邮箱取件 API 返回 HTTP {response.status_code}，凭证或邮箱状态校验失败")
+                    raise MailboxAccessError("domain_credential_invalid", "自建域名邮箱取件凭证无效或邮箱已停用", f"HTTP {response.status_code}", terminal=True)
+                if not response.ok:
+                    self.last_error = f"HTTP {response.status_code}"
+                    if self.request_count == 1 or self.request_count % 10 == 0:
+                        self.log(f"[{self.account.email}] 自建域名邮箱取件 API 返回 HTTP {response.status_code}（第 {self.request_count} 次）")
+                    raise MailboxAccessError("domain_provider_failed", "自建域名邮箱接口请求失败", f"HTTP {response.status_code}")
+                try:
+                    payload = response.json()
+                except ValueError as exc:
+                    self.last_error = "invalid_json"
+                    self.log(f"[{self.account.email}] 自建域名邮箱取件 API 返回内容不是有效 JSON（HTTP {response.status_code}）")
+                    raise MailboxAccessError("domain_response_invalid", "自建域名邮箱接口返回了无法解析的 JSON", str(exc), terminal=True) from exc
+            finally:
+                response.close()
+            if self.pickup_url or query is queries[-1] or self._has_message_rows(payload):
+                return payload
+        return {}
 
     def _latest(self) -> dict[str, Any]:
         candidates: list[dict[str, Any]] = []

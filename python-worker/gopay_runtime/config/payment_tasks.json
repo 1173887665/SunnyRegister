@@ -1,0 +1,91 @@
+{
+  "jobs": [
+    {
+      "id": "b4c2d8402554",
+      "phone": "+6285138475340",
+      "local": "85138475340",
+      "midtrans_url": "https://app.midtrans.com/snap/v4/redirection/9a49f1f8-aef2-480f-8371-3c3ae7a3a858#/gopay-tokenization/linking",
+      "snap_token": "9a49f1f8-aef2-480f-8371-3c3ae7a3a858",
+      "midtrans_meta": {
+        "snap_token": "9a49f1f8-aef2-480f-8371-3c3ae7a3a858",
+        "order_id": "setatt_1UABptC6h1nxGoI3PVqhCdKR",
+        "gross_amount": "1",
+        "currency": "IDR",
+        "midtrans_client_key": "Mid-client-3TX8nUa-f_RgNrky",
+        "expiry_time": "2026-08-30 16:59:02 +0000",
+        "account_status": "PENDING",
+        "transaction_status": "",
+        "is_setup_authorization": true,
+        "is_paid_invoice": false
+      },
+      "balance_before": 1,
+      "payment_fingerprint": {
+        "version": 1,
+        "profile_id": "fb4d5e6715b0bca9",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "locale": "id-ID",
+        "timezone": "Asia/Jakarta",
+        "viewport": {
+          "width": 1920,
+          "height": 1080,
+          "device_scale_factor": 1
+        },
+        "sec_ch_ua": "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"121\", \"Google Chrome\";v=\"121\"",
+        "sec_ch_ua_mobile": "?0",
+        "sec_ch_ua_platform": "\"Windows\""
+      },
+      "proxy": "http://1y7c3hrmtnvuomiyaip_g-IN_f-1001:157632896@global.miyaip.online:1111",
+      "inbox_job_id": "",
+      "status": "failed",
+      "message": "linking failed: 401 {'error_messages': ['Missing X-Captcha-Token header']}",
+      "created_at": "2026-08-30T16:53:39.628404+00:00",
+      "updated_at": "2026-08-30T16:54:22.087466+00:00",
+      "prompt": null,
+      "logs": [
+        {
+          "at": "2026-08-30T16:53:39.628404+00:00",
+          "message": "代理预检通过: 出口 IP 49.36.56.60"
+        },
+        {
+          "at": "2026-08-30T16:53:39.628404+00:00",
+          "message": "预检通过: setatt_1UABptC6h1nxGoI3PVqhCdKR 1 IDR，余额 1 Rp"
+        },
+        {
+          "at": "2026-08-30T16:53:39.628404+00:00",
+          "message": "GoPay 账号已预占；该号后续不会再绑定其他 Midtrans 链"
+        },
+        {
+          "at": "2026-08-30T16:53:39.679233+00:00",
+          "message": "支付指纹 profile_id=fb4d5e6715b0bca9"
+        },
+        {
+          "at": "2026-08-30T16:53:42.575599+00:00",
+          "message": "支付前代理复检通过: 出口 IP 49.37.130.27"
+        },
+        {
+          "at": "2026-08-30T16:54:10.154018+00:00",
+          "message": "SMSBower 下一条验证码准备失败，仍可在网页手动输入"
+        },
+        {
+          "at": "2026-08-30T16:54:10.156918+00:00",
+          "message": "开始支付: +6285138475340 -> https://app.midtrans.com/snap/v4/redirection/9a49f1f8-aef2-480f-8371-3c3ae7a3a858#/gopay-tokenization/linking"
+        },
+        {
+          "at": "2026-08-30T16:54:10.177645+00:00",
+          "message": "Step 1: linking"
+        },
+        {
+          "at": "2026-08-30T16:54:22.077775+00:00",
+          "message": "支付失败: linking failed: 401 {'error_messages': ['Missing X-Captcha-Token header']}，详情 linking failed: 401 {'error_messages': ['Missing X-Captcha-Token header']}"
+        }
+      ],
+      "result": {
+        "success": false,
+        "detail": "linking failed: 401 {'error_messages': ['Missing X-Captcha-Token header']}",
+        "failure_label": "linking failed: 401 {'error_messages': ['Missing X-Captcha-Token header']}"
+      }
+    }
+  ],
+  "updated_at": "2026-08-30T16:54:22.087466+00:00",
+  "history_initialized": true
+}

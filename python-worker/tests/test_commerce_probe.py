@@ -166,14 +166,24 @@ def test_probe_payment_methods_only_runs_checkout_for_requested_country() -> Non
     assert result["traffic"] == {"requests": 2, "total_bytes": 240}
 
 
-def test_payment_methods_merge_standard_custom_and_future_fields() -> None:
+def test_payment_methods_prefers_checkout_available_methods_over_declarations() -> None:
     payload = {
         "payment_method_types": ["card"],
         "custom_payment_methods": [{"id": "cpmt_gopay"}],
         "available_payment_methods": [{"type": "bank_transfer_x"}],
         "payment_method_specs": [{"type": "future_wallet_v2"}],
     }
-    assert _payment_methods(payload) == ["card", "cpmt_gopay", "bank_transfer_x", "future_wallet_v2"]
+    assert _payment_methods(payload) == ["bank_transfer_x"]
+
+
+def test_payment_methods_ignores_disabled_entries() -> None:
+    payload = {
+        "available_payment_methods": [
+            {"type": "card", "available": True},
+            {"type": "momo", "available": False},
+        ],
+    }
+    assert _payment_methods(payload) == ["card"]
 
 
 def test_indonesia_payment_probe_matches_gopay_cs_live_mode() -> None:

@@ -27,30 +27,33 @@ import (
 var embeddedStatic embed.FS
 
 type Server struct {
-	db             *gorm.DB
-	adminUser      string
-	adminPass      string
-	staticFS       http.FileSystem
-	wake           chan struct{}
-	stop           chan struct{}
-	running        map[string]bool
-	runtimeMu      sync.Mutex
-	atCheckMu      sync.Mutex
-	trialCheckMu   sync.Mutex
-	paymentProbeMu sync.Mutex
-	maintenanceMu  sync.RWMutex
-	maintenance    map[string]any
-	smsOptionsMu   sync.Mutex
-	smsOptionsRun  map[string]*sunnySMSOptionsFlight
-	sessionMu      sync.Mutex
-	sessions       map[string]time.Time
-	loginMu        sync.Mutex
-	loginFailures  map[string]*loginFailure
-	sessionTTL     time.Duration
-	secureCookies  bool
-	production     bool
-	checkoutMu     sync.Mutex
-	checkoutCreds  map[string]checkoutSecret
+	db                    *gorm.DB
+	adminUser             string
+	adminPass             string
+	staticFS              http.FileSystem
+	wake                  chan struct{}
+	stop                  chan struct{}
+	running               map[string]bool
+	runtimeMu             sync.Mutex
+	atCheckMu             sync.Mutex
+	trialCheckMu          sync.Mutex
+	paymentProbeMu        sync.Mutex
+	maintenanceMu         sync.RWMutex
+	maintenance           map[string]any
+	smsOptionsMu          sync.Mutex
+	smsOptionsRun         map[string]*sunnySMSOptionsFlight
+	sessionMu             sync.Mutex
+	sessions              map[string]time.Time
+	loginMu               sync.Mutex
+	loginFailures         map[string]*loginFailure
+	sessionTTL            time.Duration
+	secureCookies         bool
+	production            bool
+	checkoutMu            sync.Mutex
+	checkoutCreds         map[string]checkoutSecret
+	webhookMu             sync.Mutex
+	webhookSnapshots      map[uint]accountWebhookSnapshot
+	webhookSnapshotsReady bool
 }
 
 type loginFailure struct {
@@ -95,13 +98,15 @@ func main() {
 		db: db, adminUser: adminUser, adminPass: adminPass, staticFS: staticFS,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), running: map[string]bool{},
 		sessions: map[string]time.Time{}, loginFailures: map[string]*loginFailure{},
-		checkoutCreds: map[string]checkoutSecret{},
-		sessionTTL:    12 * time.Hour, secureCookies: secureCookies, production: production,
+		checkoutCreds:    map[string]checkoutSecret{},
+		webhookSnapshots: map[uint]accountWebhookSnapshot{},
+		sessionTTL:       12 * time.Hour, secureCookies: secureCookies, production: production,
 	}
 	s.maintenance = s.loadSunnyMaintenanceConfig()
 	s.recordAudit(AuditLog{LogType: "system", Category: "system", Action: "startup", Status: "success", Summary: "SunnyRegister 后端服务启动", DetailsJSON: dumpJSON(map[string]any{"environment": fallback(os.Getenv("SUNNY_ENV"), "development"), "timezone": time.Local.String()})})
 	go s.sunnyWarmSMSProviderOptions()
 	go s.sunnyAccountHealthScheduleLoop()
+	go s.accountWebhookLoop()
 	go s.auditMaintenanceLoop()
 	log.Printf("admin login enabled: username=%s password_file=%s", adminUser, adminPasswordFile())
 	go s.runtimeLoop()
@@ -446,6 +451,10 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(p, "/integrations"):
 		s.handleIntegrations(w, r, strings.TrimPrefix(p, "/integrations"))
 	case strings.HasPrefix(p, "/sunny"):
+		if p == "/sunny/webhooks" || strings.HasPrefix(p, "/sunny/webhooks/") || p == "/sunny/webhook-deliveries" || strings.HasPrefix(p, "/sunny/webhook-deliveries/") {
+			s.handleAccountWebhooks(w, r, strings.TrimPrefix(p, "/sunny"))
+			return
+		}
 		s.handleSunny(w, r, strings.TrimPrefix(p, "/sunny"))
 	case strings.HasPrefix(p, "/actions"):
 		s.handleActions(w, r, strings.TrimPrefix(p, "/actions"))

@@ -102,6 +102,9 @@ type sunnyCheckoutPrecheckRequest struct {
 	ExternalATs      []string `json:"external_ats"`
 	CheckoutProxies  string   `json:"checkout_proxies"`
 	PromotionProxies string   `json:"promotion_proxies"`
+	LinkType         string   `json:"link_type"`
+	Country          string   `json:"country"`
+	PromoCountry     string   `json:"promo_country"`
 }
 
 type sunnyCheckoutCredential struct {
@@ -147,30 +150,16 @@ func splitCheckoutPool(raw string) ([]string, error) {
 }
 
 func normalizeCheckoutProxy(raw string) (string, error) {
-	value := strings.TrimSpace(raw)
+	value := normalizeSunnyProxyAddress(raw)
 	if value == "" {
 		return "", fmt.Errorf("empty proxy")
-	}
-	if !strings.Contains(value, "://") {
-		parts := strings.Split(value, ":")
-		if len(parts) >= 4 {
-			if _, err := strconv.Atoi(parts[1]); err == nil {
-				value = fmt.Sprintf("http://%s:%s@%s:%s", url.QueryEscape(parts[2]), url.QueryEscape(strings.Join(parts[3:], ":")), parts[0], parts[1])
-			} else if _, err := strconv.Atoi(parts[len(parts)-1]); err == nil {
-				value = fmt.Sprintf("http://%s:%s@%s:%s", url.QueryEscape(parts[0]), url.QueryEscape(strings.Join(parts[1:len(parts)-2], ":")), parts[len(parts)-2], parts[len(parts)-1])
-			} else {
-				return "", fmt.Errorf("invalid proxy")
-			}
-		} else {
-			value = "http://" + value
-		}
 	}
 	u, err := url.Parse(value)
 	if err != nil || u.Hostname() == "" || u.Port() == "" {
 		return "", fmt.Errorf("invalid proxy")
 	}
 	switch strings.ToLower(u.Scheme) {
-	case "http", "https", "socks5", "socks5h":
+	case "http", "https", "socks4", "socks4a", "socks5", "socks5h":
 	default:
 		return "", fmt.Errorf("unsupported proxy scheme")
 	}
@@ -184,6 +173,66 @@ func normalizeCheckoutProxy(raw string) (string, error) {
 	return u.String(), nil
 }
 
+// sunnyCheckoutProxyPools resolves canonical proxy URLs from the program pool.
+// The legacy commerce purpose remains a fallback for existing configurations.
+func (s *Server) sunnyCheckoutProxyPools(countries ...string) ([]string, error) {
+	var proxies []SunnyProxy
+	purposeQuery := "(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?"
+	if err := s.db.Where("status = ? AND enabled = ?", "enabled", true).
+		Where("("+purposeQuery+" OR "+purposeQuery+")", "%,"+sunnyProxyPurposeCheckout+",%", "%,"+sunnyProxyPurposeCommerce+",%").
+		Order("id asc").Find(&proxies).Error; err != nil {
+		return nil, err
+	}
+	wanted := make([]string, 0, len(countries))
+	seenCountries := map[string]bool{}
+	for _, raw := range countries {
+		country := strings.ToUpper(strings.TrimSpace(raw))
+		if country == "" || seenCountries[country] {
+			continue
+		}
+		seenCountries[country] = true
+		wanted = append(wanted, country)
+	}
+	if len(wanted) == 0 {
+		return nil, fmt.Errorf("提链代理国家不能为空")
+	}
+	allowed := map[string]bool{}
+	for _, country := range wanted {
+		allowed[country] = true
+	}
+	seen := map[string]bool{}
+	out := []string{}
+	found := map[string]bool{}
+	for _, proxy := range proxies {
+		country, err := normalizeSunnyProxyCountry(proxy.Country)
+		if err != nil || !allowed[country] {
+			continue
+		}
+		canonical, err := normalizeCheckoutProxy(proxy.Address)
+		if err != nil {
+			continue
+		}
+		found[country] = true
+		if !seen[canonical] {
+			seen[canonical] = true
+			out = append(out, canonical)
+		}
+	}
+	missing := []string{}
+	for _, country := range wanted {
+		if !found[country] {
+			missing = append(missing, country)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("提链代理池缺少 %s 国家已启用代理", strings.Join(missing, "/"))
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("提链代理池没有可用代理")
+	}
+	return out, nil
+}
+
 func checkoutProviderDefaults(value string) (string, string) {
 	for _, item := range checkoutProviders {
 		if item["value"] == value {
@@ -193,7 +242,7 @@ func checkoutProviderDefaults(value string) (string, string) {
 	return "US", "USD"
 }
 
-func normalizeCheckoutRequest(in sunnyCheckoutRequest) (sunnyCheckoutRequest, []string, []string, error) {
+func (s *Server) normalizeCheckoutRequestFromPool(in sunnyCheckoutRequest) (sunnyCheckoutRequest, []string, []string, error) {
 	in.Plan = strings.ToLower(strings.TrimSpace(in.Plan))
 	if in.Plan == "" {
 		in.Plan = "plus"
@@ -251,6 +300,50 @@ func normalizeCheckoutRequest(in sunnyCheckoutRequest) (sunnyCheckoutRequest, []
 		}
 		in.PixTaxID = digits
 	}
+	checkout, err := s.sunnyCheckoutProxyPools(in.Country)
+	if err != nil {
+		return in, nil, nil, fmt.Errorf("Checkout 代理池: %w", err)
+	}
+	promotion := append([]string(nil), checkout...)
+	if in.LinkType != "gcash" {
+		promoCountry := in.PromoCountry
+		if promoCountry == "" {
+			promoCountry = in.Country
+		}
+		promotion, err = s.sunnyCheckoutProxyPools(promoCountry)
+		if err != nil {
+			return in, nil, nil, fmt.Errorf("Promotion 代理池: %w", err)
+		}
+	}
+	return in, checkout, promotion, nil
+}
+
+// normalizeCheckoutRequest is retained for callers that validate standalone payloads.
+// Runtime checkout requests use normalizeCheckoutRequestFromPool above.
+func normalizeCheckoutRequest(in sunnyCheckoutRequest) (sunnyCheckoutRequest, []string, []string, error) {
+	in.Plan = strings.ToLower(strings.TrimSpace(in.Plan))
+	if in.Plan == "" {
+		in.Plan = "plus"
+	}
+	if !map[string]bool{"plus": true, "pro": true, "team": true, "codex_low": true}[in.Plan] {
+		return in, nil, nil, fmt.Errorf("不支持的套餐")
+	}
+	in.LinkType = strings.ToLower(strings.TrimSpace(in.LinkType))
+	if !checkoutProviderSet[in.LinkType] {
+		return in, nil, nil, fmt.Errorf("不支持的支付路径")
+	}
+	in.Country = strings.ToUpper(strings.TrimSpace(in.Country))
+	in.Currency = strings.ToUpper(strings.TrimSpace(in.Currency))
+	if in.Country == "" || in.Currency == "" {
+		in.Country, in.Currency = checkoutProviderDefaults(in.LinkType)
+	}
+	if in.LinkType == "gcash" {
+		in.Country, in.Currency, in.PromoCountry = "PH", "PHP", "PH"
+	}
+	if in.LinkType == "gopay" {
+		in.Country, in.Currency = "ID", "IDR"
+	}
+	in.PromoCountry = strings.ToUpper(strings.TrimSpace(in.PromoCountry))
 	checkout, err := splitCheckoutPool(in.CheckoutProxies)
 	if err != nil {
 		return in, nil, nil, fmt.Errorf("Checkout 代理池: %w", err)
@@ -285,15 +378,30 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 			writeError(w, http.StatusBadRequest, "请求格式无效")
 			return
 		}
-		checkout, err := splitCheckoutPool(body.CheckoutProxies)
+		linkType := strings.ToLower(strings.TrimSpace(body.LinkType))
+		country := strings.ToUpper(strings.TrimSpace(body.Country))
+		if linkType == "gcash" {
+			country = "PH"
+		}
+		if country == "" {
+			country, _ = checkoutProviderDefaults(linkType)
+		}
+		checkout, err := s.sunnyCheckoutProxyPools(country)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "Checkout 代理池: "+err.Error())
 			return
 		}
-		promotion, err := splitCheckoutPool(body.PromotionProxies)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "Promotion 代理池: "+err.Error())
-			return
+		promotion := append([]string(nil), checkout...)
+		if linkType != "gcash" {
+			promoCountry := strings.ToUpper(strings.TrimSpace(body.PromoCountry))
+			if promoCountry == "" {
+				promoCountry = country
+			}
+			promotion, err = s.sunnyCheckoutProxyPools(promoCountry)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "Promotion 代理池: "+err.Error())
+				return
+			}
 		}
 		type candidate struct {
 			Email, Token string
@@ -350,7 +458,7 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 			writeError(w, 400, "请求格式无效")
 			return
 		}
-		body, checkout, promotion, err := normalizeCheckoutRequest(body)
+		body, checkout, promotion, err := s.normalizeCheckoutRequestFromPool(body)
 		if err != nil {
 			writeError(w, 400, err.Error())
 			return

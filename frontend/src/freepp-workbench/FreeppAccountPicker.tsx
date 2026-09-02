@@ -668,11 +668,6 @@ export default function FreeppAccountPicker() {
         setMessage("所选账号没有可用会话，无法启动提链");
         return;
       }
-      const enabledProxies = runtime.proxies.filter((proxy) => proxy.enabled && proxy.address);
-      if (!enabledProxies.length) {
-        setMessage("代理池为空，请先在代理配置中启用代理");
-        return;
-      }
       const projectConfig = await api<Session>("/api/config");
       const initialChains = branches.flatMap((branch) => checkoutSessions.map((session, index) => ({
         chain_id: `${branch}:${String(session.id)}`,
@@ -701,16 +696,6 @@ export default function FreeppAccountPicker() {
       for (const [branchIndex, branch] of branches.entries()) {
         try {
           const execution = chainExecutionSettings(projectConfig, branch);
-          const checkoutProxies = enabledProxies.filter((proxy) => execution.checkoutCountries.includes(String(proxy.country || "").trim().toUpperCase()));
-          const promotionProxies = enabledProxies.filter((proxy) => execution.promotionCountries.includes(String(proxy.country || "").trim().toUpperCase()));
-          if (!checkoutProxies.length) {
-            throw new Error(`${branch} 配置要求 Checkout 出口 ${execution.checkoutCountries.join("/")}，但代理池中没有对应国家的已启用代理`);
-          }
-          if (!promotionProxies.length) {
-            throw new Error(`${branch} 配置要求 Promotion 出口 ${execution.promotionCountries.join("/")}，但代理池中没有对应国家的已启用代理`);
-          }
-          const checkoutPool = checkoutProxies.map((proxy) => proxy.address).join("\n");
-          const promotionPool = promotionProxies.map((proxy) => proxy.address).join("\n");
           setChainProgress((current) => ({
             ...current,
             visible: true,
@@ -725,8 +710,6 @@ export default function FreeppAccountPicker() {
             session_ids: sessionIds,
             external_ats: [],
             checkout_kinds: [],
-            checkout_proxies: checkoutPool,
-            promotion_proxies: promotionPool,
             plan: "plus",
             link_type: branch,
             country: execution.country,

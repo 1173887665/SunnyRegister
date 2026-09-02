@@ -234,6 +234,39 @@ def test_domain_reader_uses_individual_pickup_url(monkeypatch):
     assert any("HTTP 200" in message and "识别到 1 封验证码邮件" in message for message in logs)
 
 
+def test_domain_reader_retries_without_optional_filters(monkeypatch):
+    reader = DomainMailReader(
+        account_from_row({"email": "user@example.com", "mailbox_type": "domain", "access_key": _credential()}),
+        None,
+    )
+    calls = []
+
+    class Response:
+        status_code = 200
+        ok = True
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+        @staticmethod
+        def close():
+            return None
+
+    def fake_post(url, **kwargs):
+        calls.append(kwargs["json"])
+        if "type" in kwargs["json"]:
+            return Response({"data": []})
+        return Response({"data": [{"id": "m1", "bodyPreview": "code 654321"}]})
+
+    monkeypatch.setattr(mailbox_module.requests, "post", fake_post)
+    assert reader._latest()["code"] == "654321"
+    assert len(calls) == 2
+    assert "type" not in calls[1] and "isDel" not in calls[1]
+
+
 def test_domain_reader_keeps_otp_when_provider_recipient_field_differs(monkeypatch):
     logs = []
     reader = DomainMailReader(

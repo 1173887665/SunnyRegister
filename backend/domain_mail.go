@@ -34,6 +34,7 @@ func defaultDomainMailboxConfig() map[string]any {
 		"enabled_for_rebinding":    false,
 		"base_url":                 "",
 		"auth_token":               "",
+		"external_api_key":         "",
 		"site_password":            "",
 		"pickup_base_url":          "",
 		"domain":                   "",
@@ -45,15 +46,17 @@ func defaultDomainMailboxConfig() map[string]any {
 }
 
 type domainMailClient struct {
-	baseURL      string
-	token        string
-	sitePassword string
-	client       *http.Client
+	baseURL        string
+	token          string
+	externalAPIKey string
+	sitePassword   string
+	client         *http.Client
 }
 
 func newDomainMailClient(cfg map[string]any) (*domainMailClient, error) {
 	base := strings.TrimRight(strings.TrimSpace(text(cfg["base_url"])), "/")
 	token := strings.TrimSpace(text(cfg["auth_token"]))
+	externalAPIKey := strings.TrimSpace(text(cfg["external_api_key"]))
 	sitePassword := strings.TrimSpace(text(cfg["site_password"]))
 	if base == "" || token == "" {
 		return nil, fmt.Errorf("自建域名邮箱配置不完整：请填写 API 地址、PUBLIC_API_TOKEN 和邮箱域名")
@@ -65,7 +68,7 @@ func newDomainMailClient(cfg map[string]any) (*domainMailClient, error) {
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return nil, fmt.Errorf("自建域名邮箱 API 地址无效")
 	}
-	return &domainMailClient{baseURL: base, token: token, sitePassword: sitePassword, client: &http.Client{Timeout: 30 * time.Second}}, nil
+	return &domainMailClient{baseURL: base, token: token, externalAPIKey: externalAPIKey, sitePassword: sitePassword, client: &http.Client{Timeout: 30 * time.Second}}, nil
 }
 
 func domainMailboxDomains(cfg map[string]any) ([]string, error) {
@@ -214,6 +217,78 @@ func (c *domainMailClient) request(ctx context.Context, method, path string, bod
 		}
 	}
 	return payload, nil
+}
+
+// sendMessage uses Cloud-Mail Plus' external API.  The public token used for
+// mailbox provisioning and reads is intentionally not accepted by that API;
+// callers must configure the separate External API Key.
+func (c *domainMailClient) sendMessage(ctx context.Context, from string, to []string, subject, htmlBody, textBody string) (map[string]any, error) {
+	if strings.TrimSpace(c.externalAPIKey) == "" {
+		return nil, fmt.Errorf("CloudMail 发件未配置 External API Key，请在 CloudMail 设置中生成并填入")
+	}
+	from = strings.TrimSpace(from)
+	subject = strings.TrimSpace(subject)
+	if from == "" || len(to) == 0 || subject == "" || (strings.TrimSpace(htmlBody) == "" && strings.TrimSpace(textBody) == "") {
+		return nil, fmt.Errorf("CloudMail 发件参数不完整：需要 from、to、subject，以及 html 或 text")
+	}
+	cleanTo := make([]string, 0, len(to))
+	for _, address := range to {
+		if value := strings.TrimSpace(address); value != "" {
+			cleanTo = append(cleanTo, value)
+		}
+	}
+	if len(cleanTo) == 0 || len(cleanTo) > 50 {
+		return nil, fmt.Errorf("CloudMail 发件收件人数量必须在 1 到 50 之间")
+	}
+	body := map[string]any{"from": from, "to": cleanTo, "subject": subject}
+	if strings.TrimSpace(htmlBody) != "" {
+		body["html"] = htmlBody
+	}
+	if strings.TrimSpace(textBody) != "" {
+		body["text"] = textBody
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("CloudMail 发件参数编码失败：%w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/external/send", strings.NewReader(string(encoded)))
+	if err != nil {
+		return nil, fmt.Errorf("CloudMail 发件请求创建失败：%w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", c.externalAPIKey)
+	req.Header.Set("User-Agent", "SunnyRegister/1.0")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("CloudMail 发件请求失败：%w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, fmt.Errorf("CloudMail 发件响应读取失败：%w", err)
+	}
+	summary := domainMailResponseSummary(raw)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("CloudMail 发件失败：HTTP %d：%s", resp.StatusCode, summary)
+	}
+	var payload any
+	if summary != "" {
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return nil, fmt.Errorf("CloudMail 发件返回内容不是有效 JSON：%s", summary)
+		}
+	}
+	obj, ok := payload.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("CloudMail 发件返回格式无效")
+	}
+	if code := text(obj["code"]); code != "" && code != "200" && code != "0" {
+		return nil, fmt.Errorf("CloudMail 发件失败：%s", fallback(firstText(obj["message"], obj["error"], obj["detail"]), code))
+	}
+	if data, ok := obj["data"].(map[string]any); ok {
+		return data, nil
+	}
+	return obj, nil
 }
 
 func (c *domainMailClient) addUser(ctx context.Context, email string) error {
@@ -787,8 +862,10 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 			cfg["domain"] = domains[0]
 		}
 		cfg["auth_token_configured"] = strings.TrimSpace(text(cfg["auth_token"])) != ""
+		cfg["external_api_key_configured"] = strings.TrimSpace(text(cfg["external_api_key"])) != ""
 		cfg["site_password_configured"] = strings.TrimSpace(text(cfg["site_password"])) != ""
 		cfg["auth_token"] = ""
+		cfg["external_api_key"] = ""
 		cfg["site_password"] = ""
 		writeJSON(w, http.StatusOK, cfg)
 		return
@@ -802,6 +879,10 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 		if strings.TrimSpace(text(body["site_password"])) == "" {
 			current := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
 			body["site_password"] = text(current["site_password"])
+		}
+		if strings.TrimSpace(text(body["external_api_key"])) == "" {
+			current := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
+			body["external_api_key"] = text(current["external_api_key"])
 		}
 		cfg := mergeConfig(defaultDomainMailboxConfig(), body)
 		domains, domainErr := domainMailboxDomains(cfg)
@@ -822,8 +903,10 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 			}
 		}
 		cfg["auth_token_configured"] = strings.TrimSpace(text(cfg["auth_token"])) != ""
+		cfg["external_api_key_configured"] = strings.TrimSpace(text(cfg["external_api_key"])) != ""
 		cfg["site_password_configured"] = strings.TrimSpace(text(cfg["site_password"])) != ""
 		cfg["auth_token"] = ""
+		cfg["external_api_key"] = ""
 		cfg["site_password"] = ""
 		cfg["migrated_mailboxes"] = migrated
 		writeJSON(w, http.StatusOK, cfg)
@@ -870,6 +953,32 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 		mailbox, err = s.createDomainMailbox(ctx, cfg, client, s.sunnyEnsureDefaultGroup())
 		if err == nil {
 			writeJSON(w, http.StatusOK, map[string]any{"id": mailbox.ID, "email": mailbox.Email, "mailbox_type": mailbox.MailboxType, "mailbox_channel": mailbox.MailboxChannel})
+			return
+		}
+	case "send-test":
+		body, _ := parseBody(r)
+		to := strings.TrimSpace(text(body["to"]))
+		from := strings.TrimSpace(text(body["from"]))
+		subject := strings.TrimSpace(text(body["subject"]))
+		htmlBody := strings.TrimSpace(text(body["html"]))
+		textBody := strings.TrimSpace(text(body["text"]))
+		if to == "" {
+			writeError(w, http.StatusBadRequest, "CloudMail 发件测试需要填写收件人")
+			return
+		}
+		if from == "" {
+			from = "SunnyRegister <noreply@" + strings.TrimSpace(text(cfg["domain"])) + ">"
+		}
+		if subject == "" {
+			subject = "SunnyRegister CloudMail 测试邮件"
+		}
+		if htmlBody == "" && textBody == "" {
+			textBody = "SunnyRegister CloudMail send test " + time.Now().Format(time.RFC3339)
+		}
+		var result map[string]any
+		result, err = client.sendMessage(ctx, from, []string{to}, subject, htmlBody, textBody)
+		if err == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
 			return
 		}
 	default:

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -59,7 +60,7 @@ func TestRemailWalletUsesDocumentedEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wallet, err := client.wallet(t.Context())
+	wallet, err := client.wallet(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

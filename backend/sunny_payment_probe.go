@@ -473,6 +473,58 @@ func mergeSunnyPaymentProbeResults(existingJSON string, current map[string]any) 
 	return merged, normalizeSunnyPaymentMethods(methods)
 }
 
+// mergeSunnyPaymentProbeResultsForSelection keeps country history for
+// diagnostics, but the account-level summary only reflects the countries
+// selected for this run and only successful, current snapshots. This avoids
+// presenting a stale method from an unavailable proxy as currently usable.
+func mergeSunnyPaymentProbeResultsForSelection(existingJSON string, current map[string]any, selected []string) (map[string]any, []string) {
+	merged := jsonMap(existingJSON)
+	selectedSet := map[string]bool{}
+	for _, country := range selected {
+		selectedSet[strings.ToUpper(strings.TrimSpace(country))] = true
+	}
+	for country, currentValue := range current {
+		country = strings.ToUpper(strings.TrimSpace(country))
+		currentDetail, ok := currentValue.(map[string]any)
+		if !ok {
+			currentDetail = map[string]any{}
+		}
+		if text(currentDetail["error"]) != "" {
+			if existingDetail, ok := merged[country].(map[string]any); ok {
+				preserved := make(map[string]any, len(existingDetail)+len(currentDetail)+1)
+				for key, value := range existingDetail {
+					preserved[key] = value
+				}
+				for key, value := range currentDetail {
+					if key != "methods" {
+						preserved[key] = value
+					}
+				}
+				preserved["stale"] = true
+				currentDetail = preserved
+			} else {
+				currentDetail["stale"] = true
+			}
+		} else {
+			delete(currentDetail, "stale")
+		}
+		merged[country] = currentDetail
+	}
+	methods := []string{}
+	for country := range selectedSet {
+		value, exists := merged[country]
+		if !exists {
+			continue
+		}
+		detail, ok := value.(map[string]any)
+		if !ok || text(detail["error"]) != "" || boolValue(detail["stale"], false) {
+			continue
+		}
+		methods = append(methods, stringSlice(detail["methods"])...)
+	}
+	return merged, normalizeSunnyPaymentMethods(methods)
+}
+
 func (s *Server) executeSunnyPaymentProbeTask(task *Task, payload map[string]any) {
 	task.Status = TaskRunning
 	task.StartedAt = sql.NullTime{Time: time.Now(), Valid: true}
@@ -564,7 +616,7 @@ func (s *Server) executeSunnyPaymentProbeTask(task *Task, payload map[string]any
 				item["status"], item["error"] = "failed", message
 				var account SunnyAccount
 				if queryErr := s.db.Where("email = ?", outcome.Candidate.Email).First(&account).Error; queryErr == nil {
-					mergedCountries, mergedMethods := mergeSunnyPaymentProbeResults(account.PaymentProbeResultsJSON, outcome.Countries)
+					mergedCountries, mergedMethods := mergeSunnyPaymentProbeResultsForSelection(account.PaymentProbeResultsJSON, outcome.Countries, selectedCountries)
 					item["payment_methods"] = mergedMethods
 					s.db.Model(&SunnyAccount{}).Where("id = ?", account.ID).Updates(map[string]any{"payment_methods_json": dumpJSON(mergedMethods), "payment_probe_methods_json": dumpJSON(mergedMethods), "payment_probe_results_json": dumpJSON(mergedCountries), "payment_probe_error": message})
 				}
@@ -583,7 +635,7 @@ func (s *Server) executeSunnyPaymentProbeTask(task *Task, payload map[string]any
 				}
 				var account SunnyAccount
 				queryErr := s.db.Where("email = ?", outcome.Candidate.Email).First(&account).Error
-				mergedCountries, mergedMethods := mergeSunnyPaymentProbeResults(account.PaymentProbeResultsJSON, outcome.Countries)
+				mergedCountries, mergedMethods := mergeSunnyPaymentProbeResultsForSelection(account.PaymentProbeResultsJSON, outcome.Countries, selectedCountries)
 				item["payment_methods"] = mergedMethods
 				updates := map[string]any{"payment_methods_json": dumpJSON(mergedMethods), "payment_probe_methods_json": dumpJSON(mergedMethods), "payment_probe_results_json": dumpJSON(mergedCountries), "payment_probe_error": message, "payment_probed_at": now}
 				updateErr := queryErr
