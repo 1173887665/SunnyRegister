@@ -919,6 +919,9 @@ export default function FreeppAccountPicker() {
   const operationBusy = busy !== null;
   const selectedCount = Math.max(selected.length, selectedTokenIds.size);
   return (
+  // Batch size is a task preference, not a selection count.  Users may set it
+  // before selecting rows; the actual start still uses only selected sessions.
+  const chainBatchLimit = Math.max(1, total, selectedCount);
     <section className="freepp-account-picker" aria-label="账号 AT">
       <div className="freepp-account-picker-head">
         <div>
@@ -930,7 +933,7 @@ export default function FreeppAccountPicker() {
           <span>提链项目 {selectedProjects.size} 项</span>
           <span className="freepp-runtime-summary">运行时：{runtime.accounts.filter((item) => item.accessToken).length} AT · {runtime.proxies.length} 代理</span>
           <button className="btn" type="button" onClick={() => void load()} disabled={loading || operationBusy} title="刷新账号列表"><RefreshCw className={loading ? "spin" : ""} />刷新</button>
-          <label className="freepp-chain-count"><span>批量数量</span><input type="number" min={1} max={Math.max(1, selectedCount)} value={Math.min(chainBatchCount, Math.max(1, selectedCount))} onChange={(event) => setChainBatchCount(Math.max(1, Math.min(Number(event.target.value || 1), Math.max(1, selectedCount))))} disabled={operationBusy} /></label>
+          <label className="freepp-chain-count"><span>批量数量</span><input type="number" min={1} max={chainBatchLimit} value={Math.min(chainBatchCount, chainBatchLimit)} onChange={(event) => setChainBatchCount(Math.max(1, Math.min(Number(event.target.value || 1), chainBatchLimit)))} disabled={operationBusy} /></label>
           <button className="btn btn-primary" type="button" onClick={() => void startSelectedChains()} disabled={(!selected.length && !selectedTokenIds.size) || !selectedProjects.size || operationBusy}><Play />开始提链</button>
         </div>
       </div>

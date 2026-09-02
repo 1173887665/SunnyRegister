@@ -126,9 +126,8 @@ export const useStore = create<StoreState>((set, get) => ({
   selectedWorkspaceProjects: new Set(initialWorkspaceState.selected),
   toggleWorkspaceProject: (project) => set((state) => {
     const next = new Set(state.selectedWorkspaceProjects);
-    let selected: WorkspaceProject[];
     if (next.has(project)) next.delete(project); else next.add(project);
-    selected = Array.from(next);
+    const selected: WorkspaceProject[] = Array.from(next);
     try {
       const current = readWorkspaceState();
       window.localStorage.setItem(WORKSPACE_STATE_KEY, JSON.stringify({ ...current, selected }));

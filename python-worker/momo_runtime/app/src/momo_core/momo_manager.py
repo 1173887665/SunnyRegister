@@ -1345,7 +1345,7 @@ class MomoManager:
             session.update(started.data)
             with self.lock:
                 job = self.jobs.get(job_id)
-                if not job:
+                if not job or str(job.get("status") or "") == "cancelled":
                     return
                 job["_session"] = session
                 job["status"] = "waiting_otp"
@@ -1364,7 +1364,7 @@ class MomoManager:
             session.setdefault("otp_sent", True)
             with self.lock:
                 job = self.jobs.get(job_id)
-                if job:
+                if job and str(job.get("status") or "") != "cancelled":
                     job["_session"] = session
                     self._persist()
         lease: SmsLease | None = None
