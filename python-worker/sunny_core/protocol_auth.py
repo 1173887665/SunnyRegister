@@ -877,7 +877,10 @@ class ProtocolRegistrationFlow:
 
     def _restart_with_email_login(self, auth_started_at: float) -> dict[str, Any]:
         """Start one fresh authorization state and force the mailbox OTP route."""
-        self._start_next_auth()
+        # Password/TOTP failures can leave the authorization transaction on a
+        # password page that no longer accepts the email-OTP transition. Drop
+        # all cookies and state before starting the mailbox route.
+        self._rebuild_auth_session_for_retry()
         initial_path = urlsplit(self.auth_page_url).path.rstrip("/")
         initial_otp_redirect = initial_path == "/email-verification"
         if initial_otp_redirect:
@@ -1255,7 +1258,21 @@ class ProtocolRegistrationFlow:
                         login_secret_attempted = True
                     except ProtocolLoginSecretRejected as exc:
                         self.log(f"[认证] LS 密码验证失败，将改用邮箱凭证登录重试：{str(exc)[:220]}")
-                        state = self._verify_email(continue_url, min_timestamp=auth_started_at)
+                        stale_step = any(
+                            marker in str(exc or "").lower()
+                            for marker in (
+                                "invalid_auth_step",
+                                "invalid authorization step",
+                                "认证步骤不匹配",
+                                "密码提交后认证页面未继续",
+                                "2fa 提交后认证页面未继续",
+                            )
+                        )
+                        state = (
+                            self._restart_with_email_login(auth_started_at)
+                            if stale_step
+                            else self._verify_email(continue_url, min_timestamp=auth_started_at)
+                        )
                 else:
                     if self.account.chatgpt_password or self.account.totp_secret:
                         self.log("[认证] 登录密钥不完整，本次继续使用邮箱凭证登录")
