@@ -337,6 +337,34 @@ func TestDomainMailSendMessageRequiresExternalAPIKey(t *testing.T) {
 	}
 }
 
+func TestDomainMailboxSendTestHandlerUsesRequestBody(t *testing.T) {
+	var gotKey, gotPath, gotTo string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey, gotPath = r.Header.Get("X-API-Key"), r.URL.Path
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode send-test body: %v", err)
+		}
+		if values, ok := body["to"].([]any); ok && len(values) == 1 {
+			gotTo = text(values[0])
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"code": 200, "data": map[string]any{"status": "sent"}})
+	}))
+	defer upstream.Close()
+	s := newSunnySessionTestServer(t)
+	s.sunnySaveConfig(sunnyCfgDomainMailbox, map[string]any{
+		"enabled": true, "base_url": upstream.URL, "auth_token": "public-token", "external_api_key": "external-test-key",
+		"domain": "example.com", "pickup_base_url": "https://sunny.example",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/domain-mail/send-test", strings.NewReader(`{"to":"recipient@example.com","text":"hello","external_api_key":""}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	s.handleSunny(recorder, req, "domain-mail/send-test")
+	if recorder.Code != http.StatusOK || gotPath != "/api/external/send" || gotKey != "external-test-key" || gotTo != "recipient@example.com" {
+		t.Fatalf("send-test failed: status=%d body=%s path=%q key=%q to=%q", recorder.Code, recorder.Body.String(), gotPath, gotKey, gotTo)
+	}
+}
+
 func TestDomainMailDeleteUserAcceptsPublicDeleteExtension(t *testing.T) {
 	var method string
 	var path string

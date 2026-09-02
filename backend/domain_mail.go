@@ -291,11 +291,22 @@ func (c *domainMailClient) sendMessage(ctx context.Context, from string, to []st
 	return obj, nil
 }
 
-func (c *domainMailClient) addUser(ctx context.Context, email string) error {
-	password := randomDomainSecret(18)
+func (c *domainMailClient) addUserWithPassword(ctx context.Context, email, password string) (string, error) {
+	password = strings.TrimSpace(password)
+	if password == "" {
+		password = randomDomainSecret(18)
+	}
 	_, err := c.request(ctx, http.MethodPost, "/api/public/addUser", map[string]any{
 		"list": []map[string]string{{"email": email, "password": password}},
 	}, true)
+	if err != nil {
+		return "", err
+	}
+	return password, nil
+}
+
+func (c *domainMailClient) addUser(ctx context.Context, email string) error {
+	_, err := c.addUserWithPassword(ctx, email, "")
 	return err
 }
 
@@ -776,15 +787,17 @@ func (s *Server) createDomainMailbox(ctx context.Context, cfg map[string]any, cl
 		if credentialErr != nil {
 			return SunnyMailbox{}, credentialErr
 		}
+		mailboxPassword := ""
 		if boolValue(cfg["auto_add_user"], true) {
-			if lastErr = client.addUser(ctx, email); lastErr != nil {
+			mailboxPassword = randomDomainSecret(18)
+			if mailboxPassword, lastErr = client.addUserWithPassword(ctx, email, mailboxPassword); lastErr != nil {
 				continue
 			}
 		}
 		mailbox := SunnyMailbox{
 			GroupID: groupID, Email: email, MailboxType: "domain", MailboxChannel: "domain_api",
 			AccessKey: credential, PickupTokenHash: domainMailboxPickupTokenHash(pickupToken),
-			Raw: sunnyURLAPIRaw(email, credential), AccountType: "free", Status: "未注册", Enabled: true, LatestMailJSON: "{}",
+			Password: mailboxPassword, Raw: sunnyURLAPIRaw(email, credential), AccountType: "free", Status: "未注册", Enabled: true, LatestMailJSON: "{}",
 		}
 		if lastErr = s.db.Create(&mailbox).Error; lastErr == nil {
 			return mailbox, nil
@@ -917,15 +930,19 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	cfg := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
-	if body, _ := parseBody(r); body != nil {
+	requestBody, _ := parseBody(r)
+	if requestBody != nil {
 		enabled := cfg["enabled"]
-		if strings.TrimSpace(text(body["auth_token"])) == "" {
-			body["auth_token"] = text(cfg["auth_token"])
+		if strings.TrimSpace(text(requestBody["auth_token"])) == "" {
+			requestBody["auth_token"] = text(cfg["auth_token"])
 		}
-		if strings.TrimSpace(text(body["site_password"])) == "" {
-			body["site_password"] = text(cfg["site_password"])
+		if strings.TrimSpace(text(requestBody["site_password"])) == "" {
+			requestBody["site_password"] = text(cfg["site_password"])
 		}
-		cfg = mergeConfig(cfg, body)
+		if strings.TrimSpace(text(requestBody["external_api_key"])) == "" {
+			requestBody["external_api_key"] = text(cfg["external_api_key"])
+		}
+		cfg = mergeConfig(cfg, requestBody)
 		// Operational requests may test unsaved connection fields, but the
 		// persisted master switch cannot be bypassed through request payloads.
 		cfg["enabled"] = enabled
@@ -956,7 +973,7 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	case "send-test":
-		body, _ := parseBody(r)
+		body := requestBody
 		to := strings.TrimSpace(text(body["to"]))
 		from := strings.TrimSpace(text(body["from"]))
 		subject := strings.TrimSpace(text(body["subject"]))
