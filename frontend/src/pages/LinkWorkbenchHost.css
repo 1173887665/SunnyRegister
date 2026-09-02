@@ -9,6 +9,8 @@
 .freepp-account-picker-head { justify-content:space-between; gap:18px; margin-bottom:14px; }
 .freepp-account-picker h2 { margin:0; font-size:16px; }.freepp-account-picker p { margin:4px 0 0; color:var(--text-3,var(--text-muted)); font-size:12px; }
 .freepp-account-picker-actions { flex-wrap:wrap; justify-content:flex-end; }.freepp-account-picker-actions>span { color:var(--text-2,var(--text-secondary)); font-size:12px; }
+.freepp-chain-count { display:inline-flex; align-items:center; gap:6px; color:var(--text-2,var(--text-secondary)); font-size:12px; white-space:nowrap; }
+.freepp-chain-count input { width:64px; height:34px; padding:0 8px; border:1px solid var(--border); border-radius:7px; background:var(--bg-card); color:var(--text-primary); font-size:13px; }
 .freepp-account-message { margin:0 0 10px; color:var(--accent); font-size:12px; }
 .freepp-chain-progress { margin: 10px 0 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-raised); color: var(--text-secondary); font-size: 12px; }
 .freepp-chain-progress-head { display:flex; justify-content:space-between; gap:12px; }.freepp-chain-progress-head strong { color:var(--accent); }.freepp-chain-progress.failed .freepp-chain-progress-head strong { color:#dc2626; }.freepp-chain-progress-track { height:6px; margin:7px 0 5px; overflow:hidden; border-radius:999px; background:var(--border); }.freepp-chain-progress-track span { display:block; height:100%; border-radius:inherit; background:var(--accent); transition:width .25s ease; }.freepp-chain-progress.failed .freepp-chain-progress-track span { background:#dc2626; }.freepp-chain-progress small { color:var(--text-muted); }

@@ -36,6 +36,7 @@ const TRIAL_COUNTRY_OPTIONS = ["US", "GB", "AU", "VN", "BR", "NL", "IN", "KR", "
 const CHECKOUT_POLL_HARD_TIMEOUT_MS = 35 * 60 * 1000;
 const CHECKOUT_POLL_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const CHAIN_TASK_STORAGE_KEY = "sunnyregister.chainTasks.v1";
+const CHAIN_BATCH_COUNT_KEY = "sunnyregister.chainBatchCount.v1";
 const COUNTRY_CURRENCIES: Record<string, string> = {
   AE: "AED", AU: "AUD", BR: "BRL", CA: "CAD", CH: "CHF", ES: "EUR", GB: "GBP",
   ID: "IDR", IN: "INR", JP: "JPY", KR: "KRW", MX: "MXN", NL: "EUR", PH: "PHP",
@@ -287,7 +288,17 @@ export default function FreeppAccountPicker() {
     } catch { return {}; }
   });
   const [chainRecoveryBusy, setChainRecoveryBusy] = useState(false);
+  const [chainBatchCount, setChainBatchCount] = useState<number>(() => {
+    try {
+      const value = Number(window.localStorage.getItem(CHAIN_BATCH_COUNT_KEY) || 10);
+      return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 10;
+    } catch { return 10; }
+  });
   const runtime = useRuntime();
+
+  useEffect(() => {
+    try { window.localStorage.setItem(CHAIN_BATCH_COUNT_KEY, String(chainBatchCount)); } catch { /* optional */ }
+  }, [chainBatchCount]);
 
   useEffect(() => {
     try {
@@ -662,7 +673,9 @@ export default function FreeppAccountPicker() {
     const failures: string[] = [];
     let started = 0;
     try {
-      const checkoutSessions = selectedSessions.filter((session) => Number.isFinite(Number(session.id)) && Number(session.id) > 0);
+      const checkoutSessions = selectedSessions
+        .filter((session) => Number.isFinite(Number(session.id)) && Number(session.id) > 0)
+        .slice(0, Math.max(1, Math.min(Math.trunc(Number(chainBatchCount) || 1), selectedSessions.length)));
       const sessionIds = checkoutSessions.map((session) => Number(session.id));
       if (!sessionIds.length) {
         setMessage("所选账号没有可用会话，无法启动提链");
@@ -917,6 +930,7 @@ export default function FreeppAccountPicker() {
           <span>提链项目 {selectedProjects.size} 项</span>
           <span className="freepp-runtime-summary">运行时：{runtime.accounts.filter((item) => item.accessToken).length} AT · {runtime.proxies.length} 代理</span>
           <button className="btn" type="button" onClick={() => void load()} disabled={loading || operationBusy} title="刷新账号列表"><RefreshCw className={loading ? "spin" : ""} />刷新</button>
+          <label className="freepp-chain-count"><span>批量数量</span><input type="number" min={1} max={Math.max(1, selectedCount)} value={Math.min(chainBatchCount, Math.max(1, selectedCount))} onChange={(event) => setChainBatchCount(Math.max(1, Math.min(Number(event.target.value || 1), Math.max(1, selectedCount))))} disabled={operationBusy} /></label>
           <button className="btn btn-primary" type="button" onClick={() => void startSelectedChains()} disabled={(!selected.length && !selectedTokenIds.size) || !selectedProjects.size || operationBusy}><Play />开始提链</button>
         </div>
       </div>

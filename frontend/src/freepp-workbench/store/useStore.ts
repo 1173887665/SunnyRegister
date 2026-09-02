@@ -8,6 +8,22 @@ import { baStepCn } from "../types";
 
 const LOG_MAX = 1000;
 const BA_FEED_MAX = 300;
+const WORKSPACE_STATE_KEY = "sunnyregister.workspace.state.v1";
+
+function readWorkspaceState(): { project: WorkspaceProject | null; selected: WorkspaceProject[] } {
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_STATE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return {
+      project: typeof parsed?.project === "string" ? parsed.project as WorkspaceProject : null,
+      selected: Array.isArray(parsed?.selected) ? parsed.selected.filter((value: unknown): value is WorkspaceProject => typeof value === "string") : [],
+    };
+  } catch {
+    return { project: null, selected: [] };
+  }
+}
+
+const initialWorkspaceState = typeof window !== "undefined" ? readWorkspaceState() : { project: null, selected: [] };
 
 const REGISTER_OPERATION_CN: Record<string, string> = {
   account_import: "账号导入",
@@ -99,12 +115,24 @@ const tag = () => new Date().toLocaleTimeString("zh-CN", { hour12: false });
 export const useStore = create<StoreState>((set, get) => ({
   currentView: "overview",
   setView: (v) => set({ currentView: v }),
-  workspaceProject: null,
-  setWorkspaceProject: (project) => set({ workspaceProject: project }),
-  selectedWorkspaceProjects: new Set(),
+  setWorkspaceProject: (project) => {
+    set({ workspaceProject: project });
+    try {
+      const current = readWorkspaceState();
+      window.localStorage.setItem(WORKSPACE_STATE_KEY, JSON.stringify({ ...current, project }));
+    } catch { /* localStorage is optional */ }
+  },
+  workspaceProject: initialWorkspaceState.project,
+  selectedWorkspaceProjects: new Set(initialWorkspaceState.selected),
   toggleWorkspaceProject: (project) => set((state) => {
     const next = new Set(state.selectedWorkspaceProjects);
+    let selected: WorkspaceProject[];
     if (next.has(project)) next.delete(project); else next.add(project);
+    selected = Array.from(next);
+    try {
+      const current = readWorkspaceState();
+      window.localStorage.setItem(WORKSPACE_STATE_KEY, JSON.stringify({ ...current, selected }));
+    } catch { /* localStorage is optional */ }
     return { selectedWorkspaceProjects: next };
   }),
 
