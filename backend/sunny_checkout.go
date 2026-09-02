@@ -23,6 +23,7 @@ const sunnyCheckoutTaskType = "sunny_checkout_link"
 const (
 	defaultSunnyCheckoutTimeout = 30 * time.Minute
 	sunnyCheckoutPollInterval   = 1500 * time.Millisecond
+	sunnyCheckoutHeartbeat      = 10 * time.Second
 )
 
 func sunnyCheckoutTimeout() time.Duration {
@@ -763,7 +764,7 @@ func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, ch
 		status, err := sunnyCheckoutWorkerStatus(ctx, client, workerURL, jobID)
 		if err != nil {
 			workerStatusFailures++
-			if time.Since(lastHeartbeat) >= 20*time.Second {
+			if time.Since(lastHeartbeat) >= sunnyCheckoutHeartbeat {
 				s.appendCheckoutProgress(task, email, accountID, rowIndex, lastProgress, fmt.Sprintf("提链引擎状态读取重试中（第 %d 次）", workerStatusFailures))
 				lastHeartbeat = time.Now()
 			}
@@ -802,7 +803,7 @@ func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, ch
 				workerLogSequence = sequence
 			}
 		}
-		if time.Since(lastHeartbeat) >= 20*time.Second && lastProgress < 95 {
+		if time.Since(lastHeartbeat) >= sunnyCheckoutHeartbeat && lastProgress < 95 {
 			// The worker adapter exposes its current message as `message`; older
 			// worker versions used `text`, so keep the fallback for rolling updates.
 			statusMessage := fallback(text(status["message"]), text(status["text"]))
@@ -823,7 +824,7 @@ func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, ch
 		}
 	}
 	_ = cancelSunnyCheckoutWorkerJob(context.Background(), workerURL, jobID)
-	return nil, fmt.Errorf("提链引擎执行超时（已等待 %s，任务 %s 已停止）", sunnyCheckoutTimeout().Round(time.Second), jobID)
+	return nil, fmt.Errorf("提链引擎执行超时（已等待 %s）。任务 %s 已自动停止，请检查：1) 提链引擎是否正常响应 2) 代理连接是否稳定 3) 是否需要增加超时配置（环境变量 SUNNY_CHECKOUT_TIMEOUT_SECONDS）", sunnyCheckoutTimeout().Round(time.Second), jobID)
 }
 
 // checkoutTaskCancelRequested only observes cancellation state. Checkout

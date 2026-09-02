@@ -31,8 +31,10 @@ const TRIAL_OPTIONS = ["unknown", "eligible", "ineligible"];
 const CHECKOUT_OPTIONS = ["unknown", "oaics", "cs_live", "cs_test"];
 const BOOLEAN_FILTER_OPTIONS = ["present", "missing"];
 const TRIAL_COUNTRY_OPTIONS = ["US", "GB", "AU", "VN", "BR", "NL", "IN", "KR", "PL", "CH", "ES", "ID", "PH", "JP"];
-const CHECKOUT_POLL_HARD_TIMEOUT_MS = 25 * 60 * 1000;
-const CHECKOUT_POLL_IDLE_TIMEOUT_MS = 3 * 60 * 1000;
+// Keep the browser attached slightly longer than the backend's 30-minute
+// worker deadline, while allowing slow but active jobs to keep running.
+const CHECKOUT_POLL_HARD_TIMEOUT_MS = 35 * 60 * 1000;
+const CHECKOUT_POLL_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const CHAIN_TASK_STORAGE_KEY = "sunnyregister.chainTasks.v1";
 const COUNTRY_CURRENCIES: Record<string, string> = {
   AE: "AED", AU: "AUD", BR: "BRL", CA: "CAD", CH: "CHF", ES: "EUR", GB: "GBP",
@@ -465,11 +467,9 @@ export default function FreeppAccountPicker() {
     const startedAt = Date.now();
     let delay = 500;
     let failures = 0;
-    let lastTask: Session = {};
-    while (Date.now() - startedAt < 10 * 60 * 1000) {
+    while (Date.now() - startedAt < CHECKOUT_POLL_HARD_TIMEOUT_MS) {
       try {
         const task = await apiFetch(`/tasks/${encodeURIComponent(taskId)}`);
-        lastTask = task;
         failures = 0;
         if (isTerminalTask(task)) return task;
         delay = Math.min(2500, Math.round(delay * 1.2));
@@ -482,10 +482,8 @@ export default function FreeppAccountPicker() {
       }
       await wait(delay);
     }
-    if (lastTask && !isTerminalTask(lastTask)) {
-      throw new Error(`任务仍在后台处理，任务编号 ${taskId} 已保留，请稍后继续查询`);
-    }
-    throw new Error(`任务状态等待结束，任务编号 ${taskId} 已保留，请稍后继续查询`);
+    const elapsedMinutes = Math.max(1, Math.round((Date.now() - startedAt) / 60000));
+    throw new Error(`任务超时（已等待 ${elapsedMinutes} 分钟），任务 ${taskId} 仍在后台运行中，请稍后刷新任务状态查看结果`);
   }
 
   async function waitForSunnyCheckout(taskId: string, branch: string, branchIndex: number, branchTotal: number, accountTotal: number) {
@@ -509,6 +507,9 @@ export default function FreeppAccountPicker() {
         return true;
       });
       if (!fresh.length) return;
+      // A live SSE event is activity even when the task summary endpoint is
+      // temporarily unavailable. Do not detach an actively progressing job.
+      lastActivityAt = Date.now();
       setChainProgress((current) => {
         const chains = [...current.chains];
         for (const item of fresh) {
