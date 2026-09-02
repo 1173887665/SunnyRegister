@@ -76,13 +76,13 @@ func TestSunnyPhoneRegisterRejectsIncompleteFirefoxConfig(t *testing.T) {
 	}
 }
 
-func TestSunnyPhoneRegisterAllowsAccountsThatAlreadyHaveRTWithoutSMSConfig(t *testing.T) {
+func TestSunnyPhoneRegisterRequiresAnSMSProviderEvenWhenMailboxRowsAreSelected(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/phone-register", strings.NewReader(`{"mailbox_ids":[1]}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	s.sunnyTasks(rec, req, []string{"phone-register"})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("existing RT phone task status = %d, body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "接码平台") {
+		t.Fatalf("phone task without SMS provider status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }

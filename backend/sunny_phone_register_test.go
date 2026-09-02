@@ -17,7 +17,7 @@ func TestSunnyPhoneRegisterCreatesRegisterOnlyTask(t *testing.T) {
 	s.sunnySaveConfig(sunnyCfgPhone, mergeConfig(defaultPhoneConfig(), map[string]any{
 		"luban_enabled": true, "luban_api_key": "test-key", "luban_service_id": "openai",
 	}))
-	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/phone-register", strings.NewReader(`{"mailbox_ids":[1],"sms_provider":"luban","sms_country":"","registration_stage":"codex_phone_bind"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/tasks/phone-register", strings.NewReader(`{"mailbox_ids":[1],"count":2,"sms_provider":"luban","sms_country":"","registration_stage":"codex_phone_bind"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	s.sunnyTasks(rec, req, []string{"phone-register"})
@@ -39,14 +39,17 @@ func TestSunnyPhoneRegisterCreatesRegisterOnlyTask(t *testing.T) {
 		t.Fatalf("task type = %q, want sunny_phone_register", task.Type)
 	}
 	payload := jsonMap(task.PayloadJSON)
-	if got := uintSlice(payload["mailbox_ids"]); len(got) != 1 || got[0] != mailbox.ID {
-		t.Fatalf("task mailbox_ids = %#v, want [%d]", got, mailbox.ID)
+	if got := uintSlice(payload["mailbox_ids"]); len(got) != 0 {
+		t.Fatalf("task mailbox_ids = %#v, want empty for phone registration", got)
 	}
 	if got := text(payload["registration_stage"]); got != "register_only" {
 		t.Fatalf("phone registration stage = %q, want register_only", got)
 	}
-	if got := text(payload["identity"]); got != "system" {
-		t.Fatalf("phone registration identity = %q, want system", got)
+	if got := text(payload["identity"]); got != "phone" {
+		t.Fatalf("phone registration identity = %q, want phone", got)
+	}
+	if got := intValue(payload["count"], 0); got != 2 {
+		t.Fatalf("phone registration count = %d, want 2", got)
 	}
 }
 

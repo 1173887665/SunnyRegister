@@ -23,7 +23,7 @@ from .db import SunnyDB, SunnyTaskCancelled, app_timezone, now_sql
 from .domain_mail_cleanup import cleanup_failed_mailbox
 from .firefox_sms import FIREFOX_RELEASE_DELAY_SECONDS, FireFoxSMSClient
 from .luban_sms import LubanSMSClient
-from .mailbox import MailboxAccessError, account_from_row, parse_account_line
+from .mailbox import MailAccount, MailboxAccessError, account_from_row, parse_account_line
 from .openai_auth import TaskCancelledError, login_or_register, refresh_openai_access_token
 from .phone_pool import read_sms_candidates, wait_sms_code
 from .protocol_auth import ProtocolChallengeRequired, ProtocolRegistrationError, login_or_register_protocol
@@ -657,6 +657,261 @@ def _choose_mailboxes(db: SunnyDB, payload: dict[str, Any]) -> list[dict[str, An
         return raw
     ids = _ids(payload.get("mailbox_ids"))
     return db.fetch_mailboxes(ids or None, int(payload.get("count") or 0))
+
+
+def _run_phone_one_impl(
+    db: SunnyDB,
+    payload: dict[str, Any],
+    index: int,
+    total: int,
+) -> tuple[bool, dict[str, Any] | str]:
+    """Register one account from the SMS provider without a mailbox source.
+
+    The shared browser state machine owns the complete phone flow: it submits
+    the number, calls OpenAI's send-code endpoint, waits for the provider code,
+    and verifies it. This keeps phone registration behavior aligned with the
+    existing login flow while explicitly disabling mailbox and RT stages.
+    """
+    db.ensure_not_cancelled()
+    slot = f"phone-{index}"
+    stage = REGISTER_ONLY
+    _emit_registration_progress(db, slot, stage, "initializing")
+    provider = None
+    phone: dict[str, Any] = {}
+    active_phone: dict[str, Any] = {}
+    phone_lease_finalized = False
+    traffic_scope = None
+    traffic_meter: ProxyTrafficMeter | None = None
+    traffic_finished = False
+
+    def finish_traffic(success: bool) -> dict[str, Any]:
+        nonlocal traffic_scope, traffic_finished
+        if traffic_finished:
+            return traffic_meter.snapshot() if traffic_meter is not None else {}
+        traffic_finished = True
+        snapshot = traffic_meter.snapshot() if traffic_meter is not None else {}
+        if traffic_scope is not None:
+            try:
+                traffic_scope.__exit__(None, None, None)
+            finally:
+                traffic_scope = None
+        db.event(
+            f"[{slot}] [流量] 本次手机号注册代理 HTTP 应用层流量估算 {snapshot.get('total_bytes', 0)} bytes",
+            detail={"email": slot, "scope": "selected", "phone_registration": True, "success": success, "proxy_traffic": snapshot},
+        )
+        return snapshot
+
+    def release_unsettled_phone(reason: str) -> None:
+        """Return the current SMS lease when registration exits before verification."""
+        nonlocal phone_lease_finalized
+        if provider is None or phone_lease_finalized:
+            return
+        candidate = active_phone or phone
+        if not str(candidate.get("number") or "").strip():
+            return
+        phone_lease_finalized = True
+        try:
+            provider("bad", slot, {**candidate, "error": reason})
+        except Exception as release_exc:
+            db.event(
+                f"[{slot}] [接码] 注册异常后的号码释放失败：{release_exc}",
+                "warning",
+                detail={"email": slot, "scope": "selected", "phone_registration": True, "release_error": str(release_exc)},
+            )
+
+    try:
+        proxies = _prepare_register_proxy(db, payload, slot, index - 1)
+        auxiliary_proxy = _auxiliary_proxy(payload, proxies)
+        traffic_meter = ProxyTrafficMeter(
+            proxy_url=str(proxies.get("register") or ""),
+            tracked_proxy=str(proxies.get("mode") or "") == "proxy_pool",
+            email=slot,
+            operation="sunny_phone_register",
+        )
+        traffic_scope = use_traffic_meter(traffic_meter)
+        traffic_scope.__enter__()
+        db.event(
+            f"[{slot}] [代理] 手机注册流量使用{redact_proxy_url(str(proxies.get('register') or '')) or '系统直连'}",
+            detail={"email": slot, "scope": "selected", "phone_registration": True, "proxy": redact_proxy_url(str(proxies.get("register") or ""))},
+        )
+        _emit_registration_progress(db, slot, stage, "proxy_ready")
+
+        execution_mode = str(payload.get("execution_mode") or payload.get("mode") or "protocol").strip().lower()
+        provider = _combined_phone_provider(
+            db,
+            slot,
+            auxiliary_proxy,
+            execution_mode,
+            str(payload.get("sms_provider") or "").strip(),
+            str(payload.get("sms_country") or "").strip(),
+        )
+        if provider is None:
+            raise RuntimeError("没有可用的接码平台，请先完成接码配置")
+        phone = dict(provider("next", slot, {}) or {})
+        number = str(phone.get("number") or "").strip()
+        if not number:
+            raise RuntimeError("接码平台未返回有效手机号")
+        active_phone = dict(phone)
+        _emit_registration_progress(db, slot, stage, "phone_started")
+        db.event(
+            f"[{slot}] [接码] 已获取手机号 {number}，开始纯手机号注册",
+            detail={"email": slot, "scope": "selected", "phone_registration": True, "phone_number": number, "sms_provider": phone.get("provider_name") or phone.get("provider")},
+        )
+
+        # The provider lease is keyed by the task slot, while OpenAI's auth
+        # page uses the phone number as the username. Keep those identities
+        # separate so retries cannot allocate a second lease accidentally.
+        first_number = number
+        first_phone = dict(phone)
+        first_next = True
+        latest_phone = dict(phone)
+
+        def phone_provider(action: str, _account_key: str, info: dict[str, Any] | None = None):
+            nonlocal active_phone, first_next, latest_phone, phone_lease_finalized
+            if action == "next" and first_next:
+                first_next = False
+                return dict(first_phone)
+            result = provider(action, slot, dict(info or {}))
+            if action == "next" and isinstance(result, dict):
+                latest_phone = dict(result)
+                active_phone = dict(result)
+                phone_lease_finalized = False
+            elif action in {"success", "bad"}:
+                phone_lease_finalized = True
+            return result
+
+        account = MailAccount(
+            email=first_number,
+            password="",
+            client_id="",
+            refresh_token="",
+            raw=f"{first_number}----phone",
+            account_type="free",
+            mailbox_type="phone",
+            mailbox_channel="sms",
+        )
+        headless = execution_mode != "visible"
+        browser_execution_mode = "protocol_headless_fallback" if execution_mode == "protocol" else execution_mode
+        session = login_or_register(
+            account,
+            str(proxies.get("register") or ""),
+            headless,
+            lambda message: db.event(f"[{slot}] {message}", detail={"email": slot, "scope": "selected", "phone_registration": True}),
+            phone_provider=phone_provider,
+            existing_account=False,
+            require_refresh_token=False,
+            should_cancel=db.cancel_requested,
+            execution_mode=browser_execution_mode,
+            on_progress=lambda checkpoint, data=None: _emit_registration_progress(db, slot, stage, checkpoint),
+            mailbox_proxy_url=str(proxies.get("register") or ""),
+            traffic_meter=traffic_meter,
+            traffic_config=payload.get("browser_traffic_optimization"),
+        )
+        bound_number = str(latest_phone.get("number") or first_number).strip()
+        phone_bound = bool(session.get("phone_bound"))
+        if not phone_bound:
+            reason = str(session.get("post_registration_error") or "手机验证未完成").strip()
+            raise RuntimeError(reason)
+        password = str(session.pop("generated_chatgpt_password", "") or account.chatgpt_password or "").strip()
+        session["phone_bound"] = phone_bound
+        session["phone_number"] = bound_number
+        session["refresh_token"] = ""
+        session["requested_execution_mode"] = execution_mode
+        session["execution_mode"] = str(session.get("execution_mode") or browser_execution_mode)
+        session["auth_action"] = str(session.get("auth_action") or "register")
+        account_identity = bound_number or first_number
+        account_id = db.upsert_account(
+            account_identity,
+            mailbox_id=0,
+            status="phone_bound" if phone_bound else "registered",
+            account_type=session.get("plan_type") or "free",
+            access_token=session.get("access_token") or "",
+            openai_rt="",
+            phone_number=bound_number,
+            last_error="",
+            metadata_json=json.dumps(
+                {
+                    "task_id": db.task_id,
+                    "source": "sunny_phone_register",
+                    "checkpoint": "flow_completed" if phone_bound else "flow_incomplete",
+                    "phone_number": bound_number,
+                    "chatgpt_password": password,
+                },
+                ensure_ascii=False,
+            ),
+        )
+        session_for_db = dict(session)
+        session_for_db.pop("generated_chatgpt_password", None)
+        session_for_db.pop("password", None)
+        db.upsert_session(account_identity, account_id, session_for_db, "")
+        _emit_registration_progress(db, slot, stage, "phone_bound" if phone_bound else "registered")
+        result: dict[str, Any] = {
+            "email": slot,
+            "account_email": account_identity,
+            "phone": bound_number,
+            "account_id": account_id,
+            "auth_action": session["auth_action"],
+            "execution_mode": session["execution_mode"],
+            "stage": stage,
+            "phone_bound": phone_bound,
+            "completed_status": "phone_bound" if phone_bound else "registered",
+            "stage_complete": phone_bound,
+            "has_session": bool(session.get("access_token")),
+            "has_access_token": bool(session.get("access_token")),
+            "has_refresh_token": False,
+            "proxy_traffic": finish_traffic(True),
+        }
+        if email_bind_requested(payload):
+            bind_result = run_post_registration_email_bind(
+                db,
+                payload,
+                account_id=account_id,
+                source_email=number,
+                index=index,
+                bind_with_proxy_rotation=lambda bind_payload, bind_account, bind_index: _rebind_with_proxy_rotation(db, bind_payload, bind_account, bind_index),
+                emit_progress=lambda checkpoint, state, error: _emit_registration_progress(db, slot, stage, checkpoint, state=state, error=error),
+            )
+            result.update(bind_result)
+            if not bind_result.get("email_bind_complete"):
+                result["stage_complete"] = False
+                result["stage_error"] = str(bind_result.get("email_bind_error") or "注册后绑定邮箱失败")
+        _emit_registration_progress(
+            db,
+            slot,
+            stage,
+            "email_bind_completed" if result.get("email_bind_complete") else "registered",
+            state="completed" if result.get("stage_complete") else "abnormal",
+            error=str(result.get("stage_error") or ""),
+        )
+        return True, result
+    except Exception as exc:
+        error = str(exc)
+        release_unsettled_phone(error)
+        if _is_cancel_exception(exc):
+            finish_traffic(False)
+            raise
+        try:
+            number = str(phone.get("number") or "").strip()
+            if number:
+                db.upsert_account(number, mailbox_id=0, status="failed", phone_number=number, last_error=error)
+        except Exception:
+            pass
+        finish_traffic(False)
+        db.event(f"[{slot}] 手机号注册失败：{error}", "error", detail={"email": slot, "scope": "selected", "phone_registration": True, "traceback": traceback.format_exc()[-3000:]})
+        _emit_registration_progress(db, slot, stage, "failed", state="abnormal", error=error)
+        return False, f"[{slot}] {error}"
+def _run_phone_one_isolated(
+    task_id: str,
+    payload: dict[str, Any],
+    index: int,
+    total: int,
+) -> tuple[int, bool, dict[str, Any] | str]:
+    worker_db = SunnyDB(task_id, ensure_schema=False)
+    try:
+        ok, result = _run_phone_one_impl(worker_db, payload, index, total)
+        return index, ok, result
+    finally:
+        worker_db.close()
 
 
 def _phone_provider(db: SunnyDB, email: str):
@@ -4077,8 +4332,8 @@ def run_sunny_task(task_id: str) -> None:
         if task_type in {"sunny_register", "sunny_phone_register"}:
             identity = _normalize_registration_identity(payload.get("identity"))
             if task_type == "sunny_phone_register":
-                identity = "system"
-            if identity not in {"system", "domain", "remail"}:
+                identity = "phone"
+            if identity not in {"system", "phone", "domain", "remail"}:
                 raise RuntimeError(f"注册身份不受支持：{identity or 'unknown'}")
             payload["identity"] = identity
         if task_type == "sunny_refresh_session":
@@ -4125,6 +4380,95 @@ def run_sunny_task(task_id: str) -> None:
             result = {"success": ok, "failed": len(errors), "skipped": skipped, "errors": errors, "items": items}
             db.update_task(status=status, success_count=ok, error_count=len(errors), result_json=json.dumps(result, ensure_ascii=False), error="; ".join(errors[:3]) if errors else "", finished_at=now_sql())
             db.event(f"邮箱换绑任务总结：成功 {ok}，跳过 {skipped}，失败 {len(errors)}", "info" if not errors else "error", detail={"scope": "global", **result})
+            return
+
+        if task_type == "sunny_phone_register":
+            requested_total = max(1, int(payload.get("count") or 1))
+            stage = REGISTER_ONLY
+            db.update_task(progress_total=requested_total, progress_current=0, success_count=0, error_count=0)
+            db.event(
+                f"[系统] 本次任务阶段：{_stage_label(stage)}，手机号注册数量：{requested_total}；不读取邮箱池",
+                detail={"scope": "global", "stage": stage, "total": requested_total, "phone_registration": True, "mailbox_source": False},
+            )
+            _log_proxy_startup(db, payload)
+            if payload.get("proxy_enabled") is not False and not _proxy_snapshot(payload).get("register"):
+                raise RuntimeError("代理开关已开启，但没有可用于注册机的启用代理；请在代理配置中新增并启用代理，或关闭代理开关后再开始任务")
+            requested_concurrency = int(payload.get("concurrency") or 1)
+            concurrency = max(1, min(requested_concurrency, requested_total))
+            db.event(
+                f"[系统] 手机号注册并发数：{concurrency}；每个任务槽位独立获取手机号和短信验证码",
+                detail={"scope": "global", "concurrency": concurrency, "total": requested_total, "phone_registration": True},
+            )
+            success = 0
+            completed = 0
+            errors: list[str] = []
+            items: list[dict[str, Any]] = []
+
+            def record_phone_result(ok: bool, result: dict[str, Any] | str) -> None:
+                nonlocal success, completed
+                completed += 1
+                if ok:
+                    success += 1
+                    assert isinstance(result, dict)
+                    items.append(result)
+                else:
+                    errors.append(str(result))
+                db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
+
+            if concurrency <= 1:
+                for index in range(1, requested_total + 1):
+                    db.ensure_not_cancelled()
+                    ok, result = _run_phone_one_impl(db, payload, index, requested_total)
+                    record_phone_result(ok, result)
+            else:
+                pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sunny-phone-register")
+                try:
+                    futures = {
+                        pool.submit(_run_phone_one_isolated, db.task_id, payload, index, requested_total): index
+                        for index in range(1, requested_total + 1)
+                    }
+                    pending = set(futures)
+                    while pending:
+                        if db.cancel_requested():
+                            for future in pending:
+                                future.cancel()
+                            db.mark_cancelled("用户已中断注册任务")
+                            return
+                        done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                        for future in done:
+                            try:
+                                _index, ok, result = future.result()
+                            except Exception as exc:
+                                if _is_cancel_exception(exc):
+                                    db.mark_cancelled("用户已中断注册任务")
+                                    return
+                                ok, result = False, f"手机号注册并行 Worker 失败：{exc}"
+                            record_phone_result(ok, result)
+                finally:
+                    pool.shutdown(wait=True, cancel_futures=True)
+            db.ensure_not_cancelled()
+            status = "succeeded" if success > 0 and not (errors and success == 0) else "failed"
+            summary = {
+                "success": success,
+                "failed": len(errors),
+                "registered": success,
+                "stage": stage,
+                "phone_registration": True,
+                "mailbox_source": False,
+                "errors": errors,
+                "items": items,
+            }
+            db.update_task(
+                status=status,
+                error="; ".join(errors[:3]) if errors and success == 0 else "",
+                result_json=json.dumps(summary, ensure_ascii=False),
+                finished_at=now_sql(),
+            )
+            db.event(
+                f"手机号注册任务总结：成功 {success}，失败 {len(errors)}",
+                "error" if status == "failed" else "info",
+                detail={"scope": "global", **summary},
+            )
             return
 
         is_remail_task = str(payload.get("identity") or "").strip().lower() == "remail"

@@ -978,6 +978,70 @@ class SunnyDB:
                 (new_email, new_mailbox_api, timestamp, account["id"]),
             )
 
+    def persist_phone_rebind_verified(
+        self,
+        account_id: int,
+        old_email: str,
+        new_email: str,
+        new_mailbox_api: str,
+        pickup_token_hash: str,
+        session: dict[str, Any],
+    ) -> None:
+        """Persist a post-registration email binding for a phone-only account.
+
+        Phone registrations intentionally have no ``sunny_mailboxes`` source
+        row. Keep the account identity and session linked while recording the
+        replacement mailbox fields on the account itself.
+        """
+        account_id = int(account_id or 0)
+        old_email = str(old_email or "").strip()
+        new_email = str(new_email or "").strip()
+        if account_id <= 0 or not old_email or not new_email or "@" not in new_email:
+            raise ValueError("换绑账户或邮箱地址无效")
+        timestamp = now_sql()
+        access_token = str(session.get("access_token") or "").strip()
+        refresh_token = str(session.get("refresh_token") or session.get("openai_rt") or "").strip()
+        id_token = str(session.get("id_token") or access_token)
+        session_json = session.get("session_json", session)
+        if not isinstance(session_json, str):
+            session_json = json.dumps(session_json, ensure_ascii=False)
+        storage_state = session.get("storage_state_json", {})
+        if not isinstance(storage_state, str):
+            storage_state = json.dumps(storage_state, ensure_ascii=False)
+        raw = f"{new_email}----{new_mailbox_api}"
+        with self.conn:
+            account = self.conn.execute(
+                "select id from sunny_accounts where id=? and lower(trim(email))=lower(trim(?)) limit 1",
+                (account_id, old_email),
+            ).fetchone()
+            if not account:
+                raise ValueError("手机号账户记录不存在")
+            conflict = self.conn.execute(
+                "select id from sunny_accounts where lower(trim(email))=lower(trim(?)) and id<>? limit 1",
+                (new_email, account_id),
+            ).fetchone()
+            if conflict:
+                raise ValueError("换绑邮箱已被其他账户使用")
+            self.conn.execute(
+                "update sunny_accounts set access_token=coalesce(nullif(?,''),access_token),openai_rt=coalesce(nullif(?,''),openai_rt),rebind_email=?,rebind_mailbox_api=?,last_error='',updated_at=? where id=?",
+                (access_token, refresh_token, new_email, new_mailbox_api, timestamp, account_id),
+            )
+            current_session = self.conn.execute(
+                "select id from sunny_sessions where account_id=? order by updated_at desc,id desc limit 1",
+                (account_id,),
+            ).fetchone()
+            if current_session:
+                self.conn.execute(
+                    "update sunny_sessions set email=?,access_token=coalesce(nullif(?,''),access_token),refresh_token=coalesce(nullif(?,''),refresh_token),id_token=?,session_json=?,storage_state_json=?,raw_mailbox_line=?,access_token_status=?,access_token_error='',access_token_checked_at=?,last_refresh_at=?,updated_at=? where id=?",
+                    (new_email, access_token, refresh_token, id_token, session_json, storage_state, raw, "valid" if access_token else "invalid", timestamp, timestamp, timestamp, current_session["id"]),
+                )
+            pending = self.conn.execute(
+                "select id from sunny_mailboxes where lower(email)=lower(?) and pickup_token_hash=? limit 1",
+                (new_email, pickup_token_hash),
+            ).fetchone()
+            if pending:
+                self.conn.execute("delete from sunny_mailboxes where id=?", (int(pending["id"]),))
+
     def persist_rebind_failure(
         self,
         email: str,

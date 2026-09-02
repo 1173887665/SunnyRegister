@@ -722,6 +722,7 @@ class OpenAIEmailRegisterFlow:
             if (
                 (browser_storage_state is None or (protocol_handoff and not protocol_handoff["email_verified"]))
                 and not self._uses_login_secret()
+                and str(self.account.mailbox_type or "").strip().lower() != "phone"
                 and not (self.account.mailbox_type == "apple" and self.account.mailbox_channel == "url_api" and not self.account.access_key)
             ):
                 self._preconnect_otp_reader()
@@ -886,6 +887,8 @@ class OpenAIEmailRegisterFlow:
         })();""".replace("{fp_json}", fp_json))
 
     def _preconnect_otp_reader(self) -> None:
+        if str(self.account.mailbox_type or "").strip().lower() == "phone":
+            raise RuntimeError("手机号注册流程不支持邮箱验证码读取")
         if self.otp_reader:
             return
         provider = f"{self.account.mailbox_channel} iCloud API" if self.account.mailbox_type == "apple" else "Outlook Graph/IMAP"
@@ -1459,7 +1462,13 @@ class OpenAIEmailRegisterFlow:
             return False
 
     def _fill_email_if_visible(self, page) -> bool:
-        inputs = self._visible_inputs(page, ['input[type="email"]', 'input[name="email"]', 'input[name="username"]', 'input[autocomplete="email"]'])
+        phone_account = str(self.account.mailbox_type or "").strip().lower() == "phone"
+        selectors = (
+            ['input[type="tel"]', 'input[inputmode="tel"]', 'input[name*="phone" i]', 'input[autocomplete*="tel" i]', 'input[name="username"]', 'input[type="email"]']
+            if phone_account
+            else ['input[type="email"]', 'input[name="email"]', 'input[name="username"]', 'input[autocomplete="email"]']
+        )
+        inputs = self._visible_inputs(page, selectors)
         if not inputs:
             return False
         email_input = inputs[0]
@@ -1478,11 +1487,11 @@ class OpenAIEmailRegisterFlow:
                 self.email_transition_wait_logged = True
             return False
         self.email_transition_wait_logged = False
-        self.log("[认证] 填写邮箱并继续")
+        self.log("[认证] 填写手机号并继续" if phone_account else "[认证] 填写邮箱并继续")
         if current_value.casefold() != self.account.email.strip().casefold():
             email_input.fill(self.account.email, timeout=5000)
         self._click_continue(page)
-        self._emit_progress("email_submitted")
+        self._emit_progress("phone_started" if phone_account else "email_submitted")
         return True
 
     def _has_otp_input(self, page) -> bool:

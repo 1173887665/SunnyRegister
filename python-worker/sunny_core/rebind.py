@@ -569,6 +569,63 @@ def _browser_mailbox_fallback(
     return flow, result
 
 
+def _phone_session_flow(
+    db: SunnyDB,
+    account: MailAccount,
+    account_row: dict[str, Any],
+    proxy: str,
+    log: Callable[[str], None],
+) -> tuple[ProtocolRegistrationFlow, dict[str, Any]]:
+    """Restore a phone-only account from its persisted ChatGPT session.
+
+    A phone registration has no mailbox credentials, so rebind must not try
+    to authenticate through an email reader. The session captured immediately
+    after registration already contains the AT and cookies required by the
+    change-email endpoints.
+    """
+    account_id = int(account_row.get("id") or 0)
+    session_row = db.fetch_session_by_account_id(account_id) if account_id > 0 else None
+    if not session_row:
+        raise RebindError("手机号账户缺少已保存的登录会话，请先完成注册或刷新会话")
+    access_token = str(session_row.get("access_token") or "").strip()
+    if not access_token:
+        raise RebindError("手机号账户会话缺少 Access Token，请先刷新会话")
+    def parse_json(value: Any, default: Any) -> Any:
+        if isinstance(value, (dict, list)):
+            return value
+        try:
+            parsed = json.loads(str(value or ""))
+            return parsed if isinstance(parsed, type(default)) else default
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return default
+    session_json = parse_json(session_row.get("session_json"), {})
+    storage_state = parse_json(session_row.get("storage_state_json"), {})
+    if not isinstance(storage_state, dict) or not isinstance(storage_state.get("cookies"), list):
+        raise RebindError("手机号账户会话缺少认证 Cookie，请先刷新会话")
+    flow = ProtocolRegistrationFlow(
+        account,
+        proxy,
+        log,
+        existing_account=True,
+        should_cancel=db.cancel_requested,
+        challenge_strategy="sentinel_protocol",
+        keep_session=True,
+        skip_mailbox=True,
+    )
+    flow.session = flow._new_session()
+    result = {
+        "access_token": access_token,
+        "refresh_token": str(session_row.get("refresh_token") or "").strip(),
+        "id_token": str(session_row.get("id_token") or access_token),
+        "session_json": session_json,
+        "storage_state_json": storage_state,
+        "account_id": str((session_json.get("account") or {}).get("id") or "") if isinstance(session_json, dict) else "",
+    }
+    _hydrate_protocol_flow_from_browser(flow, result)
+    flow._last_access_token = access_token
+    return flow, result
+
+
 def _persist_login_result(db: SunnyDB, identity_email: str, mailbox: dict[str, Any], result: dict[str, Any], log: Callable[[str], None]) -> None:
     persist = getattr(db, "persist_authenticated_session", None)
     if not callable(persist):
@@ -729,13 +786,30 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
     if not old_email:
         raise RebindError("账户邮箱为空")
     mailbox = db.fetch_mailbox_by_email(old_email)
-    if not mailbox:
+    phone_only = not mailbox and (
+        int(account_row.get("mailbox_id") or 0) <= 0
+        and bool(str(account_row.get("phone_number") or "").strip())
+    )
+    if not mailbox and not phone_only:
         raise RebindError("未找到关联邮箱记录")
-    if str(account_row.get("status") or "").strip().lower() in {"banned", "已封禁", "disabled"} or str(mailbox.get("status") or "").strip().lower() in {"banned", "已封禁", "disabled"}:
+    if str(account_row.get("status") or "").strip().lower() in {"banned", "已封禁", "disabled"} or (mailbox and str(mailbox.get("status") or "").strip().lower() in {"banned", "已封禁", "disabled"}):
         return {"email": old_email, "status": "skipped", "reason": "账户已封禁"}
-    merged = {**mailbox, **account_row}
-    merged["email"] = old_email
-    account = account_from_row(merged)
+    if phone_only:
+        account = MailAccount(
+            email=old_email,
+            password="",
+            client_id="",
+            refresh_token="",
+            raw=f"{old_email}----phone",
+            account_type=str(account_row.get("account_type") or "free"),
+            openai_rt=str(account_row.get("openai_rt") or ""),
+            mailbox_type="phone",
+            mailbox_channel="sms",
+        )
+    else:
+        merged = {**(mailbox or {}), **account_row}
+        merged["email"] = old_email
+        account = account_from_row(merged)
     new_email = ""
     new_api = ""
     new_api_token_hash = ""
@@ -748,8 +822,8 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             verified_type, verified_channel = _resolve_rebind_mailbox_kind(
                 verified_api,
                 verified_email,
-                str(mailbox.get("mailbox_type") or ""),
-                str(mailbox.get("mailbox_channel") or ""),
+                str((mailbox or {}).get("mailbox_type") or ""),
+                str((mailbox or {}).get("mailbox_channel") or ""),
             )
             verified_hash = _pickup_token_hash(verified_api)
             resumed_account = replace(
@@ -768,16 +842,22 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
                 raise RebindError("换绑断点恢复登录未返回新的 Access Token")
             if not str(new_result.get("refresh_token") or "").strip() and account.openai_rt:
                 new_result["refresh_token"] = account.openai_rt
-            _persist_login_result(db, old_email, mailbox, new_result, log)
-            db.persist_rebind(
-                old_email, verified_email, verified_api, verified_hash, new_result, verified_type, verified_channel
-            )
+            _persist_login_result(db, old_email, mailbox or {}, new_result, log)
+            if phone_only:
+                db.persist_phone_rebind_verified(int(account_row.get("id") or 0), old_email, verified_email, verified_api, verified_hash, new_result)
+            else:
+                db.persist_rebind(
+                    old_email, verified_email, verified_api, verified_hash, new_result, verified_type, verified_channel
+                )
             log(f"[{old_email}] 换绑断点恢复成功：{verified_email}")
             return {"email": old_email, "new_email": verified_email, "status": "success", "resumed": True}
 
         log(f"[{old_email}] 开始协议换绑")
-        old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
-        _persist_login_result(db, old_email, mailbox, old_result, log)
+        if phone_only:
+            old_flow, old_result = _phone_session_flow(db, account, account_row, proxy, log)
+        else:
+            old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
+        _persist_login_result(db, old_email, mailbox or {}, old_result, log)
         client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""), log)
         client.set_access_token(str(old_result.get("access_token") or ""))
         client.eligibility()
@@ -813,7 +893,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
                     raise
                 previous_flow = old_flow
                 old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
-                _persist_login_result(db, old_email, mailbox, old_result, log)
+                _persist_login_result(db, old_email, mailbox or {}, old_result, log)
                 try:
                     if previous_flow and previous_flow.session:
                         previous_flow.session.close()
@@ -828,9 +908,12 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             reader.close()
         client.verify(new_email, code)
         log(f"[{old_email}] 已向 ChatGPT 提交换绑邮箱验证码")
-        db.persist_rebind_verified(
-            old_email, new_email, new_api, new_api_token_hash, imported_type, target_channel
-        )
+        if phone_only:
+            db.persist_phone_rebind_verified(int(account_row.get("id") or 0), old_email, new_email, new_api, new_api_token_hash, old_result)
+        else:
+            db.persist_rebind_verified(
+                old_email, new_email, new_api, new_api_token_hash, imported_type, target_channel
+            )
         log(f"[{old_email}] 已保存上游换绑验证断点，后续登录失败可直接恢复")
         new_account = _rebind_target_account(new_email, new_api, imported_type, target_channel, account)
         new_flow, new_result = _login_rebound_account(
@@ -840,8 +923,11 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             raise RebindError("换绑后重新登录未返回新的 Access Token")
         if not str(new_result.get("refresh_token") or "").strip() and account.openai_rt:
             new_result["refresh_token"] = account.openai_rt
-        _persist_login_result(db, old_email, mailbox, new_result, log)
-        db.persist_rebind(old_email, new_email, new_api, new_api_token_hash, new_result, imported_type, target_channel)
+        _persist_login_result(db, old_email, mailbox or {}, new_result, log)
+        if phone_only:
+            db.persist_phone_rebind_verified(int(account_row.get("id") or 0), old_email, new_email, new_api, new_api_token_hash, new_result)
+        else:
+            db.persist_rebind(old_email, new_email, new_api, new_api_token_hash, new_result, imported_type, target_channel)
         log(f"[{old_email}] 换绑成功：{new_email}")
         return {"email": old_email, "new_email": new_email, "status": "success"}
     except Exception as exc:

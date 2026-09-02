@@ -6085,64 +6085,59 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 	}
 	if typ == "sunny_register" || typ == "sunny_phone_register" {
 		if typ == "sunny_phone_register" {
-			body["identity"] = "system"
+			body["identity"] = "phone"
+			// Phone registration is always sourced from the SMS provider. Discard
+			// stale mailbox selection state at the API boundary so an email row can
+			// never become a registration input.
+			body["mailbox_ids"] = []uint{}
 			body["phone_registration"] = true
 			// Phone registration only creates the ChatGPT account and Session.
 			// Codex OAuth/RT acquisition is submitted through its own task.
 			body["registration_stage"] = "register_only"
 			provider := strings.ToLower(strings.TrimSpace(text(body["sms_provider"])))
 			validProviders := map[string]bool{"local": true, "luban": true, "smsbower": true, "smspool": true, "firefox": true, "grizzlysms": true, "hero_sms": true}
-			mailboxes, err := s.sunnyMailboxesForRegisterTask(body)
-			if err != nil {
+			if !validProviders[provider] {
+				writeError(w, http.StatusBadRequest, "请选择有效的接码平台")
+				return
+			}
+			cfg := s.sunnyGetConfig(sunnyCfgPhone, defaultPhoneConfig())
+			available := false
+			switch provider {
+			case "local":
+				available = s.sunnyUsablePhoneCount() > 0
+			case "luban":
+				available = boolValue(cfg["luban_enabled"], false) && strings.TrimSpace(text(cfg["luban_api_key"])) != "" && strings.TrimSpace(text(cfg["luban_service_id"])) != ""
+			case "smsbower":
+				available = boolValue(cfg["smsbower_enabled"], false) && strings.TrimSpace(text(cfg["smsbower_api_key"])) != ""
+			case "smspool":
+				available = boolValue(cfg["smspool_enabled"], false) && strings.TrimSpace(text(cfg["smspool_api_key"])) != ""
+			case "firefox":
+				maxPrice, parseErr := strconv.ParseFloat(strings.TrimSpace(text(cfg["firefox_max_price"])), 64)
+				available = boolValue(cfg["firefox_enabled"], false) && fireFoxAPIToken(cfg) != "" &&
+					strings.TrimSpace(text(cfg["firefox_default_country"])) != "" &&
+					strings.TrimSpace(text(cfg["firefox_default_service"])) != "" && parseErr == nil && maxPrice > 0
+			case "grizzlysms":
+				available = boolValue(cfg["grizzlysms_enabled"], false) && strings.TrimSpace(text(cfg["grizzlysms_api_key"])) != ""
+			case "hero_sms":
+				available = boolValue(cfg["hero_sms_enabled"], false) && strings.TrimSpace(text(cfg["hero_sms_api_key"])) != ""
+			}
+			if !available {
+				writeError(w, http.StatusBadRequest, "所选接码平台未启用或配置不完整")
+				return
+			}
+			if provider != "local" && provider != "luban" && strings.TrimSpace(text(body["sms_country"])) == "" {
+				writeError(w, http.StatusBadRequest, "请选择注册国家")
+				return
+			}
+			requestedCount := intValue(body["count"], 1)
+			if requestedCount <= 0 {
+				writeError(w, http.StatusBadRequest, "请填写有效的手机注册数量")
+				return
+			}
+			if err := prepareSunnyPostRegistrationEmailBind(body, requestedCount); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			if len(mailboxes) == 0 {
-				writeError(w, http.StatusBadRequest, "手机注册没有可用账号来源")
-				return
-			}
-			if s.sunnyMailboxesNeedPhone(mailboxes) {
-				if !validProviders[provider] {
-					writeError(w, http.StatusBadRequest, "请选择有效的接码平台")
-					return
-				}
-				cfg := s.sunnyGetConfig(sunnyCfgPhone, defaultPhoneConfig())
-				available := false
-				switch provider {
-				case "local":
-					available = s.sunnyUsablePhoneCount() > 0
-				case "luban":
-					available = boolValue(cfg["luban_enabled"], false) && strings.TrimSpace(text(cfg["luban_api_key"])) != "" && strings.TrimSpace(text(cfg["luban_service_id"])) != ""
-				case "smsbower":
-					available = boolValue(cfg["smsbower_enabled"], false) && strings.TrimSpace(text(cfg["smsbower_api_key"])) != ""
-				case "smspool":
-					available = boolValue(cfg["smspool_enabled"], false) && strings.TrimSpace(text(cfg["smspool_api_key"])) != ""
-				case "firefox":
-					maxPrice, parseErr := strconv.ParseFloat(strings.TrimSpace(text(cfg["firefox_max_price"])), 64)
-					available = boolValue(cfg["firefox_enabled"], false) && fireFoxAPIToken(cfg) != "" &&
-						strings.TrimSpace(text(cfg["firefox_default_country"])) != "" &&
-						strings.TrimSpace(text(cfg["firefox_default_service"])) != "" && parseErr == nil && maxPrice > 0
-				case "grizzlysms":
-					available = boolValue(cfg["grizzlysms_enabled"], false) && strings.TrimSpace(text(cfg["grizzlysms_api_key"])) != ""
-				case "hero_sms":
-					available = boolValue(cfg["hero_sms_enabled"], false) && strings.TrimSpace(text(cfg["hero_sms_api_key"])) != ""
-				}
-				if !available {
-					writeError(w, http.StatusBadRequest, "所选接码平台未启用或配置不完整")
-					return
-				}
-				if provider != "local" && provider != "luban" && strings.TrimSpace(text(body["sms_country"])) == "" {
-					writeError(w, http.StatusBadRequest, "请选择注册国家")
-					return
-				}
-			}
-			if err := prepareSunnyPostRegistrationEmailBind(body, len(mailboxes)); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			// Keep task progress aligned with the number of actual account sources.
-			// When no rows were selected, the Worker allocates up to `count` sources.
-			body["count"] = len(mailboxes)
 		} else {
 			normalizedIdentity, err := normalizeSunnyRegistrationIdentity(text(body["identity"]))
 			if err != nil {
@@ -6231,6 +6226,9 @@ func (s *Server) sunnyTasks(w http.ResponseWriter, r *http.Request, parts []stri
 		}
 	}
 	total := len(uintSlice(body["mailbox_ids"])) + len(uintSlice(body["account_ids"]))
+	if typ == "sunny_phone_register" && strings.EqualFold(strings.TrimSpace(text(body["identity"])), "phone") {
+		total = intValue(body["count"], 1)
+	}
 	if typ == "sunny_refresh_session" || typ == "sunny_acquire_rt" || typ == "sunny_add_ls" || typ == "sunny_sub2_import" {
 		total = len(uintSlice(body["account_ids"]))
 	}
@@ -6320,6 +6318,11 @@ func (s *Server) sunnyValidateRegisterStageResources(body map[string]any) error 
 	}
 	identity := strings.ToLower(strings.TrimSpace(text(body["identity"])))
 	phoneRegistration := boolValue(body["phone_registration"], false)
+	if phoneRegistration || identity == "phone" {
+		// Phone registration has no mailbox source.  The SMS provider and proxy
+		// checks are performed by the phone-register endpoint before task creation.
+		return s.sunnyValidateProxyForRegisterTask()
+	}
 	if identity == "remail" || identity == "domain" || identity == "domain_mailbox" || identity == "自建域名邮箱" {
 		return s.sunnyValidateProxyForRegisterTask()
 	}
