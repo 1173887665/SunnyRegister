@@ -2126,6 +2126,43 @@ class RebindProxyRotationTests(unittest.TestCase):
 
 
 class RebindTaskTests(unittest.TestCase):
+    def test_rebind_registration_timestamp_accepts_unix_milliseconds(self):
+        registered_at = 1_800_000_000_000
+        self.assertEqual(worker._rebind_registration_timestamp({"registered_at": registered_at}), 1_800_000_000)
+
+    def test_rebind_prefilters_accounts_inside_24_hour_cooldown(self):
+        db = MagicMock()
+        now = 1_800_000_000.0
+        eligible, skipped = worker._rebind_prefilter_accounts(
+            db,
+            [
+                {"id": 1, "email": "new@example.com", "mailbox_registered_at": now - 23 * 3600},
+                {"id": 2, "email": "old@example.com", "mailbox_registered_at": now - 25 * 3600},
+            ],
+            now=now,
+        )
+
+        self.assertEqual([item["email"] for item in eligible], ["old@example.com"])
+        self.assertEqual([item["email"] for item in skipped], ["new@example.com"])
+        self.assertEqual(skipped[0]["status"], "skipped")
+        self.assertIn("注册未满24小时", skipped[0]["reason"])
+        self.assertTrue(any("rebind.skipped.cooldown" in str(call.kwargs.get("detail")) for call in db.event.call_args_list))
+
+    def test_rebind_all_accounts_in_cooldown_returns_skipped_without_worker(self):
+        db = MagicMock()
+        db.task_id = "task-rebind-cooldown"
+        db.cancel_requested.return_value = False
+        db.fetch_accounts.return_value = [
+            {"id": 1, "email": "new@example.com", "mailbox_registered_at": 1_800_000_000.0 - 3600},
+        ]
+
+        with patch.object(worker, "_rebind_one_isolated") as isolated:
+            success, errors, items = worker._rebind_sessions(db, {"concurrency": 2})
+
+        self.assertEqual((success, errors), (0, []))
+        self.assertEqual(items[0]["status"], "skipped")
+        isolated.assert_not_called()
+
     def test_parallel_imported_rebind_preserves_each_target_mailbox(self):
         db = MagicMock()
         db.task_id = "task-rebind-imported"

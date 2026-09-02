@@ -8,6 +8,7 @@ import time
 import traceback
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from datetime import datetime, timezone
 from threading import Lock
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
@@ -18,7 +19,7 @@ from .access_token_probe import probe_access_token
 from .agent_identity import AgentIdentityUnavailableError, create_agent_identity_auth
 from .auth_resilience import classify_auth_failure, retry_allowed
 from .browser_traffic import ProxyTrafficMeter, use_traffic_meter
-from .db import SunnyDB, SunnyTaskCancelled, now_sql
+from .db import SunnyDB, SunnyTaskCancelled, app_timezone, now_sql
 from .domain_mail_cleanup import cleanup_failed_mailbox
 from .firefox_sms import FIREFOX_RELEASE_DELAY_SECONDS, FireFoxSMSClient
 from .luban_sms import LubanSMSClient
@@ -3806,11 +3807,100 @@ def _rebind_with_proxy_rotation(
     raise RuntimeError("邮箱换绑代理轮换未返回执行结果")
 
 
+def _rebind_registration_timestamp(account: dict[str, Any]) -> float:
+    """Return the authoritative registration time used by the 24h gate."""
+    value = account.get("mailbox_registered_at") or account.get("registered_at")
+    if isinstance(value, datetime):
+        parsed = value
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=app_timezone())
+        return parsed.timestamp()
+    raw = str(value or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        numeric = float(raw)
+        if numeric > 0:
+            if numeric > 1e14:
+                numeric /= 1_000_000
+            elif numeric > 1e11:
+                numeric /= 1_000
+            return numeric
+    except (TypeError, ValueError, OverflowError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=app_timezone())
+    return parsed.astimezone(timezone.utc).timestamp()
+
+
+def _rebind_prefilter_accounts(
+    db: SunnyDB,
+    accounts: list[dict[str, Any]],
+    *,
+    now: float | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Skip accounts still inside the upstream 24-hour email-change cooldown."""
+    current = time.time() if now is None else float(now)
+    eligible: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for account in accounts:
+        registered_at = _rebind_registration_timestamp(account)
+        age = current - registered_at if registered_at else 0.0
+        if registered_at and age < 24 * 60 * 60:
+            email = str(account.get("email") or "").strip()
+            remaining_hours = max(0.0, (24 * 60 * 60 - max(0.0, age)) / 3600)
+            reason = (
+                "注册未满24小时，处于官方邮箱换绑冷却期 "
+                f"（预计还需 {remaining_hours:.1f} 小时）"
+            )
+            skipped.append({
+                "email": email,
+                "status": "skipped",
+                "reason": reason,
+                "registered_at": str(account.get("mailbox_registered_at") or account.get("registered_at") or ""),
+            })
+            db.event(
+                f"[{email}] 已跳过邮箱换绑：{reason}",
+                "warning",
+                detail={
+                    "email": email,
+                    "module": "auth",
+                    "action": "rebind.skipped.cooldown",
+                    "registered_at": str(account.get("mailbox_registered_at") or account.get("registered_at") or ""),
+                    "remaining_hours": round(remaining_hours, 2),
+                },
+            )
+            continue
+        eligible.append(account)
+    return eligible, skipped
+
+
 def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[str], list[dict[str, Any]]]:
     account_ids = _ids(payload.get("account_ids"))
     accounts = db.fetch_accounts(account_ids or None)
     if not accounts:
         return 0, ["未找到需要换绑的账户"], []
+    selected_total = len(accounts)
+    accounts, prefiltered_items = _rebind_prefilter_accounts(db, accounts)
+    db.update_task(progress_total=selected_total, progress_current=len(prefiltered_items), success_count=0, error_count=0)
+    if prefiltered_items:
+        db.event(
+            f"[系统] 邮箱换绑 24 小时预检：跳过 {len(prefiltered_items)} 个，待处理 {len(accounts)} 个",
+            "warning" if accounts else "info",
+            detail={
+                "scope": "global",
+                "operation": "rebind",
+                "cooldown_skipped": len(prefiltered_items),
+                "remaining": len(accounts),
+                "total": selected_total,
+            },
+        )
+    if not accounts:
+        return 0, [], prefiltered_items
     if str(payload.get("rebind_source") or "").strip().lower() == "imported":
         raw_targets = payload.get("target_mailboxes")
         targets = [item for item in raw_targets if isinstance(item, dict) and str(item.get("email") or "").strip() and str(item.get("mailbox_api") or "").strip()] if isinstance(raw_targets, list) else []
@@ -3824,8 +3914,8 @@ def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[st
             account["_rebind_target_channel"] = str(target.get("mailbox_channel") or "").strip()
     success = 0
     errors: list[str] = []
-    items: list[dict[str, Any]] = []
-    db.update_task(progress_total=len(accounts))
+    items: list[dict[str, Any]] = list(prefiltered_items)
+    db.update_task(progress_total=selected_total, progress_current=len(prefiltered_items))
     cpu_count = max(1, int(os.cpu_count() or 1))
     default_concurrency = max(1, (cpu_count * 3 + 1) // 2)
     try:
@@ -3862,10 +3952,14 @@ def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[st
                 errors.append(message)
                 items.append({"email": email, "status": "failed", "error": str(exc)})
                 db.event(message, "error", detail={"email": email, "module": "auth", "action": "rebind.failed"})
-            db.update_task(progress_current=index, success_count=success, error_count=len(errors))
+            db.update_task(
+                progress_current=len(prefiltered_items) + index,
+                success_count=success,
+                error_count=len(errors),
+            )
         return success, errors, items
 
-    completed = 0
+    completed = len(prefiltered_items)
     for batch_start in range(0, len(accounts), concurrency):
         batch = accounts[batch_start : batch_start + concurrency]
         pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sunny-rebind")

@@ -35,3 +35,23 @@ func TestPrepareSunnyPostRegistrationEmailBindRequiresEnoughTargets(t *testing.T
 		t.Fatal("expected insufficient binding targets to fail")
 	}
 }
+
+func TestPrepareSunnyPostRegistrationEmailBindAcceptsLocalDomainPickup(t *testing.T) {
+	body := map[string]any{
+		sunnyEmailBindEnabledKey:  true,
+		sunnyEmailBindCategoryKey: "domain",
+		sunnyEmailBindTargetsKey: []any{map[string]any{
+			"email":           "target@example.com",
+			"mailbox_api":     "http://127.0.0.1/api/sunny/domain-mail/pickup?email=target%40example.com&token=dmsk_test",
+			"mailbox_type":    "domain",
+			"mailbox_channel": "domain_api",
+		}},
+	}
+	if err := prepareSunnyPostRegistrationEmailBind(body, 1); err != nil {
+		t.Fatalf("local domain pickup should be accepted: %v", err)
+	}
+	targets := body[sunnyEmailBindTargetsKey].([]map[string]any)
+	if targets[0]["mailbox_type"] != "domain" || targets[0]["mailbox_channel"] != "domain_api" {
+		t.Fatalf("target type = %#v", targets[0])
+	}
+}

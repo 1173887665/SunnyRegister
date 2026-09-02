@@ -1444,6 +1444,9 @@ class DomainMailReader:
         self.seen_keys: set[str] = set()
         self.request_count = 0
         self.last_status = 0
+        self.last_raw_count = 0
+        self.last_recipient_match_count = 0
+        self.last_recipient_mismatch_count = 0
         self.last_candidate_count = 0
         self.last_error = ""
 
@@ -1539,9 +1542,36 @@ class DomainMailReader:
 
     def _latest(self) -> dict[str, Any]:
         candidates: list[dict[str, Any]] = []
+        raw_count = 0
+        recipient_matches = 0
+        recipient_mismatches = 0
+        expected_recipient = self.account.email.strip().casefold()
         for order, item in enumerate(self._nested(self._request())):
             if not isinstance(item, dict):
                 continue
+            # The provider query is already scoped by toEmail, but older
+            # CloudMail deployments may omit or misname recipient fields.
+            # Keep those rows usable while exposing the mismatch in diagnostics.
+            if any(
+                key in item
+                for key in (
+                    "id", "emailId", "messageId", "subject", "text", "body", "content",
+                    "html", "bodyPreview", "body_preview", "verificationCode", "toEmail",
+                    "recipient", "to",
+                )
+            ):
+                raw_count += 1
+            recipient = ""
+            for key in ("toEmail", "recipient", "to", "email"):
+                value = str(item.get(key) or "").strip()
+                if value:
+                    recipient = value
+                    break
+            if recipient:
+                if recipient.casefold() == expected_recipient:
+                    recipient_matches += 1
+                else:
+                    recipient_mismatches += 1
             body_source = "\n".join(
                 str(item.get(key) or "").strip()
                 for key in ("text", "body", "content", "html", "bodyPreview", "body_preview", "subject")
@@ -1566,9 +1596,18 @@ class DomainMailReader:
                     break
             message_id = item.get("emailId") or item.get("id") or item.get("messageId") or timestamp
             candidates.append({"code": code, "key": f"{message_id}:{code}", "timestamp": timestamp, "order": order, "body": body, "id": message_id, "sender": item.get("sendEmail") or item.get("sender") or item.get("from"), "recipient": item.get("toEmail") or item.get("recipient") or item.get("to"), "subject": item.get("subject"), "date": item.get("createTime") or item.get("receivedAt") or item.get("date")})
+        self.last_raw_count = raw_count
+        self.last_recipient_match_count = recipient_matches
+        self.last_recipient_mismatch_count = recipient_mismatches
         self.last_candidate_count = len(candidates)
         if self.request_count == 1 or self.request_count % 10 == 0:
-            self.log(f"[{self.account.email}] 自建域名邮箱取件 API：HTTP {self.last_status or '未知'}，第 {self.request_count} 次查询，识别到 {self.last_candidate_count} 封验证码邮件")
+            self.log(
+                f"[{self.account.email}] 自建域名邮箱取件 API：HTTP {self.last_status or '未知'}，"
+                f"第 {self.request_count} 次查询，原始邮件 {self.last_raw_count}，"
+                f"收件人匹配 {self.last_recipient_match_count}，"
+                f"收件人不匹配 {self.last_recipient_mismatch_count}，"
+                f"识别到 {self.last_candidate_count} 封验证码邮件"
+            )
         return max(candidates, key=lambda item: (float(item.get("timestamp") or 0), -int(item.get("order") or 0)), default={})
 
     def connect(self, access_token: str | None = None) -> None:
@@ -1606,7 +1645,12 @@ class DomainMailReader:
                 self.log(f"[{self.account.email}] 已通过自建域名邮箱 API 收到验证码（已脱敏）")
                 return code
             time.sleep(min(2, remaining))
-        detail = f"HTTP {self.last_status or '未知'}，累计查询 {self.request_count} 次，最近识别到 {self.last_candidate_count} 封验证码邮件"
+        detail = (
+            f"HTTP {self.last_status or '未知'}，累计查询 {self.request_count} 次，"
+            f"最近原始邮件 {self.last_raw_count}，收件人匹配 {self.last_recipient_match_count}，"
+            f"收件人不匹配 {self.last_recipient_mismatch_count}，"
+            f"识别到 {self.last_candidate_count} 封验证码邮件"
+        )
         if self.last_error:
             detail += f"，最近错误：{self.last_error[:180]}"
         raise TimeoutError(f"Timed out waiting for OpenAI email OTP via domain mailbox API（{detail}）")

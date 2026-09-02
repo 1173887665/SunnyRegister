@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import replace
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 import requests
 
@@ -91,6 +91,49 @@ def _pickup_token_hash(credential: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest() if token else ""
 
 
+def _redact_pickup_credential(credential: str) -> str:
+    """Keep pickup diagnostics useful without exposing the one-time token."""
+    parsed = urlsplit(str(credential or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "<redacted>"
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    if "token" in query:
+        query["token"] = ["<redacted>"]
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query if "token" not in query else urlencode(query, doseq=True), ""))
+
+
+def _resolve_rebind_mailbox_kind(
+    api: str,
+    email: str,
+    mailbox_type: str = "",
+    mailbox_channel: str = "",
+) -> tuple[str, str]:
+    """Resolve an imported target without losing an explicit provider choice.
+
+    A pickup URL carrying both ``email`` and ``token`` is an unambiguous
+    SunnyRegister domain credential, including rows created by older builds
+    that were incorrectly labelled as Apple URL API. For all other values,
+    keep a supplied type/channel and only infer when the type is absent.
+    """
+    explicit_type = str(mailbox_type or "").strip().lower()
+    explicit_channel = str(mailbox_channel or "").strip().lower()
+    detected = _infer_rebind_mailbox_kind(api, email)
+    if detected == ("domain", "domain_api"):
+        return detected
+    if detected == ("apple", "url_api") and explicit_type in {"", "domain"} and explicit_channel in {"", "domain_api"}:
+        return detected
+    if explicit_type:
+        return explicit_type, explicit_channel or (
+            "outlook" if explicit_type == "microsoft" else
+            "domain_api" if explicit_type == "domain" else
+            "url_api" if explicit_type == "apple" else
+            "remail_api"
+        )
+    if detected:
+        return detected
+    return "domain", "domain_api"
+
+
 class ChangeEmailClient:
     def __init__(self, flow: ProtocolRegistrationFlow, account_id: str = "", log: Callable[[str], None] | None = None):
         self.flow = flow
@@ -101,6 +144,7 @@ class ChangeEmailClient:
             raise RebindError("旧账号登录态不完整，缺少设备 ID 或 Access Token")
         self.session_id = str(uuid.uuid4())
         self.client_observation = "v1.r.p." + secrets.token_urlsafe(12)
+        self.last_begin_accepted = False
 
     @property
     def _access_token(self) -> str:
@@ -177,7 +221,10 @@ class ChangeEmailClient:
         return result
 
     def begin(self, email: str) -> dict[str, Any]:
-        return self._request("POST", BEGIN_PATH, json={"email": email})
+        result = self._request("POST", BEGIN_PATH, json={"email": email})
+        success = result.get("success") if isinstance(result, dict) else None
+        self.last_begin_accepted = success is not False and str(success).strip().lower() not in {"false", "0", "no"}
+        return result
 
     def verify(self, email: str, code: str) -> dict[str, Any]:
         return self._request("POST", VERIFY_PATH, json={"email": email, "code": code})
@@ -234,7 +281,10 @@ def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str, 
                 pickup_token = "dmsk_" + secrets.token_urlsafe(32)
                 credential = pickup_base + "/api/sunny/domain-mail/pickup?" + urlencode({"email": email, "token": pickup_token})
                 token_hash = hashlib.sha256(pickup_token.encode("utf-8")).hexdigest()
-                log(f"[{email}] 已从自建域名邮箱池生成换绑邮箱：{email}----{credential}")
+                log(
+                    f"[{email}] 已从自建域名邮箱池生成换绑邮箱，"
+                    f"取件地址={_redact_pickup_credential(credential)}"
+                )
                 return email, credential, token_hash
         except requests.RequestException as exc:
             last = str(exc)
@@ -546,7 +596,32 @@ def _wait_for_rebind_code(reader: DomainMailReader, client: ChangeEmailClient, e
         log(f"[{email}] 第 1 次重发后 {REBIND_OTP_SECOND_WAIT_SECONDS} 秒内仍未收到邮件，进行第 2 次重发")
         _begin_with_retry(client, email, log)
         log(f"[{email}] 第 2 次重发已接受，进行最后一次邮箱等待")
-        return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_FINAL_WAIT_SECONDS)
+        try:
+            return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_FINAL_WAIT_SECONDS)
+        except TimeoutError as exc:
+            raw_count = int(getattr(reader, "last_raw_count", 0) or 0)
+            if getattr(client, "last_begin_accepted", False) and raw_count == 0:
+                raise TimeoutError(
+                    "换绑验证码请求已被上游接受（begin HTTP 200/success=true），"
+                    "但 CloudMail 查询持续返回空收件箱（data=[]），邮件尚未投递到该邮箱；"
+                    "请检查发信投递、域名 MX 与 CloudMail 入站配置"
+                ) from exc
+            raise
+
+
+def _requires_fresh_email_auth(error: Exception) -> bool:
+    """Return true for a rejected LS step whose OAuth transaction is stale."""
+    message = str(error or "").lower()
+    return any(
+        marker in message
+        for marker in (
+            "invalid_auth_step",
+            "invalid authorization step",
+            "认证步骤不匹配",
+            "密码提交后认证页面未继续",
+            "2fa 提交后认证页面未继续",
+        )
+    )
 
 
 def _handle_failed_domain_mailbox(
@@ -670,10 +745,11 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         verified_email = str(account_row.get("rebind_email") or "").strip()
         verified_api = str(account_row.get("rebind_mailbox_api") or "").strip()
         if verified_email and verified_api and verified_email.lower() != old_email.lower():
-            detected_kind = _infer_rebind_mailbox_kind(verified_api, verified_email)
-            verified_type = detected_kind[0] if detected_kind else str(mailbox.get("mailbox_type") or "domain").strip().lower() or "domain"
-            verified_channel = detected_kind[1] if detected_kind else str(mailbox.get("mailbox_channel") or "").strip().lower() or (
-                "url_api" if verified_type == "apple" else "remail_api" if verified_type == "remail" else "domain_api"
+            verified_type, verified_channel = _resolve_rebind_mailbox_kind(
+                verified_api,
+                verified_email,
+                str(mailbox.get("mailbox_type") or ""),
+                str(mailbox.get("mailbox_channel") or ""),
             )
             verified_hash = _pickup_token_hash(verified_api)
             resumed_account = replace(
@@ -707,16 +783,17 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         client.eligibility()
         imported_email = str(account_row.get("_rebind_target_email") or "").strip()
         imported_api = str(account_row.get("_rebind_target_api") or "").strip()
-        imported_type = str(account_row.get("_rebind_target_type") or "domain").strip().lower() or "domain"
+        imported_type = str(account_row.get("_rebind_target_type") or "").strip().lower()
         imported_channel = str(account_row.get("_rebind_target_channel") or "").strip().lower()
         if imported_email and imported_api:
-            detected_kind = _infer_rebind_mailbox_kind(imported_api, imported_email)
-            if detected_kind:
-                imported_type, imported_channel = detected_kind
+            imported_type, imported_channel = _resolve_rebind_mailbox_kind(
+                imported_api, imported_email, imported_type, imported_channel
+            )
             new_email, new_api = imported_email, imported_api
             new_api_token_hash = _pickup_token_hash(new_api)
             log(f"[{old_email}] 使用已导入域名邮箱：{new_email}")
         else:
+            imported_type = "domain"
             new_email, new_api, new_api_token_hash = _domain_mailbox(db, log)
         # Register the one-time pickup credential before ChatGPT sends the verification mail.
         # The public pickup endpoint validates the token against this database row.

@@ -52,6 +52,13 @@ func TestClassifySunnyRebindMailboxCredential(t *testing.T) {
 	if _, _, err := classifySunnyRebindMailboxCredential(externalURL, "other@example.com"); err == nil {
 		t.Fatal("mismatched external URL email should be rejected")
 	}
+	localPickup := "http://127.0.0.1/api/sunny/domain-mail/pickup?email=user%40example.com&token=dmsk_local"
+	if mailboxType, channel, err := classifySunnyRebindMailboxCredential(localPickup, "user@example.com"); err != nil || mailboxType != "domain" || channel != "domain_api" {
+		t.Fatalf("local domain pickup classification = %q/%q err=%v", mailboxType, channel, err)
+	}
+	if _, _, err := classifySunnyRebindMailboxCredential("http://127.0.0.1/inbox?email=user%40example.com", "user@example.com"); err == nil {
+		t.Fatal("ordinary URL API pointing to localhost must be rejected")
+	}
 }
 
 func TestReconcileSunnyRebindCredentialsPreservesExternalURLType(t *testing.T) {

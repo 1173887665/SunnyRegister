@@ -800,9 +800,18 @@ class SunnyDB:
     def fetch_accounts(self, ids: list[int] | None = None) -> list[dict[str, Any]]:
         if ids:
             marks = ",".join("?" for _ in ids)
-            rows = self.conn.execute(f"select * from sunny_accounts where id in ({marks}) order by id asc", ids).fetchall()
+            rows = self.conn.execute(
+                f"select a.*, m.registered_at as mailbox_registered_at "
+                f"from sunny_accounts a left join sunny_mailboxes m on m.id=a.mailbox_id "
+                f"where a.id in ({marks}) order by a.id asc",
+                ids,
+            ).fetchall()
         else:
-            rows = self.conn.execute("select * from sunny_accounts order by id asc").fetchall()
+            rows = self.conn.execute(
+                "select a.*, m.registered_at as mailbox_registered_at "
+                "from sunny_accounts a left join sunny_mailboxes m on m.id=a.mailbox_id "
+                "order by a.id asc"
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def fetch_mailbox_by_email(self, email: str) -> dict[str, Any] | None:

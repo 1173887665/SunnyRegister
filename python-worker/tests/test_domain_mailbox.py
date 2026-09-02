@@ -11,7 +11,7 @@ from sunny_core import mailbox as mailbox_module
 from sunny_core import domain_mail_cleanup as cleanup_module
 from sunny_core import rebind as rebind_module
 from sunny_core.db import SunnyDB
-from sunny_core.mailbox import DomainMailReader, account_from_row
+from sunny_core.mailbox import DomainMailReader, URLAPIICloudReader, account_from_row, create_mailbox_reader
 from sunny_core.protocol_auth import ProtocolChallengeRequired
 
 
@@ -56,6 +56,34 @@ def test_rebound_url_api_mailbox_preserves_apple_channel():
     assert effective["email"] == "replacement@example.com"
     assert effective["mailbox_type"] == "apple"
     assert effective["mailbox_channel"] == "url_api"
+
+
+def test_rebind_target_recognizes_local_pickup_url_despite_historical_apple_type():
+    pickup_url = "http://127.0.0.1/api/sunny/domain-mail/pickup?email=replacement%40example.com&token=dmsk_one"
+    mailbox_type, mailbox_channel = rebind_module._resolve_rebind_mailbox_kind(
+        pickup_url, "replacement@example.com", "apple", "url_api"
+    )
+
+    assert (mailbox_type, mailbox_channel) == ("domain", "domain_api")
+    account = rebind_module._rebind_target_account(
+        "replacement@example.com", pickup_url, mailbox_type, mailbox_channel,
+        account_from_row({"email": "source@example.com", "raw": "source@example.com----password----11111111-1111-1111-1111-111111111111----refresh"}),
+    )
+    assert isinstance(create_mailbox_reader(account, None), DomainMailReader)
+
+
+def test_rebind_target_keeps_explicit_apple_url_api_for_external_url():
+    api = "https://mail.example/inbox/replacement"
+    mailbox_type, mailbox_channel = rebind_module._resolve_rebind_mailbox_kind(
+        api, "replacement@example.com", "apple", "url_api"
+    )
+
+    assert (mailbox_type, mailbox_channel) == ("apple", "url_api")
+    account = rebind_module._rebind_target_account(
+        "replacement@example.com", api, mailbox_type, mailbox_channel,
+        account_from_row({"email": "source@example.com", "raw": "source@example.com----password----11111111-1111-1111-1111-111111111111----refresh"}),
+    )
+    assert isinstance(create_mailbox_reader(account, None), URLAPIICloudReader)
 
 
 def test_historical_domain_row_with_impersonate_url_routes_to_url_api():
@@ -206,6 +234,26 @@ def test_domain_reader_uses_individual_pickup_url(monkeypatch):
     assert any("HTTP 200" in message and "识别到 1 封验证码邮件" in message for message in logs)
 
 
+def test_domain_reader_keeps_otp_when_provider_recipient_field_differs(monkeypatch):
+    logs = []
+    reader = DomainMailReader(
+        account_from_row({"email": "user@example.com", "mailbox_type": "domain", "access_key": _credential()}),
+        logs.append,
+    )
+    monkeypatch.setattr(reader, "_request", lambda: {"data": [{
+        "id": "m1",
+        "to": "legacy-recipient-field",
+        "receivedAt": "2099-01-01T00:00:00Z",
+        "bodyPreview": "ChatGPT code 654321",
+    }]})
+
+    assert reader._latest()["code"] == "654321"
+    assert reader.last_raw_count == 1
+    assert reader.last_recipient_match_count == 0
+    assert reader.last_recipient_mismatch_count == 1
+    assert any("收件人不匹配 1" in message for message in logs)
+
+
 def test_rebind_domain_mailbox_creates_individual_pickup_credential(monkeypatch):
     class DB:
         @staticmethod
@@ -240,7 +288,9 @@ def test_rebind_domain_mailbox_creates_individual_pickup_credential(monkeypatch)
     assert pickup_token.startswith("dmsk_")
     assert token_hash == hashlib.sha256(pickup_token.encode("utf-8")).hexdigest()
     assert "global-manager-token" not in credential
-    assert any(f"{email}----{credential}" in message for message in logs)
+    assert any("取件地址=" in message for message in logs)
+    assert all(pickup_token not in message for message in logs)
+    assert any("token=%3Credacted%3E" in message for message in logs)
 
 
 def test_rebind_imported_pickup_credential_hashes_token():
