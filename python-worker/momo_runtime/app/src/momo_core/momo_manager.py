@@ -26,6 +26,14 @@ DATA_ROOT = Path(os.getenv("SUNNY_DATA_DIR") or ("/app/data" if Path("/app/data"
 MOMO_ROOT = DATA_ROOT / "momo"
 MOMO_RUNTIME_VERSION = "direct-protocol-v1"
 
+# Public protocol stages are deliberately provider-neutral.  They describe
+# orchestration progress without exposing the provider's session payload.
+MOMO_PROTOCOL_STAGES = {
+    "queued", "register_started", "otp_wait", "otp_verified", "profile_submitted",
+    "pin_set", "device_bound", "session_ready", "login", "qr_submitted",
+    "payment_otp", "confirmation", "completed", "failed", "cancelled",
+}
+
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -192,6 +200,9 @@ class MomoManager:
             "otp_poll_interval_sec": 3,
             "otp_max_resends": 2,
             "api_timeout_sec": 60,
+            # API callers can override this per payment.  Keep the persisted
+            # default conservative so existing integrations remain manual.
+            "auto_confirm_payment": False,
             "proxy_pool": [],
             "proxy_mode": "round_robin",
             "proxy_required": False,
@@ -275,6 +286,7 @@ class MomoManager:
         self.settings["api_timeout_sec"] = min(300, max(5, api_timeout))
         self.settings["mock_mode"] = _as_bool(self.settings.get("mock_mode"), False)
         self.settings["skip_kyc_default"] = _as_bool(self.settings.get("skip_kyc_default"), True)
+        self.settings["auto_confirm_payment"] = _as_bool(self.settings.get("auto_confirm_payment"), False)
         try:
             self.settings["protocol_base_url"] = _normalize_endpoint(self.settings.get("protocol_base_url", ""), "MoMo 协议 Base URL")
         except ValueError:
@@ -323,6 +335,7 @@ class MomoManager:
         stale_ids: list[str] = []
         resume_register: list[str] = []
         resume_payment: list[str] = []
+        resume_confirmation: list[str] = []
         with self.lock:
             for job_id, job in self.jobs.items():
                 if str(job.get("status") or "") in {"success", "failed", "cancelled"}:
@@ -334,6 +347,11 @@ class MomoManager:
                     job.setdefault("logs", []).append({"at": _now(), "message": "Worker 已重启，恢复 OTP 等待"})
                     job["message"] = "Worker 已重启，OTP 等待已恢复"
                     job["updated_at"] = _now()
+                    job["protocol_stage"] = "payment_otp" if str(job.get("kind") or "") == "payment" else "otp_wait"
+                    job["automation_mode"] = "automatic"
+                    auto_otp = str(job.get("otp_mode") or "manual") == "automatic"
+                    job["requires_user_action"] = not auto_otp
+                    job["next_action"] = "poll_otp" if auto_otp else "submit_otp"
                     if str(job.get("kind") or "") == "payment":
                         resume_payment.append(str(job_id))
                     else:
@@ -343,14 +361,27 @@ class MomoManager:
                     job.setdefault("logs", []).append({"at": _now(), "message": "Worker 已重启，保留待确认支付"})
                     job["message"] = "Worker 已重启，请继续确认支付"
                     job["updated_at"] = _now()
+                    job["protocol_stage"] = "confirmation"
+                    job["automation_mode"] = "automatic"
+                    if _as_bool(job.get("auto_confirm"), False):
+                        job["requires_user_action"] = False
+                        job["next_action"] = "confirm_payment"
+                        resume_confirmation.append(str(job_id))
+                    else:
+                        job["requires_user_action"] = True
+                        job["next_action"] = "confirm_payment"
                     continue
                 job["status"] = "failed"
                 job["stage"] = "recovered"
+                job["protocol_stage"] = "failed"
+                job["automation_mode"] = "automatic"
+                job["requires_user_action"] = False
+                job["next_action"] = ""
                 job["message"] = "任务在不可恢复的协议步骤中被 Worker 重启中断，请重新创建"
                 job["updated_at"] = _now()
                 job.setdefault("logs", []).append({"at": _now(), "message": job["message"]})
                 stale_ids.append(str(job_id))
-            if stale_ids or resume_register or resume_payment:
+            if stale_ids or resume_register or resume_payment or resume_confirmation:
                 self._persist()
         for job_id in stale_ids:
             self._release_lease(job_id, success=False)
@@ -359,6 +390,8 @@ class MomoManager:
             threading.Thread(target=self._run_register_safe, args=(job_id,), daemon=True, name=f"momo-recover-register-{job_id}").start()
         for job_id in resume_payment:
             threading.Thread(target=self._resume_payment_otp_safe, args=(job_id,), daemon=True, name=f"momo-recover-payment-{job_id}").start()
+        for job_id in resume_confirmation:
+            threading.Thread(target=self._run_payment_confirm_safe, args=(job_id,), daemon=True, name=f"momo-recover-payment-confirm-{job_id}").start()
 
     def _persist(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -376,6 +409,37 @@ class MomoManager:
         clean.pop("pin", None)
         clean.pop("proxy", None)
         return _redact_public(clean)
+
+    def _set_protocol_stage(
+        self,
+        job_id: str,
+        stage: str,
+        *,
+        requires_user_action: bool = False,
+        next_action: str = "",
+        message: str = "",
+    ) -> None:
+        """Persist a provider-neutral stage for automatic clients.
+
+        The direct provider may use different wire states, while callers need
+        one stable field to resume or display a task.  The stage is advisory;
+        the provider response remains authoritative for completion.
+        """
+        normalized = str(stage or "").strip().lower().replace("-", "_")
+        if normalized not in MOMO_PROTOCOL_STAGES:
+            normalized = "failed"
+        with self.lock:
+            job = self.jobs.get(str(job_id))
+            if not job or str(job.get("status") or "") == "cancelled":
+                return
+            job["protocol_stage"] = normalized
+            job["automation_mode"] = "automatic"
+            job["requires_user_action"] = bool(requires_user_action)
+            job["next_action"] = str(next_action or "")
+            if message:
+                self._log(str(job_id), message)
+            else:
+                self._persist()
 
     def _public_account(self, account: dict[str, Any]) -> dict[str, Any]:
         clean = dict(account)
@@ -441,6 +505,7 @@ class MomoManager:
                 "otp_poll_interval_sec": int(self.settings.get("otp_poll_interval_sec", 3)),
                 "otp_max_resends": int(self.settings.get("otp_max_resends", 2)),
                 "api_timeout_sec": int(self.settings.get("api_timeout_sec", 60)),
+                "auto_confirm_payment": _as_bool(self.settings.get("auto_confirm_payment"), False),
                 "proxy_pool": [_mask_proxy(item) for item in self.settings.get("proxy_pool", [])],
                 "proxy_count": len(self.settings.get("proxy_pool", [])),
                 "proxy_mode": self.settings.get("proxy_mode", "round_robin"),
@@ -523,6 +588,8 @@ class MomoManager:
             except (TypeError, ValueError) as exc:
                 raise ValueError("MoMo API 超时必须是数字") from exc
             self.settings["api_timeout_sec"] = min(300, max(5, api_timeout))
+            if "auto_confirm_payment" in values:
+                self.settings["auto_confirm_payment"] = _as_bool(values.get("auto_confirm_payment"), False)
             if "protocol_headers_json" in values or "api_headers_json" in values:
                 raw_headers = str(values.get("protocol_headers_json", values.get("api_headers_json", "")) or "").strip()
                 if raw_headers:
@@ -808,6 +875,10 @@ class MomoManager:
             if str(job.get("status") or "") == "cancelled":
                 return
             job["status"] = "success" if success else "failed"
+            job["protocol_stage"] = "completed" if success else "failed"
+            job["automation_mode"] = "automatic"
+            job["requires_user_action"] = False
+            job["next_action"] = ""
             self._log(job_id, message)
         self._release_lease(job_id, success=success)
         self._release_phone(job_id, success=success)
@@ -885,6 +956,11 @@ class MomoManager:
             timeout = int(job.get("otp_timeout_sec") or self.settings.get("otp_timeout_sec", 300))
             job["status"] = "waiting_otp"
             job["stage"] = stage
+            job["protocol_stage"] = "payment_otp" if str(stage).startswith("payment") else "otp_wait"
+            job["automation_mode"] = "automatic"
+            auto_otp = str(job.get("otp_mode") or "manual") == "automatic"
+            job["requires_user_action"] = not auto_otp
+            job["next_action"] = "poll_otp" if auto_otp else "submit_otp"
             job["_otp_deadline"] = time.time() + timeout
             job["_payment_context"] = dict(context)
             self._log(job_id, message)
@@ -896,6 +972,10 @@ class MomoManager:
                 return
             job["status"] = "awaiting_confirmation"
             job["stage"] = "confirm"
+            job["protocol_stage"] = "confirmation"
+            job["automation_mode"] = "automatic"
+            job["requires_user_action"] = True
+            job["next_action"] = "confirm_payment"
             job["_payment_context"] = dict(context)
             self._log(job_id, message)
 
@@ -934,6 +1014,28 @@ class MomoManager:
             self._complete_payment_result(job_id, payload_session, verified, depth=depth + 1)
             return
         if state == "awaiting_confirmation":
+            with self.lock:
+                current = self.jobs.get(job_id) or {}
+                auto_confirm = _as_bool(current.get("auto_confirm"), False)
+            if auto_confirm:
+                with self.lock:
+                    current = self.jobs.get(job_id)
+                    if not current or str(current.get("status") or "") == "cancelled":
+                        return
+                    current["status"] = "running"
+                    current["stage"] = "confirm"
+                    current["protocol_stage"] = "confirmation"
+                    current["automation_mode"] = "automatic"
+                    current["requires_user_action"] = False
+                    current["next_action"] = ""
+                    current["_payment_context"] = dict(context)
+                    self._log(job_id, "协议阶段：自动提交支付确认")
+                confirmed = self._provider_step_result(
+                    "payment_confirm", job_id,
+                    {"session": {**session, **context}, "payment": context, "phone": session.get("phone", "")},
+                )
+                self._complete_payment_result(job_id, {**session, **context}, confirmed, depth=depth + 1)
+                return
             self._mark_awaiting_confirmation(job_id, context=context, message="二维码已提交，等待支付确认")
             return
         with self.lock:
@@ -942,6 +1044,10 @@ class MomoManager:
                 return
             job["stage"] = "completed"
             job["status"] = "success"
+            job["protocol_stage"] = "completed"
+            job["automation_mode"] = "automatic"
+            job["requires_user_action"] = False
+            job["next_action"] = ""
             job["payment_id"] = str(data.get("payment_id") or data.get("id") or f"momo-payment-{uuid.uuid4().hex[:10]}")
             job["result"] = {key: value for key, value in data.items() if key not in {"token", "session", "pin", "proxy"}}
             self._log(job_id, "扫码支付流程已完成")
@@ -979,6 +1085,10 @@ class MomoManager:
                 return None
             job["status"] = "cancelled"
             job["stage"] = "cancelled"
+            job["protocol_stage"] = "cancelled"
+            job["automation_mode"] = "automatic"
+            job["requires_user_action"] = False
+            job["next_action"] = ""
             self._log(str(job_id), "任务已取消")
             condition = self.conds.get(str(job_id))
             if condition:
@@ -1014,7 +1124,9 @@ class MomoManager:
         self.jobs[job_id] = {
             "id": job_id, "kind": kind, "phone": phone, "pin": pin, "proxy": proxy,
             "status": "running", "message": "任务已创建", "created_at": now, "updated_at": now,
-            "logs": [], "_otp": [], "_otp_deadline": 0, **values,
+            "logs": [], "_otp": [], "_otp_deadline": 0,
+            "automation_mode": "automatic", "protocol_stage": "queued",
+            "requires_user_action": False, "next_action": "", **values,
         }
         self._log(job_id, "任务已创建")
         return job_id, condition
@@ -1102,6 +1214,7 @@ class MomoManager:
                     _sms_config=sms_config,
                     phone_pool_reserved=phone_pool_reserved,
                     otp_timeout_sec=otp_timeout,
+                    otp_mode="automatic" if effective_source != "pool" or bool(self.phones.get(normalized, {}).get("sms_url")) else "manual",
                     profile=profile_data,
                     _session={"phone": normalized, "proxy": selected_proxy},
                 )
@@ -1146,16 +1259,19 @@ class MomoManager:
             account = dict(self.accounts.get(phone) or {})
             login_existing = bool(job.get("login_existing"))
         if login_existing:
+            self._set_protocol_stage(job_id, "login", message="协议阶段：登录已有 MoMo 账号")
             result = self._provider_step_result("login", job_id, {"phone": phone, "pin": str(job.get("pin") or account.get("pin") or ""), "proxy": proxy, "session": session})
             if not result.ok:
                 self._finish_job(job_id, success=False, message=result.error or "MoMo 登录失败")
                 return
             session.update(result.data)
+            self._set_protocol_stage(job_id, "device_bound", message="协议阶段：绑定设备会话")
             bound = self._provider_step_result("bind_device", job_id, {"session": session, "phone": phone, "proxy": proxy})
             if not bound.ok:
                 self._finish_job(job_id, success=False, message=bound.error or "MoMo 设备绑定失败")
                 return
             session.update(bound.data)
+            self._set_protocol_stage(job_id, "session_ready", message="协议阶段：刷新账号会话")
             refreshed = self._provider_step_result("get_session", job_id, {"session": session, "phone": phone, "proxy": proxy})
             if not refreshed.ok:
                 self._finish_job(job_id, success=False, message=refreshed.error or "MoMo Session 获取失败")
@@ -1169,6 +1285,10 @@ class MomoManager:
                     account.update({"status": "registered", "session_ready": True, "device_bound": bool(session.get("device_bound", True)), "last_login_at": now, "updated_at": now, "session": session.get("session") or session.get("token") or account.get("session", "")})
                     job["_session"] = session
                     job["stage"] = "completed"
+                    job["protocol_stage"] = "completed"
+                    job["automation_mode"] = "automatic"
+                    job["requires_user_action"] = False
+                    job["next_action"] = ""
                     job["result"] = {"phone": phone, "session_ready": True}
                     job["status"] = "success"
                     self._log(job_id, "MoMo 已登录，账号会话已更新")
@@ -1176,6 +1296,7 @@ class MomoManager:
             return
         resumed_otp = str(job.get("stage") or "") == "otp" and bool(session.get("otp_sent"))
         if not resumed_otp:
+            self._set_protocol_stage(job_id, "register_started", message="协议阶段：注册初始化")
             started = self._provider_step_result("register_start", job_id, {"phone": phone, "proxy": proxy, "login_existing": bool(job.get("login_existing"))})
             if not started.ok:
                 self._finish_job(job_id, success=False, message=started.error or "MoMo 注册初始化失败")
@@ -1189,6 +1310,10 @@ class MomoManager:
                 job["status"] = "waiting_otp"
                 job["stage"] = "otp"
                 job["_otp_deadline"] = time.time() + timeout
+                job["protocol_stage"] = "otp_wait"
+                job["automation_mode"] = "automatic"
+                job["requires_user_action"] = str(job.get("otp_mode") or "manual") != "automatic"
+                job["next_action"] = "poll_otp" if not job["requires_user_action"] else "submit_otp"
                 self._log(job_id, "正在请求 MoMo 注册 OTP")
             sent = self._provider_step_result("register_send_otp", job_id, {"session": session, "phone": phone, "proxy": proxy})
             if not sent.ok:
@@ -1275,28 +1400,35 @@ class MomoManager:
                 return
             job["status"] = "running"
             job["stage"] = "verify_otp"
+            job["protocol_stage"] = "otp_verified"
+            job["requires_user_action"] = False
+            job["next_action"] = ""
             self._log(job_id, f"OTP 已提交（{len(code)} 位）")
         verified = self._provider_step_result("register_verify_otp", job_id, {"session": session, "otp": code, "phone": phone, "proxy": proxy})
         if not verified.ok:
             self._finish_job(job_id, success=False, message=verified.error or "MoMo OTP 校验失败")
             return
         session.update(verified.data)
+        self._set_protocol_stage(job_id, "profile_submitted", message="协议阶段：提交账号资料")
         profile = {"phone": phone, "country": "VN", "skip_kyc": bool(job.get("skip_kyc", True)), **(job.get("profile") if isinstance(job.get("profile"), dict) else {})}
         profile_result = self._provider_step_result("register_profile", job_id, {"session": session, "profile": profile, "phone": phone, "skip_kyc": profile["skip_kyc"]})
         if not profile_result.ok:
             self._finish_job(job_id, success=False, message=profile_result.error or "MoMo 资料提交失败")
             return
         session.update(profile_result.data)
+        self._set_protocol_stage(job_id, "pin_set", message="协议阶段：设置支付 PIN")
         pin_result = self._provider_step_result("register_pin", job_id, {"session": session, "phone": phone, "pin": str(job.get("pin") or ""), "proxy": proxy})
         if not pin_result.ok:
             self._finish_job(job_id, success=False, message=pin_result.error or "MoMo PIN 设置失败")
             return
         session.update(pin_result.data)
+        self._set_protocol_stage(job_id, "device_bound", message="协议阶段：绑定设备会话")
         bound = self._provider_step_result("bind_device", job_id, {"session": session, "phone": phone, "proxy": proxy})
         if not bound.ok:
             self._finish_job(job_id, success=False, message=bound.error or "MoMo 设备绑定失败")
             return
         session.update(bound.data)
+        self._set_protocol_stage(job_id, "session_ready", message="协议阶段：刷新账号会话")
         refreshed = self._provider_step_result("get_session", job_id, {"session": session, "phone": phone, "proxy": proxy})
         if not refreshed.ok:
             self._finish_job(job_id, success=False, message=refreshed.error or "MoMo Session 获取失败")
@@ -1317,6 +1449,10 @@ class MomoManager:
                 self._log(job_id, "MoMo 注册完成，已保存账号会话")
             job["_session"] = session
             job["stage"] = "completed"
+            job["protocol_stage"] = "completed"
+            job["automation_mode"] = "automatic"
+            job["requires_user_action"] = False
+            job["next_action"] = ""
             job["result"] = {"phone": phone, "kyc_status": "skipped" if job.get("skip_kyc") else "pending", "session_ready": True}
             job["status"] = "success"
             self._persist()
@@ -1363,7 +1499,16 @@ class MomoManager:
             self._persist()
             return self._public_job(job)
 
-    def start_payment(self, *, phone: str, qr_payload: str, amount: str = "", pin: str = "", proxy: str = "") -> dict[str, Any]:
+    def start_payment(
+        self,
+        *,
+        phone: str,
+        qr_payload: str,
+        amount: str = "",
+        pin: str = "",
+        proxy: str = "",
+        auto_confirm: bool | None = None,
+    ) -> dict[str, Any]:
         self._ensure_provider_ready()
         normalized = _normalize_phone(phone)
         try:
@@ -1383,9 +1528,20 @@ class MomoManager:
             effective_pin = str(pin or "").strip() or str(account.get("pin") or "")
             if not _valid_pin(effective_pin):
                 raise ValueError("账号没有可用 PIN，请先在注册或登录时设置")
+            configured_auto_confirm = _as_bool(self.settings.get("auto_confirm_payment"), False)
+            should_auto_confirm = configured_auto_confirm if auto_confirm is None else bool(auto_confirm)
+            otp_mode = "automatic" if bool(self.phones.get(normalized, {}).get("sms_url")) else "manual"
         selected_proxy = self._select_proxy(proxy)
         with self.lock:
-            job_id, _ = self._new_job(kind="payment", phone=normalized, pin=effective_pin, proxy=selected_proxy, qr_payload=payload, amount=amount_text, merchant=qr.get("merchant", ""), currency="VND", qr_hash=hashlib.sha256(payload.encode()).hexdigest()[:16], idempotency_key=f"momo-payment-{uuid.uuid4().hex}", _session={"phone": normalized, "proxy": selected_proxy, "session": account.get("session", "")})
+            job_id, _ = self._new_job(
+                kind="payment", phone=normalized, pin=effective_pin, proxy=selected_proxy,
+                qr_payload=payload, amount=amount_text, merchant=qr.get("merchant", ""),
+                currency="VND", qr_mode="protocol", otp_mode=otp_mode,
+                auto_confirm=should_auto_confirm,
+                qr_hash=hashlib.sha256(payload.encode()).hexdigest()[:16],
+                idempotency_key=f"momo-payment-{uuid.uuid4().hex}",
+                _session={"phone": normalized, "proxy": selected_proxy, "session": account.get("session", "")},
+            )
         created = self.get_job(job_id) or {}
         threading.Thread(target=self._run_payment_safe, args=(job_id,), daemon=True, name=f"momo-payment-{job_id}").start()
         return created
@@ -1433,16 +1589,19 @@ class MomoManager:
             self._log(job_id, "正在使用已注册 MoMo 账号登录")
             account = self.accounts.get(job["phone"])
             session = dict(job.get("_session") if isinstance(job.get("_session"), dict) else {})
+        self._set_protocol_stage(job_id, "login", message="协议阶段：登录 MoMo 账号")
         login_result = self._provider_step_result("login", job_id, {"phone": job["phone"], "pin": job.get("pin", ""), "proxy": job.get("proxy", ""), "session": session})
         if not login_result.ok:
             self._finish_job(job_id, success=False, message=login_result.error or "MoMo 登录失败")
             return
         session.update(login_result.data)
+        self._set_protocol_stage(job_id, "device_bound", message="协议阶段：绑定支付设备")
         bound = self._provider_step_result("bind_device", job_id, {"session": session, "phone": job["phone"], "proxy": job.get("proxy", "")})
         if not bound.ok:
             self._finish_job(job_id, success=False, message=bound.error or "MoMo 设备绑定失败")
             return
         session.update(bound.data)
+        self._set_protocol_stage(job_id, "session_ready", message="协议阶段：刷新支付会话")
         refreshed = self._provider_step_result("get_session", job_id, {"session": session, "phone": job["phone"], "proxy": job.get("proxy", "")})
         if not refreshed.ok:
             self._finish_job(job_id, success=False, message=refreshed.error or "MoMo Session 获取失败")
@@ -1462,7 +1621,12 @@ class MomoManager:
                     account["session"] = login_result.data.get("session") or login_result.data.get("token")
             job["_session"] = session
             job["stage"] = "qr_scan"
+            job["protocol_stage"] = "qr_submitted"
+            job["automation_mode"] = "automatic"
+            job["requires_user_action"] = False
+            job["next_action"] = ""
             self._log(job_id, "账号登录成功，已识别二维码，准备提交扫码支付")
+        self._set_protocol_stage(job_id, "qr_submitted", message="协议阶段：提交二维码支付请求")
         payment_result = self._provider_step_result("payment", job_id, {"phone": job["phone"], "qr_payload": job["qr_payload"], "amount": job.get("amount", ""), "currency": job.get("currency", "VND"), "proxy": job.get("proxy", ""), "request_id": job.get("idempotency_key", ""), "idempotency_key": job.get("idempotency_key", ""), "session": session})
         with self.lock:
             job = self.jobs.get(job_id)

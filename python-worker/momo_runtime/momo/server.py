@@ -90,7 +90,16 @@ class Handler(BaseHTTPRequestHandler):
                 job = manager.cancel_job(_job_id(path[:-7], "/api/register-jobs/"))
                 return self.send_json(200, job) if job else self.send_json(400, {"error": "注册任务已结束或不存在"})
             if path == "/api/payment":
-                job = manager.start_payment(phone=str(data.get("phone") or ""), qr_payload=str(data.get("qr_payload") or ""), amount=str(data.get("amount") or ""), pin=str(data.get("pin") or ""), proxy=str(data.get("proxy") or ""))
+                raw_auto_confirm = data.get("auto_confirm")
+                auto_confirm = None if raw_auto_confirm is None else str(raw_auto_confirm).strip().lower() in {"1", "true", "yes", "on"}
+                job = manager.start_payment(
+                    phone=str(data.get("phone") or ""),
+                    qr_payload=str(data.get("qr_payload") or ""),
+                    amount=str(data.get("amount") or ""),
+                    pin=str(data.get("pin") or ""),
+                    proxy=str(data.get("proxy") or ""),
+                    auto_confirm=auto_confirm,
+                )
                 return self.send_json(201, job)
             if path.startswith("/api/payment-jobs/") and path.endswith("/otp"):
                 job = manager.submit_otp(_job_id(path[:-4], "/api/payment-jobs/"), str(data.get("code") or data.get("value") or ""))

@@ -192,6 +192,85 @@ def test_manager_handles_direct_protocol_payment_otp_and_confirmation(tmp_path: 
         server.server_close()
 
 
+def test_manager_auto_confirms_payment_after_protocol_otp(tmp_path: Path) -> None:
+    server = _server()
+    try:
+        manager = MomoManager(state_file=str(tmp_path / "state.json"), pool_file=str(tmp_path / "pool.json"))
+        manager.update_settings({"protocol_base_url": f"http://127.0.0.1:{server.server_port}", "mock_mode": False})
+        manager.import_phones("+84901234567----https://example.test/sms/1")
+        registration = manager.start_register(pin="1234")
+        _wait(manager, registration["id"], {"waiting_otp"})
+        manager.submit_otp(registration["id"], "123456")
+        _wait(manager, registration["id"], {"success"})
+
+        payment = manager.start_payment(
+            phone="+84901234567", qr_payload="momo://merchant/auto", amount="50000", auto_confirm=True,
+        )
+        _wait(manager, payment["id"], {"waiting_otp"})
+        manager.submit_otp(payment["id"], "654321")
+        finished = _wait(manager, payment["id"], {"success"})
+        assert finished["protocol_stage"] == "completed"
+        assert finished["automation_mode"] == "automatic"
+        assert finished["requires_user_action"] is False
+        assert finished["payment_id"] == "payment-1"
+        assert [path for path, *_ in _ProtocolHandler.calls][-1] == "/payment/confirm"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_manager_resumes_auto_confirmation_after_restart(tmp_path: Path) -> None:
+    server = _server()
+    try:
+        state = tmp_path / "state.json"
+        state.write_text(json.dumps({
+            "jobs": {
+                "recovered-payment": {
+                    "id": "recovered-payment", "kind": "payment", "phone": "+84901234567",
+                    "pin": "1234", "proxy": "", "status": "awaiting_confirmation", "stage": "confirm",
+                    "protocol_stage": "confirmation", "automation_mode": "automatic",
+                    "requires_user_action": False, "next_action": "confirm_payment", "auto_confirm": True,
+                    "_session": {"phone": "+84901234567", "session": "session-1"},
+                    "_payment_context": {"payment_token": "payment-token"}, "logs": [],
+                    "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+                },
+            },
+            "accounts": {"+84901234567": {"phone": "+84901234567", "pin": "1234"}},
+            "settings": {"protocol_base_url": f"http://127.0.0.1:{server.server_port}", "mock_mode": False},
+        }), encoding="utf-8")
+        manager = MomoManager(state_file=str(state), pool_file=str(tmp_path / "pool.json"))
+        finished = _wait(manager, "recovered-payment", {"success"})
+        assert finished["protocol_stage"] == "completed"
+        assert finished["payment_id"] == "payment-1"
+        assert [path for path, *_ in _ProtocolHandler.calls][-1] == "/payment/confirm"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_manager_cancel_marks_protocol_stage(tmp_path: Path) -> None:
+    manager = MomoManager(state_file=str(tmp_path / "state.json"), pool_file=str(tmp_path / "pool.json"))
+    manager.import_phones("+84901234567----https://sms.example.test/activation/1")
+    created = manager.start_register(pin="1234")
+    cancelled = manager.cancel_job(created["id"])
+    assert cancelled is not None
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["protocol_stage"] == "cancelled"
+    assert cancelled["requires_user_action"] is False
+    assert cancelled["next_action"] == ""
+
+
+def test_manager_polls_pool_otp_without_user_submission(tmp_path: Path) -> None:
+    manager = MomoManager(state_file=str(tmp_path / "state.json"), pool_file=str(tmp_path / "pool.json"))
+    manager.import_phones("+84901234567----https://sms.example.test/activation/1")
+    manager._poll_pool_code = lambda _phone, _proxy="", _ignored=None: "123456"  # type: ignore[method-assign]
+    created = manager.start_register(pin="1234")
+    finished = _wait(manager, created["id"], {"success"})
+    assert finished["protocol_stage"] == "completed"
+    assert finished["requires_user_action"] is False
+    assert finished["next_action"] == ""
+
+
 def test_manager_migrates_saved_adapter_fields_to_direct_protocol(tmp_path: Path) -> None:
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"jobs": {}, "accounts": {}, "settings": {
