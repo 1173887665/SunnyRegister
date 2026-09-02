@@ -318,7 +318,8 @@ def test_manager_uses_embedded_protocol_when_endpoint_is_not_configured(tmp_path
     manager = MomoManager(state_file=str(tmp_path / "state.json"), pool_file=str(tmp_path / "pool.json"))
     settings = manager.get_settings()
     assert settings["provider_mode"] == "embedded"
-    assert settings["live_protocol_ready"] is True
+    assert settings["live_protocol_ready"] is False
+    assert [item["value"] for item in settings["sms_sources"]] == ["pool", "smsbower", "smspool", "grizzlysms", "hero_sms"]
     check = manager.check_settings()
     protocol = next(item for item in check["checks"] if item["name"] == "momo_protocol")
     assert protocol == {"name": "momo_protocol", "ok": True, "message": "系统内置默认协议"}
@@ -328,6 +329,30 @@ def test_manager_uses_embedded_protocol_when_endpoint_is_not_configured(tmp_path
     _wait(manager, registration["id"], {"waiting_otp"})
     manager.submit_otp(registration["id"], "123456")
     assert _wait(manager, registration["id"], {"success"})["status"] == "success"
+
+
+def test_manager_rejects_embedded_provider_in_production(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("OPAI_MOMO_MOCK_MODE", raising=False)
+    manager = MomoManager(state_file=str(tmp_path / "state.json"), pool_file=str(tmp_path / "pool.json"))
+    manager._mock_mode_explicit = False
+    manager.import_phones("+84901234567----https://example.test/sms/1")
+    check = manager.check_settings()
+    protocol = next(item for item in check["checks"] if item["name"] == "momo_protocol")
+    assert protocol["ok"] is False
+    try:
+        manager.start_register(pin="1234")
+    except ValueError as exc:
+        assert "直连协议" in str(exc)
+    else:
+        raise AssertionError("production mode must require a live protocol endpoint")
+
+
+def test_provider_state_does_not_treat_empty_success_as_paid() -> None:
+    from momo_runtime.app.src.momo_core.momo_models import ProviderResult
+
+    assert MomoManager._provider_state(ProviderResult(True, {})) == "unknown"
+    assert MomoManager._provider_state(ProviderResult(True, {"payment_token": "token-1"})) == "awaiting_confirmation"
+    assert MomoManager._provider_state(ProviderResult(True, {"payment_id": "payment-1"})) == "success"
 
 
 def test_sms_supplier_control_plane_does_not_inherit_wallet_proxy(tmp_path: Path, monkeypatch) -> None:

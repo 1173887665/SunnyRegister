@@ -114,7 +114,22 @@ def _split_lines(value: Any) -> list[str]:
     return [str(item).strip() for item in raw if str(item).strip()]
 
 
-SMS_SOURCES = {"pool", "smsbower", "smspool", "grizzlysms", "hero_sms"}
+SMS_SOURCE_ORDER = ("pool", "smsbower", "smspool", "grizzlysms", "hero_sms")
+SMS_SOURCES = set(SMS_SOURCE_ORDER)
+SMS_SOURCE_LABELS = {
+    "pool": "系统号码池",
+    "smsbower": "SMSBower",
+    "smspool": "SMSPool",
+    "grizzlysms": "GrizzlySMS",
+    "hero_sms": "HeroSMS",
+}
+SMS_SOURCE_DEFAULT_URLS = {
+    "pool": "",
+    "smsbower": "https://smsbower.page/stubs/handler_api.php",
+    "smspool": "https://api.smspool.net",
+    "grizzlysms": "https://api.grizzlysms.com/stubs/handler_api.php",
+    "hero_sms": "https://hero-sms.com/api/v1",
+}
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -480,7 +495,18 @@ class MomoManager:
                 "mock_mode": explicit_mock,
                 "provider_mode": "embedded" if embedded else "direct",
                 "live_mode": not embedded,
-                "live_protocol_ready": True,
+                # An empty endpoint selects the deterministic embedded
+                # provider only for explicit test stores. Production workers
+                # must show the missing live protocol configuration clearly.
+                "live_protocol_ready": configured_endpoint,
+                "sms_sources": [
+                    {
+                        "value": source,
+                        "label": SMS_SOURCE_LABELS[source],
+                        "default_base_url": SMS_SOURCE_DEFAULT_URLS[source],
+                    }
+                    for source in SMS_SOURCE_ORDER
+                ],
                 "protocol_auth_mode": self.settings.get("protocol_auth_mode", "none"),
                 "protocol_token_configured": bool(self.settings.get("protocol_token")),
                 "protocol_token": mask_secret(str(self.settings.get("protocol_token") or "")),
@@ -671,7 +697,11 @@ class MomoManager:
         embedded = not endpoint or (self._mock_mode_forced and _as_bool(snapshot.get("mock_mode"), False))
         live = not embedded
         endpoint_ok = bool(endpoint) and not _is_worker_management_endpoint(endpoint)
-        protocol_check = {"name": "momo_protocol", "ok": endpoint_ok if live else True, "message": "MoMo 直连协议地址已配置" if endpoint_ok else "系统内置默认协议"}
+        protocol_check = {
+            "name": "momo_protocol",
+            "ok": endpoint_ok if live else self._mock_mode_explicit,
+            "message": "MoMo 直连协议地址已配置" if endpoint_ok else ("系统内置默认协议" if self._mock_mode_explicit else "未配置 MoMo 直连协议地址"),
+        }
         if live and endpoint_ok:
             probe = self._probe_protocol(endpoint, snapshot.get("protocol_headers_json"), snapshot.get("protocol_token"))
             protocol_check["probe"] = probe
@@ -708,6 +738,8 @@ class MomoManager:
             access_key = str(self.settings.get("protocol_access_key") or "").strip()
             secret_key = str(self.settings.get("protocol_secret_key") or "").strip()
         embedded = not endpoint or (self._mock_mode_forced and mock)
+        if embedded and not self._mock_mode_explicit:
+            raise ValueError("MoMo 直连协议 Base URL 未配置，请先在系统配置填写")
         if not embedded and auth_mode == "bearer" and not token:
             raise ValueError("请先在 MoMo 系统配置填写协议 Token")
         if not embedded and auth_mode == "hmac_sha256" and (not access_key or not secret_key):
@@ -898,7 +930,13 @@ class MomoManager:
             return "awaiting_confirmation"
         if raw in {"success", "succeeded", "completed", "complete", "paid", "ok"}:
             return "success"
-        return "success"
+        if _as_bool(data.get("confirmed"), False) or any(data.get(key) for key in ("payment_id", "transaction_id", "transId")):
+            return "success"
+        # A payment token means the provider accepted the request but has not
+        # reported settlement yet. Let the confirmation step finish it.
+        if data.get("payment_token"):
+            return "awaiting_confirmation"
+        return "unknown"
 
     def _wait_for_manual_otp(self, job_id: str) -> str:
         """Wait for an OTP submitted through the HTTP API or UI."""
@@ -995,6 +1033,9 @@ class MomoManager:
             previous = dict(job.get("_payment_context") if isinstance(job.get("_payment_context"), dict) else {})
         context = {**previous, **data}
         state = self._provider_state(result)
+        if state == "unknown":
+            self._finish_job(job_id, success=False, message="MoMo 协议未返回明确的支付状态或凭据")
+            return
         if state == "waiting_otp":
             self._mark_waiting_otp(job_id, stage="payment_otp", context=context, message="MoMo 支付需要 OTP，请输入收到的验证码")
             code = self._wait_for_payment_otp(job_id, str(session.get("phone") or ""))

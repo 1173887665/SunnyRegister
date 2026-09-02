@@ -16,6 +16,13 @@ type SmsSource = "pool" | "smsbower" | "smspool" | "grizzlysms" | "hero_sms";
 const api = (path: string, options?: RequestInit) => apiFetch(`/payments/momo${path}`, options);
 const post = (path: string, body: Row = {}) => api(path, { method: "POST", body: JSON.stringify(body) });
 const smsLabels: Record<Exclude<SmsSource, "pool">, string> = { smsbower: "SMSBower", smspool: "SMSPool", grizzlysms: "GrizzlySMS", hero_sms: "HeroSMS" };
+const smsDefaults: Array<{ value: SmsSource; label: string; default_base_url: string }> = [
+  { value: "pool", label: "系统号码池", default_base_url: "" },
+  { value: "smsbower", label: "SMSBower", default_base_url: "https://smsbower.page/stubs/handler_api.php" },
+  { value: "smspool", label: "SMSPool", default_base_url: "https://api.smspool.net" },
+  { value: "grizzlysms", label: "GrizzlySMS", default_base_url: "https://api.grizzlysms.com/stubs/handler_api.php" },
+  { value: "hero_sms", label: "HeroSMS", default_base_url: "https://hero-sms.com/api/v1" },
+];
 
 function statusLabel(value: unknown) {
   const key = String(value || "unknown");
@@ -256,9 +263,13 @@ function MomoSettings({ settings, busy, run }: { settings: Row; busy: string; ru
   }
   const legacyWorker = Boolean(settings && !settings.runtime_version);
   const protocolReady = Boolean(settings.live_protocol_ready);
-  const phoneSource = String(settings.phone_source || "pool") === "pool" ? "系统号码池" : "短信平台（系统默认）";
+  const configuredSources = Array.isArray(settings.sms_sources) ? settings.sms_sources : smsDefaults;
+  const selectedSource = String(values.phone_source || settings.phone_source || "pool") as SmsSource;
+  const selectedSourceInfo = configuredSources.find((item: Row) => String(item.value) === selectedSource) || smsDefaults.find((item) => item.value === selectedSource) || smsDefaults[0];
+  const phoneSource = selectedSourceInfo?.label || selectedSource;
   return <div className="gopay-view">
     <div className="gopay-section-title"><div><h2>MoMo 系统配置</h2><p>Worker 内置协议直连手机号、短信、账号与支付接口，不再经过外置适配器</p>{legacyWorker && <div className="gopay-warning"><Activity />当前 Worker 返回的是旧版配置接口；磁盘代码已更新为直连协议，重启 Worker 后检测项会显示为 momo_protocol。</div>}</div></div>
+    {!protocolReady && <div className="gopay-warning"><Activity />当前未配置真实 MoMo 直连协议地址，注册和支付任务会在创建前提示配置；内置 provider 仅用于测试数据。</div>}
     <Panel title="MoMo 默认配置">
       <form className="gopay-form" onSubmit={submit}>
         <div className="gopay-defaults" aria-label="MoMo 默认配置状态">
@@ -269,9 +280,10 @@ function MomoSettings({ settings, busy, run }: { settings: Row; busy: string; ru
         </div>
         <h4>短信自动取号</h4>
         <div className="gopay-form-grid">
+          <label><span>手机号码平台</span><select value={selectedSource} onChange={(event) => set("phone_source", event.target.value as SmsSource)}>{configuredSources.map((item: Row) => <option key={String(item.value)} value={String(item.value)}>{String(item.label || item.value)}</option>)}</select><small className="gopay-field-hint">已内置号码池、SMSBower、SMSPool、GrizzlySMS、HeroSMS；一次选择一个默认来源</small></label>
           <label><span>SMS 服务代码</span><input value={String(values.sms_service_code || "momo")} onChange={(event) => set("sms_service_code", event.target.value)} /></label>
           <label><span>SMS 国家代码</span><input value={String(values.sms_country_code || "84")} onChange={(event) => set("sms_country_code", event.target.value)} /></label>
-          <label className="wide"><span>SMS API Base URL（可选）</span><input value={String(values.sms_api_base_url || "")} onChange={(event) => set("sms_api_base_url", event.target.value)} type="url" /></label>
+          <label className="wide"><span>SMS API Base URL（可选）</span><input value={String(values.sms_api_base_url || "")} onChange={(event) => set("sms_api_base_url", event.target.value)} type="url" placeholder={selectedSourceInfo?.default_base_url || "号码池模式不需要填写"} /></label>
           <label className="wide"><span>SMS API Key</span><input value={smsApiKey} onChange={(event) => { setSmsApiKey(event.target.value); setDirty(true); }} type="password" autoComplete="new-password" placeholder={settings.sms_api_key_configured ? `已配置 ${settings.sms_api_key || ""}，留空保持不变` : "请输入 API Key"} /></label>
           <label><span>最高价格（可选）</span><input value={String(values.sms_max_price || "")} onChange={(event) => set("sms_max_price", event.target.value)} type="number" min="0" step="any" /></label>
           <label><span>SMSPool 号码池（可选）</span><input value={String(values.sms_pool || "")} onChange={(event) => set("sms_pool", event.target.value)} /></label>
