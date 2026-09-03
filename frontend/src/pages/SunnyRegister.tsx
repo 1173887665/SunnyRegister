@@ -1406,7 +1406,11 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   useEffect(() => { taskEventCursorRef.current = taskEventCursor; }, [taskEventCursor]);
   useEffect(() => () => { workbenchMountedRef.current = false; }, []);
   const load = () => trackListLoad(async () => {
-    const params = new URLSearchParams({ page: String(pageNo), page_size: String(pageSize), enabled: "true", sort_by: "status_changed_at", sort_order: timeSort });
+    // The workbench is another view of the mailbox configuration data. Keep
+    // disabled rows visible here as well so both pages always expose the same
+    // mailbox set; whether a mailbox can be used is still validated when a task
+    // is submitted.
+    const params = new URLSearchParams({ page: String(pageNo), page_size: String(pageSize), sort_by: "status_changed_at", sort_order: timeSort });
     params.set("summary", "true");
     if (debouncedQuery.trim()) params.set("q", debouncedQuery.trim());
     if (groupFilter) params.set("group_id", String(groupFilter));
@@ -1428,7 +1432,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   const selectAllFiltered = async () => {
     setSelectingAll(true);
     try {
-      const params = new URLSearchParams({ enabled: "true", summary: "true", sort_by: "status_changed_at", sort_order: timeSort });
+      const params = new URLSearchParams({ summary: "true", sort_by: "status_changed_at", sort_order: timeSort });
       if (debouncedQuery.trim()) params.set("q", debouncedQuery.trim());
       if (groupFilter) params.set("group_id", String(groupFilter));
       if (status) params.set("status", status);
