@@ -111,6 +111,38 @@ func TestSunnyMailboxSearchMatchesRebindEmailCaseInsensitively(t *testing.T) {
 	}
 }
 
+func TestSunnyMailboxSelectionReportsAvailabilityAndSkipsDisabledRows(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	enabled := SunnyMailbox{Email: "selection-enabled@example.com", Status: "未注册", Enabled: true}
+	disabled := SunnyMailbox{Email: "selection-disabled@example.com", Status: "未注册", Enabled: false}
+	statusDisabled := SunnyMailbox{Email: "selection-status-disabled@example.com", Status: "disabled", Enabled: true}
+	for _, mailbox := range []*SunnyMailbox{&enabled, &disabled, &statusDisabled} {
+		if err := s.db.Create(mailbox).Error; err != nil {
+			t.Fatalf("create mailbox %s: %v", mailbox.Email, err)
+		}
+	}
+	if err := s.db.Model(&disabled).Update("enabled", false).Error; err != nil {
+		t.Fatalf("disable mailbox: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	s.sunnyMailboxes(recorder, httptest.NewRequest(http.MethodGet, "/api/sunny/mailboxes?selection=all&enabled=true&q=selection-", nil), nil)
+	payload := decodeFilteredSelection(t, recorder)
+	if payload.Total != 1 || len(payload.IDs) != 1 || payload.IDs[0] != enabled.ID {
+		t.Fatalf("enabled selection = %#v, want only enabled mailbox %d", payload, enabled.ID)
+	}
+	if got := payload.Items[0]["enabled"]; got != true {
+		t.Fatalf("selection item enabled = %#v, want true", got)
+	}
+	if got := payload.Items[0]["status"]; got != enabled.Status {
+		t.Fatalf("selection item status = %#v, want %q", got, enabled.Status)
+	}
+
+	if _, err := s.sunnyMailboxesForRegisterTask(map[string]any{"mailbox_ids": []any{statusDisabled.ID}}); err == nil {
+		t.Fatal("expected disabled status mailbox to be rejected by register task validation")
+	}
+}
+
 func TestAuditFilteredSelectionIgnoresPagination(t *testing.T) {
 	s := newAuditTestServer(t)
 	for index := 0; index < 12; index++ {

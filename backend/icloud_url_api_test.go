@@ -202,6 +202,13 @@ func TestValidateURLAPIMailAddressRejectsPrivateTargets(t *testing.T) {
 	}
 }
 
+func TestValidateURLAPIMailAddressAcceptsMoinkProviderWithSyntheticDNS(t *testing.T) {
+	const raw = "https://mail.moink.cc/inbox?email=user%40example.com"
+	if got, err := validateURLAPIMailAddress(raw); err != nil || got != raw {
+		t.Fatalf("moink provider URL was not accepted: got %q err=%v", got, err)
+	}
+}
+
 func TestValidateURLAPIMailAddressRejectsURLCredentials(t *testing.T) {
 	if _, err := validateURLAPIMailAddress("https://user:pass@example.test/inbox"); err == nil {
 		t.Fatal("URL userinfo must not be accepted as a mailbox credential")

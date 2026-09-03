@@ -86,6 +86,25 @@ func TestAuditMiddlewareRecordsMutationsAndRedactsSecrets(t *testing.T) {
 	}
 }
 
+func TestRecordAuditBoundsSubjectKeyForBatchOperations(t *testing.T) {
+	s := newAuditTestServer(t)
+	// Batch requests can contain hundreds of addresses. Keep the diagnostic key
+	// bounded while preserving the complete payload in details.
+	longKey := strings.Repeat("a", 5000)
+	s.recordAudit(AuditLog{Email: longKey, SubjectKey: longKey, DetailsJSON: `{"emails":["` + longKey + `"]}`})
+
+	var item AuditLog
+	if err := s.db.First(&item).Error; err != nil {
+		t.Fatalf("audit log missing: %v", err)
+	}
+	if got := len([]rune(item.SubjectKey)); got != 512 {
+		t.Fatalf("subject key length = %d, want 512", got)
+	}
+	if !strings.Contains(item.DetailsJSON, longKey) {
+		t.Fatalf("full batch details were not preserved")
+	}
+}
+
 func TestAuditMiddlewareClassifiesNewAccountTasksAndLinksTaskID(t *testing.T) {
 	s := newAuditTestServer(t)
 	accounts := []SunnyAccount{{Email: "First@Example.com"}, {Email: "second@example.com"}}
@@ -222,7 +241,11 @@ func TestAuditCompletedScheduledHealthTaskRecordsFullLifecycle(t *testing.T) {
 func TestAuditRetentionCleanup(t *testing.T) {
 	s := newAuditTestServer(t)
 	now := time.Now()
-	s.db.Create(&AuditSetting{ID: 1, RetentionDays: 7, CleanupHour: now.Hour(), Enabled: true})
+	setting := AuditSetting{ID: 1, RetentionDays: 7, CleanupHour: now.Hour(), Enabled: true}
+	s.db.Create(&setting)
+	// GORM applies the model's default value to integer zero on INSERT. Update
+	// explicitly so the midnight case still tests the current cleanup window.
+	s.db.Model(&setting).Update("cleanup_hour", now.Hour())
 	s.db.Create(&AuditLog{OccurredAt: now.AddDate(0, 0, -8), Summary: "old"})
 	s.db.Create(&AuditLog{OccurredAt: now.AddDate(0, 0, -1), Summary: "recent"})
 	s.auditRetentionCleanup()

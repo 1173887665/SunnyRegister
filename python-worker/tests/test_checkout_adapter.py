@@ -32,6 +32,7 @@ class CheckoutAdapterTests(unittest.TestCase):
                 "checkout_kind": "oaics",
                 "checkout_proxies": ["checkout-proxy"],
                 "promotion_proxies": ["promotion-proxy"],
+                "proxy_slot": 7,
             })
         self.assertEqual(result, "job-3")
         options = create.call_args.args[0]
@@ -41,6 +42,7 @@ class CheckoutAdapterTests(unittest.TestCase):
         self.assertTrue(options["named_proxy_pools"])
         self.assertEqual(options["entry_proxies"], ["promotion-proxy"])
         self.assertEqual(options["exit_proxies"], ["checkout-proxy"])
+        self.assertEqual(options["proxy_slot"], 7)
 
     def test_start_checkout_leaves_non_paypal_routes_on_default_workflow(self) -> None:
         with patch.object(sunny_adapter.STORE, "create", create=True, return_value="job-4") as create:

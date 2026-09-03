@@ -27,33 +27,34 @@ import (
 var embeddedStatic embed.FS
 
 type Server struct {
-	db                    *gorm.DB
-	adminUser             string
-	adminPass             string
-	staticFS              http.FileSystem
-	wake                  chan struct{}
-	stop                  chan struct{}
-	running               map[string]bool
-	runtimeMu             sync.Mutex
-	atCheckMu             sync.Mutex
-	trialCheckMu          sync.Mutex
-	paymentProbeMu        sync.Mutex
-	maintenanceMu         sync.RWMutex
-	maintenance           map[string]any
-	smsOptionsMu          sync.Mutex
-	smsOptionsRun         map[string]*sunnySMSOptionsFlight
-	sessionMu             sync.Mutex
-	sessions              map[string]time.Time
-	loginMu               sync.Mutex
-	loginFailures         map[string]*loginFailure
-	sessionTTL            time.Duration
-	secureCookies         bool
-	production            bool
-	checkoutMu            sync.Mutex
-	checkoutCreds         map[string]checkoutSecret
-	webhookMu             sync.Mutex
-	webhookSnapshots      map[uint]accountWebhookSnapshot
-	webhookSnapshotsReady bool
+	db                     *gorm.DB
+	adminUser              string
+	adminPass              string
+	staticFS               http.FileSystem
+	wake                   chan struct{}
+	stop                   chan struct{}
+	running                map[string]bool
+	runtimeMu              sync.Mutex
+	atCheckMu              sync.Mutex
+	trialCheckMu           sync.Mutex
+	paymentProbeMu         sync.Mutex
+	maintenanceMu          sync.RWMutex
+	maintenance            map[string]any
+	smsOptionsMu           sync.Mutex
+	smsOptionsRun          map[string]*sunnySMSOptionsFlight
+	sessionMu              sync.Mutex
+	sessions               map[string]time.Time
+	loginMu                sync.Mutex
+	loginFailures          map[string]*loginFailure
+	sessionTTL             time.Duration
+	secureCookies          bool
+	production             bool
+	checkoutMu             sync.Mutex
+	checkoutCreds          map[string]checkoutSecret
+	workbenchCheckoutCreds map[string]checkoutSecret
+	webhookMu              sync.Mutex
+	webhookSnapshots       map[uint]accountWebhookSnapshot
+	webhookSnapshotsReady  bool
 }
 
 type loginFailure struct {
@@ -98,9 +99,10 @@ func main() {
 		db: db, adminUser: adminUser, adminPass: adminPass, staticFS: staticFS,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), running: map[string]bool{},
 		sessions: map[string]time.Time{}, loginFailures: map[string]*loginFailure{},
-		checkoutCreds:    map[string]checkoutSecret{},
-		webhookSnapshots: map[uint]accountWebhookSnapshot{},
-		sessionTTL:       12 * time.Hour, secureCookies: secureCookies, production: production,
+		checkoutCreds:          map[string]checkoutSecret{},
+		workbenchCheckoutCreds: map[string]checkoutSecret{},
+		webhookSnapshots:       map[uint]accountWebhookSnapshot{},
+		sessionTTL:             12 * time.Hour, secureCookies: secureCookies, production: production,
 	}
 	s.maintenance = s.loadSunnyMaintenanceConfig()
 	s.recordAudit(AuditLog{LogType: "system", Category: "system", Action: "startup", Status: "success", Summary: "SunnyRegister 后端服务启动", DetailsJSON: dumpJSON(map[string]any{"environment": fallback(os.Getenv("SUNNY_ENV"), "development"), "timezone": time.Local.String()})})

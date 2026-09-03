@@ -138,6 +138,18 @@ class StageStatusTests(unittest.TestCase):
             flow._fill_about_you_date_controls(date_controls, "1995-10-11", "name=birthdate")
         self.assertEqual([control.value for control in date_controls], ["10", "11", "1995"])
 
+    def test_about_you_fills_japanese_segmented_birth_date_controls_by_label(self):
+        flow = object.__new__(OpenAIEmailRegisterFlow)
+        controls = [
+            self.AboutYouControl(name="年"),
+            self.AboutYouControl(name="月"),
+            self.AboutYouControl(name="日"),
+        ]
+        with patch.object(flow, "_force_fill", side_effect=lambda control, value: setattr(control, "value", value)):
+            date_controls = flow._about_you_date_controls(controls)
+            flow._fill_about_you_date_controls(date_controls, "1995-10-11", "name=生年月日")
+        self.assertEqual([control.value for control in date_controls], ["1995", "10", "11"])
+
     def test_about_you_current_values_accepts_valid_segmented_birth_date(self):
         flow = object.__new__(OpenAIEmailRegisterFlow)
         controls = [

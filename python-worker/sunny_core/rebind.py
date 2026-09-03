@@ -282,38 +282,49 @@ def _domain_mailbox(
     for _ in range(8):
         local = re.sub(r"[^a-z0-9]", "", secrets.token_urlsafe(length + 4).lower())[:length]
         email = f"{local}@{domain}"
-        try:
-            headers = {"Accept": "application/json", "Authorization": token, "X-Auth-Token": token, "User-Agent": "SunnyRegister/1.0"}
-            if site_password:
-                headers["x-custom-auth"] = site_password
-            response = requests.post(
-                base + "/api/public/addUser",
-                json={"list": [{"email": email, "password": secrets.token_urlsafe(18)}]},
-                headers=headers,
-                timeout=30,
-                proxies=proxies,
-            )
-            payload = {}
+        password = secrets.token_urlsafe(18)
+        headers = {"Accept": "application/json", "Authorization": token, "X-Auth-Token": token, "User-Agent": "SunnyRegister/1.0"}
+        if site_password:
+            headers["x-custom-auth"] = site_password
+        # Retry transport failures against the same address. Creating a new
+        # random address for every TLS reset left multiple provider-side users
+        # behind and still failed after a short network interruption.
+        for request_attempt in range(3):
             try:
-                payload = response.json()
-            except Exception:
-                pass
-            provider_code = str(payload.get("code") or "") if isinstance(payload, dict) else ""
-            if response.ok and provider_code not in {"", "0", "200"}:
-                last = f"provider code {provider_code}: {str(payload.get('message') or payload.get('error') or '')[:180]}"
-            elif response.ok:
-                pickup_token = "dmsk_" + secrets.token_urlsafe(32)
-                credential = pickup_base + "/api/sunny/domain-mail/pickup?" + urlencode({"email": email, "token": pickup_token})
-                token_hash = hashlib.sha256(pickup_token.encode("utf-8")).hexdigest()
-                log(
-                    f"[{email}] 已从自建域名邮箱池生成换绑邮箱，"
-                    f"取件地址={_redact_pickup_credential(credential)}"
+                response = requests.post(
+                    base + "/api/public/addUser",
+                    json={"list": [{"email": email, "password": password}]},
+                    headers=headers,
+                    timeout=30,
+                    proxies=proxies,
                 )
-                return email, credential, token_hash
-        except requests.RequestException as exc:
-            last = str(exc)
-        else:
-            last = f"HTTP {response.status_code}: {str(response.text or '')[:180]}"
+                payload = {}
+                try:
+                    payload = response.json()
+                except Exception:
+                    pass
+                provider_code = str(payload.get("code") or "") if isinstance(payload, dict) else ""
+                if response.ok and provider_code not in {"", "0", "200"}:
+                    last = f"provider code {provider_code}: {str(payload.get('message') or payload.get('error') or '')[:180]}"
+                    break
+                if response.ok:
+                    pickup_token = "dmsk_" + secrets.token_urlsafe(32)
+                    credential = pickup_base + "/api/sunny/domain-mail/pickup?" + urlencode({"email": email, "token": pickup_token})
+                    token_hash = hashlib.sha256(pickup_token.encode("utf-8")).hexdigest()
+                    log(
+                        f"[{email}] 已从自建域名邮箱池生成换绑邮箱，"
+                        f"取件地址={_redact_pickup_credential(credential)}"
+                    )
+                    return email, credential, token_hash
+                last = f"HTTP {response.status_code}: {str(response.text or '')[:180]}"
+                if response.status_code not in {408, 425, 429} and response.status_code < 500:
+                    break
+            except requests.RequestException as exc:
+                last = str(exc)
+            if request_attempt < 2:
+                delay = 1 << request_attempt
+                log(f"[{email}] CloudMail 创建请求暂时失败，{delay} 秒后重试同一地址（{request_attempt + 2}/3）")
+                time.sleep(delay)
     raise RebindError(f"生成自建域名邮箱失败：{last}")
 
 

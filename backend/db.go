@@ -179,6 +179,12 @@ func ensureSunnyStatusTriggers(db *gorm.DB) {
 }
 
 func ensureSunnyIndexes(db *gorm.DB) {
+	// subject_key is free-form text and batch operations may contain hundreds
+	// of email addresses. PostgreSQL B-tree entries have a hard size limit;
+	// remove the legacy full-text index before creating the remaining indexes.
+	if err := db.Exec("DROP INDEX IF EXISTS idx_audit_logs_subject_key").Error; err != nil {
+		log.Printf("drop oversized audit subject index failed: %v", err)
+	}
 	indexes := []string{
 		"CREATE INDEX IF NOT EXISTS idx_sunny_mailboxes_enabled_updated ON sunny_mailboxes(enabled, updated_at DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_sunny_mailboxes_group_status_enabled ON sunny_mailboxes(group_id, status, enabled)",
@@ -206,7 +212,6 @@ func ensureSunnyIndexes(db *gorm.DB) {
 		"CREATE INDEX IF NOT EXISTS idx_audit_logs_category_action ON audit_logs(category, action, occurred_at DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_ip ON audit_logs(actor, ip, occurred_at DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_audit_logs_task_entity ON audit_logs(task_id, entity_type, entity_id)",
-		"CREATE INDEX IF NOT EXISTS idx_audit_logs_subject_key ON audit_logs(subject_key)",
 		"CREATE INDEX IF NOT EXISTS idx_audit_export_jobs_status_created ON audit_export_jobs(status, created_at DESC)",
 	}
 	for _, statement := range indexes {

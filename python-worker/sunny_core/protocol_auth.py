@@ -207,6 +207,15 @@ def _is_transient_transport_error(error: BaseException) -> bool:
     return any(marker in message for marker in _TRANSIENT_TRANSPORT_MARKERS)
 
 
+def _is_transient_http_status(status_code: Any) -> bool:
+    """Gateway/edge responses that are safe to retry for idempotent reads."""
+    try:
+        status = int(status_code or 0)
+    except (TypeError, ValueError):
+        return False
+    return status in {408, 425, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526}
+
+
 class _ProtocolCallbackSession:
     """Expose the active protocol request path to post-registration steps."""
 
@@ -328,7 +337,6 @@ class ProtocolRegistrationFlow:
                 else:
                     with suspend_http_traffic_hook():
                         response = self.session.request(method, url, **kwargs)
-                break
             except Exception as exc:
                 if (
                     attempt < 2
@@ -342,6 +350,19 @@ class ProtocolRegistrationFlow:
                 error = ProtocolRegistrationError(f"{step} request failed: {exc}")
                 error.traffic = self.traffic.snapshot()
                 raise error from exc
+            if (
+                attempt < 2
+                and method.upper() in {"GET", "HEAD", "OPTIONS"}
+                and _is_transient_http_status(getattr(response, "status_code", 0))
+            ):
+                self.log(
+                    f"[协议] {step} 收到临时网关响应 HTTP {getattr(response, 'status_code', 0)}，"
+                    f"正在重试 ({attempt + 1}/2)"
+                )
+                time.sleep(0.5 * (attempt + 1))
+                self._check_cancelled()
+                continue
+            break
         if response is None:
             error = ProtocolRegistrationError(f"{step} request failed: empty response")
             error.traffic = self.traffic.snapshot()

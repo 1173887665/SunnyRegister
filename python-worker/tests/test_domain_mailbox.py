@@ -358,6 +358,44 @@ def test_rebind_domain_mailbox_distributes_spawned_workers_and_rotates_retries(m
     assert [email.rsplit("@", 1)[1] for email in emails] == ["two.example", "three.example", "one.example"]
 
 
+def test_domain_mailbox_retries_same_address_after_transient_network_error(monkeypatch):
+    class DB:
+        @staticmethod
+        def get_config(_key):
+            return {
+                "enabled_for_rebinding": True,
+                "base_url": "https://cloud-mail.example",
+                "auth_token": "manager-token",
+                "pickup_base_url": "https://sunny.example",
+                "domains": ["example.com"],
+                "random_local_length": 12,
+            }
+
+    class Response:
+        ok = True
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"code": 200}
+
+    submitted: list[str] = []
+
+    def post(*_args, **kwargs):
+        submitted.append(kwargs["json"]["list"][0]["email"])
+        if len(submitted) < 3:
+            raise rebind_module.requests.ConnectionError("temporary TLS reset")
+        return Response()
+
+    monkeypatch.setattr(rebind_module.requests, "post", post)
+    monkeypatch.setattr(rebind_module.time, "sleep", lambda _seconds: None)
+
+    email, _credential, _token_hash = rebind_module._domain_mailbox(DB(), lambda _message: None)
+
+    assert submitted == [email, email, email]
+
+
 def test_rebind_imported_pickup_credential_hashes_token():
     token = "dmsk_imported-token"
     credential = f"https://sunny.example/api/sunny/domain-mail/pickup?email=new%40example.com&token={token}"

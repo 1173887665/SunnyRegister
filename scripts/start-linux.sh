@@ -22,7 +22,7 @@ fi
 is_running() {
   [[ -f "$1" ]] && kill -0 "$(cat "$1")" >/dev/null 2>&1
 }
-if is_running "$RUNTIME/backend.pid" || is_running "$RUNTIME/python-worker.pid"; then
+if is_running "$RUNTIME/backend.pid" || is_running "$RUNTIME/python-worker.pid" || is_running "$RUNTIME/link-workbench-worker.pid"; then
   echo "SunnyRegister already appears to be running. Run scripts/stop-linux.sh first." >&2
   exit 1
 fi
@@ -38,6 +38,7 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
   exit 1
 fi
 export PYTHON_WORKER_URL="http://127.0.0.1:8765"
+export PYTHON_WORKBENCH_WORKER_URL="http://127.0.0.1:8766"
 export PYTHON_TASK_TYPES="sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt,sunny_rebind"
 export PORT="${SUNNYREGISTER_PORT:-8000}"
 export DISPLAY="${WORKER_DISPLAY:-${DISPLAY:-:99}}"
@@ -64,6 +65,11 @@ fi
   cd "$ROOT/python-worker"
   nohup "$ROOT/python-worker/.venv/bin/python" -m uvicorn worker:app --host 127.0.0.1 --port 8765 >"$LOGS/python-worker.out.log" 2>"$LOGS/python-worker.err.log" &
   echo $! > "$RUNTIME/python-worker.pid"
+)
+(
+  cd "$ROOT/python-worker"
+  nohup "$ROOT/python-worker/.venv/bin/python" -m uvicorn link_workbench_worker:app --host 127.0.0.1 --port 8766 >"$LOGS/link-workbench-worker.out.log" 2>"$LOGS/link-workbench-worker.err.log" &
+  echo $! > "$RUNTIME/link-workbench-worker.pid"
 )
 
 # The backend may need to load a large task_events table during startup.
@@ -98,6 +104,10 @@ wait_for_ready() {
 }
 
 if ! wait_for_ready "$RUNTIME/python-worker.pid" "http://127.0.0.1:8765/health" "Python Worker"; then
+  "$ROOT/scripts/stop-linux.sh"
+  exit 1
+fi
+if ! wait_for_ready "$RUNTIME/link-workbench-worker.pid" "http://127.0.0.1:8766/health" "Link Workbench Worker"; then
   "$ROOT/scripts/stop-linux.sh"
   exit 1
 fi

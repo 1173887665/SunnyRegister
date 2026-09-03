@@ -675,6 +675,38 @@ func TestDomainMailboxPublicPickupBindsTokenToMailbox(t *testing.T) {
 	}
 }
 
+func TestDomainMailboxPickupReportsUpstreamFailureAsRetryable(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusTooManyRequests, "rate limited")
+	}))
+	defer upstream.Close()
+	s := newSunnySessionTestServer(t)
+	s.sunnySaveConfig(sunnyCfgDomainMailbox, map[string]any{
+		"enabled": true, "base_url": upstream.URL, "auth_token": "manager-token",
+		"pickup_base_url": "https://sunny.example", "domain": "example.com",
+	})
+	token := "pending-mailbox-token"
+	mailbox := SunnyMailbox{
+		Email: "pending@example.com", MailboxType: "domain", MailboxChannel: "domain_api",
+		AccessKey: "unused", PickupTokenHash: domainMailboxPickupTokenHash(token),
+		Status: "换绑中", Enabled: true,
+	}
+	if err := s.db.Create(&mailbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/sunny/domain-mail/pickup?"+url.Values{
+		"email": {mailbox.Email}, "token": {token},
+	}.Encode(), nil)
+	recorder := httptest.NewRecorder()
+	s.serveHTTP(recorder, req)
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("upstream failure must remain retryable: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Retry-After") != "3" {
+		t.Fatalf("missing Retry-After header: %#v", recorder.Header())
+	}
+}
+
 func TestSavingDomainMailboxConfigMigratesLegacyGlobalCredential(t *testing.T) {
 	s := newSunnySessionTestServer(t)
 	legacy := SunnyMailbox{

@@ -21,6 +21,16 @@ class AuthResilienceTests(unittest.TestCase):
         self.assertFalse(retry_allowed("invalid_auth_step", 1, operation="protocol_login").retryable)
         self.assertEqual(classify_auth_failure("edge rejected", http_status=403).category, "edge_blocked")
 
+    def test_retry_allowed_honors_operation_budget(self):
+        first = retry_allowed("connection reset by peer", 0, operation="token_refresh")
+        second = retry_allowed("connection reset by peer", 1, operation="token_refresh")
+        exhausted = retry_allowed("connection reset by peer", 2, operation="token_refresh")
+        self.assertTrue(first.retryable)
+        self.assertTrue(second.retryable)
+        self.assertFalse(exhausted.retryable)
+        self.assertEqual(exhausted.category, "transient_transport")
+        self.assertFalse(retry_allowed("account_deactivated", 0).retryable)
+
     def test_invalid_openai_refresh_token_does_not_disable_mailbox_credentials(self):
         failure = classify_auth_failure("Invalid OpenAI refresh token")
         self.assertEqual(failure.category, "token_invalid")

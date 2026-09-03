@@ -494,6 +494,10 @@ func (s *Server) recordAudit(item AuditLog) {
 	if item.SubjectKey == "" && item.Email != "" {
 		item.SubjectKey = strings.ToLower(item.Email)
 	}
+	// Keep subject_key useful for diagnostics without allowing a batch email
+	// list to create oversized database values or log/index pressure. The full
+	// request details remain available in details_json when needed.
+	item.SubjectKey = truncateAuditText(item.SubjectKey, 512)
 	item.UserAgent = truncateAuditText(item.UserAgent, 512)
 	item.EntityName = truncateAuditText(item.EntityName, 512)
 	if item.Actor == "" {

@@ -153,12 +153,6 @@ export function FlowWorkspaceView() {
         </div>
       </section>
 
-      <section className="workspace-footer-grid">
-        <button className="workspace-quick" onClick={() => openView("tokens")}><strong>Token 库</strong><span>批量选择、导入和启动链路</span><b>›</b></button>
-        <button className="workspace-quick" onClick={() => openView("chains")}><strong>链路监控</strong><span>实时阶段、日志与失败定位</span><b>›</b></button>
-        <button className="workspace-quick" onClick={() => openView("pipeline")}><strong>一键流程</strong><span>注册 → 提链 → 支付授权</span><b>›</b></button>
-      </section>
-
       {active && (
         <div className="workspace-overlay" onClick={() => setSelected(null)}>
           <div className="workspace-dialog workspace-dialog-config" onClick={(event) => event.stopPropagation()}>

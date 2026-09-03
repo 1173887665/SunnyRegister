@@ -57,6 +57,10 @@ func (s *Server) handleSunny(w http.ResponseWriter, r *http.Request, rest string
 			s.sunnyListAccounts(w, r)
 			return
 		}
+		if len(parts) >= 2 && parts[1] == "checkout" {
+			s.sunnyWorkbenchCheckout(w, r, parts[2:])
+			return
+		}
 	case "mailbox-groups":
 		s.sunnyMailboxGroups(w, r, parts[1:])
 		return
@@ -773,6 +777,9 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		}
 		if enabled := strings.TrimSpace(q.Get("enabled")); enabled != "" {
 			query = query.Where("enabled = ?", boolValue(enabled, true))
+			if selectionOnly && boolValue(enabled, true) {
+				query = query.Where("status NOT IN ?", []string{"disabled", "禁用"})
+			}
 		}
 		if kw := strings.TrimSpace(q.Get("q")); kw != "" {
 			like := "%" + kw + "%"
@@ -841,7 +848,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 						continue
 					}
 					ids = append(ids, id)
-					selectionItems = append(selectionItems, map[string]any{"id": id, "email": text(item["email"])})
+					selectionItems = append(selectionItems, map[string]any{"id": id, "email": text(item["email"]), "enabled": boolValue(item["enabled"], true), "status": text(item["status"])})
 				}
 				writeJSON(w, 200, map[string]any{"ids": ids, "items": selectionItems, "total": len(ids)})
 				return
@@ -859,15 +866,17 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		}
 		if selectionOnly {
 			var rows []struct {
-				ID    uint
-				Email string
+				ID      uint
+				Email   string
+				Enabled bool
+				Status  string
 			}
-			query.Select("id", "email").Order("id desc").Scan(&rows)
+			query.Select("id", "email", "enabled", "status").Order("id desc").Scan(&rows)
 			ids := make([]uint, 0, len(rows))
 			selectionItems := make([]map[string]any, 0, len(rows))
 			for _, row := range rows {
 				ids = append(ids, row.ID)
-				selectionItems = append(selectionItems, map[string]any{"id": row.ID, "email": row.Email})
+				selectionItems = append(selectionItems, map[string]any{"id": row.ID, "email": row.Email, "enabled": row.Enabled, "status": row.Status})
 			}
 			writeJSON(w, 200, map[string]any{"ids": ids, "items": selectionItems, "total": len(ids)})
 			return
@@ -4068,19 +4077,104 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 		} else {
 			s.db.Where("enabled = ?", true).Order("updated_at desc").Limit(200).Find(&proxies)
 		}
-		okCount := 0
-		for i := range proxies {
-			result := checkSunnyProxy(proxies[i].Address)
-			applySunnyProxyCheck(&proxies[i], result)
-			if proxies[i].LastCheckOK {
-				okCount++
+		okCount := checkSunnyProxyBatch(proxies, sunnyProxyCheckConcurrency(), checkSunnyProxy)
+		if err := s.db.Transaction(func(tx *gorm.DB) error {
+			for i := range proxies {
+				if err := tx.Save(&proxies[i]).Error; err != nil {
+					return err
+				}
 			}
-			s.db.Save(&proxies[i])
+			return nil
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
 		writeJSON(w, 200, map[string]any{"checked": len(proxies), "available": okCount})
 		return
 	}
+	if len(parts) == 1 && parts[0] == "batch-delete" && r.Method == http.MethodPost {
+		body, _ := parseBody(r)
+		ids := sunnyRegisterProxyIDs(map[string]any{"proxy_ids": body["ids"]})
+		if len(ids) == 0 {
+			writeError(w, http.StatusBadRequest, "select at least one proxy")
+			return
+		}
+		result := s.db.Where("id IN ?", ids).Delete(&SunnyProxy{})
+		if result.Error != nil {
+			writeError(w, http.StatusInternalServerError, result.Error.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "deleted": result.RowsAffected})
+		return
+	}
+	if len(parts) == 1 && parts[0] == "batch-update" && r.Method == http.MethodPost {
+		body, err := parseBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		ids := sunnyRegisterProxyIDs(map[string]any{"proxy_ids": body["ids"]})
+		if len(ids) == 0 {
+			writeError(w, http.StatusBadRequest, "select at least one proxy")
+			return
+		}
+		updates := map[string]any{}
+		if rawStatus := strings.TrimSpace(text(body["status"])); rawStatus != "" {
+			status := normalizeSunnyProxyStatus(rawStatus)
+			if status == "" {
+				writeError(w, http.StatusBadRequest, "invalid proxy status")
+				return
+			}
+			updates["status"] = status
+			updates["enabled"] = status == "enabled"
+		}
+		if enabled, ok := body["enabled"]; ok {
+			updates["enabled"] = asBool(enabled)
+		}
+		if purposeTags, ok := body["purpose_tags"]; ok {
+			updates["purpose_tags"] = strings.Join(normalizeSunnyProxyPurposes(purposeTags), ",")
+		}
+		if rawCountry := strings.TrimSpace(text(body["country"])); rawCountry != "" {
+			country, countryErr := normalizeSunnyProxyCountry(rawCountry)
+			if countryErr != nil {
+				writeError(w, http.StatusBadRequest, countryErr.Error())
+				return
+			}
+			updates["country"] = country
+		}
+		if len(updates) == 0 {
+			writeError(w, http.StatusBadRequest, "proxy update is required")
+			return
+		}
+		result := s.db.Model(&SunnyProxy{}).Where("id IN ?", ids).Updates(updates)
+		if result.Error != nil {
+			writeError(w, http.StatusInternalServerError, result.Error.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "updated": result.RowsAffected})
+		return
+	}
 	if len(parts) >= 1 {
+		if len(parts) == 2 && parts[1] == "check" && r.Method == http.MethodPost {
+			id64, err := strconv.ParseUint(parts[0], 10, 64)
+			if err != nil || id64 == 0 {
+				writeError(w, 400, "invalid proxy id")
+				return
+			}
+			var p SunnyProxy
+			if err := s.db.First(&p, uint(id64)).Error; err != nil {
+				writeError(w, 404, "proxy not found")
+				return
+			}
+			result := checkSunnyProxy(p.Address)
+			applySunnyProxyCheck(&p, result)
+			if err := s.db.Save(&p).Error; err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, 200, sunnyProxyJSON(p))
+			return
+		}
 		id64, err := strconv.ParseUint(parts[0], 10, 64)
 		if err != nil || id64 == 0 {
 			writeError(w, 400, "invalid proxy id")
@@ -4142,15 +4236,11 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 			return
 		}
 		if len(parts) == 1 && r.Method == http.MethodDelete {
-			s.db.Delete(&p)
+			if err := s.db.Delete(&p).Error; err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 			writeJSON(w, 200, map[string]any{"ok": true})
-			return
-		}
-		if len(parts) == 2 && parts[1] == "check" && r.Method == http.MethodPost {
-			result := checkSunnyProxy(p.Address)
-			applySunnyProxyCheck(&p, result)
-			s.db.Save(&p)
-			writeJSON(w, 200, sunnyProxyJSON(p))
 			return
 		}
 	}
@@ -4325,7 +4415,7 @@ func sunnyProxyJSON(p SunnyProxy) map[string]any {
 
 func checkSunnyProxy(proxyAddr string) map[string]any {
 	proxyAddr = normalizeSunnyProxyAddress(proxyAddr)
-	result := map[string]any{"proxy": proxyAddr, "ok": false, "latency_ms": int64(0), "check_mode": "tcp_connect"}
+	result := map[string]any{"proxy": proxyAddr, "ok": false, "latency_ms": int64(0), "check_mode": "https_connect"}
 	if proxyAddr == "" {
 		result["error"] = "proxy is empty"
 		return result
@@ -4352,15 +4442,232 @@ func checkSunnyProxy(proxyAddr string) map[string]any {
 		return result
 	}
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 8*time.Second)
+	timeout := sunnyProxyCheckTimeout()
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), timeout)
+	if err != nil {
+		result["latency_ms"] = time.Since(start).Milliseconds()
+		result["error"] = err.Error()
+		return result
+	}
+	defer conn.Close()
+	// Cap the complete dial + protocol handshake, rather than allowing an
+	// additional full read timeout after a slow connection has been established.
+	_ = conn.SetDeadline(start.Add(timeout))
+
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		if strings.EqualFold(u.Scheme, "https") {
+			tlsConn := tls.Client(conn, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+			if err = tlsConn.Handshake(); err == nil {
+				conn = tlsConn
+			}
+		}
+		if err == nil {
+			err = checkHTTPProxyConnect(conn, u)
+		}
+	case "socks5", "socks5h":
+		err = checkSOCKS5ProxyConnect(conn, u)
+	case "socks4", "socks4a":
+		err = checkSOCKS4ProxyConnect(conn, u)
+	default:
+		err = fmt.Errorf("unsupported proxy scheme: %s", u.Scheme)
+	}
 	result["latency_ms"] = time.Since(start).Milliseconds()
 	if err != nil {
 		result["error"] = err.Error()
 		return result
 	}
-	_ = conn.Close()
 	result["ok"] = true
 	return result
+}
+
+func sunnyProxyCheckTimeout() time.Duration {
+	seconds := 6
+	if raw := strings.TrimSpace(os.Getenv("SUNNY_PROXY_CHECK_TIMEOUT_SECONDS")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			seconds = parsed
+		}
+	}
+	if seconds < 2 {
+		seconds = 2
+	}
+	if seconds > 30 {
+		seconds = 30
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func sunnyProxyCheckConcurrency() int {
+	value := 16
+	if raw := strings.TrimSpace(os.Getenv("SUNNY_PROXY_CHECK_CONCURRENCY")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			value = parsed
+		}
+	}
+	if value < 1 {
+		return 1
+	}
+	if value > 64 {
+		return 64
+	}
+	return value
+}
+
+func checkSunnyProxyBatch(proxies []SunnyProxy, concurrency int, checker func(string) map[string]any) int {
+	if len(proxies) == 0 {
+		return 0
+	}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if concurrency > len(proxies) {
+		concurrency = len(proxies)
+	}
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	workers.Add(concurrency)
+	for worker := 0; worker < concurrency; worker++ {
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				applySunnyProxyCheck(&proxies[index], checker(proxies[index].Address))
+			}
+		}()
+	}
+	for index := range proxies {
+		jobs <- index
+	}
+	close(jobs)
+	workers.Wait()
+	okCount := 0
+	for i := range proxies {
+		if proxies[i].LastCheckOK {
+			okCount++
+		}
+	}
+	return okCount
+}
+
+// A successful TCP dial only proves that the proxy gateway port is open.  The
+// checkout path needs an authenticated HTTPS tunnel, so the pool check performs
+// the protocol handshake and opens a CONNECT route before marking an entry usable.
+func checkHTTPProxyConnect(conn net.Conn, proxyURL *url.URL) error {
+	req, err := http.NewRequest(http.MethodConnect, "https://example.com:443", nil)
+	if err != nil {
+		return err
+	}
+	req.Host = "example.com:443"
+	if proxyURL.User != nil {
+		password, _ := proxyURL.User.Password()
+		credentials := base64.StdEncoding.EncodeToString([]byte(proxyURL.User.Username() + ":" + password))
+		req.Header.Set("Proxy-Authorization", "Basic "+credentials)
+	}
+	if err := req.WriteProxy(conn); err != nil {
+		return fmt.Errorf("proxy CONNECT request failed: %w", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+	if err != nil {
+		return fmt.Errorf("proxy CONNECT response failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("proxy CONNECT returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func checkSOCKS5ProxyConnect(conn net.Conn, proxyURL *url.URL) error {
+	methods := []byte{0x00}
+	if proxyURL.User != nil {
+		methods = append(methods, 0x02)
+	}
+	if _, err := conn.Write(append([]byte{0x05, byte(len(methods))}, methods...)); err != nil {
+		return fmt.Errorf("SOCKS5 greeting failed: %w", err)
+	}
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, reply); err != nil || reply[0] != 0x05 || reply[1] == 0xff {
+		if err != nil {
+			return fmt.Errorf("SOCKS5 greeting response failed: %w", err)
+		}
+		return fmt.Errorf("SOCKS5 proxy rejected authentication methods")
+	}
+	if reply[1] == 0x02 {
+		if proxyURL.User == nil {
+			return fmt.Errorf("SOCKS5 proxy requires authentication")
+		}
+		username := proxyURL.User.Username()
+		password, _ := proxyURL.User.Password()
+		if len(username) > 255 || len(password) > 255 {
+			return fmt.Errorf("SOCKS5 credentials are too long")
+		}
+		auth := []byte{0x01, byte(len(username))}
+		auth = append(auth, username...)
+		auth = append(auth, byte(len(password)))
+		auth = append(auth, password...)
+		if _, err := conn.Write(auth); err != nil {
+			return fmt.Errorf("SOCKS5 authentication request failed: %w", err)
+		}
+		if _, err := io.ReadFull(conn, reply); err != nil || reply[1] != 0x00 {
+			if err != nil {
+				return fmt.Errorf("SOCKS5 authentication response failed: %w", err)
+			}
+			return fmt.Errorf("SOCKS5 authentication failed")
+		}
+	}
+	target := "example.com"
+	request := []byte{0x05, 0x01, 0x00, 0x03, byte(len(target))}
+	request = append(request, target...)
+	request = append(request, 0x01, 0xbb)
+	if _, err := conn.Write(request); err != nil {
+		return fmt.Errorf("SOCKS5 CONNECT request failed: %w", err)
+	}
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return fmt.Errorf("SOCKS5 CONNECT response failed: %w", err)
+	}
+	if header[0] != 0x05 || header[1] != 0x00 {
+		return fmt.Errorf("SOCKS5 CONNECT rejected with code %d", header[1])
+	}
+	addressBytes := 0
+	switch header[3] {
+	case 0x01:
+		addressBytes = 4
+	case 0x04:
+		addressBytes = 16
+	case 0x03:
+		length := []byte{0}
+		if _, err := io.ReadFull(conn, length); err != nil {
+			return err
+		}
+		addressBytes = int(length[0])
+	default:
+		return fmt.Errorf("SOCKS5 CONNECT returned invalid address type")
+	}
+	_, err := io.ReadFull(conn, make([]byte, addressBytes+2))
+	return err
+}
+
+func checkSOCKS4ProxyConnect(conn net.Conn, proxyURL *url.URL) error {
+	username := ""
+	if proxyURL.User != nil {
+		username = proxyURL.User.Username()
+	}
+	request := []byte{0x04, 0x01, 0x01, 0xbb, 0x00, 0x00, 0x00, 0x01}
+	request = append(request, username...)
+	request = append(request, 0x00)
+	request = append(request, "example.com"...)
+	request = append(request, 0x00)
+	if _, err := conn.Write(request); err != nil {
+		return fmt.Errorf("SOCKS4 CONNECT request failed: %w", err)
+	}
+	reply := make([]byte, 8)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		return fmt.Errorf("SOCKS4 CONNECT response failed: %w", err)
+	}
+	if reply[1] != 0x5a {
+		return fmt.Errorf("SOCKS4 CONNECT rejected with code %d", reply[1])
+	}
+	return nil
 }
 
 func applySunnyProxyCheck(p *SunnyProxy, result map[string]any) {
@@ -5370,6 +5677,7 @@ func (s *Server) sunnyMailboxForSession(sess SunnySession) (SunnyMailbox, error)
 func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []string) {
 	if len(parts) == 0 && r.Method == http.MethodGet {
 		q := r.URL.Query()
+		includeMailboxOnly := boolValue(q.Get("include_mailbox_only"), false)
 		paymentMethodOptions := s.sunnyPaymentMethodOptions()
 		trialCountryOptions := s.sunnyTrialCountryOptions()
 		page := intValue(q.Get("page"), 1)
@@ -5395,7 +5703,7 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		trialCountryFilter := normalizeSunnyTrialCountryFilter(q.Get("trial_countries"))
 		groupFilter := uint(intValue(q.Get("group_id"), 0))
 		sortBy := strings.ToLower(strings.TrimSpace(q.Get("sort_by")))
-		if statusFilter == "" && planFilter == "" && trialFilter == "" && checkoutFilter == "" && len(paymentMethodFilter) == 0 && loginSecretFilter == "" && rebindEmailFilter == "" && registeredAgeFilter == "" && len(trialCountryFilter) == 0 && sortBy != "rebind_email" {
+		if !includeMailboxOnly && statusFilter == "" && planFilter == "" && trialFilter == "" && checkoutFilter == "" && len(paymentMethodFilter) == 0 && loginSecretFilter == "" && rebindEmailFilter == "" && registeredAgeFilter == "" && len(trialCountryFilter) == 0 && sortBy != "rebind_email" {
 			query := s.db.Model(&SunnySession{})
 			query = sunnyUniqueSessionIdentityScope(query)
 			if kw != "" {
@@ -5440,13 +5748,69 @@ func (s *Server) sunnySessions(w http.ResponseWriter, r *http.Request, parts []s
 		listQuery := sunnyUniqueSessionIdentityScope(s.db.Model(&SunnySession{}))
 		listQuery.Select(sunnySessionListColumns).Scan(&rows)
 		accounts, mailboxes := s.sunnySessionListSidecars(rows)
-		itemsAll := []map[string]any{}
+		candidateItems := make([]map[string]any, 0, len(rows))
 		for _, row := range rows {
 			item := serializeSunnySessionList(row, accounts, mailboxes)
+			item["row_kind"] = "session"
+			item["selectable"] = true
+			candidateItems = append(candidateItems, item)
+		}
+		if includeMailboxOnly && (statusFilter == "" || normalizeSunnyMailboxCountStatus(statusFilter) == "失败") {
+			var mailboxOnly []SunnyMailbox
+			mailboxOnlyQuery := s.db.Model(&SunnyMailbox{}).
+				Where("sunny_mailboxes.status IN ?", sunnyMailboxStatusFilterValues("失败")).
+				Where(`NOT EXISTS (
+					SELECT 1 FROM sunny_sessions
+					WHERE LOWER(TRIM(sunny_sessions.email)) = LOWER(TRIM(sunny_mailboxes.email))
+					   OR (
+						TRIM(COALESCE(sunny_mailboxes.rebind_email, '')) <> ''
+						AND LOWER(TRIM(sunny_sessions.email)) = LOWER(TRIM(sunny_mailboxes.rebind_email))
+					   )
+				)`)
+			if err := mailboxOnlyQuery.Find(&mailboxOnly).Error; err == nil && len(mailboxOnly) > 0 {
+				groups := s.sunnyGroupMap()
+				emails := make([]string, 0, len(mailboxOnly)*2)
+				for _, mailbox := range mailboxOnly {
+					emails = append(emails, mailbox.Email)
+					if strings.TrimSpace(mailbox.RebindEmail) != "" {
+						emails = append(emails, mailbox.RebindEmail)
+					}
+				}
+				linked := s.sunnyMailboxLinkedDataByEmail(emails)
+				for _, mailbox := range mailboxOnly {
+					key := sunnyEmailKey(mailbox.Email)
+					if strings.TrimSpace(mailbox.RebindEmail) != "" && !linked.accountExists[key] {
+						key = sunnyEmailKey(mailbox.RebindEmail)
+					}
+					plan := sunnyPlanTypeForMailbox(mailbox, linked.sessionPlans, linked.accountExists)
+					trialEligibility := linked.trialEligibility[key]
+					if trialEligibility == "" {
+						trialEligibility = mailbox.TrialEligibility
+					}
+					item := serializeSunnyMailboxList(mailbox, groups, plan, sunnyMailboxAccessTokenFromLinked(mailbox, linked), linked.accountIDs[key], trialEligibility, true)
+					item["id"] = fmt.Sprintf("mailbox-%d", mailbox.ID)
+					item["mailbox_id"] = mailbox.ID
+					item["status"] = normalizeSunnyMailboxCountStatus(mailbox.Status)
+					item["row_kind"] = "mailbox"
+					item["selectable"] = false
+					item["has_refresh_token"] = boolValue(item["has_openai_rt"], false)
+					item["access_token_status"] = "missing"
+					item["health_check_status"] = "unknown"
+					item["last_health_checked_at"] = nullableTime(mailbox.LastHealthCheckedAt != nil, pointerTime(mailbox.LastHealthCheckedAt))
+					if strings.TrimSpace(mailbox.LastError) != "" {
+						item["mailbox_error"] = mailbox.LastError
+						item["error"] = mailbox.LastError
+					}
+					candidateItems = append(candidateItems, item)
+				}
+			}
+		}
+		itemsAll := []map[string]any{}
+		for _, item := range candidateItems {
 			if kw != "" && !strings.Contains(strings.ToLower(text(item["email"])), kw) && !strings.Contains(strings.ToLower(text(item["rebind_email"])), kw) {
 				continue
 			}
-			if statusFilter != "" && text(item["status"]) != statusFilter {
+			if statusFilter != "" && normalizeSunnyMailboxCountStatus(text(item["status"])) != normalizeSunnyMailboxCountStatus(statusFilter) {
 				continue
 			}
 			if planFilter != "" && strings.ToLower(text(item["plan_type"])) != planFilter {
@@ -6393,7 +6757,17 @@ func (s *Server) sunnyValidateProxyForRegisterTask() error {
 	if !boolValue(cfg["proxy_enabled"], true) {
 		return nil
 	}
-	if normalizeSunnyProxyAddress(text(cfg["register_proxy"])) != "" {
+	// Once the database proxy pool has at least one registration row, it is the
+	// authoritative route source.  Do not silently fall back to the legacy
+	// single `register_proxy` listener: that would pin every account to one
+	// local port/IP when a dynamic pool is empty or unchecked.
+	var configured int64
+	if err := s.db.Model(&SunnyProxy{}).
+		Where("(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%").
+		Count(&configured).Error; err != nil {
+		return fmt.Errorf("proxy pool query failed: %w", err)
+	}
+	if configured == 0 && normalizeSunnyProxyAddress(text(cfg["register_proxy"])) != "" {
 		return nil
 	}
 	var n int64
@@ -6475,7 +6849,7 @@ func (s *Server) sunnyMailboxesForRegisterTask(body map[string]any) ([]SunnyMail
 		seen := map[uint]bool{}
 		for _, m := range rows {
 			seen[m.ID] = true
-			if !m.Enabled {
+			if !m.Enabled || strings.EqualFold(strings.TrimSpace(m.Status), "disabled") || strings.TrimSpace(m.Status) == "禁用" {
 				return nil, fmt.Errorf("mailbox config is unavailable: selected mailbox is disabled: %s", m.Email)
 			}
 		}
@@ -6600,6 +6974,16 @@ func (s *Server) sunnyTaskProxySnapshot(payload map[string]any) map[string]any {
 	registerProxy := normalizeSunnyProxyAddress(text(cfg["register_proxy"]))
 	selectedCountries := sunnyRegisterProxyCountries(payload)
 	selectedIDs := sunnyRegisterProxyIDs(payload)
+	var configuredPoolRows int64
+	if err := s.db.Model(&SunnyProxy{}).
+		Where("(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%").
+		Count(&configuredPoolRows).Error; err == nil {
+		next["proxy_pool_configured"] = configuredPoolRows > 0
+	} else {
+		// Keep the snapshot deterministic if an older database cannot answer the
+		// metadata query; the usable-row query below still determines the pool.
+		next["proxy_pool_configured"] = false
+	}
 	var proxies []SunnyProxy
 	s.db.Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
 		Where("(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%").
@@ -6620,6 +7004,7 @@ func (s *Server) sunnyTaskProxySnapshot(payload map[string]any) map[string]any {
 	}
 	proxyPool := make([]string, 0, len(proxies))
 	proxyIDs := make([]uint, 0, len(proxies))
+	addressCounts := map[string]int{}
 	for _, p := range proxies {
 		address := normalizeSunnyProxyAddress(p.Address)
 		if address == "" {
@@ -6627,12 +7012,33 @@ func (s *Server) sunnyTaskProxySnapshot(payload map[string]any) map[string]any {
 		}
 		proxyPool = append(proxyPool, address)
 		proxyIDs = append(proxyIDs, p.ID)
+		addressCounts[address]++
 	}
 	if len(proxyPool) > 0 {
 		registerProxy = proxyPool[0]
 		next["proxy_pool"] = proxyPool
 		next["proxy_ids"] = proxyIDs
 		next["proxy_pool_size"] = len(proxyPool)
+		// Several database rows can intentionally share one dynamic gateway
+		// URL. Preserve those rows as independent rotation slots; the Worker
+		// excludes a failed row by ID instead of excluding the shared URL.
+		proxyPoolDynamic := false
+		for _, count := range addressCounts {
+			if count > 1 {
+				proxyPoolDynamic = true
+				break
+			}
+		}
+		next["proxy_pool_dynamic"] = proxyPoolDynamic
+		next["proxy_pool_preserve_slots"] = proxyPoolDynamic
+		next["proxy_pool_mode"] = "static"
+		if proxyPoolDynamic {
+			next["proxy_pool_mode"] = "dynamic"
+		}
+	} else if boolValue(next["proxy_pool_configured"], false) {
+		// A configured-but-empty pool must fail at the Worker instead of falling
+		// back to the legacy single listener from proxy config.
+		registerProxy = ""
 	}
 	if len(selectedCountries) > 0 {
 		next["proxy_countries"] = selectedCountries

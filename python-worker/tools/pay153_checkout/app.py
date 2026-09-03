@@ -61,15 +61,6 @@ app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="/stat
 app.config["JSON_AS_ASCII"] = False
 
 ROTATING_PAYPAL_ADDRESS_COUNTRIES = {"NL", "GB", "TH", "BR", "US"}
-DYNAMIC_PROXY_API_URL = str(
-    os.getenv("PAY153_DYNAMIC_PROXY_API")
-    or "https://white.1024proxy.com/white/api"
-).strip()
-DYNAMIC_PROXY_API_LOCK = threading.Lock()
-DYNAMIC_PROXY_API_LAST_AT = 0.0
-DYNAMIC_PROXY_API_MIN_INTERVAL = max(
-    0.1, float(os.getenv("PAY153_DYNAMIC_PROXY_MIN_INTERVAL") or 0.35)
-)
 GOPAY_BLOCKED_REBUILD_ATTEMPTS = 10
 
 
@@ -516,62 +507,17 @@ def normalize_proxy_pool(raw: Any, label: str) -> list[str]:
     values = [value for value in values if value]
     if len(values) > 500:
         raise ValueError(f"{label}最多填写 500 条")
+    # Do not collapse equal URLs. A rotating gateway intentionally exposes
+    # multiple pool slots through one host/port; each occurrence is a separate
+    # opportunity to obtain a fresh exit route on the next connection.
     normalized: list[str] = []
-    seen: set[str] = set()
     for index, value in enumerate(values, 1):
         try:
             proxy = normalize_proxy(value)
         except ValueError as exc:
             raise ValueError(f"{label}第 {index} 条：{exc}") from exc
-        if proxy not in seen:
-            normalized.append(proxy)
-            seen.add(proxy)
+        normalized.append(proxy)
     return normalized
-
-
-def fetch_dynamic_attempt_proxy(country: str, session_time: int = 10) -> str:
-    """Fetch exactly one fresh regional proxy for the current outer attempt."""
-
-    country = str(country or "").strip().upper()
-    if not re.fullmatch(r"[A-Z]{2}", country):
-        raise ValueError(f"Invalid dynamic proxy country: {country or '-'}")
-    session_time = min(120, max(1, int(session_time or 10)))
-    global DYNAMIC_PROXY_API_LAST_AT
-    last_error = ""
-    for api_attempt in range(1, 5):
-        try:
-            with DYNAMIC_PROXY_API_LOCK:
-                wait_seconds = DYNAMIC_PROXY_API_MIN_INTERVAL - (
-                    time.monotonic() - DYNAMIC_PROXY_API_LAST_AT
-                )
-                if wait_seconds > 0:
-                    time.sleep(wait_seconds)
-                response = requests.get(
-                    DYNAMIC_PROXY_API_URL,
-                    params={
-                        "region": country,
-                        "num": 1,
-                        "time": session_time,
-                        "format": "1",
-                        "type": "txt",
-                    },
-                    timeout=25,
-                    impersonate="firefox144",
-                )
-                DYNAMIC_PROXY_API_LAST_AT = time.monotonic()
-            if response.status_code >= 400:
-                raise RuntimeError(f"HTTP {response.status_code}")
-            proxies = normalize_proxy_pool(response.text, f"{country} dynamic proxy")
-            if not proxies:
-                raise RuntimeError("empty response")
-            return proxies[0]
-        except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
-            if api_attempt < 4:
-                time.sleep(0.25 * api_attempt + random.random() * 0.2)
-    raise RuntimeError(
-        f"Dynamic proxy API did not return a valid {country} proxy after 4 attempts: {last_error}"
-    )
 
 
 def generate_cpf() -> str:
@@ -953,10 +899,9 @@ def preflight_trial_eligibility(token: str, account_id: str, proxy: str, device_
                     "promotion_processor": str(offer.get("processor") or ""),
                     "promotion_transport": str(offer.get("transport") or ""),
                 }
-                log(
-                    f"Rust \u4f18\u60e0\u68c0\u6d4b\u5b8c\u6210\uff1a"
-                    f"{campaign_id or '\u5f53\u524d\u65e0\u4f18\u60e0'}\uff08{normalized['promotion_transport']}\uff09"
-                )
+                promotion_label = campaign_id or "当前无优惠"
+                transport_label = normalized["promotion_transport"]
+                log(f"Rust 优惠检测完成：{promotion_label}（{transport_label}）")
                 return normalized
             log(f"Rust \u4f18\u60e0\u68c0\u6d4b HTTP {rust_response.status_code}\uff0c\u56de\u9000 Python")
         except Exception as rust_exc:
@@ -1016,7 +961,8 @@ def preflight_trial_eligibility(token: str, account_id: str, proxy: str, device_
             "eligible_offers": account.get("eligible_offers") or {},
         }
         if campaign_id:
-            log(f"\u8d26\u53f7\u6d3b\u52a8\u76ee\u5f55\u5df2\u5339\u914d\uff1a{campaign_id}\uff08{label or 'Plus \u6d3b\u52a8'}\uff09")
+            campaign_label = label or "Plus 活动"
+            log(f"账号活动目录已匹配：{campaign_id}（{campaign_label}）")
         else:
             log("\u8d26\u53f7\u6d3b\u52a8\u76ee\u5f55\u672a\u8fd4\u56de Plus \u4f18\u60e0")
         return normalized
@@ -1144,7 +1090,9 @@ def select_paypal_exit_proxy(
     expected_country: str = "",
 ) -> tuple[str, dict[str, str], list[str]]:
     """Prefer a proxy matching the user-selected PayPal billing country."""
-    rest = [proxy for proxy in dict.fromkeys(pool) if proxy and proxy != preferred]
+    # Do not deduplicate URLs: repeated entries can be independent leases of a
+    # rotating gateway and each connection may receive a different exit IP.
+    rest = [proxy for proxy in pool if proxy and proxy != preferred]
     random.SystemRandom().shuffle(rest)
     candidates = ([preferred] if preferred else []) + rest
     candidates = candidates[:max(1, min(int(scan_limit), len(candidates)))]
@@ -2266,6 +2214,16 @@ def approve_gopay_checkout_or_rebuild(
 def _proxy_transport_error_kind(message: str) -> str:
     """Classify transport failures that should rotate the proxy route."""
     lowered = str(message or "").lower()
+    # curl_cffi reports proxy authentication/tunnel failures as either a
+    # numeric curl code or an HTTP 407 string.  Treat these as route-local
+    # failures so the outer retry can select another pool entry.
+    if any(marker in lowered for marker in (
+        "curl: (5)", "curl: (6)", "curl: (7)", "curl: (56)", "curl: (97)",
+        "proxy authentication", "proxy auth", "proxy connect",
+        "connect tunnel failed", "proxy tunnel", "http 407", "response 407",
+        "cannot complete socks", "could not resolve proxy",
+    )):
+        return "代理连接/认证失败"
     if any(marker in lowered for marker in (
         "sslerror",
         "curl: (35)",
@@ -2722,7 +2680,10 @@ class JobStore:
     def _run_locked(self, job_id: str, options: dict):
         retry_count = min(50, max(0, int(options.get("retry_count") or 0)))
         max_attempts = min(51, retry_count + 1)
-        used_pairs: set[tuple[str, str]] = set()
+        # Track pool indexes, not proxy URLs. Repeated URLs are valid dynamic
+        # gateway slots and must remain independently selectable.
+        used_pairs: set[tuple[int, int]] = set()
+        proxy_slot = max(0, int(options.get("proxy_slot") or 0))
         proxy_transport_retries = 0
         retry_same_strategy = False
         last_error = ""
@@ -2749,94 +2710,71 @@ class JobStore:
                 return
             current = dict(options)
             current["retry_wrapper"] = True
-            if current.get("dynamic_proxy_api"):
-                try:
-                    entry_country = str(
-                        current.get("entry_proxy_country") or current.get("country") or "US"
-                    ).upper()
-                    exit_country = str(
-                        current.get("exit_proxy_country") or current.get("country") or entry_country
-                    ).upper()
-                    proxy_session_time = int(current.get("proxy_session_time") or 10)
-                    entry_proxy = fetch_dynamic_attempt_proxy(entry_country, proxy_session_time)
-                    if shares_checkout_proxy(current, str(current.get("link_type") or "")):
-                        exit_proxy = entry_proxy
-                    else:
-                        exit_proxy = fetch_dynamic_attempt_proxy(exit_country, proxy_session_time)
-                    pair = (entry_proxy, exit_proxy)
-                    current["entry_proxies"] = [entry_proxy]
-                    current["exit_proxies"] = [exit_proxy]
-                    self.log(
-                        job_id,
-                        f"Attempt {attempt}/{max_attempts}: proxy API issued fresh {entry_country}/{exit_country} routes",
+            pair_indexes: tuple[int, int] = (attempt, attempt)
+            entry_pool = current["entry_proxies"]
+            exit_pool = current.get("exit_proxies") or entry_pool
+            entry_size = len(entry_pool)
+            exit_size = len(exit_pool)
+            if entry_size == 0 or exit_size == 0:
+                message = "提链代理池为空，任务未发送到上游"
+                self.update(job_id, status="error", percent=100, text="任务失败", error=message)
+                self.log(job_id, message)
+                return
+            if current.get("paired_proxy_rotation"):
+                # Keep deterministic rotation while skipping combinations
+                # already used by an earlier attempt. This prevents an
+                # SSL retry from accidentally reusing the reset route.
+                same_route = shares_checkout_proxy(current, str(current.get("link_type") or ""))
+                pair = None
+                max_offsets = max(entry_size, exit_size, 1)
+                for offset in range(max_offsets):
+                    entry_index = (proxy_slot + attempt - 1 + offset) % entry_size
+                    exit_index = (proxy_slot + attempt - 1 + offset) % exit_size
+                    candidate_key = (entry_index, entry_index if same_route else exit_index)
+                    if candidate_key not in used_pairs or len(used_pairs) >= entry_size * exit_size:
+                        entry_proxy = entry_pool[entry_index]
+                        exit_proxy = entry_proxy if same_route else exit_pool[exit_index]
+                        pair = (entry_proxy, exit_proxy)
+                        pair_indexes = candidate_key
+                        break
+                if pair is None:
+                    entry_index = (proxy_slot + attempt - 1) % entry_size
+                    exit_index = (proxy_slot + attempt - 1) % exit_size
+                    pair = (
+                        entry_pool[entry_index],
+                        entry_pool[entry_index] if same_route else exit_pool[exit_index],
                     )
-                except Exception as exc:
-                    last_error = f"Dynamic proxy fetch failed: {type(exc).__name__}: {exc}"
-                    transport_kind = _proxy_transport_error_kind(last_error)
-                    if transport_kind and proxy_transport_retries >= 3:
-                        self.log(job_id, f"{transport_kind}已达到 3 次代理切换上限，停止继续尝试")
-                        self.update(job_id, status="error", percent=100, text="代理传输失败", error=last_error[:1200])
-                        return
-                    if transport_kind and proxy_transport_retries < 3:
-                        proxy_transport_retries += 1
-                        retry_same_strategy = True
-                        self.log(job_id, f"检测到{transport_kind}，切换第 {proxy_transport_retries} 次代理后重试")
-                    can_retry = attempt < max_attempts
-                    self.update(
-                        job_id,
-                        status="running" if can_retry else "error",
-                        percent=4 if can_retry else 100,
-                        text=("正在重新获取代理" if can_retry else "任务失败"),
-                        error=last_error[:1200],
-                        last_retry_error=last_error[:500],
-                    )
-                    self.log(job_id, f"第 {attempt}/{max_attempts} 轮代理获取失败：{last_error[:260]}")
-                    if not can_retry:
-                        return
-                    time.sleep(min(4, 1 + attempt * 0.35))
-                    attempt += 1
-                    continue
+                    pair_indexes = (entry_index, entry_index if same_route else exit_index)
             else:
-                entry_pool = current["entry_proxies"]
-                exit_pool = current.get("exit_proxies") or entry_pool
-                if current.get("paired_proxy_rotation"):
-                    # Keep deterministic rotation while skipping combinations
-                    # already used by an earlier attempt. This prevents an
-                    # SSL retry from accidentally reusing the reset route.
-                    same_route = shares_checkout_proxy(current, str(current.get("link_type") or ""))
-                    pair = None
-                    max_offsets = max(len(entry_pool), len(exit_pool), 1)
-                    for offset in range(max_offsets):
-                        entry_proxy = entry_pool[(attempt - 1 + offset) % len(entry_pool)]
-                        exit_proxy = entry_proxy if same_route else exit_pool[(attempt - 1 + offset) % len(exit_pool)]
-                        candidate = (entry_proxy, exit_proxy)
-                        if candidate not in used_pairs or len(used_pairs) >= len(entry_pool) * len(exit_pool):
-                            pair = candidate
-                            break
-                    if pair is None:
-                        pair = (
-                            entry_pool[(attempt - 1) % len(entry_pool)],
-                            entry_pool[(attempt - 1) % len(entry_pool)]
-                            if same_route else exit_pool[(attempt - 1) % len(exit_pool)],
-                        )
-                else:
-                    pair = None
-                    for _ in range(40):
-                        if shares_checkout_proxy(current, str(current.get("link_type") or "")):
-                            proxy = secrets.choice(entry_pool)
-                            candidate = (proxy, proxy)
-                        else:
-                            candidate = (secrets.choice(entry_pool), secrets.choice(exit_pool))
-                        if candidate not in used_pairs or len(used_pairs) >= len(entry_pool) * len(exit_pool):
-                            pair = candidate
-                            break
-                    if pair is None:
-                        pair = (secrets.choice(entry_pool), secrets.choice(exit_pool))
-            used_pairs.add(pair)
+                pair = None
+                pair_indexes = None
+                for _ in range(40):
+                    if shares_checkout_proxy(current, str(current.get("link_type") or "")):
+                        entry_index = secrets.randbelow(entry_size)
+                        proxy = entry_pool[entry_index]
+                        candidate = (proxy, proxy)
+                        candidate_indexes = (entry_index, entry_index)
+                    else:
+                        entry_index = secrets.randbelow(entry_size)
+                        exit_index = secrets.randbelow(exit_size)
+                        candidate = (entry_pool[entry_index], exit_pool[exit_index])
+                        candidate_indexes = (entry_index, exit_index)
+                    if candidate_indexes not in used_pairs or len(used_pairs) >= entry_size * exit_size:
+                        pair = candidate
+                        pair_indexes = candidate_indexes
+                        break
+                if pair is None:
+                    entry_index = secrets.randbelow(entry_size)
+                    exit_index = secrets.randbelow(exit_size)
+                    pair = (entry_pool[entry_index], exit_pool[exit_index])
+                    pair_indexes = (entry_index, exit_index)
+            used_pairs.add(pair_indexes)
             current["fixed_entry_proxy"], current["fixed_exit_proxy"] = pair
+            current["selected_proxy_slots"] = list(pair_indexes)
             self.log(
                 job_id,
-                f"本轮代理路由：Promotion={proxy_route_label(pair[0])}；Checkout={proxy_route_label(pair[1])}",
+                f"本轮代理槽位：Promotion#{pair_indexes[0] + 1}={proxy_route_label(pair[0])}；"
+                f"Checkout#{pair_indexes[1] + 1}={proxy_route_label(pair[1])}",
             )
             logical_attempt = max(1, attempt - proxy_transport_retries)
             if current.get("link_type") == "paypal":
@@ -2995,6 +2933,11 @@ class JobStore:
                 "access token", "token_invalidated", "token_expired", "token_revoked", "jwt expired",
                 "openai checkout http 401", "unauthorized_unknown",
                 "计划类型", "提取方式", "任务已停止", "promotion_not_available",
+                # Once Stripe has initialized a valid Checkout and reports the
+                # provider absent, changing transport routes cannot add that
+                # account/payment-method capability.  Stop burning the full
+                # retry budget and return the actionable account-state error.
+                "当前 checkout 未开放 momo",
             ))
             transport_kind = _proxy_transport_error_kind(last_error)
             if transport_kind:
@@ -5450,19 +5393,18 @@ def start_checkout():
     exit_raw = data.get("exit_proxies")
     if exit_raw is None:
         exit_raw = data.get("exit_proxy") or data.get("payment_proxy") or ""
-    dynamic_proxy_api = bool(data.get("dynamic_proxy_api")) and internal_request
-    if not entry_raw and not dynamic_proxy_api:
+    if not entry_raw:
         return jsonify({"error": "请填写 Checkout 入口代理"}), 400
-    if link_type not in {"hosted", "pix", "momo"} and not exit_raw and not dynamic_proxy_api:
+    if link_type not in {"hosted", "pix", "momo"} and not exit_raw:
         return jsonify({"error": "当前支付路径需要填写支付出口代理"}), 400
     try:
         entry_proxies = normalize_proxy_pool(entry_raw,  "入口代理") if entry_raw else []
         exit_proxies = normalize_proxy_pool(exit_raw, "出口代理") if exit_raw else []
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    if not entry_proxies and not dynamic_proxy_api:
+    if not entry_proxies:
         return jsonify({"error": "入口代理至少填写 1 条"}), 400
-    if link_type not in {"hosted", "pix", "momo"} and not exit_proxies and not dynamic_proxy_api:
+    if link_type not in {"hosted", "pix", "momo"} and not exit_proxies:
         return jsonify({"error": "出口代理至少填写 1 条"}), 400
     raw_pix_tax_id = re.sub(r"\D", "", str(data.get("pix_tax_id") or ""))[:14] if link_type == "pix" else ""
     try:
@@ -5521,11 +5463,9 @@ def start_checkout():
         "paired_proxy_rotation": bool(data.get("paired_proxy_rotation", False)),
         "use_sen": data.get("use_sen", True) is not False,
         "use_so": data.get("use_so", True) is not False,
-        "dynamic_proxy_api": dynamic_proxy_api,
         "allow_missing_customer_session": bool(data.get("allow_missing_customer_session")) and internal_request,
         "entry_proxy_country": str(data.get("entry_proxy_country") or (str(data.get("promo_country") or country) if link_type == "kakao" else ("VN" if link_type == "gcash" else ("US" if link_type == "ph_short" and country == "PH" else country)))).upper(),
         "exit_proxy_country": str(data.get("exit_proxy_country") or ("PH" if link_type == "gcash" else ((str(data.get("promo_country") or ("TR" if country == "PH" else country))) if link_type == "ph_short" and bool(data.get("use_promo", True)) else country))).upper(),
-        "proxy_session_time": min(120, max(1, int(data.get("proxy_session_time") or 10))),
     }
     if link_type == "ph_short":
         if country == "PH" and options["entry_proxy_country"] == "PH":

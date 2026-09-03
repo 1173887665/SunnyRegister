@@ -92,8 +92,9 @@ function Test-RunningPid([string]$File) {
 }
 
 $workerPidFile = Join-Path $RuntimeDir "python-worker.pid"
+$workbenchWorkerPidFile = Join-Path $RuntimeDir "link-workbench-worker.pid"
 $backendPidFile = Join-Path $RuntimeDir "backend.pid"
-if (Test-RunningPid $workerPidFile -or Test-RunningPid $backendPidFile) {
+if (Test-RunningPid $workerPidFile -or Test-RunningPid $workbenchWorkerPidFile -or Test-RunningPid $backendPidFile) {
   $existingPort = if ($env:SUNNYREGISTER_PORT) { $env:SUNNYREGISTER_PORT } else { "8000" }
   Write-Host "SunnyRegister is already running: http://127.0.0.1:$existingPort" -ForegroundColor Green
   Start-Process "http://127.0.0.1:$existingPort"
@@ -105,6 +106,7 @@ if (-not $env:DATABASE_URL) {
   throw "DATABASE_URL is required. Configure PostgreSQL in .env before starting SunnyRegister."
 }
 $env:PYTHON_WORKER_URL = "http://127.0.0.1:8765"
+$env:PYTHON_WORKBENCH_WORKER_URL = "http://127.0.0.1:8766"
 $env:PYTHON_TASK_TYPES = "sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt,sunny_rebind"
 $env:TZ = if ($env:TZ) { $env:TZ } else { "Asia/Shanghai" }
 $env:SUNNY_TIMEZONE = $env:TZ
@@ -132,6 +134,27 @@ for ($i = 0; $i -lt 60; $i++) {
 if (-not $workerReady) {
   & (Join-Path $PSScriptRoot "stop-windows.ps1")
   throw "Python Worker failed to become ready. Check logs\python-worker.err.log."
+}
+
+$workbenchWorker = Start-Process -FilePath $WorkerPython `
+  -ArgumentList @("-m", "uvicorn", "link_workbench_worker:app", "--host", "127.0.0.1", "--port", "8766") `
+  -WorkingDirectory (Join-Path $Root "python-worker") `
+  -RedirectStandardOutput (Join-Path $LogDir "link-workbench-worker.out.log") `
+  -RedirectStandardError (Join-Path $LogDir "link-workbench-worker.err.log") `
+  -WindowStyle Hidden -PassThru
+[System.IO.File]::WriteAllText($workbenchWorkerPidFile, [string]$workbenchWorker.Id)
+
+$workbenchReady = $false
+for ($i = 0; $i -lt 60; $i++) {
+  if ($workbenchWorker.HasExited) { break }
+  try {
+    $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8766/health" -TimeoutSec 2
+    if ($response.StatusCode -eq 200) { $workbenchReady = $true; break }
+  } catch { Start-Sleep -Seconds 1 }
+}
+if (-not $workbenchReady) {
+  & (Join-Path $PSScriptRoot "stop-windows.ps1")
+  throw "Link Workbench Worker failed to become ready. Check logs\link-workbench-worker.err.log."
 }
 
 $backend = Start-Process -FilePath $BackendExe `

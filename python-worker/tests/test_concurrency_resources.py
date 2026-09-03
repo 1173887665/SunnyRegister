@@ -143,7 +143,45 @@ class ProxySnapshotTests(unittest.TestCase):
             "http://same.example:8080", "http://other.example:8081",
         ])
 
-    def test_excluding_all_pool_endpoints_uses_local_fallback(self) -> None:
+    def test_dynamic_gateway_snapshot_preserves_repeated_endpoints_as_slots(self) -> None:
+        payload = {
+            "proxy_enabled": True,
+            "proxy_pool_dynamic": True,
+            "proxy_pool": ["http://gateway.example:8080"] * 3,
+            "proxy_ids": [101, 102, 103],
+        }
+        candidates = _proxy_pool_candidates(payload)
+        self.assertEqual(len(candidates), 3)
+        self.assertEqual([item["register"] for item in candidates], [
+            "http://gateway.example:8080",
+            "http://gateway.example:8080",
+            "http://gateway.example:8080",
+        ])
+        self.assertEqual([item["proxy_key"] for item in candidates], ["id:101", "id:102", "id:103"])
+
+    def test_dynamic_gateway_exclusion_uses_slot_identity_not_shared_url(self) -> None:
+        class FakeDB:
+            def proxy_is_usable(self, proxy_id: int) -> bool:
+                return True
+
+            def event(self, *args, **kwargs) -> None:
+                pass
+
+        payload = {
+            "proxy_enabled": True,
+            "proxy_pool_dynamic": True,
+            "proxy_pool": ["http://gateway.example:8080"] * 3,
+            "proxy_ids": [101, 102, 103],
+            "_excluded_register_proxies": ["id:101"],
+        }
+        with patch("sunny_core.worker.proxy_target_tls_check", return_value={"ok": True, "latency_ms": 1}) as check:
+            selected = _prepare_register_proxy(FakeDB(), payload, "user@example.com", slot=0)
+
+        self.assertEqual(selected["register"], "http://gateway.example:8080")
+        self.assertEqual(selected["proxy_id"], 102)
+        self.assertEqual(check.call_args.args[0], "http://gateway.example:8080")
+
+    def test_excluding_all_pool_endpoints_does_not_use_local_fallback(self) -> None:
         class FakeDB:
             def event(self, *args, **kwargs) -> None:
                 pass
@@ -158,10 +196,26 @@ class ProxySnapshotTests(unittest.TestCase):
             "local_proxy": "http://local.example:7890",
             "_excluded_register_proxies": ["http://pool.example:8080"],
         }
-        with patch("sunny_core.worker.proxy_target_tls_check", return_value={"ok": True, "latency_ms": 1}):
-            selected = _prepare_register_proxy(FakeDB(), payload, "user@example.com")
-        self.assertEqual(selected["register"], "http://local.example:7890")
-        self.assertEqual(selected["mode"], "local_proxy_fallback")
+        with patch("sunny_core.worker.proxy_target_tls_check", return_value={"ok": False, "error": "excluded", "latency_ms": 1}):
+            with self.assertRaises(RuntimeError) as error:
+                _prepare_register_proxy(FakeDB(), payload, "user@example.com")
+        self.assertIn("代理池已配置但当前没有可用槽位", str(error.exception))
+
+    def test_configured_empty_pool_does_not_use_legacy_register_listener(self) -> None:
+        class FakeDB:
+            def event(self, *args, **kwargs) -> None:
+                pass
+
+        payload = {
+            "proxy_enabled": True,
+            "proxy_pool_configured": True,
+            "register_proxy": "http://127.0.0.1:7897",
+            "local_proxy": "http://127.0.0.1:7897",
+            "proxy_pool": [],
+        }
+        with self.assertRaises(RuntimeError) as error:
+            _prepare_register_proxy(FakeDB(), payload, "user@example.com")
+        self.assertIn("代理池已配置但当前没有可用槽位", str(error.exception))
 
 
 class PhoneReservationTests(unittest.TestCase):

@@ -100,6 +100,32 @@ func TestSunnyProxyCreatePreservesExplicitEmptyPurpose(t *testing.T) {
 	}
 }
 
+func TestSunnyTaskProxySnapshotMarksRepeatedGatewayRowsAsDynamicSlots(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	s.sunnySaveConfig(sunnyCfgProxy, mergeConfig(defaultProxyConfig(), map[string]any{"proxy_enabled": true}))
+	rows := []SunnyProxy{
+		{Address: "http://gateway.example:8080", Country: "JP", PurposeTags: sunnyProxyPurposeRegister, Status: "enabled", Enabled: true, LastCheckOK: true},
+		{Address: "http://gateway.example:8080", Country: "JP", PurposeTags: sunnyProxyPurposeRegister, Status: "enabled", Enabled: true, LastCheckOK: true},
+	}
+	if err := s.db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	snapshot := s.sunnyTaskProxySnapshot(map[string]any{"proxy_countries": []any{"JP"}})
+	pool, ok := snapshot["proxy_pool"].([]string)
+	if !ok || len(pool) != 2 {
+		t.Fatalf("proxy_pool=%#v", snapshot["proxy_pool"])
+	}
+	if !boolValue(snapshot["proxy_pool_dynamic"], false) || !boolValue(snapshot["proxy_pool_preserve_slots"], false) {
+		t.Fatalf("dynamic slot flags missing: %#v", snapshot)
+	}
+	if text(snapshot["proxy_pool_mode"]) != "dynamic" {
+		t.Fatalf("proxy_pool_mode=%#v", snapshot["proxy_pool_mode"])
+	}
+	if !boolValue(snapshot["proxy_pool_configured"], false) {
+		t.Fatalf("proxy_pool_configured flag missing: %#v", snapshot)
+	}
+}
+
 func TestSunnyCommerceProxyURLPrefersCheckoutCountryAndPurpose(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

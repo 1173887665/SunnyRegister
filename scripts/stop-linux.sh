@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME="$ROOT/.runtime"
 
-for name in backend python-worker novnc x11vnc xvfb; do
+for name in backend python-worker link-workbench-worker novnc x11vnc xvfb; do
   pid_file="$RUNTIME/${name}.pid"
   [[ -f "$pid_file" ]] || continue
   pid="$(cat "$pid_file")"

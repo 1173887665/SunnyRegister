@@ -920,6 +920,12 @@ class MomoManager:
         """Normalize direct-protocol progress hints into manager states."""
         data = result.data if isinstance(result.data, dict) else {}
         raw = str(data.get("status") or data.get("state") or data.get("next_step") or "").strip().lower().replace("-", "_")
+        # A confirmation response may be merged with the previous payment
+        # context, which still carries requires_confirmation=true.  Final
+        # settlement identifiers are authoritative and must win over stale
+        # transition flags to avoid recursively submitting confirmation.
+        if _as_bool(data.get("confirmed"), False) or any(data.get(key) for key in ("payment_id", "transaction_id", "transId")):
+            return "success"
         if _as_bool(data.get("requires_otp"), False) or _as_bool(data.get("otp_required"), False):
             return "waiting_otp"
         if _as_bool(data.get("requires_confirmation"), False) or _as_bool(data.get("confirmation_required"), False):
@@ -929,8 +935,6 @@ class MomoManager:
         if raw in {"awaiting_confirmation", "confirmation_required", "requires_confirmation", "pending_confirmation", "pending"}:
             return "awaiting_confirmation"
         if raw in {"success", "succeeded", "completed", "complete", "paid", "ok"}:
-            return "success"
-        if _as_bool(data.get("confirmed"), False) or any(data.get(key) for key in ("payment_id", "transaction_id", "transId")):
             return "success"
         # A payment token means the provider accepted the request but has not
         # reported settlement yet. Let the confirmation step finish it.
@@ -980,6 +984,15 @@ class MomoManager:
             if code:
                 return code
             with self.lock:
+                # A manually submitted OTP may arrive while the SMS endpoint
+                # probe is in flight. Re-check the queue before sleeping for
+                # another poll interval so direct submissions are handled
+                # immediately instead of adding a full interval of latency.
+                queued = job.get("_otp") or []
+                if queued:
+                    code = str(queued.pop(0))
+                    ignored.add(hashlib.sha256(code.encode("utf-8")).hexdigest())
+                    return code
                 condition = self.conds.get(job_id)
                 if condition:
                     condition.wait(timeout=min(interval, max(0.1, remaining)))
@@ -1412,6 +1425,15 @@ class MomoManager:
                         code = str(queued.pop(0))
                 if not code:
                     code = self._poll_pool_code(phone, proxy, ignored)
+                # A user may submit the OTP while the pool endpoint request
+                # is in flight. Check the queue again before starting another
+                # poll/sleep cycle so registration resumes immediately.
+                if not code:
+                    with self.lock:
+                        current = self.jobs.get(job_id)
+                        queued = current.get("_otp") if current else []
+                        if queued:
+                            code = str(queued.pop(0))
             if code:
                 break
             with self.lock:

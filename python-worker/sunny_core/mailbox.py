@@ -671,6 +671,7 @@ class HotmailReader:
         self.imap: imaplib.IMAP4_SSL | None = None
         self.graph_access_token = ""
         self.graph_proxies: dict[str, str] | None = None
+        self.graph_disabled = False
         self.seen: set[str] = set()
 
     def connect(self, access_token: str | None = None) -> None:
@@ -682,7 +683,7 @@ class HotmailReader:
         request_routes = [None]
         if self.proxy_url:
             request_routes.append({"http": self.proxy_url, "https": self.proxy_url})
-        if self._connect_graph_routes(request_routes, errors):
+        if not self.graph_disabled and self._connect_graph_routes(request_routes, errors):
             return
         for endpoint in TOKEN_ENDPOINTS:
             for request_proxies in request_routes:
@@ -743,10 +744,10 @@ class HotmailReader:
                 detail = response.text[:300]
             if response.status_code == 401:
                 raise MailboxAccessError(
-                    "mailbox_credential_expired",
-                    "Outlook Graph 凭证已过期或被撤销",
+                    "mailbox_graph_unauthorized",
+                    "Outlook Graph 访问令牌被拒绝，正在尝试其它邮箱通道",
                     f"Graph HTTP {response.status_code}: {detail}",
-                    terminal=True,
+                    terminal=False,
                 )
             if response.status_code == 403:
                 raise MailboxAccessError(
@@ -948,8 +949,18 @@ class HotmailReader:
 
     def latest_message(self) -> dict[str, Any]:
         if self.graph_access_token:
-            items = self._graph_messages(1)
-            return items[0] if items else {"email": self.account.email, "empty": True, "source": "graph"}
+            try:
+                items = self._graph_messages(1)
+                return items[0] if items else {"email": self.account.email, "empty": True, "source": "graph"}
+            except MailboxAccessError as exc:
+                if exc.code != "mailbox_graph_unauthorized":
+                    raise
+                token = self.graph_access_token
+                self.graph_access_token = ""
+                self.graph_proxies = None
+                self.graph_disabled = True
+                self._connect_with_access_token_routes(token, "graph-fallback")
+                self.log(f"[{self.account.email}] Graph 401，已切换 Outlook IMAP 兼容通道")
         assert self.imap is not None
         for folder in ("INBOX", "Junk", "Junk Email"):
             try:
@@ -1028,6 +1039,24 @@ class HotmailReader:
                     return code
         except Exception as exc:
             self.log(f"[{self.account.email}] Outlook Graph OTP scan failed: {exc}")
+            if isinstance(exc, MailboxAccessError) and exc.code == "mailbox_graph_unauthorized":
+                token = self.graph_access_token
+                self.graph_access_token = ""
+                self.graph_proxies = None
+                self.graph_disabled = True
+                try:
+                    self._connect_with_access_token_routes(token, "graph-fallback")
+                    self.log(f"[{self.account.email}] Graph 401，已切换 Outlook IMAP 兼容通道")
+                except Exception as fallback_exc:
+                    self.log(f"[{self.account.email}] Graph 401 后 IMAP 兼容通道连接失败：{fallback_exc}")
+                    if isinstance(fallback_exc, MailboxAccessError) and fallback_exc.terminal:
+                        raise
+                    raise MailboxAccessError(
+                        "mailbox_auth_failed",
+                        "Outlook Graph 返回 401，且 IMAP 兼容通道也未连接成功",
+                        str(fallback_exc),
+                        terminal=True,
+                    ) from fallback_exc
             if isinstance(exc, MailboxAccessError) and exc.terminal:
                 raise
         return ""

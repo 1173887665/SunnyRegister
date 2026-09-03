@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +26,10 @@ _ACCOUNT_DISABLED = (
 def classify_auth_failure(error: Any, *, http_status: int = 0) -> AuthFailure:
     text = str(error or "").strip().lower()
     status = int(http_status or 0)
+    if status <= 0:
+        match = re.search(r"\bhttp(?:/\d(?:\.\d)?)?\s*[:=]?\s*(\d{3})\b", text)
+        if match:
+            status = int(match.group(1))
     if any(marker in text for marker in ("task cancelled", "任务已取消", "用户已中断")):
         return AuthFailure("cancelled", terminal=True)
     if any(marker in text for marker in _ACCOUNT_DISABLED):
@@ -45,7 +50,7 @@ def classify_auth_failure(error: Any, *, http_status: int = 0) -> AuthFailure:
         "rate_limit_exceeded", "rate limit", "too many requests", "请求过多",
     )):
         return AuthFailure("rate_limited", retryable=True, rotate_proxy=True, fresh_context=True, delay_seconds=20)
-    if "407" in text or "proxy authentication required" in text or "proxy authentication failed" in text:
+    if status == 407 or "407" in text or "proxy authentication required" in text or "proxy authentication failed" in text:
         return AuthFailure("proxy_authentication", retryable=True, rotate_proxy=True, delay_seconds=2)
     if any(marker in text for marker in (
         "cloudflare", "upstream edge", "上游边缘", "proxy connect failed", "https 隧道",
@@ -55,10 +60,20 @@ def classify_auth_failure(error: Any, *, http_status: int = 0) -> AuthFailure:
         "sec_error_unknown_issuer", "unknown issuer", "net::err_cert_authority_invalid",
         "certificate verify failed", "unable to get local issuer certificate",
         "self signed certificate", "ssl_error_bad_cert", "ssl_error_untrusted_cert",
+        "proxy error", "proxy connect", "proxy tunnel", "proxy refused",
     )):
         return AuthFailure("edge_blocked", retryable=True, rotate_proxy=True, delay_seconds=2)
     if any(marker in text for marker in (
         "invalid_auth_step", "invalid_state", "authorization step", "认证事务状态失效",
+        "session is no longer valid", "session has expired", "session expired",
+        "セッションは無効", "セッションの有効期限",
+    )):
+        # A stale authorization transaction is tied to the route that created
+        # its cookies/challenge. Rebuilding the context on the same dynamic
+        # gateway can reproduce the invalid state, so let the task rotate to a
+        # fresh gateway slot as well.
+        return AuthFailure("stale_auth_context", retryable=True, rotate_proxy=True, fresh_context=True, delay_seconds=12)
+    if any(marker in text for marker in (
         "email-otp/validate", "emailotpvalidate", "proof_required", "sentinel_required",
     )):
         return AuthFailure("stale_auth_context", retryable=True, fresh_context=True, delay_seconds=12)
@@ -72,9 +87,20 @@ def classify_auth_failure(error: Any, *, http_status: int = 0) -> AuthFailure:
         return AuthFailure("token_invalid", retryable=True, fresh_context=True)
     if status == 403:
         return AuthFailure("edge_blocked", retryable=True, rotate_proxy=True, delay_seconds=2)
-    if status in {500, 502, 503, 504} or any(marker in text for marker in (
+    if status in {408, 425, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526} or any(marker in text for marker in (
         "connection reset", "connection refused", "timed out", "timeout", "curl: (28)",
         "curl: (7)", "curl: (35)", "unexpected eof", "tls", "temporary failure", "network is unreachable",
+        "ns_error_net_reset", "net_error_net_reset", "network reset",
+        "connection aborted", "connection closed", "remote end closed", "server disconnected",
+        "failed to establish a new connection", "max retries exceeded", "read timed out",
+        "connect timeout", "connect timed out", "operation timed out", "empty response", "empty reply",
+        "name or service not known", "temporary failure in name resolution", "dns",
+        "bad gateway", "service unavailable", "temporarily unavailable", "gateway timeout",
+        "request timeout", "upstream connect error", "socket hang up", "connection timed out",
+        "econnreset", "econnrefused", "etimedout", "eai_again", "enotfound",
+        "tls handshake timeout", "ssl handshake timeout",
+        "at 检测未能到达官方模型接口", "at 检测上游响应异常", "代理池脉冲预检",
+        "dynamic proxy api", "动态代理 api", "dynamic proxy provider", "动态代理提供方",
     )):
         return AuthFailure("transient_transport", retryable=True, rotate_proxy=True, delay_seconds=2)
     return AuthFailure("unknown")

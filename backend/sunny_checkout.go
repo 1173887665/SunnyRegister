@@ -18,7 +18,12 @@ import (
 	"time"
 )
 
-const sunnyCheckoutTaskType = "sunny_checkout_link"
+const (
+	sunnyCheckoutTaskType          = "sunny_checkout_link"
+	sunnyWorkbenchCheckoutTaskType = "sunny_workbench_checkout_link"
+	checkoutRuntimeManager         = "manager"
+	checkoutRuntimeWorkbench       = "workbench"
+)
 
 const (
 	defaultSunnyCheckoutTimeout = 30 * time.Minute
@@ -35,6 +40,20 @@ func sunnyCheckoutTimeout() time.Duration {
 		seconds = 2 * 60 * 60
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func checkoutWorkerURL(runtimeName string) string {
+	envKey := "PYTHON_WORKER_URL"
+	defaultURL := "http://127.0.0.1:8765"
+	if runtimeName == checkoutRuntimeWorkbench {
+		envKey = "PYTHON_WORKBENCH_WORKER_URL"
+		defaultURL = "http://127.0.0.1:8766"
+	}
+	workerURL := strings.TrimRight(strings.TrimSpace(os.Getenv(envKey)), "/")
+	if workerURL == "" {
+		workerURL = defaultURL
+	}
+	return workerURL
 }
 
 var checkoutProviders = []map[string]string{
@@ -68,43 +87,45 @@ var checkoutCountryCurrency = map[string]string{
 }
 
 type sunnyCheckoutRequest struct {
-	SystemAT         bool           `json:"system_at"`
-	SessionIDs       []uint         `json:"session_ids"`
-	ExternalATs      []string       `json:"external_ats"`
-	CheckoutProxies  string         `json:"checkout_proxies"`
-	PromotionProxies string         `json:"promotion_proxies"`
-	CheckoutKinds    []string       `json:"checkout_kinds"`
-	Plan             string         `json:"plan"`
-	LinkType         string         `json:"link_type"`
-	Country          string         `json:"country"`
-	Currency         string         `json:"currency"`
-	RetryCount       int            `json:"retry_count"`
-	Concurrency      int            `json:"concurrency"`
-	UsePromo         bool           `json:"use_promo"`
-	PromoCampaign    string         `json:"promo_campaign"`
-	PromoCode        string         `json:"promo_code"`
-	WorkspaceName    string         `json:"workspace_name"`
-	WorkspaceID      string         `json:"workspace_id"`
-	SeatQuantity     int            `json:"seat_quantity"`
-	PriceInterval    string         `json:"price_interval"`
-	CreditQuantity   int            `json:"credit_quantity"`
-	PixTaxID         string         `json:"pix_tax_id"`
-	PixAutoKind      string         `json:"pix_auto_kind"`
-	IdealBank        string         `json:"ideal_bank"`
-	PromoCountry     string         `json:"promo_country"`
-	CheckoutMode     string         `json:"checkout_mode"`
-	ChainConfig      map[string]any `json:"chain_config"`
+	SystemAT            bool           `json:"system_at"`
+	SessionIDs          []uint         `json:"session_ids"`
+	ExternalATs         []string       `json:"external_ats"`
+	CheckoutProxies     string         `json:"checkout_proxies"`
+	PromotionProxies    string         `json:"promotion_proxies"`
+	CheckoutKinds       []string       `json:"checkout_kinds"`
+	Plan                string         `json:"plan"`
+	LinkType            string         `json:"link_type"`
+	Country             string         `json:"country"`
+	Currency            string         `json:"currency"`
+	RetryCount          int            `json:"retry_count"`
+	Concurrency         int            `json:"concurrency"`
+	UsePromo            bool           `json:"use_promo"`
+	PromoCampaign       string         `json:"promo_campaign"`
+	PromoCode           string         `json:"promo_code"`
+	WorkspaceName       string         `json:"workspace_name"`
+	WorkspaceID         string         `json:"workspace_id"`
+	SeatQuantity        int            `json:"seat_quantity"`
+	PriceInterval       string         `json:"price_interval"`
+	CreditQuantity      int            `json:"credit_quantity"`
+	PixTaxID            string         `json:"pix_tax_id"`
+	PixAutoKind         string         `json:"pix_auto_kind"`
+	IdealBank           string         `json:"ideal_bank"`
+	PromoCountry        string         `json:"promo_country"`
+	CheckoutMode        string         `json:"checkout_mode"`
+	ChainConfig         map[string]any `json:"chain_config"`
+	UseProgramProxyPool bool           `json:"use_program_proxy_pool"`
 }
 
 type sunnyCheckoutPrecheckRequest struct {
-	SystemAT         bool     `json:"system_at"`
-	SessionIDs       []uint   `json:"session_ids"`
-	ExternalATs      []string `json:"external_ats"`
-	CheckoutProxies  string   `json:"checkout_proxies"`
-	PromotionProxies string   `json:"promotion_proxies"`
-	LinkType         string   `json:"link_type"`
-	Country          string   `json:"country"`
-	PromoCountry     string   `json:"promo_country"`
+	SystemAT            bool     `json:"system_at"`
+	SessionIDs          []uint   `json:"session_ids"`
+	ExternalATs         []string `json:"external_ats"`
+	CheckoutProxies     string   `json:"checkout_proxies"`
+	PromotionProxies    string   `json:"promotion_proxies"`
+	LinkType            string   `json:"link_type"`
+	Country             string   `json:"country"`
+	PromoCountry        string   `json:"promo_country"`
+	UseProgramProxyPool bool     `json:"use_program_proxy_pool"`
 }
 
 type sunnyCheckoutCredential struct {
@@ -123,21 +144,20 @@ type checkoutSecret struct {
 
 func splitCheckoutPool(raw string) ([]string, error) {
 	lines := strings.FieldsFunc(raw, func(r rune) bool { return r == '\r' || r == '\n' })
-	seen := map[string]bool{}
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || seen[line] {
+		if line == "" {
 			continue
 		}
 		normalized, err := normalizeCheckoutProxy(line)
 		if err != nil {
 			return nil, fmt.Errorf("代理格式无效: %s", line)
 		}
-		if seen[normalized] {
-			continue
-		}
-		seen[normalized] = true
+		// Keep repeated rows as independent pool slots. Dynamic gateways often
+		// expose the same host/port while issuing a different exit IP per slot
+		// or connection; URL-level deduplication would pin every retry to one
+		// slot.
 		out = append(out, normalized)
 	}
 	if len(out) == 0 {
@@ -173,8 +193,9 @@ func normalizeCheckoutProxy(raw string) (string, error) {
 	return u.String(), nil
 }
 
-// sunnyCheckoutProxyPools resolves canonical proxy URLs from the program pool.
-// The legacy commerce purpose remains a fallback for existing configurations.
+// sunnyCheckoutProxyPools resolves proxy URLs from the program pool while
+// preserving repeated rows. Rotating gateways may intentionally expose the
+// same host/port in several independent pool slots.
 func (s *Server) sunnyCheckoutProxyPools(countries ...string) ([]string, error) {
 	var proxies []SunnyProxy
 	purposeQuery := "(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?"
@@ -200,7 +221,6 @@ func (s *Server) sunnyCheckoutProxyPools(countries ...string) ([]string, error) 
 	for _, country := range wanted {
 		allowed[country] = true
 	}
-	seen := map[string]bool{}
 	out := []string{}
 	found := map[string]bool{}
 	for _, proxy := range proxies {
@@ -213,10 +233,7 @@ func (s *Server) sunnyCheckoutProxyPools(countries ...string) ([]string, error) 
 			continue
 		}
 		found[country] = true
-		if !seen[canonical] {
-			seen[canonical] = true
-			out = append(out, canonical)
-		}
+		out = append(out, canonical)
 	}
 	missing := []string{}
 	for _, country := range wanted {
@@ -300,19 +317,35 @@ func (s *Server) normalizeCheckoutRequestFromPool(in sunnyCheckoutRequest) (sunn
 		}
 		in.PixTaxID = digits
 	}
-	checkout, err := s.sunnyCheckoutProxyPools(in.Country)
-	if err != nil {
-		return in, nil, nil, fmt.Errorf("Checkout 代理池: %w", err)
-	}
-	promotion := append([]string(nil), checkout...)
-	if in.LinkType != "gcash" {
-		promoCountry := in.PromoCountry
-		if promoCountry == "" {
-			promoCountry = in.Country
-		}
-		promotion, err = s.sunnyCheckoutProxyPools(promoCountry)
+	var checkout, promotion []string
+	var err error
+	if in.UseProgramProxyPool {
+		checkout, err = s.sunnyCheckoutProxyPools(in.Country)
 		if err != nil {
-			return in, nil, nil, fmt.Errorf("Promotion 代理池: %w", err)
+			return in, nil, nil, fmt.Errorf("Checkout 代理池: %w", err)
+		}
+		promotion = append([]string(nil), checkout...)
+		if in.LinkType != "gcash" {
+			promoCountry := in.PromoCountry
+			if promoCountry == "" {
+				promoCountry = in.Country
+			}
+			promotion, err = s.sunnyCheckoutProxyPools(promoCountry)
+			if err != nil {
+				return in, nil, nil, fmt.Errorf("Promotion 代理池: %w", err)
+			}
+		}
+	} else {
+		checkout, err = splitCheckoutPool(in.CheckoutProxies)
+		if err != nil {
+			return in, nil, nil, fmt.Errorf("Checkout 代理池: %w", err)
+		}
+		promotion = append([]string(nil), checkout...)
+		if in.LinkType != "gcash" {
+			promotion, err = splitCheckoutPool(in.PromotionProxies)
+			if err != nil {
+				return in, nil, nil, fmt.Errorf("Promotion 代理池: %w", err)
+			}
 		}
 	}
 	return in, checkout, promotion, nil
@@ -364,12 +397,20 @@ func checkoutCredentialID() string {
 }
 
 func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []string) {
+	s.sunnyCheckoutRuntime(w, r, parts, checkoutRuntimeManager)
+}
+
+func (s *Server) sunnyWorkbenchCheckout(w http.ResponseWriter, r *http.Request, parts []string) {
+	s.sunnyCheckoutRuntime(w, r, parts, checkoutRuntimeWorkbench)
+}
+
+func (s *Server) sunnyCheckoutRuntime(w http.ResponseWriter, r *http.Request, parts []string, runtimeName string) {
 	if len(parts) == 1 && parts[0] == "providers" && r.Method == http.MethodGet {
 		writeJSON(w, 200, map[string]any{"items": checkoutProviders, "countries": checkoutCountryCurrency})
 		return
 	}
 	if len(parts) >= 2 && parts[0] == "gcash-orders" && (r.Method == http.MethodGet || r.Method == http.MethodPost) {
-		s.proxySunnyGcashOrder(w, r, parts[1:])
+		s.proxySunnyGcashOrder(w, r, parts[1:], runtimeName)
 		return
 	}
 	if len(parts) == 1 && parts[0] == "precheck" && r.Method == http.MethodPost {
@@ -386,21 +427,39 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 		if country == "" {
 			country, _ = checkoutProviderDefaults(linkType)
 		}
-		checkout, err := s.sunnyCheckoutProxyPools(country)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "Checkout 代理池: "+err.Error())
-			return
-		}
-		promotion := append([]string(nil), checkout...)
-		if linkType != "gcash" {
-			promoCountry := strings.ToUpper(strings.TrimSpace(body.PromoCountry))
-			if promoCountry == "" {
-				promoCountry = country
+		var checkout, promotion []string
+		var err error
+		if body.UseProgramProxyPool {
+			checkout, err = s.sunnyCheckoutProxyPools(country)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "Checkout 代理池: "+err.Error())
+				return
 			}
-			promotion, err = s.sunnyCheckoutProxyPools(promoCountry)
+			promotion = append([]string(nil), checkout...)
+			if linkType != "gcash" {
+				promoCountry := strings.ToUpper(strings.TrimSpace(body.PromoCountry))
+				if promoCountry == "" {
+					promoCountry = country
+				}
+				promotion, err = s.sunnyCheckoutProxyPools(promoCountry)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, "Promotion 代理池: "+err.Error())
+					return
+				}
+			}
+		} else {
+			checkout, err = splitCheckoutPool(body.CheckoutProxies)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "Checkout 代理池: "+err.Error())
+				return
+			}
+			promotion, err = splitCheckoutPool(body.PromotionProxies)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, "Promotion 代理池: "+err.Error())
 				return
+			}
+			if linkType == "gcash" {
+				promotion = append([]string(nil), checkout...)
 			}
 		}
 		type candidate struct {
@@ -516,29 +575,30 @@ func (s *Server) sunnyCheckout(w http.ResponseWriter, r *http.Request, parts []s
 			values[fmt.Sprintf("%d", i)] = c.Token
 		}
 		s.checkoutMu.Lock()
-		s.checkoutCreds[id] = checkoutSecret{Tokens: values, Checkout: checkout, Promotion: promotion}
+		s.checkoutCredentials(runtimeName)[id] = checkoutSecret{Tokens: values, Checkout: checkout, Promotion: promotion}
 		s.checkoutMu.Unlock()
-		payload := map[string]any{"credential_id": id, "credentials": make([]map[string]any, len(creds)), "plan": body.Plan, "link_type": body.LinkType, "country": body.Country, "currency": body.Currency, "retry_count": body.RetryCount, "concurrency": body.Concurrency, "use_promo": body.UsePromo, "promo_campaign": body.PromoCampaign, "promo_country": body.PromoCountry, "promo_code": body.PromoCode, "workspace_name": body.WorkspaceName, "workspace_id": body.WorkspaceID, "seat_quantity": body.SeatQuantity, "price_interval": body.PriceInterval, "credit_quantity": body.CreditQuantity, "pix_tax_id": body.PixTaxID, "pix_auto_kind": body.PixAutoKind, "ideal_bank": body.IdealBank, "checkout_mode": body.CheckoutMode, "chain_config": body.ChainConfig}
+		payload := map[string]any{"checkout_runtime": runtimeName, "credential_id": id, "credentials": make([]map[string]any, len(creds)), "plan": body.Plan, "link_type": body.LinkType, "country": body.Country, "currency": body.Currency, "retry_count": body.RetryCount, "concurrency": body.Concurrency, "use_promo": body.UsePromo, "promo_campaign": body.PromoCampaign, "promo_country": body.PromoCountry, "promo_code": body.PromoCode, "workspace_name": body.WorkspaceName, "workspace_id": body.WorkspaceID, "seat_quantity": body.SeatQuantity, "price_interval": body.PriceInterval, "credit_quantity": body.CreditQuantity, "pix_tax_id": body.PixTaxID, "pix_auto_kind": body.PixAutoKind, "ideal_bank": body.IdealBank, "checkout_mode": body.CheckoutMode, "chain_config": body.ChainConfig, "proxy_enabled": true}
 		items := payload["credentials"].([]map[string]any)
 		for i, c := range creds {
 			items[i] = map[string]any{"index": i, "email": c.Email, "checkout_kind": c.CheckoutKind, "session_id": c.SessionID, "external": c.External}
 		}
-		task := s.createTask(sunnyCheckoutTaskType, "chatgpt", payload, len(creds))
+		taskType := sunnyCheckoutTaskType
+		if runtimeName == checkoutRuntimeWorkbench {
+			taskType = sunnyWorkbenchCheckoutTaskType
+		}
+		task := s.createTask(taskType, "chatgpt", payload, len(creds))
 		writeJSON(w, http.StatusAccepted, serializeTask(task))
 		return
 	}
 	writeError(w, 404, "not found")
 }
 
-func (s *Server) proxySunnyGcashOrder(w http.ResponseWriter, r *http.Request, parts []string) {
+func (s *Server) proxySunnyGcashOrder(w http.ResponseWriter, r *http.Request, parts []string, runtimeName string) {
 	if len(parts) == 0 || len(parts) > 2 {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	workerURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PYTHON_WORKER_URL")), "/")
-	if workerURL == "" {
-		workerURL = "http://127.0.0.1:8765"
-	}
+	workerURL := checkoutWorkerURL(runtimeName)
 	path := "/api/gcash/orders/" + url.PathEscape(parts[0])
 	if len(parts) == 2 {
 		if (parts[1] != "callback" && parts[1] != "qr") || r.Method != http.MethodPost {
@@ -638,9 +698,20 @@ func parseCheckoutExternalAT(raw string) (string, string) {
 }
 
 func (s *Server) checkoutCredential(taskID string, index int) string {
+	return s.checkoutCredentialForRuntime(checkoutRuntimeManager, taskID, index)
+}
+
+func (s *Server) checkoutCredentials(runtimeName string) map[string]checkoutSecret {
+	if runtimeName == checkoutRuntimeWorkbench {
+		return s.workbenchCheckoutCreds
+	}
+	return s.checkoutCreds
+}
+
+func (s *Server) checkoutCredentialForRuntime(runtimeName, taskID string, index int) string {
 	s.checkoutMu.Lock()
 	defer s.checkoutMu.Unlock()
-	values := s.checkoutCreds[taskID]
+	values := s.checkoutCredentials(runtimeName)[taskID]
 	return values.Tokens[fmt.Sprintf("%d", index)]
 }
 
@@ -651,9 +722,13 @@ func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
 	task.StartedAt.Time = now
 	s.db.Save(task)
 	credentialID := text(payload["credential_id"])
+	runtimeName := text(payload["checkout_runtime"])
+	if runtimeName != checkoutRuntimeWorkbench {
+		runtimeName = checkoutRuntimeManager
+	}
 	defer func() {
 		s.checkoutMu.Lock()
-		delete(s.checkoutCreds, credentialID)
+		delete(s.checkoutCredentials(runtimeName), credentialID)
 		s.checkoutMu.Unlock()
 	}()
 	var rows []map[string]any
@@ -665,7 +740,7 @@ func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
 		}
 	}
 	s.checkoutMu.Lock()
-	secret := s.checkoutCreds[credentialID]
+	secret := s.checkoutCredentials(runtimeName)[credentialID]
 	s.checkoutMu.Unlock()
 	if len(secret.Tokens) == 0 || len(secret.Checkout) == 0 || len(secret.Promotion) == 0 {
 		s.finishTask(task, TaskFailed, "临时提链凭据已不存在；服务重启后的临时任务不能恢复，请重新提交", map[string]any{"requested": len(rows), "success": 0, "failed": len(rows), "items": []any{}})
@@ -699,7 +774,7 @@ func (s *Server) executeSunnyCheckoutTask(task *Task, payload map[string]any) {
 			}
 		acquired:
 			defer func() { <-sem }()
-			token := s.checkoutCredential(credentialID, intValue(row["index"], idx))
+			token := s.checkoutCredentialForRuntime(runtimeName, credentialID, intValue(row["index"], idx))
 			email := text(row["email"])
 			accountID := uint(intValue(row["session_id"], 0))
 			rowIndex := intValue(row["index"], idx)
@@ -813,17 +888,32 @@ func (s *Server) runSunnyCheckoutAttempt(task *Task, payload, row map[string]any
 	return item
 }
 
-func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, checkoutKind string, payload map[string]any, checkoutProxies, promotionProxies []string, email string, accountID uint, rowIndex int) (map[string]any, error) {
-	body := map[string]any{
+func sunnyCheckoutWorkerRequestBody(token, checkoutKind string, payload map[string]any, checkoutProxies, promotionProxies []string, proxySlot int) map[string]any {
+	// The Worker schema treats chain_config as an object.  Older workbench
+	// payloads persisted a JSON null when no provider-specific options were set;
+	// normalize that value before dispatch so those tasks are accepted too.
+	chainConfig := payload["chain_config"]
+	if chainConfig == nil {
+		chainConfig = map[string]any{}
+	}
+	return map[string]any{
 		"token": token, "checkout_proxies": checkoutProxies, "promotion_proxies": promotionProxies,
+		// The Go batch scheduler assigns one row index per account. Carry it to
+		// the Worker so concurrent account jobs start at different pool slots
+		// instead of all selecting index zero.
+		"proxy_slot":    proxySlot,
 		"checkout_kind": checkoutKind,
 		"plan":          payload["plan"], "link_type": payload["link_type"], "country": payload["country"], "currency": payload["currency"],
 		"retry_count": payload["retry_count"], "use_promo": payload["use_promo"], "promo_campaign": payload["promo_campaign"], "promo_country": payload["promo_country"],
-		"promo_code": payload["promo_code"], "workspace_name": payload["workspace_name"], "workspace_id": payload["workspace_id"], "seat_quantity": payload["seat_quantity"], "checkout_mode": payload["checkout_mode"], "chain_config": payload["chain_config"],
+		"promo_code": payload["promo_code"], "workspace_name": payload["workspace_name"], "workspace_id": payload["workspace_id"], "seat_quantity": payload["seat_quantity"], "checkout_mode": payload["checkout_mode"], "chain_config": chainConfig,
 		"price_interval": payload["price_interval"], "credit_quantity": payload["credit_quantity"], "ideal_bank": payload["ideal_bank"], "pix_tax_id": payload["pix_tax_id"], "pix_auto_kind": payload["pix_auto_kind"],
 	}
+}
+
+func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, checkoutKind string, payload map[string]any, checkoutProxies, promotionProxies []string, email string, accountID uint, rowIndex int) (map[string]any, error) {
+	body := sunnyCheckoutWorkerRequestBody(token, checkoutKind, payload, checkoutProxies, promotionProxies, rowIndex)
 	data, _ := json.Marshal(body)
-	workerURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PYTHON_WORKER_URL")), "/")
+	workerURL := checkoutWorkerURL(text(payload["checkout_runtime"]))
 	if workerURL == "" {
 		workerURL = "http://127.0.0.1:8765"
 	}
@@ -843,7 +933,24 @@ func (s *Server) requestSunnyCheckout(ctx context.Context, task *Task, token, ch
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("提链引擎 HTTP %d", resp.StatusCode)
+		// Preserve the worker's structured validation/error response.  The
+		// status code alone made 4xx failures indistinguishable in the UI.
+		detail := strings.TrimSpace(string(raw))
+		if detail != "" {
+			var envelope map[string]any
+			if json.Unmarshal(raw, &envelope) == nil {
+				if value := strings.TrimSpace(text(envelope["detail"])); value != "" {
+					detail = value
+				} else if value := strings.TrimSpace(text(envelope["error"])); value != "" {
+					detail = value
+				}
+			}
+			detail = strings.TrimSpace(checkoutSecretPattern.ReplaceAllString(detail, "[REDACTED]"))
+		}
+		if detail == "" {
+			return nil, fmt.Errorf("提链引擎 HTTP %d", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("提链引擎 HTTP %d: %s", resp.StatusCode, detail)
 	}
 	var started map[string]any
 	if json.Unmarshal(raw, &started) != nil || text(started["job_id"]) == "" {

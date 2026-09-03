@@ -51,6 +51,16 @@ class LoginSecretRateLimitError(RuntimeError):
     """OpenAI rejected the reauthentication transaction due to request rate limiting."""
 
 
+class RemotePasswordAlreadySetError(RuntimeError):
+    """The account has a password, but this worker has no copy of it."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "远端 ChatGPT 已存在密码，但本地没有密码凭证；请在账户管理中补录原密码，"
+            "或先重置密码后再重试登录密钥"
+        )
+
+
 def _is_auth_rate_limit_text(value: Any) -> bool:
     text = str(value or "").strip().lower()
     return any(marker in text for marker in _AUTH_RATE_LIMIT_MARKERS)
@@ -925,7 +935,7 @@ class LoginSecretSetupFlow:
             self.log("[登录密钥] 已通过 OpenAI 协议接口添加 ChatGPT 密码（内容不写日志）")
             return password
         if _password_already_set(protocol_result):
-            raise RuntimeError("远端 ChatGPT 已存在密码，但本地没有密码凭证，无法恢复原密码；请在账户管理中手动录入或重置后重试")
+            raise RemotePasswordAlreadySetError()
         self.log(
             "[登录密钥] 协议添加密码接口未完成，将回退账户设置页："
             f"HTTP {protocol_result.get('status', 0)} {self._protocol_error_detail(protocol_result)}".strip()
@@ -1343,6 +1353,8 @@ class LoginSecretSetupFlow:
                 self.log("[登录密钥] ChatGPT 密码添加成功，继续复用当前认证状态添加 2FA")
             except Exception as exc:
                 result["errors"].append(f"添加密码失败: {exc}")
+                if isinstance(exc, RemotePasswordAlreadySetError):
+                    result["remote_password_already_set"] = True
                 self.log(f"[登录密钥] ChatGPT 密码添加失败，停止后续 2FA：{str(exc)[:240]}")
         else:
             self.log("[登录密钥] 账户已有 ChatGPT 密码，跳过密码添加阶段")
@@ -1879,7 +1891,7 @@ class ProtocolLoginSecretSetupFlow:
             )
             result = {"status": status, "data": data, "error": data.get("error") if isinstance(data, dict) else None}
             if _password_already_set(result):
-                raise RuntimeError("远端 ChatGPT 已存在密码，但本地没有密码凭证，无法恢复原密码；请在账户管理中手动录入或重置后重试")
+                raise RemotePasswordAlreadySetError()
             if 200 <= status < 300:
                 self.log("[登录密钥] 已通过同一协议登录态添加 ChatGPT 密码（内容不写日志）")
                 return self._session_json()
@@ -2000,6 +2012,8 @@ class ProtocolLoginSecretSetupFlow:
                     self.log("[登录密钥] ChatGPT 密码添加成功，继续复用当前认证状态添加 2FA")
                 except Exception as exc:
                     result["errors"].append(f"添加密码失败: {exc}")
+                    if isinstance(exc, RemotePasswordAlreadySetError):
+                        result["remote_password_already_set"] = True
                     self.log(f"[登录密钥] ChatGPT 密码添加失败，停止后续 2FA：{str(exc)[:240]}")
                     if exc.__class__.__name__ == "ProtocolChallengeRequired":
                         result["browser_challenge_required"] = True

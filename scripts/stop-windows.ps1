@@ -13,7 +13,7 @@ function Stop-ProcessTree([int]$ProcessId) {
   }
 }
 
-foreach ($name in @("backend", "python-worker")) {
+foreach ($name in @("backend", "python-worker", "link-workbench-worker")) {
   $pidFile = Join-Path $RuntimeDir "$name.pid"
   if (-not (Test-Path -LiteralPath $pidFile)) { continue }
   $value = [System.IO.File]::ReadAllText($pidFile).Trim()
@@ -29,6 +29,13 @@ $workerListeners = @(Get-NetTCPConnection -State Listen -LocalPort 8765 -ErrorAc
 foreach ($processId in $workerListeners) {
   $process = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
   if ($process -and $process.CommandLine -match '(?i)-m\s+uvicorn\s+worker:app') {
+    Stop-ProcessTree -ProcessId ([int]$processId)
+  }
+}
+$workbenchListeners = @(Get-NetTCPConnection -State Listen -LocalPort 8766 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
+foreach ($processId in $workbenchListeners) {
+  $process = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+  if ($process -and $process.CommandLine -match '(?i)-m\s+uvicorn\s+link_workbench_worker:app') {
     Stop-ProcessTree -ProcessId ([int]$processId)
   }
 }

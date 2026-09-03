@@ -39,6 +39,8 @@ services:
         condition: service_healthy
       python-worker:
         condition: service_healthy
+      link-workbench-worker:
+        condition: service_healthy
     ports:
       - "${SUNNYREGISTER_BIND:-0.0.0.0}:${SUNNYREGISTER_PORT:-8000}:8000"
     environment:
@@ -48,6 +50,7 @@ services:
       ADMIN_PASSWORD_FILE: /app/data/admin_password.txt
       DATABASE_URL: postgresql://${POSTGRES_USER:-sunnyregister}:${POSTGRES_PASSWORD:-sunnyregister}@postgres:5432/${POSTGRES_DB:-sunnyregister}?sslmode=disable
       PYTHON_WORKER_URL: http://python-worker:8765
+      PYTHON_WORKBENCH_WORKER_URL: http://link-workbench-worker:8766
       PYTHON_WORKER_TOKEN: ${PYTHON_WORKER_TOKEN:-}
       PYTHON_TASK_TYPES: ${PYTHON_TASK_TYPES:-sunny_register,sunny_login,sunny_refresh_session,sunny_acquire_rt,sunny_rebind}
       TZ: ${TZ:-Asia/Shanghai}
@@ -129,6 +132,45 @@ services:
     shm_size: "${WORKER_SHM_SIZE:-1gb}"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8765/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  link-workbench-worker:
+    build:
+      context: .
+      dockerfile: python-worker/Dockerfile
+    image: sunnyregister/python-worker:${SUNNYREGISTER_TAG:-latest}
+    container_name: sunnyregister-link-workbench-worker
+    init: true
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["uvicorn", "link_workbench_worker:app", "--host", "0.0.0.0", "--port", "8766"]
+    environment:
+      PYTHON_WORKER_TOKEN: ${PYTHON_WORKER_TOKEN:-}
+      PYTHONUTF8: "1"
+      TZ: ${TZ:-Asia/Shanghai}
+      SUNNY_TIMEZONE: ${SUNNY_TIMEZONE:-Asia/Shanghai}
+      SUNNY_CONTAINERIZED: "true"
+      PAY153_WORKBENCH_STATE_DIR: /app/data/link-workbench
+      DISPLAY: ${WORKER_DISPLAY:-:99}
+      ENABLE_XVFB: ${ENABLE_XVFB:-false}
+      ENABLE_NOVNC: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - sunnyregister-data:/app/data
+    shm_size: "${WORKER_SHM_SIZE:-1gb}"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8766/health"]
       interval: 30s
       timeout: 5s
       start_period: 30s

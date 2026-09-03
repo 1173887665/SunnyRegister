@@ -63,6 +63,52 @@ func newSunnySessionTestServer(t *testing.T) *Server {
 	return server
 }
 
+func TestSunnyWorkbenchSessionListIncludesFailedMailboxesWithoutSessions(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	now := time.Now()
+	failed := SunnyMailbox{
+		Email: "failed-without-session@example.com", Status: "failed", AccountType: "free",
+		Raw: "failed-without-session@example.com----mailbox-secret", LastError: "registration transport failed",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.db.Create(&failed).Error; err != nil {
+		t.Fatalf("create failed mailbox: %v", err)
+	}
+	request := func(path string) map[string]any {
+		recorder := httptest.NewRecorder()
+		s.sunnySessions(recorder, httptest.NewRequest(http.MethodGet, path, nil), nil)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("list status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		return payload
+	}
+
+	plain := request("/api/sunny/sessions?status=失败&page=1&page_size=20")
+	if intValue(plain["total"], -1) != 0 {
+		t.Fatalf("ordinary session list unexpectedly included mailbox-only row: %#v", plain)
+	}
+
+	workbench := request("/api/sunny/sessions?include_mailbox_only=true&status=失败&page=1&page_size=20")
+	if intValue(workbench["total"], 0) != 1 {
+		t.Fatalf("workbench failed total=%v body=%#v", workbench["total"], workbench)
+	}
+	items, _ := workbench["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("workbench failed items=%#v", workbench["items"])
+	}
+	item, _ := items[0].(map[string]any)
+	if item["id"] != fmt.Sprintf("mailbox-%d", failed.ID) || item["row_kind"] != "mailbox" || boolValue(item["selectable"], true) {
+		t.Fatalf("mailbox placeholder identity=%#v", item)
+	}
+	if item["status"] != "失败" || item["mailbox_error"] != failed.LastError || item["has_secret_key"] != true {
+		t.Fatalf("mailbox placeholder diagnostics=%#v", item)
+	}
+}
+
 func TestSunnyAccessTokenProbeUsesPythonWorker(t *testing.T) {
 	t.Setenv("PYTHON_WORKER_TOKEN", "worker-secret")
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

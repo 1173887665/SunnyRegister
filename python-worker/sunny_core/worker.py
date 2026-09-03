@@ -479,6 +479,53 @@ def _raw_mailboxes(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _proxy_pool_preserves_slots(payload: dict[str, Any]) -> bool:
+    """Whether identical gateway URLs represent independent pool slots.
+
+    A dynamic gateway commonly exposes one host/port and changes the actual
+    exit for each authenticated slot/connection.  Collapsing those rows by
+    URL removes the only rotation identity (the pool row/slot) and makes a
+    retry look like it is pinned to one route.  Static pools still collapse
+    duplicate URLs to avoid probing the same endpoint repeatedly; the backend
+    marks snapshots containing dynamic gateway slots with
+    ``proxy_pool_dynamic``.
+    """
+    return bool(
+        payload.get("proxy_pool_dynamic") is True
+        or payload.get("proxy_pool_preserve_slots") is True
+        or payload.get("proxy_pool_mode") in {"dynamic", "gateway", "slot"}
+    )
+
+
+def _proxy_candidate_key(candidate: dict[str, Any]) -> str:
+    """Return the stable identity used when excluding a failed route."""
+    key = str(candidate.get("proxy_key") or candidate.get("key") or "").strip()
+    if key:
+        return key
+    try:
+        proxy_id = int(candidate.get("id") or 0)
+    except (TypeError, ValueError):
+        proxy_id = 0
+    if proxy_id > 0:
+        return f"id:{proxy_id}"
+    address = str(candidate.get("register") or candidate.get("address") or "").strip()
+    return f"address:{address}" if address else ""
+
+
+def _proxy_exclusion_value(proxy: dict[str, Any], payload: dict[str, Any] | None = None) -> str:
+    """Serialize a selected route for the task-local exclusion list.
+
+    Keep the historical URL format for ordinary static pools so persisted or
+    test payloads remain compatible.  Dynamic/slot pools use the row identity;
+    excluding the URL there would incorrectly exclude every slot sharing the
+    same gateway address.
+    """
+    payload = payload or {}
+    if _proxy_pool_preserves_slots(payload):
+        return _proxy_candidate_key(proxy)
+    return str(proxy.get("register") or "").strip()
+
+
 def _proxy_pool_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
     raw_pool = payload.get("proxy_pool")
     pool_items = raw_pool if isinstance(raw_pool, list) else []
@@ -486,6 +533,7 @@ def _proxy_pool_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
     proxy_ids = raw_ids if isinstance(raw_ids, list) else []
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
+    preserve_slots = _proxy_pool_preserves_slots(payload)
     for index, item in enumerate(pool_items):
         stored_address = build_proxy("", str(item or "")).url
         if not stored_address:
@@ -495,16 +543,25 @@ def _proxy_pool_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
         except (TypeError, ValueError):
             proxy_id = 0
         register_address = _container_host_proxy(stored_address)
-        # A task snapshot can contain one row per mailbox while many rows
-        # point to the same endpoint. Keep one candidate per endpoint so a
-        # failed route is not probed hundreds of times.
-        if register_address in seen:
+        if preserve_slots:
+            # Keep each persisted row as an independent lease/slot even when
+            # its gateway URL is identical to another row.  Prefer the stable
+            # database ID; imported snapshots without IDs still get a slot
+            # identity so retries can move past the first entry.
+            candidate_key = f"id:{proxy_id}" if proxy_id > 0 else f"slot:{index}"
+        else:
+            candidate_key = register_address
+        # Ordinary static pools keep one candidate per endpoint. Dynamic slot
+        # pools only collapse an accidental duplicate of the same row identity.
+        if candidate_key in seen:
             continue
-        seen.add(register_address)
+        seen.add(candidate_key)
         candidates.append({
             "id": proxy_id,
             "address": stored_address,
             "register": register_address,
+            "slot": index,
+            "proxy_key": candidate_key,
         })
     return candidates
 
@@ -524,6 +581,7 @@ def _proxy_snapshot(payload: dict[str, Any], slot: int = 0) -> dict[str, Any]:
             "proxy_id": int(lease.get("proxy_id") or 0),
             "proxy_slot": int(lease.get("slot") or -1),
             "proxy_latency_ms": int(lease.get("latency_ms") or 0),
+            "proxy_key": str(lease.get("proxy_key") or f"address:{register_proxy}").strip(),
         }
     base = str(payload.get("proxy") or "").strip()
     candidates = _proxy_pool_candidates(payload)
@@ -531,11 +589,26 @@ def _proxy_snapshot(payload: dict[str, Any], slot: int = 0) -> dict[str, Any]:
         selected = candidates[max(0, int(slot)) % len(candidates)]
         register_proxy = selected["register"]
         proxy_id = selected["id"]
+        proxy_key = selected.get("proxy_key") or ""
     else:
-        register_proxy = _container_host_proxy(build_proxy("", str(payload.get("register_proxy") or base)).url)
+        # A configured database pool is authoritative.  Its usable snapshot
+        # can be empty when every row is unchecked/disabled; returning the
+        # legacy register_proxy here would pin all accounts to one listener.
+        if payload.get("proxy_pool_configured") is True:
+            register_proxy = ""
+        else:
+            register_proxy = _container_host_proxy(build_proxy("", str(payload.get("register_proxy") or base)).url)
         proxy_id = 0
+        proxy_key = f"address:{register_proxy}" if register_proxy else ""
     local_proxy = _container_host_proxy(build_proxy(str(payload.get("local_proxy") or ""), "").url)
-    return {"register": register_proxy, "mode": "proxy_pool", "local_proxy": local_proxy, "proxy_id": proxy_id}
+    return {
+        "register": register_proxy,
+        "mode": "proxy_pool",
+        "local_proxy": local_proxy,
+        "proxy_id": proxy_id,
+        "proxy_slot": selected.get("slot", -1) if candidates else -1,
+        "proxy_key": proxy_key,
+    }
 
 
 def _auxiliary_proxy(payload: dict[str, Any], proxies: dict[str, Any]) -> str:
@@ -570,24 +643,34 @@ def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, sl
     proxies = _proxy_snapshot(payload, slot)
     proxy = proxies.get("register", "")
     if not proxy or proxies.get("mode") != "proxy_pool":
+        if payload.get("proxy_pool_configured") is True:
+            raise RuntimeError("代理池已配置但当前没有可用槽位；请先启用并检测图二代理池中的记录")
         return proxies
 
     candidates = _proxy_pool_candidates(payload)
+    pool_configured = bool(candidates) or payload.get("proxy_pool_configured") is True
     excluded = {
         str(value or "").strip()
         for value in (payload.get("_excluded_register_proxies") or [])
         if str(value or "").strip()
     }
     if excluded:
-        candidates = [candidate for candidate in candidates if str(candidate.get("register") or "").strip() not in excluded]
+        preserve_slots = _proxy_pool_preserves_slots(payload)
+        if preserve_slots:
+            candidates = [candidate for candidate in candidates if _proxy_candidate_key(candidate) not in excluded]
+        else:
+            candidates = [candidate for candidate in candidates if str(candidate.get("register") or "").strip() not in excluded]
     if candidates:
         start = max(0, int(slot)) % len(candidates)
         candidates = candidates[start:] + candidates[:start]
         fallbacks = candidates[1:]
         random.SystemRandom().shuffle(fallbacks)
         candidates = candidates[:1] + fallbacks
-    elif not excluded:
+    elif not excluded and not pool_configured:
         candidates = [{"id": 0, "address": proxy, "register": proxy}]
+
+    if pool_configured and not candidates:
+        raise RuntimeError("代理池已配置但当前没有可用槽位；请先启用并检测图二代理池中的记录")
 
     failures: list[str] = []
     for attempt, candidate in enumerate(candidates, start=1):
@@ -602,7 +685,13 @@ def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, sl
             continue
         check = proxy_target_tls_check(candidate_proxy, timeout=10)
         if check.get("ok"):
-            selected = {**proxies, "register": candidate_proxy, "proxy_id": proxy_id}
+            selected = {
+                **proxies,
+                "register": candidate_proxy,
+                "proxy_id": proxy_id,
+                "proxy_slot": int(candidate.get("slot", -1)),
+                "proxy_key": _proxy_candidate_key(candidate),
+            }
             db.event(
                 f"[{email}] [代理] 代理 HTTPS 隧道预检通过：{redact_proxy_url(candidate_proxy)}，延迟 {check.get('latency_ms', 0)}ms",
                 detail={"email": email, "scope": "selected", "proxy": candidate_proxy, "proxy_id": proxy_id, "proxy_mode": selected.get("mode"), "proxy_precheck": check, "proxy_attempt": attempt},
@@ -619,7 +708,10 @@ def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, sl
 
     local_proxy = proxies.get("local_proxy", "")
     attempted_proxies = {str(candidate.get("register") or "") for candidate in candidates}
-    if local_proxy and local_proxy not in attempted_proxies:
+    # A configured pool is authoritative. Falling back to one local listener
+    # after pool failures would silently pin every account to the same host/IP,
+    # defeating rotating gateway slots and hiding pool outages.
+    if local_proxy and local_proxy not in attempted_proxies and not pool_configured:
         local_check = proxy_target_tls_check(local_proxy, timeout=10)
         if local_check.get("ok"):
             db.event(
@@ -634,6 +726,8 @@ def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, sl
             detail={"email": email, "scope": "selected", "proxy": local_proxy, "proxy_mode": "local_proxy_fallback", "proxy_precheck": local_check},
         )
     failure_summary = "；".join(failures[-3:]) or "任务快照中的代理均已失效"
+    if pool_configured and local_proxy:
+        failure_summary += "；已禁用本地代理回退以保持代理池路由隔离"
     raise RuntimeError(f"代理池中没有可用于 ChatGPT 注册链路的代理；{failure_summary}")
 
 
@@ -736,7 +830,7 @@ def _run_phone_one_impl(
         auxiliary_proxy = _auxiliary_proxy(payload, proxies)
         traffic_meter = ProxyTrafficMeter(
             proxy_url=str(proxies.get("register") or ""),
-            tracked_proxy=str(proxies.get("mode") or "") == "proxy_pool",
+            tracked_proxy=bool(str(proxies.get("register") or "")),
             email=slot,
             operation="sunny_phone_register",
         )
@@ -2073,7 +2167,7 @@ def _run_one_impl(
     is_registered_mailbox = bool(account.openai_rt) or str(mailbox.get("status") or "") in {"registered", "已注册", "phone_bound", "已接码", "已反代", "reverse_proxied", "登录刷新"}
     traffic_meter = ProxyTrafficMeter(
         proxy_url=str(proxies.get("register") or ""),
-        tracked_proxy=str(proxies.get("mode") or "") == "proxy_pool",
+        tracked_proxy=bool(str(proxies.get("register") or "")),
         email=str(email),
         operation=task_type,
     )
@@ -3029,15 +3123,23 @@ def _run_one_with_proxy_retry(
         current_payload = dict(payload)
         if excluded:
             current_payload["_excluded_register_proxies"] = sorted(excluded)
-        selected_before = _proxy_snapshot(current_payload, max(0, index - 1)).get("register", "")
+        selected_snapshot = _proxy_snapshot(current_payload, max(0, index - 1))
+        selected_before = str(selected_snapshot.get("register") or "").strip()
+        selected_key = _proxy_exclusion_value(selected_snapshot, current_payload)
         last_result = _run_one(db, task_type, current_payload, mailbox, index, total, protocol_batch_policy)
         ok, result = last_result
         if ok:
             return last_result
         failure = classify_auth_failure(result)
-        if not (failure.retryable and failure.rotate_proxy and selected_before and attempt + 1 < max_attempts):
+        if not (
+            failure.retryable
+            and failure.rotate_proxy
+            and selected_before
+            and attempt + 1 < max_attempts
+        ):
             return last_result
-        excluded.add(str(selected_before).strip())
+        if selected_key:
+            excluded.add(selected_key)
         db.event(
             f"[{email}] [代理] 当前注册链路属于 {failure.category}，已排除当前出口并建立新上下文重试（{attempt + 2}/{max_attempts}）",
             "warning",
@@ -3079,7 +3181,7 @@ def _refresh_with_retry(db: SunnyDB, refresh_token: str, proxy_url: str) -> dict
 
 
 def _renewal_proxy_candidates(payload: dict[str, Any], preferred: str = "") -> list[str]:
-    """Return a shuffled, de-duplicated set of usable renewal routes.
+    """Return shuffled renewal routes while preserving dynamic pool slots.
 
     Renewal tasks historically kept the first lease for every account, so a
     single 407/connection reset caused the whole batch to fail.  Keep the
@@ -3087,8 +3189,10 @@ def _renewal_proxy_candidates(payload: dict[str, Any], preferred: str = "") -> l
     order; this spreads retries across independent exits without changing the
     configured pool.
     """
+    # Equal URLs are not necessarily the same route: dynamic gateways use
+    # repeated pool rows as independent leases. Keep every slot in the list.
     pool = [str(item.get("register") or "").strip() for item in _proxy_pool_candidates(payload)]
-    pool = list(dict.fromkeys(value for value in pool if value))
+    pool = [value for value in pool if value]
     preferred = str(preferred or "").strip()
     if preferred and preferred in pool:
         pool.remove(preferred)
@@ -3863,7 +3967,9 @@ def _sub2_import_one(
     _emit_registration_progress(db, email, stage, "reverse_importing")
     # Sub2API itself can use its configured upstream proxy; importing an
     # already-authenticated account must not require a registration proxy.
-    _import_sub2api(db, email, account_id, session, proxy_url="")
+    import_proxies = _proxy_snapshot(payload, max(0, index - 1))
+    import_proxy_url = _auxiliary_proxy(payload, import_proxies)
+    _import_sub2api(db, email, account_id, session, proxy_url=import_proxy_url)
     db.upsert_account(email, status="reverse_proxied", access_token=access_token, openai_rt=refresh_token, last_error="")
     db.mark_mailbox_by_email(email, "已反代", openai_rt=refresh_token)
     _emit_registration_progress(db, email, stage, "reverse_imported", state="completed")
@@ -4297,8 +4403,11 @@ def _rebind_with_proxy_rotation(
         current_payload = dict(payload)
         if excluded:
             current_payload["_excluded_register_proxies"] = sorted(excluded)
-        proxy = _prepare_register_proxy(db, current_payload, email, slot + attempt).get("register", "")
+        prepared_proxy: dict[str, Any] = {}
+        proxy = ""
         try:
+            prepared_proxy = _prepare_register_proxy(db, current_payload, email, slot + attempt)
+            proxy = str(prepared_proxy.get("register") or "").strip()
             account_for_rebind = dict(account)
             if str(current_payload.get("rebind_source") or "").strip().lower() == "imported":
                 for account_key, payload_key in (
@@ -4324,15 +4433,18 @@ def _rebind_with_proxy_rotation(
             delivery_not_observed = phase == "delivery" and "上游未实际投递换绑验证码" in str(exc)
             can_rotate = (
                 attempt + 1 < max_attempts
-                and bool(proxy)
                 and (
-                    (failure.rotate_proxy and phase in {"login", "eligibility", "begin", "delivery"})
+                    (bool(proxy) and failure.rotate_proxy and phase in {"login", "eligibility", "begin", "delivery"})
                     or delivery_not_observed
                 )
             )
             if not can_rotate:
                 raise
-            excluded.add(proxy)
+            # Static pools need to exclude the selected row, not just its URL
+            # when multiple dynamic gateway slots intentionally share it.
+            excluded_value = _proxy_exclusion_value(prepared_proxy, current_payload)
+            if excluded_value:
+                excluded.add(excluded_value)
             phase_label = {
                 "login": "登录阶段",
                 "eligibility": "资格检查阶段",

@@ -25,7 +25,7 @@ const sunnyAccessTokenProbeEndpoint = "https://chatgpt.com/backend-api/models"
 var sunnyProbeAccessTokenEndpoint = sunnyAccessTokenProbeEndpoint
 
 func sunnyGoTaskType(taskType string) bool {
-	return taskType == sunnyHealthTaskType || taskType == sunnyAccessTokenCheckTaskType || taskType == sunnySubscriptionTaskType || taskType == sunnyTrialTaskType || taskType == sunnyCheckoutProbeTaskType || taskType == sunnyPaymentProbeTaskType || taskType == sunnyCheckoutTaskType
+	return taskType == sunnyHealthTaskType || taskType == sunnyAccessTokenCheckTaskType || taskType == sunnySubscriptionTaskType || taskType == sunnyTrialTaskType || taskType == sunnyCheckoutProbeTaskType || taskType == sunnyPaymentProbeTaskType || taskType == sunnyCheckoutTaskType || taskType == sunnyWorkbenchCheckoutTaskType
 }
 
 type sunnyAccessTokenCandidate struct {
@@ -521,6 +521,7 @@ func (s *Server) createSunnyAccessTokenCheckTask(body map[string]any) (Task, err
 		return Task{}, err
 	}
 	payload := map[string]any{"session_ids": ids, "scheduled": scheduled, "skipped": skipped}
+	payload = s.sunnyTaskProxySnapshot(payload)
 	return s.createTask(sunnyAccessTokenCheckTaskType, "sunny", payload, len(candidates)), nil
 }
 

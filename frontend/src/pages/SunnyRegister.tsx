@@ -803,7 +803,7 @@ const zh: AnyObj = new Proxy(Object.assign({
   smspoolProvider: "SMSPool 接码供应商", smspoolDesc: "SMSPool 临时号码平台，可在自建手机号池和 SMSBower 不可用时自动购买一次性接码号码。", smspoolSwitch: "启用 SMSPool", smspoolReady: "SMSPool 已配置", smspoolApiKey: "API Key", smspoolCountry: "默认国家", smspoolService: "默认服务", refreshProviderOptions: "获取列表", providerOptionSearch: "搜索 ID、代码或名称...", providerOptionNoResults: "没有匹配的选项", smspoolMaxPrice: "最大价格", smspoolBaseURL: "接口地址", smspoolCheck: "检测余额", smspoolBalance: "余额：{balance}", smspoolSaved: "SMSPool 配置已保存",
   firefoxProvider: "FireFox 接码供应商", firefoxDesc: "FireFox 临时号码平台。使用 API 密钥 Token 直接取号，每 5 秒轮询验证码，不可用号码将在 35 秒后自动释放。", firefoxSwitch: "启用 FireFox", firefoxReady: "FireFox 已配置", firefoxApiToken: "API 密钥 Token", firefoxCountry: "默认国家", firefoxService: "默认服务", firefoxMaxPrice: "单号最高价格", firefoxBaseURL: "接口地址", firefoxCheck: "检测余额", firefoxBalance: "余额：{balance}", firefoxSaved: "FireFox 配置已保存", firefoxMaxPriceRequired: "FireFox 单号最高价格必须大于 0",
   proxyTip: "管理出站代理用途。注册任务使用注册/登录代理；试用、Checkout 和支付方式检测使用账户检测代理。", proxyPool: "代理池", proxyEnabled: "启用", proxyDisabled: "停用", proxyAvailable: "失效", proxySearch: "搜索代理地址...", proxyCountry: "国家", proxyAllCountry: "全部国家", proxyAddress: "代理地址", proxyPurpose: "用途", proxyPurposeRegister: "注册/登录", proxyPurposeCommerce: "账户检测", proxyPurposeAll: "全部用途", proxyPurposeKeep: "留空保持原用途", proxyBatchCheck: "批量检测", proxyBatchDelete: "批量删除", proxyBatchEdit: "批量修改", proxyAdd: "新增代理", proxyEdit: "编辑代理", proxyCheckDone: "代理检测完成", proxyAddedPendingCheck: "代理已快速加入，请执行批量检测后使用", proxyImportIncomplete: "代理批量写入结果不完整，请刷新列表后重试", proxyNoData: "暂无代理", proxyNoDataDesc: "请先新增代理地址，再对启用代理进行批量检测。", proxyStatusEnabled: "启用", proxyStatusDisabled: "停用", proxyStatusInvalid: "失效", proxyLastChecked: "上次检测", proxyLatency: "延迟", proxyCountryPlaceholder: "例如 US / HK / JP / Brazil", proxyCountryKeep: "留空保持各代理原国家不变", proxyAddressPlaceholder: "每行一个代理，例如 http://user:pass@host:port 或 socks5://host:port", proxyConfirmDelete: "确认删除该代理？此操作不可撤销。", proxyConfirmBatchDelete: "确认删除选中的代理？此操作不可撤销。", proxyTrafficSwitch: "注册流量代理", proxyTrafficOn: "代理开启", proxyTrafficOff: "代理关闭", proxyTrafficOnHint: "注册/登录请求走代理池", proxyTrafficOffHint: "使用服务器系统网络出口", proxySwitchSaved: "代理出口设置已更新", allTrafficProxyPool: "全流程使用代理池", allTrafficProxyPoolTip: "默认关闭：只有 ChatGPT 官方注册/登录使用代理池；邮箱读取、接码、试用和其他外部 API 由服务器直接访问。勾选后，整个注册任务统一使用代理池出口。",
-  selected: "已选", selectedItems: "已选 {count} 项", selectAll: "全选", selectAllDone: "已选中当前筛选结果中的 {count} 条记录", clearSelection: "清除选择", globalLogs: "全局日志", selectedLogs: "当前邮箱日志", registrationTaskProgress: "注册任务进度", accountRegistrationProgress: "账户注册进度", clearLogs: "清除", logAll: "全部模块", logErrorsOnly: "只看异常", latest: "查询最近邮件", done: "操作完成", failed: "操作失败", batchProgress: "进度", batchSuccess: "成功", batchFailed: "失败", batchTrialProgress: "试用检测进度", batchCheckoutProgress: "Checkout进度", batchPaymentProgress: "支付探测进度", batchAddLSProgress: "添加LS进度", batchATRenewalProgress: "AT续期进度", batchATCheckProgress: "AT检测进度", batchHealthProgress: "测活进度", batchSubscriptionProgress: "订阅检测进度", batchRebindProgress: "换绑进度", batchReverseProxyProgress: "反代进度", file: "选择文件", status: "状态", prev: "上一页", next: "下一页", pageSize: "每页", pageInfo: "第 {page} / {pages} 页", pageRange: "显示 {from} 至 {to} 共 {total} 条结果", noLogs: "暂无日志", noRegistrationTask: "暂无注册任务", noAccountProgress: "暂无正在处理的邮箱账户", taskTotal: "任务总数", taskCompleted: "当前完成", completedAccounts: "已完成注册", pendingAccounts: "未完成注册", abnormalAccounts: "注册状态异常", currentStep: "当前步骤", total: "总计", yes: "是", no: "否", step: "步骤",
+  selected: "已选", selectedItems: "已选 {count} 项", selectAll: "全选", selectAllDone: "已选中当前筛选结果中的 {count} 条记录", clearSelection: "清除选择", globalLogs: "全局日志", selectedLogs: "当前邮箱日志", registrationTaskProgress: "注册任务进度", accountRegistrationProgress: "账户注册进度", clearLogs: "清除", logAll: "全部模块", logErrorsOnly: "只看异常", latest: "查询最近邮件", done: "操作完成", failed: "操作失败", batchProgress: "进度", batchSuccess: "成功", batchFailed: "失败", batchTrialProgress: "试用检测进度", batchCheckoutProgress: "Checkout进度", batchPaymentProgress: "支付探测进度", batchAddLSProgress: "添加LS进度", batchATRenewalProgress: "AT续期进度", batchATCheckProgress: "AT检测进度", batchHealthProgress: "测活进度", batchSubscriptionProgress: "订阅检测进度", batchRebindProgress: "换绑进度", batchReverseProxyProgress: "反代进度", file: "选择文件", status: "状态", prev: "上一页", next: "下一页", pageSize: "每页", pageInfo: "第 {page} / {pages} 页", pageRange: "显示 {from} 至 {to} 共 {total} 条结果", noLogs: "暂无日志", noRegistrationTask: "暂无注册任务", noAccountProgress: "暂无正在处理的邮箱账户", taskTotal: "任务总数", taskCompleted: "当前已处理", completedAccounts: "已完成注册", pendingAccounts: "未完成注册", abnormalAccounts: "注册状态异常", currentStep: "当前步骤", total: "总计", yes: "是", no: "否", step: "步骤",
   progressSteps: { queued: "等待任务调度", initializing: "初始化邮箱任务", proxy_ready: "代理与出口准备完成", browser_started: "启动隔离浏览器", protocol_started: "建立纯协议注册会话", email_submitted: "提交注册邮箱", email_verified: "完成邮箱验证码验证", auth_completed: "完成注册或登录认证", registered: "保存 ChatGPT Session", phone_started: "分配手机号并开始接码", phone_code_received: "收到并提交手机验证码", phone_bound: "完成手机号验证", email_bind_started: "开始注册后绑定邮箱", email_bind_completed: "注册后绑定邮箱完成", reverse_importing: "正在导入反代平台", reverse_imported: "完成反代平台导入", agent_identity_importing: "正在创建 Agent Identity 并导入反代平台", agent_identity_imported: "完成 Agent Identity 反代导入", stage_incomplete: "目标阶段未完成", cancelled: "任务已由用户中断", failed: "注册流程异常" },
   logProxy: "代理", logMailbox: "邮箱", logPhone: "手机", logSession: "Session", logAuth: "认证", logSystem: "系统",
   defaultGroup: "默认分组", allGroups: "全部分组", mailboxGroup: "所属分组", groupSearch: "搜索邮箱分组...", groupNoResults: "没有匹配的邮箱分组", importMailboxes: "导入邮箱", manualImport: "手动导入", fileImport: "文件导入", dragFile: "拖拽邮箱文件到这里，或点击选择文件", importToGroup: "导入到分组", addGroup: "新建分组", editGroup: "编辑分组名", deleteGroup: "删除分组", enterGroup: "输入分组名后回车", groupCreated: "邮箱分组新建成功", groupRenamed: "邮箱分组名称修改成功", groupDeleted: "邮箱分组删除成功", groupNotEmpty: "该邮箱分组下存在邮箱账户，请移除后再删除分组", defaultGroupCannotDelete: "默认分组不能删除", groupNameConflict: "邮箱分组名称已存在", confirmDeleteGroup: "确认删除该邮箱分组？", mailboxCount: "邮箱数量", validationOk: "校验通过", validationFailed: "校验失败", mailboxList: "邮箱列表", enabled: "启用", trafficUsage: "流量消耗", trafficUsageTip: "ChatGPT 账户注册流量 / 邮箱账户历史代理交互总流量", updatedAt: "更新时间", actions: "操作", queryMailbox: "搜索邮箱或换绑邮箱...", allStatus: "全部状态", allPlanTypes: "全部套餐", edit: "编辑", delete: "删除", batchDelete: "批量删除", batchEdit: "批量编辑", confirmDeleteMailbox: "确认删除该邮箱记录？此操作不可撤销。", confirmBatchDeleteMailbox: "确认删除选中的邮箱记录？此操作不可撤销。", queryMail: "邮件查询", currentMailbox: "当前邮箱", getMail: "获取邮件", mailFetchCount: "查询数量", mailFetchCountSuffix: "封", mailList: "邮件列表", sender: "发件人", receiver: "收件人", time: "时间", subject: "主题", content: "邮件内容", emptyMail: "暂无邮件", mailboxName: "邮箱名", password: "密码", chatgptPassword: "ChatGPT 密码", totpSecret: "2FA 密钥", keepCredential: "留空则保持现有凭证", clearCredential: "清除现有凭证", clientId: "client_id", refreshToken: "refresh_token", openaiAccessToken: "OpenAI Access Token", batchEditMailboxTitle: "批量编辑邮箱", applyToSelected: "应用到选中的邮箱", mailboxType: "邮箱类型", microsoftMailbox: "微软邮箱", appleMailbox: "苹果邮箱", channelType: "渠道类型", xbovoChannel: "xbovo", xbovoChannelTip: "验证码查询入口：https://icloud.xbovo.online/code", urlAPIChannel: "url_api", urlAPIChannelTip: "通过邮箱专属取码 URL 查询最新邮件，单次响应最长约 30 秒", icloudAccessKey: "查询 Key", icloudQueryURL: "取码 URL", urlAPIBrowser: "URL API 邮件浏览器", browserBack: "后退", browserForward: "前进", browserReload: "刷新页面", browserLoading: "正在加载邮件页面", browserGetOnly: "当前预览仅支持网页链接和 GET 表单跳转",
@@ -832,7 +832,7 @@ const en = Object.assign({
   phonePool: "Self-managed Phone Pool", phonePoolGlobalSwitch: "Use Self-managed Phone Pool", importPhones: "Import Phones", phonePoolSwitchTip: "When disabled, SunnyRegister will not allocate numbers from this phone pool. You can switch to external SMS providers later.", phonePoolOn: "Usable for SMS", phonePoolOff: "Not used for SMS", phoneImportHelp: "One long-lived SMS record per line. The first character must be +, and the phone number and SMS URL must be separated with exactly four hyphens: ----.", phoneImportPlaceholder: "+12025550123----https://sms.example.com/messages?token=example", phoneImportInvalid: "Invalid phone import format", phoneSearch: "Search phone number...", phoneNumber: "Phone Number", smsLink: "SMS Link", usedCount: "Used Count", countFilter: "Count", allCount: "All Counts", lastUsedAt: "Last Used", phoneEdit: "Edit Phone", phoneStatusEnabled: "Enabled", phoneStatusDisabled: "Disabled", phoneConfirmDelete: "Delete this phone number? This cannot be undone.", phoneConfirmBatchDelete: "Delete selected phone numbers? This cannot be undone.", smsbowerProvider: "SMSBower Provider", smsbowerDesc: "When the self-managed phone pool is unavailable or empty, SunnyRegister can use SMSBower API to rent a one-time number automatically.", smsbowerSwitch: "Enable SMSBower", smsbowerReady: "SMSBower configured", smsbowerApiKey: "API Key", smsbowerCountry: "Default Country", smsbowerService: "Default Service", smsbowerMaxPrice: "Max Price", smsbowerBaseURL: "API URL", smsbowerCheck: "Check Balance", smsbowerBalance: "Balance: {balance}", smsbowerSaved: "SMSBower config saved", smspoolProvider: "SMSPool Provider", smspoolDesc: "SMSPool is a temporary-number provider used when the self-managed phone pool and SMSBower are unavailable.", smspoolSwitch: "Enable SMSPool", smspoolReady: "SMSPool configured", smspoolApiKey: "API Key", smspoolCountry: "Default Country", smspoolService: "Default Service", refreshProviderOptions: "Fetch options", providerOptionSearch: "Search by ID, code, or name...", providerOptionNoResults: "No matching options", smspoolMaxPrice: "Max Price", smspoolBaseURL: "API URL", smspoolCheck: "Check Balance", smspoolBalance: "Balance: {balance}", smspoolSaved: "SMSPool config saved", firefoxProvider: "FireFox Provider", firefoxDesc: "FireFox temporary-number provider using a direct API Token. It polls every 5 seconds and releases rejected numbers after 35 seconds.", firefoxSwitch: "Enable FireFox", firefoxReady: "FireFox configured", firefoxApiToken: "API Token", firefoxCountry: "Default Country", firefoxService: "Default Service", firefoxMaxPrice: "Maximum Unit Price", firefoxBaseURL: "API URL", firefoxCheck: "Check Balance", firefoxBalance: "Balance: {balance}", firefoxSaved: "FireFox config saved", firefoxMaxPriceRequired: "FireFox maximum unit price must be greater than 0",
   proxyTip: "Manage outbound proxies by purpose. Registration uses register/login proxies; trial, Checkout and payment checks use account-check proxies.",
   proxyPool: "Proxy Pool", proxyEnabled: "Enabled", proxyAvailable: "Invalid", proxySearch: "Search proxy address...", proxyCountry: "Country", proxyAllCountry: "All Countries", proxyAddress: "Proxy Address", proxyPurpose: "Purpose", proxyPurposeRegister: "Register/Login", proxyPurposeCommerce: "Account Checks", proxyPurposeAll: "All Purposes", proxyPurposeKeep: "Leave blank to keep current purposes", proxyBatchCheck: "Batch Check", proxyBatchDelete: "Batch Delete", proxyBatchEdit: "Batch Edit", proxyAdd: "Add Proxy", proxyEdit: "Edit Proxy", proxyCheckDone: "Proxy check completed", proxyAddedPendingCheck: "Proxy added immediately; run a batch check before use", proxyImportIncomplete: "The proxy batch result is incomplete; refresh the list and retry", proxyNoData: "No Proxies", proxyNoDataDesc: "Add proxy addresses first, then batch-check enabled proxies.", proxyStatusEnabled: "Enabled", proxyStatusDisabled: "Disabled", proxyStatusInvalid: "Invalid", proxyLastChecked: "Last Checked", proxyLatency: "Latency", proxyCountryPlaceholder: "e.g. US / HK / JP / Brazil", proxyCountryKeep: "Leave blank to keep each proxy's current country", proxyAddressPlaceholder: "One proxy per line, e.g. http://user:pass@host:port or socks5://host:port", proxyConfirmDelete: "Delete this proxy? This cannot be undone.", proxyConfirmBatchDelete: "Delete selected proxies? This cannot be undone.", proxyTrafficSwitch: "Register Traffic Proxy", proxyTrafficOn: "Proxy On", proxyTrafficOff: "Proxy Off", proxyTrafficOnHint: "Register/login requests use proxy pool", proxyTrafficOffHint: "Use server/system network", proxySwitchSaved: "Proxy outlet setting updated", allTrafficProxyPool: "Use proxy pool for all traffic", allTrafficProxyPoolTip: "Off by default: only ChatGPT registration/login uses the proxy pool; mail, SMS, trial checks and other external APIs use direct server egress. Turn this on to route the entire registration task through the proxy pool.",
-  selected: "Selected", selectedItems: "{count} selected", selectAll: "Select All", selectAllDone: "Selected {count} records from the current filters", clearSelection: "Clear Selection", globalLogs: "Global Logs", selectedLogs: "Current Mailbox Logs", registrationTaskProgress: "Registration Progress", accountRegistrationProgress: "Account Progress", clearLogs: "Clear", logAll: "All Modules", logErrorsOnly: "Errors Only", latest: "Latest Mail", done: "Done", failed: "Failed", batchProgress: "Progress", batchSuccess: "Success", batchFailed: "Failed", batchTrialProgress: "Trial check progress", batchCheckoutProgress: "Checkout progress", batchPaymentProgress: "Payment probe progress", batchAddLSProgress: "Add LS progress", batchATRenewalProgress: "AT renewal progress", batchATCheckProgress: "AT check progress", batchHealthProgress: "Health check progress", batchSubscriptionProgress: "Subscription check progress", batchRebindProgress: "Rebind progress", batchReverseProxyProgress: "Reverse proxy progress", file: "Choose File", status: "Status", prev: "Prev", next: "Next", pageSize: "Per page", pageInfo: "Page {page} / {pages}", pageRange: "Showing {from} to {to} of {total} results", noLogs: "No logs", noRegistrationTask: "No registration task yet", noAccountProgress: "No mailbox account is being processed", taskTotal: "Task Total", taskCompleted: "Completed", completedAccounts: "Completed Accounts", pendingAccounts: "Pending Accounts", abnormalAccounts: "Abnormal Accounts", currentStep: "Current Step", total: "Total", yes: "Yes", no: "No", step: "STEP",
+  selected: "Selected", selectedItems: "{count} selected", selectAll: "Select All", selectAllDone: "Selected {count} records from the current filters", clearSelection: "Clear Selection", globalLogs: "Global Logs", selectedLogs: "Current Mailbox Logs", registrationTaskProgress: "Registration Progress", accountRegistrationProgress: "Account Progress", clearLogs: "Clear", logAll: "All Modules", logErrorsOnly: "Errors Only", latest: "Latest Mail", done: "Done", failed: "Failed", batchProgress: "Progress", batchSuccess: "Success", batchFailed: "Failed", batchTrialProgress: "Trial check progress", batchCheckoutProgress: "Checkout progress", batchPaymentProgress: "Payment probe progress", batchAddLSProgress: "Add LS progress", batchATRenewalProgress: "AT renewal progress", batchATCheckProgress: "AT check progress", batchHealthProgress: "Health check progress", batchSubscriptionProgress: "Subscription check progress", batchRebindProgress: "Rebind progress", batchReverseProxyProgress: "Reverse proxy progress", file: "Choose File", status: "Status", prev: "Prev", next: "Next", pageSize: "Per page", pageInfo: "Page {page} / {pages}", pageRange: "Showing {from} to {to} of {total} results", noLogs: "No logs", noRegistrationTask: "No registration task yet", noAccountProgress: "No mailbox account is being processed", taskTotal: "Task Total", taskCompleted: "Processed", completedAccounts: "Completed Accounts", pendingAccounts: "Pending Accounts", abnormalAccounts: "Abnormal Accounts", currentStep: "Current Step", total: "Total", yes: "Yes", no: "No", step: "STEP",
    progressSteps: { queued: "Waiting for task scheduling", initializing: "Initializing mailbox task", proxy_ready: "Proxy and network outlet ready", browser_started: "Starting isolated browser", protocol_started: "Establishing protocol registration session", email_submitted: "Submitting registration email", email_verified: "Email verification completed", auth_completed: "Registration or login authenticated", registered: "ChatGPT Session saved", phone_started: "Allocating phone and starting SMS", phone_code_received: "Phone code received and submitted", phone_bound: "Phone verification completed", email_bind_started: "Starting post-registration email binding", email_bind_completed: "Post-registration email binding completed", reverse_importing: "Importing to reverse proxy", reverse_imported: "Reverse proxy import completed", agent_identity_importing: "Creating Agent Identity and importing to reverse proxy", agent_identity_imported: "Agent Identity reverse proxy import completed", stage_incomplete: "Target stage incomplete", cancelled: "Task interrupted by user", failed: "Registration flow failed" },
   logProxy: "Proxy", logMailbox: "Mailbox", logPhone: "Phone", logSession: "Session", logAuth: "Auth", logSystem: "System",
   defaultGroup: "Default Group", allGroups: "All Groups", mailboxGroup: "Group", groupSearch: "Search mailbox groups...", groupNoResults: "No matching mailbox groups", importMailboxes: "Import Mailboxes", manualImport: "Manual", fileImport: "File", dragFile: "Drag mailbox file here, or click to choose a file", importToGroup: "Import to group", addGroup: "New Group", editGroup: "Rename Group", deleteGroup: "Delete Group", enterGroup: "Type group name and press Enter", groupCreated: "Mailbox group created", groupRenamed: "Mailbox group renamed", groupDeleted: "Mailbox group deleted", groupNotEmpty: "This mailbox group contains accounts. Move them before deleting the group.", defaultGroupCannotDelete: "The default group cannot be deleted", groupNameConflict: "A mailbox group with this name already exists", confirmDeleteGroup: "Delete this mailbox group?", mailboxCount: "Mailboxes", validationOk: "Validation passed", validationFailed: "Validation failed", mailboxList: "Mailbox List", enabled: "Enabled", trafficUsage: "Traffic Usage", trafficUsageTip: "ChatGPT registration traffic / mailbox lifetime proxy traffic", updatedAt: "Updated", actions: "Actions", queryMailbox: "Search mailbox or rebound mailbox...",
@@ -1261,6 +1261,11 @@ function selectionIDs(result: AnyObj): number[] {
   const ids = (Array.isArray(result?.ids) ? result.ids : []).map(Number).filter((id: number)=>id > 0);
   return Array.from(new Set<number>(ids));
 }
+function isMailboxSelectable(row: AnyObj): boolean {
+  if (row?.enabled === false) return false;
+  const status = String(row?.status || "").trim().toLowerCase();
+  return status !== "disabled" && status !== "禁用";
+}
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 function pageCount(total: number, pageSize: number) {
   return Math.max(1, Math.ceil(Math.max(0, Number(total || 0)) / Math.max(1, Number(pageSize || 10))));
@@ -1438,11 +1443,12 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       if (status) params.set("status", status);
       if (planFilter) params.set("plan_type", planFilter);
       if (trialFilter) params.set("trial_eligibility", trialFilter);
+      params.set("enabled", "true");
       const result = await apiFetch(`/sunny/mailboxes?${allSelectionParams(params).toString()}`);
       const ids = selectionIDs(result);
       const selectionItems = Array.isArray(result.items) ? result.items : [];
       setSelected(ids);
-      setSelectedRowCache(Object.fromEntries(selectionItems.map((item: AnyObj)=>[String(item.id), { id:Number(item.id), email:String(item.email || ""), account:{id:0} }])));
+      setSelectedRowCache(Object.fromEntries(selectionItems.map((item: AnyObj)=>[String(item.id), { id:Number(item.id), email:String(item.email || ""), status:String(item.status || ""), enabled:item.enabled !== false, account:{id:0} }])));
       notify("ok", template(t.selectAllDone, { count: ids.length }));
     } catch (e: any) {
       notify("fail", e.message || String(e));
@@ -1463,7 +1469,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       const next = { ...old };
       rows.forEach((row) => {
         const id = Number(row.id);
-        if (selected.includes(id) && !next[String(id)]) {
+        if (selected.includes(id) && (!next[String(id)] || next[String(id)].enabled !== row.enabled || next[String(id)].status !== row.status)) {
           next[String(id)] = row;
           changed = true;
         }
@@ -1473,9 +1479,35 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   }, [mailboxes, selected]);
   useEffect(()=>{setPageNo(1)},[query, status, planFilter, trialFilter, groupFilter, pageSize, timeSort]);
   useEffect(()=>{if (pageNo !== safePageNo) setPageNo(safePageNo)},[pageNo, safePageNo]);
+  async function resolveSelectableMailboxIds(candidateIds: number[]): Promise<number[]> {
+    if (!candidateIds.length || identity === "phone") return candidateIds;
+    const result = await apiFetch("/sunny/mailboxes?selection=all&summary=true&enabled=true");
+    const enabledIds = new Set(selectionIDs(result));
+    const ids = candidateIds.filter((id) => enabledIds.has(Number(id)));
+    const skipped = candidateIds.length - ids.length;
+    if (skipped > 0) {
+      notify("fail", t === zh
+        ? `已跳过 ${skipped} 条停用邮箱，仅提交 ${ids.length} 条可用邮箱`
+        : `Skipped ${skipped} disabled mailbox(es); submitting ${ids.length} usable mailbox(es)`);
+    }
+    return ids;
+  }
   async function createRegisterTask(directIds?: number[], proxyCountries: string[] = registerProxyCountries, phoneOptions?: PhoneRegisterOptions) {
     if (busy || activeTaskId) { notify("fail", t.registerTaskRunning); return; }
-    const ids = directIds?.length ? directIds : selected;
+    const candidateIds = directIds?.length ? directIds : selected;
+    const availableRows = [...Object.values(selectedRowCache), ...rows];
+    const rowsById = new Map(availableRows.map((row) => [Number(row.id), row]));
+    const locallySelectableIds = candidateIds.filter((id) => {
+      const row = rowsById.get(Number(id));
+      return !row || isMailboxSelectable(row);
+    });
+    let ids: number[];
+    try {
+      ids = await resolveSelectableMailboxIds(locallySelectableIds);
+    } catch (error: any) {
+      notify("fail", error?.message || String(error));
+      return;
+    }
     const phoneRegistration = identity === "phone";
     if (identity === "system" && !ids.length) { notify("fail", t.chooseMailbox); return; }
     // Phone registration allocates every account identity from the SMS
@@ -1495,8 +1527,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     setStopRequested(false);
     stopAfterSubmitRef.current = false;
     setAutoOpen(false);
-    const availableRows = [...rows, ...Object.values(selectedRowCache)];
-    const taskEmails = taskIds.map((mailboxId) => String(availableRows.find((row) => Number(row.id) === mailboxId)?.email || "")).filter(Boolean);
+    const taskEmails = taskIds.map((mailboxId) => String(rowsById.get(Number(mailboxId))?.email || "")).filter(Boolean);
     const progressEmails = identity === "system"
       ? taskEmails
       : Array.from({length: requestedCount}, (_, index) => `${phoneRegistration ? "phone" : identity}-${index + 1}`);
@@ -1538,11 +1569,22 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   }
   async function createLoginTask() {
     if (busy || activeTaskId) { notify("fail", t.registerTaskRunning); return; }
-    const ids = selected;
+    const availableRows = [...Object.values(selectedRowCache), ...rows];
+    const rowsById = new Map(availableRows.map((row) => [Number(row.id), row]));
+    const locallySelectableIds = selected.filter((id) => {
+      const row = rowsById.get(Number(id));
+      return !row || isMailboxSelectable(row);
+    });
+    let ids: number[];
+    try {
+      ids = await resolveSelectableMailboxIds(locallySelectableIds);
+    } catch (error: any) {
+      notify("fail", error?.message || String(error));
+      return;
+    }
     if (!ids.length) { notify("fail", t.chooseMailbox); return; }
     const requestedCount = ids.length;
-    const availableRows = [...rows, ...Object.values(selectedRowCache)];
-    const taskEmails = ids.map((mailboxId) => String(availableRows.find((row) => Number(row.id) === mailboxId)?.email || "")).filter(Boolean);
+    const taskEmails = ids.map((mailboxId) => String(rowsById.get(Number(mailboxId))?.email || "")).filter(Boolean);
     setBusy(true);
     setSubmittingTask(true);
     setStopRequested(false);
@@ -1843,9 +1885,11 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       setActiveTaskMailboxIds([]);
     }
   }
-  const selectedRows = selected.map((id)=>selectedRowCache[String(id)] || rows.find((row)=>row.id===id)).filter(Boolean) as AnyObj[];
-  const allChecked = pagedRows.length > 0 && pagedRows.every((r) => selected.includes(r.id));
+  const selectedRows = selected.map((id)=>rows.find((row)=>row.id===id) || selectedRowCache[String(id)]).filter((row): row is AnyObj => Boolean(row) && isMailboxSelectable(row));
+  const selectablePageRows = pagedRows.filter(isMailboxSelectable);
+  const allChecked = selectablePageRows.length > 0 && selectablePageRows.every((r) => selected.includes(r.id));
   const selectRow = (row: AnyObj, checked: boolean) => {
+    if (!isMailboxSelectable(row)) return;
     if (checked) {
       setSelected((old)=>Array.from(new Set([...old, Number(row.id)])));
       setSelectedRowCache((old)=>({...old, [String(row.id)]: row}));
@@ -1855,11 +1899,11 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     setSelectedRowCache((old)=>{ const next={...old}; delete next[String(row.id)]; return next; });
   };
   const selectCurrentPage = (checked: boolean) => {
-    const pageIds = pagedRows.map((row)=>Number(row.id));
+    const pageIds = selectablePageRows.map((row)=>Number(row.id));
     setSelected((old)=>checked ? Array.from(new Set([...old, ...pageIds])) : old.filter((id)=>!pageIds.includes(id)));
     setSelectedRowCache((old)=>{
       const next={...old};
-      pagedRows.forEach((row)=>{ if (checked) next[String(row.id)]=row; else delete next[String(row.id)]; });
+      selectablePageRows.forEach((row)=>{ if (checked) next[String(row.id)]=row; else delete next[String(row.id)]; });
       return next;
     });
   };
@@ -1899,10 +1943,10 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     </Card>
     <Card className="sr-table-card overflow-hidden rounded-[18px] p-0" aria-busy={listLoading}>
       <ListLoadingOverlay loading={listLoading} label={t.loadingData}/>
-      <div className="sr-table-scroll"><ResizableDataTable tableKey="workbench" columns={DATA_TABLE_COLUMNS.workbench} headers={[<input type="checkbox" checked={allChecked} onChange={(e)=>selectCurrentPage(e.target.checked)}/>,t.email,t.rebindEmail,t.mailboxGroup,t.status,t.planType,t.trialEligibility,<SortTimeHeader label={t.statusChangedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.operation]}><tbody>{rows.length ? pagedRows.map((r) => { const operationsVisible = expandedOperationId === Number(r.id); return <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} onChange={(e)=>selectRow(r,e.target.checked)}/></td><td title={r.email}>{r.email}</td><td title={r.rebind_email || "-"}>{r.rebind_email || "-"}</td><td title={r.group_name || t.defaultGroup}>{r.group_name || t.defaultGroup}</td><td title={r.error || r.last_error || ""}><StatusBadge t={t} status={r.status || "未注册"} /></td><td><PlanTypeBadge value={r.account?.plan_type || r.plan_type} /></td><td><TrialEligibilityBadge t={t} row={r}/></td><td>{formatDateTime(r.status_changed_at)}</td><td><div className="sr-session-actions-shell"><button type="button" className="sr-session-actions-toggle" aria-label={operationsVisible ? "隐藏操作" : "显示操作"} aria-expanded={operationsVisible} title={operationsVisible ? "隐藏操作" : t.refreshStatus} onClick={()=>setExpandedOperationId((current)=>current===Number(r.id)?null:Number(r.id))}><MoreHorizontal className="h-5 w-5" /></button>{operationsVisible && <div className="sr-session-actions"><button className="sr-link inline-flex items-center gap-1" title={t.refreshStatus} disabled={busy} onClick={()=>refreshAccountStatus(r)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button></div>}</div></td></tr>; }) : <tr><td colSpan={9}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.noDataDesc}</p></div></td></tr>}</tbody></ResizableDataTable></div>
+       <div className="sr-table-scroll"><ResizableDataTable tableKey="workbench" columns={DATA_TABLE_COLUMNS.workbench} headers={[<input type="checkbox" checked={allChecked} disabled={selectablePageRows.length === 0} onChange={(e)=>selectCurrentPage(e.target.checked)}/>,t.email,t.rebindEmail,t.mailboxGroup,t.status,t.planType,t.trialEligibility,<SortTimeHeader label={t.statusChangedAt} order={timeSort} onToggle={()=>setTimeSort(nextSortOrder(timeSort))}/>,t.operation]}><tbody>{rows.length ? pagedRows.map((r) => { const operationsVisible = expandedOperationId === Number(r.id); const selectable = isMailboxSelectable(r); return <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} disabled={!selectable} onChange={(e)=>selectRow(r,e.target.checked)}/></td><td title={r.email}>{r.email}</td><td title={r.rebind_email || "-"}>{r.rebind_email || "-"}</td><td title={r.group_name || t.defaultGroup}>{r.group_name || t.defaultGroup}</td><td title={r.error || r.last_error || ""}><StatusBadge t={t} status={r.status || "未注册"} /></td><td><PlanTypeBadge value={r.account?.plan_type || r.plan_type} /></td><td><TrialEligibilityBadge t={t} row={r}/></td><td>{formatDateTime(r.status_changed_at)}</td><td><div className="sr-session-actions-shell"><button type="button" className="sr-session-actions-toggle" aria-label={operationsVisible ? "隐藏操作" : "显示操作"} aria-expanded={operationsVisible} title={operationsVisible ? "隐藏操作" : t.refreshStatus} onClick={()=>setExpandedOperationId((current)=>current===Number(r.id)?null:Number(r.id))}><MoreHorizontal className="h-5 w-5" /></button>{operationsVisible && <div className="sr-session-actions"><button className="sr-link inline-flex items-center gap-1" title={t.refreshStatus} disabled={busy} onClick={()=>refreshAccountStatus(r)}><RefreshCw className="h-4 w-4"/>{t.refresh}</button></div>}</div></td></tr>; }) : <tr><td colSpan={9}><div className="sr-empty"><div className="sr-empty-icon"><Inbox className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.noData}</div><p className="mt-2 text-sm text-slate-400">{t.noDataDesc}</p></div></td></tr>}</tbody></ResizableDataTable></div>
       <PaginationBar t={t} total={total} page={safePageNo} pageSize={pageSize} setPage={setPageNo} setPageSize={setPageSize} />
     </Card>
-    {autoOpen && <AutoRegisterModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} selectedNeedPhone={selectedRows.some((m)=>m.has_openai_rt !== true)} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} registerCount={modalRegisterCount} setRegisterCount={setModalRegisterCount} identity={identity} setIdentity={setIdentity} mode={mode} setMode={setMode} protocolChallengeStrategy={protocolChallengeStrategy} setProtocolChallengeStrategy={setProtocolChallengeStrategy} stage={stage} setStage={setStage} allTrafficProxyPool={allTrafficProxyPool} setAllTrafficProxyPool={setAllTrafficProxyPool} setupLoginSecret={setupLoginSecret} setSetupLoginSecret={setSetupLoginSecret} onClose={()=>setAutoOpen(false)} onStart={(countries, phoneOptions)=>{ setRegisterProxyCountries(countries); void createRegisterTask(undefined, countries, phoneOptions); }} notify={notify} />}
+    {autoOpen && <AutoRegisterModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} registerCount={modalRegisterCount} setRegisterCount={setModalRegisterCount} identity={identity} setIdentity={setIdentity} mode={mode} setMode={setMode} protocolChallengeStrategy={protocolChallengeStrategy} setProtocolChallengeStrategy={setProtocolChallengeStrategy} stage={stage} setStage={setStage} allTrafficProxyPool={allTrafficProxyPool} setAllTrafficProxyPool={setAllTrafficProxyPool} setupLoginSecret={setupLoginSecret} setSetupLoginSecret={setSetupLoginSecret} onClose={()=>setAutoOpen(false)} onStart={(countries, phoneOptions)=>{ setRegisterProxyCountries(countries); void createRegisterTask(undefined, countries, phoneOptions); }} notify={notify} />}
     {loginOpen && <ExistingLoginModal t={t} busy={busy} selectedEmails={selectedRows.map((m)=>m.email)} concurrency={modalConcurrency} setConcurrency={setModalConcurrency} mode={mode} setMode={setMode} protocolChallengeStrategy={protocolChallengeStrategy} setProtocolChallengeStrategy={setProtocolChallengeStrategy} onClose={()=>setLoginOpen(false)} onStart={()=>createLoginTask()} />}
   </div>;
 }
@@ -1929,7 +1973,7 @@ function ExistingLoginModal({ t, busy, selectedEmails, concurrency, setConcurren
   </div></div>;
 }
 
-function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurrency, setConcurrency, registerCount, setRegisterCount, identity, setIdentity, mode, setMode, protocolChallengeStrategy, setProtocolChallengeStrategy, stage, setStage, allTrafficProxyPool, setAllTrafficProxyPool, setupLoginSecret, setSetupLoginSecret, onClose, onStart, notify }: { t: typeof zh; busy: boolean; selectedEmails: string[]; selectedNeedPhone: boolean; concurrency: number; setConcurrency: (v:number)=>void; registerCount: number; setRegisterCount: (v:number)=>void; identity: RegisterIdentity; setIdentity:(v:RegisterIdentity)=>void; mode: "protocol"|"background"|"visible"; setMode:(v:"protocol"|"background"|"visible")=>void; protocolChallengeStrategy: ProtocolChallengeStrategy; setProtocolChallengeStrategy:(v:ProtocolChallengeStrategy)=>void; stage: RegisterStage; setStage:(v:RegisterStage)=>void; allTrafficProxyPool: boolean; setAllTrafficProxyPool:(v:boolean)=>void; setupLoginSecret: boolean; setSetupLoginSecret:(v:boolean)=>void; onClose:()=>void; onStart:(countries:string[], phoneOptions?:PhoneRegisterOptions)=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
+function AutoRegisterModal({ t, busy, selectedEmails, concurrency, setConcurrency, registerCount, setRegisterCount, identity, setIdentity, mode, setMode, protocolChallengeStrategy, setProtocolChallengeStrategy, stage, setStage, allTrafficProxyPool, setAllTrafficProxyPool, setupLoginSecret, setSetupLoginSecret, onClose, onStart, notify }: { t: typeof zh; busy: boolean; selectedEmails: string[]; concurrency: number; setConcurrency: (v:number)=>void; registerCount: number; setRegisterCount: (v:number)=>void; identity: RegisterIdentity; setIdentity:(v:RegisterIdentity)=>void; mode: "protocol"|"background"|"visible"; setMode:(v:"protocol"|"background"|"visible")=>void; protocolChallengeStrategy: ProtocolChallengeStrategy; setProtocolChallengeStrategy:(v:ProtocolChallengeStrategy)=>void; stage: RegisterStage; setStage:(v:RegisterStage)=>void; allTrafficProxyPool: boolean; setAllTrafficProxyPool:(v:boolean)=>void; setupLoginSecret: boolean; setSetupLoginSecret:(v:boolean)=>void; onClose:()=>void; onStart:(countries:string[], phoneOptions?:PhoneRegisterOptions)=>void; notify:(type:"ok"|"fail", text:string)=>void }) {
 	const navigate = useNavigate();
 	const mailboxVerificationDescription = t === zh
 		? "系统将按邮箱类型自动选择 OAuth、iCloud 或域名邮箱 API 渠道完成邮箱验证。"
@@ -1980,9 +2024,16 @@ function AutoRegisterModal({ t, busy, selectedEmails, selectedNeedPhone, concurr
         setConfigLoadError(firstError?.message || String(firstError || "配置请求失败"));
       }
       const proxy = proxyResult.status === "fulfilled" ? proxyResult.value : {};
+      // The pool endpoint paginates `items` (max 100 rows), so deriving the
+      // country picker from that page hides countries that occur later in the
+      // pool. Use the endpoint's unpaginated country metadata instead and keep
+      // the item-derived value only for compatibility with older backends.
+      const responseCountries = Array.isArray(proxy?.countries) ? proxy.countries : [];
       const registerItems = Array.isArray(proxy?.items) ? proxy.items : [];
-      const itemCountries: string[] = Array.from(new Set<string>(registerItems.map((item:any) => String(item.country || "").trim().toUpperCase()).filter(Boolean))).sort();
-      setProxyCountries(itemCountries);
+      const itemCountries = registerItems.map((item:any) => item.country);
+      const countryValues = responseCountries.length ? responseCountries : itemCountries;
+      const availableCountries: string[] = Array.from(new Set<string>(countryValues.map((value:any) => String(value || "").trim().toUpperCase()).filter((value:string) => /^[A-Z]{2}$/.test(value)))).sort();
+      setProxyCountries(availableCountries);
     }).finally(() => { if (alive) setConfigLoading(false); });
     return () => { alive = false; };
   }, [configReloadKey]);
@@ -3770,14 +3821,18 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
   const [page,setPage]=useCachedState("proxy.page",1);
   const [pageSize,setPageSize]=useCachedState("proxy.pageSize",10);
   const [total,setTotal]=useCachedState("proxy.total",0);
-  const [loading,setLoading]=useCachedState("proxy.loading",false);
+  // Transient request state must reset after navigation/reload. Persisting it in
+  // localStorage could leave every proxy action permanently disabled when a tab
+  // was refreshed during a long check.
+  const [checking,setChecking]=useState(false);
+  const [deleting,setDeleting]=useState(false);
   const { loading: listLoading, track: trackListLoad } = useLoadingTracker();
   const [editing,setEditing]=useCachedState<AnyObj|null>("proxy.editing",null);
   const [selected,setSelected]=useCachedState<number[]>("proxy.selected",[]);
   const [selectingAll,setSelectingAll]=useState(false);
   const [batchEditing,setBatchEditing]=useCachedState<AnyObj|null>("proxy.batchEditing",null);
   const [proxyCfg,setProxyCfg]=useCachedState<AnyObj>("proxy.cfg",{proxy_enabled:true});
-  const [proxySaving,setProxySaving]=useCachedState("proxy.savingCfg",false);
+  const [proxySaving,setProxySaving]=useState(false);
   const load = () => trackListLoad(async () => {
     const qs = new URLSearchParams({page:String(page), page_size:String(pageSize), q:debouncedQuery, status, country, purpose, sort_by:"last_checked_at", sort_order:timeSort});
     const res = await apiFetch(`/sunny/proxy-config/pool?${qs.toString()}`);
@@ -3817,39 +3872,43 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
     finally { setProxySaving(false); }
   }
   async function batchCheck(){
-    setLoading(true);
+    setChecking(true);
     try {
       const ids = selected.length ? selected : items.map((x)=>Number(x.id)).filter(Boolean);
       const res = await apiFetch("/sunny/proxy-config/pool/check", { method:"POST", body: JSON.stringify({ids}) });
       notify("ok", `${t.proxyCheckDone}: ${res.available || 0}/${res.checked || 0}`);
       await load();
     } catch(e:any) { notify("fail", e.message || String(e)); }
-    finally { setLoading(false); }
+    finally { setChecking(false); }
   }
   async function checkOne(row: AnyObj){
-    setLoading(true);
+    setChecking(true);
     try {
       await apiFetch(`/sunny/proxy-config/pool/${row.id}/check`, { method:"POST" });
       notify("ok", t.proxyCheckDone);
       await load();
     } catch(e:any) { notify("fail", e.message || String(e)); }
-    finally { setLoading(false); }
+    finally { setChecking(false); }
   }
   async function deleteProxy(row: AnyObj){
+    setDeleting(true);
     try {
       await apiFetch(`/sunny/proxy-config/pool/${row.id}`, { method:"DELETE" });
       notify("ok", t.done);
       await load();
     } catch(e:any) { notify("fail", e.message || String(e)); }
+    finally { setDeleting(false); }
   }
   async function batchDeleteProxy(){
     if (!selected.length) return;
+    setDeleting(true);
     try {
-      await Promise.all(selected.map((id)=>apiFetch(`/sunny/proxy-config/pool/${id}`, { method:"DELETE" })));
+      await deleteProxyRows(selected);
       setSelected([]);
       notify("ok", t.done);
       await load();
     } catch(e:any) { notify("fail", e.message || String(e)); }
+    finally { setDeleting(false); }
   }
   async function batchUpdateProxy(form: AnyObj){
     if (!selected.length) return;
@@ -3908,9 +3967,9 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
         <div className="sr-proxy-toolbar-actions flex flex-wrap gap-2">
           <SelectionSummary t={t} count={selected.length} total={total} selectingAll={selectingAll} onSelectAll={selectAllFiltered} onClear={()=>setSelected([])}/>
           {selected.length > 0 && <Button variant="outline" className="sr-proxy-command-button" onClick={()=>setBatchEditing({country:"",purpose_tags:["register"],status:"启用"})}>{t.proxyBatchEdit} ({selected.length})</Button>}
-          {selected.length > 0 && <ConfirmBubble message={t.proxyConfirmBatchDelete} detail={`${selected.length} ${t.selected}`} onConfirm={batchDeleteProxy}><Button variant="outline" className="sr-proxy-command-button border-red-200 text-red-500">{t.proxyBatchDelete} ({selected.length})</Button></ConfirmBubble>}
+          {selected.length > 0 && <ConfirmBubble message={t.proxyConfirmBatchDelete} detail={`${selected.length} ${t.selected}`} onConfirm={batchDeleteProxy}><Button variant="outline" disabled={deleting || checking} className="sr-proxy-command-button border-red-200 text-red-500">{deleting?<Loader2 className="mr-2 h-4 w-4 animate-spin"/>:null}{t.proxyBatchDelete} ({selected.length})</Button></ConfirmBubble>}
           <button className="sr-text-btn sr-action-refresh sr-proxy-command-button" onClick={refreshProxyList}><RefreshCw className="h-4 w-4"/>{t.refresh}</button>
-          <Button variant="outline" className="sr-proxy-command-button" disabled={loading || !items.length} onClick={batchCheck}>{loading?<Loader2 className="mr-2 h-4 w-4 animate-spin"/>:<Settings2 className="mr-2 h-4 w-4"/>}{t.proxyBatchCheck}</Button>
+          <Button variant="outline" className="sr-proxy-command-button" disabled={checking || deleting || !items.length} onClick={batchCheck}>{checking?<Loader2 className="mr-2 h-4 w-4 animate-spin"/>:<Settings2 className="mr-2 h-4 w-4"/>}{t.proxyBatchCheck}</Button>
         </div>
       </div>
     </Card>
@@ -3924,7 +3983,7 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
           <td>{Array.isArray(p.purpose_tags) && p.purpose_tags.length ? <div className="flex flex-wrap gap-1">{p.purpose_tags.map((tag:string)=><Badge key={tag} variant="secondary">{tag === "commerce" ? t.proxyPurposeCommerce : tag === "payment_probe" ? t.proxyPurposePayment : tag === "checkout" ? "提链" : t.proxyPurposeRegister}</Badge>)}</div> : <span className="text-slate-400">-</span>}</td>
           <td><ProxyStatusBadge t={t} status={p.status || "启用"} />{p.latency_ms ? <div className="mt-1 text-xs text-[var(--text-muted)]">{t.proxyLatency}: {p.latency_ms}ms</div> : null}</td>
           <td>{formatDateTime(p.last_checked_at)}</td>
-          <td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" disabled={loading} onClick={()=>checkOne(p)}>{t.refresh}</button><button className="sr-link" onClick={()=>setEditing(p)}>{t.edit}</button><ConfirmBubble message={t.proxyConfirmDelete} detail={p.address || ""} onConfirm={()=>deleteProxy(p)}><button className="sr-link text-red-500">{t.delete}</button></ConfirmBubble></div></td>
+          <td><div className="flex flex-wrap justify-center gap-2"><button className="sr-link" disabled={checking || deleting} onClick={()=>checkOne(p)}>{t.refresh}</button><button className="sr-link" onClick={()=>setEditing(p)}>{t.edit}</button><ConfirmBubble message={t.proxyConfirmDelete} detail={p.address || ""} onConfirm={()=>deleteProxy(p)}><button className="sr-link text-red-500" disabled={deleting}>{t.delete}</button></ConfirmBubble></div></td>
         </tr>) : <tr><td colSpan={7}><div className="sr-empty"><div className="sr-empty-icon"><Settings2 className="h-7 w-7"/></div><div className="mt-3 text-base font-medium text-slate-900 dark:text-white">{t.proxyNoData}</div><p className="mt-2 text-sm text-slate-400">{t.proxyNoDataDesc}</p></div></td></tr>}</tbody>
       </ResizableDataTable></div>
       <PaginationBar t={t} total={total} page={page} pageSize={pageSize} setPage={setPage} setPageSize={setPageSize} />
@@ -4009,6 +4068,27 @@ async function updateProxyRows(ids: number[], updates: AnyObj) {
     while (cursor < ids.length) {
       const id = ids[cursor++];
       await apiFetch(`/sunny/proxy-config/pool/${id}`, {method:"PUT", body:JSON.stringify(updates)});
+    }
+  });
+  await Promise.all(workers);
+}
+
+async function deleteProxyRows(ids: number[]) {
+  if (!ids.length) return;
+  try {
+    await apiFetch("/sunny/proxy-config/pool/batch-delete", {method:"POST", body:JSON.stringify({ids})});
+    return;
+  } catch (error:any) {
+    // Older running backends route "batch-delete" through the numeric item-ID
+    // handler and return "invalid proxy id". Other failures retain their real
+    // error instead of being hidden by the compatibility fallback.
+    if (!/invalid proxy id|not found/i.test(String(error?.message || error))) throw error;
+  }
+  let cursor = 0;
+  const workers = Array.from({length:Math.min(16, ids.length)}, async()=>{
+    while (cursor < ids.length) {
+      const id = ids[cursor++];
+      await apiFetch(`/sunny/proxy-config/pool/${id}`, {method:"DELETE"});
     }
   });
   await Promise.all(workers);
@@ -5132,9 +5212,13 @@ function TaskRegistrationProgress({ t, progress }: { t: typeof zh; progress: Reg
   const completed = accounts.filter((account) => account.state === "completed");
   const abnormal = accounts.filter((account) => account.state === "abnormal");
   const pending = accounts.filter((account) => account.state !== "completed" && account.state !== "abnormal");
+  // Both successful and abnormal accounts have reached a terminal state. The
+  // task-level counter/progress bar represents handled accounts, while the
+  // groups below keep success and abnormal outcomes separate.
+  const processed = completed.length + abnormal.length;
   return <div className="sr-progress-panel">
-    <div className="sr-task-progress-labels"><span>{t.taskTotal} <b>{accounts.length}</b></span><span>{t.taskCompleted} <b>{completed.length}</b></span></div>
-    <RegistrationProgressBar current={completed.length} total={accounts.length}/>
+    <div className="sr-task-progress-labels"><span>{t.taskTotal} <b>{accounts.length}</b></span><span>{t.taskCompleted} <b>{processed}</b></span></div>
+    <RegistrationProgressBar current={processed} total={accounts.length}/>
     <div className="sr-progress-groups">
       <ProgressEmailGroup title={t.completedAccounts} accounts={completed}/>
       <ProgressEmailGroup title={t.pendingAccounts} accounts={pending}/>

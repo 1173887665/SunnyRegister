@@ -76,7 +76,7 @@ RUN chmod 700 /app/tools/pay153_checkout/tools/upi_go/pix_extract_slot
 COPY python-worker/docker-entrypoint.sh /usr/local/bin/sunny-worker-entrypoint
 RUN chmod +x /usr/local/bin/sunny-worker-entrypoint
 
-EXPOSE 8765 6080
+EXPOSE 8765 8766 6080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8765/health >/dev/null || exit 1
 ENTRYPOINT ["/usr/local/bin/sunny-worker-entrypoint"]

@@ -11,8 +11,22 @@ if str(_ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(_ENGINE_DIR))
 os.environ.setdefault("PAY153_UPI_GO_BINARY", str(_ENGINE_DIR / "tools" / "upi_go" / "pix_extract_slot"))
 
-from app import STORE
+import app as engine_app
 from paypal_routing import checkout_mode
+
+
+# The workbench has its own process and state root.  It intentionally does not
+# share job memory, logs, persisted aliases or successful-link output with the
+# Checkout Manager worker running on port 8765.
+_STATE_ROOT = Path(
+    os.getenv("PAY153_WORKBENCH_STATE_DIR")
+  or (_ENGINE_DIR.parents[2] / "data" / "link-workbench")
+).resolve()
+_STATE_ROOT.mkdir(parents=True, exist_ok=True)
+engine_app.ROOT = _STATE_ROOT
+engine_app.BACKEND_LOG_DIR = _STATE_ROOT / "logs"
+engine_app.RUST_ALIAS_FILE = _STATE_ROOT / "rust_job_aliases.json"
+STORE = engine_app.STORE
 
 
 _TOKEN_RE = re.compile(r"eyJ[A-Za-z0-9_.-]{40,}")
@@ -69,10 +83,6 @@ def start_checkout(payload: dict[str, Any]) -> str:
         # opposite order, so keep the translation at this adapter boundary.
         "entry_proxies": promotion_proxies,
         "exit_proxies": checkout_proxies,
-        # The backend row index is the initial lease offset for this account.
-        # It keeps concurrent accounts on different pool slots even when a
-        # rotating gateway uses one shared host/port URL.
-        "proxy_slot": max(0, int(payload.get("proxy_slot") or 0)),
         "named_proxy_pools": True,
         "use_promo": bool(payload.get("use_promo")),
         "promo_campaign": str(payload.get("promo_campaign") or ""),
@@ -205,3 +215,13 @@ def checkout_status(job_id: str) -> dict[str, Any] | None:
 
 def cancel_checkout(job_id: str) -> bool:
     return STORE.cancel(job_id)
+
+
+def runtime_snapshot() -> dict[str, Any]:
+    with STORE.lock:
+        return {
+            "jobs": len(STORE.jobs),
+            "pending": len(STORE.pending),
+            "active": int(STORE.active_workers),
+            "state_root": str(_STATE_ROOT),
+        }

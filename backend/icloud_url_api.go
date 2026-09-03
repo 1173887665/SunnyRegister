@@ -156,13 +156,16 @@ func validateURLAPIMailAddress(raw string) (string, error) {
 	return value, nil
 }
 
-// urlAPIHostResolvesToPrivate checks both literal IPs and DNS answers. A
-// hostname that resolves to a private address must not be usable as an
-// arbitrary mailbox endpoint, otherwise the URL API becomes an SSRF primitive.
+// urlAPIHostResolvesToPrivate checks both literal IPs and DNS answers. Known
+// mailbox providers are accepted before DNS inspection because transparent
+// proxy DNS can map their public names into a local synthetic address range.
 func urlAPIHostResolvesToPrivate(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 	if host == "" {
 		return true
+	}
+	if host == "mail.moink.cc" || strings.HasSuffix(host, ".mail.moink.cc") {
+		return false
 	}
 	// RFC 6761 reserves these suffixes for documentation and test fixtures;
 	// local hosts files may intentionally map them to loopback during tests.

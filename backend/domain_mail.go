@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -51,6 +52,23 @@ type domainMailClient struct {
 	externalAPIKey string
 	sitePassword   string
 	client         *http.Client
+}
+
+// domainMailboxUpstreamError distinguishes a valid one-time pickup credential
+// from a failure returned by the configured CloudMail service.  The public
+// pickup endpoint must not turn an upstream outage/rate limit into HTTP 403:
+// readers treat 403 as a terminal credential failure and delete the pending
+// mailbox before a transient provider problem has a chance to recover.
+type domainMailboxUpstreamError struct {
+	err error
+}
+
+func (e *domainMailboxUpstreamError) Error() string {
+	return e.err.Error()
+}
+
+func (e *domainMailboxUpstreamError) Unwrap() error {
+	return e.err
 }
 
 func newDomainMailClient(cfg map[string]any) (*domainMailClient, error) {
@@ -716,7 +734,11 @@ func (s *Server) domainMailboxMessagesForToken(ctx context.Context, email, token
 	if err != nil {
 		return nil, err
 	}
-	return client.listMessages(ctx, effectiveEmail)
+	messages, err := client.listMessages(ctx, effectiveEmail)
+	if err != nil {
+		return nil, &domainMailboxUpstreamError{err: err}
+	}
+	return messages, nil
 }
 
 func (s *Server) domainMailLatestMail(accessKey, email string, limit int) (map[string]any, error) {
@@ -756,6 +778,12 @@ func (s *Server) domainMailboxPickupHandler(w http.ResponseWriter, r *http.Reque
 	}
 	messages, err := s.domainMailboxMessagesForToken(r.Context(), email, token)
 	if err != nil {
+		var upstreamErr *domainMailboxUpstreamError
+		if errors.As(err, &upstreamErr) {
+			w.Header().Set("Retry-After", "3")
+			writeError(w, http.StatusBadGateway, upstreamErr.Error())
+			return
+		}
 		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}

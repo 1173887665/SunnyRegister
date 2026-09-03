@@ -239,6 +239,28 @@ def test_protocol_homepage_reset_falls_back_to_lightweight_csrf() -> None:
     assert flow.auth_page_url == "https://auth.openai.com/authorize"
 
 
+def test_protocol_get_retries_gateway_timeout_response() -> None:
+    flow = ProtocolRegistrationFlow(
+        MailAccount("user@outlook.com", "password", "client", "refresh", "raw"),
+        session=FakeSession([
+            FakeResponse(status_code=504, text="gateway timeout", url="https://auth.openai.com/authorize"),
+            FakeResponse(text="auth page", url="https://auth.openai.com/authorize"),
+        ]),
+    )
+    logs: list[str] = []
+    flow.log = logs.append
+
+    response = flow._request(
+        "GET",
+        "https://auth.openai.com/authorize",
+        step="OpenAI authorization initialization",
+    )
+
+    assert response.status_code == 200
+    assert len(flow.session.requests) == 2
+    assert any("HTTP 504" in message and "重试" in message for message in logs)
+
+
 def test_protocol_authorize_email_rebuilds_stale_oauth_session_once() -> None:
     account = MailAccount("user@outlook.com", "password", "client", "refresh", "raw")
     stale_session = FakeSession([

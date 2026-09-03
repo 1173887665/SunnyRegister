@@ -151,6 +151,7 @@ function runtimeBase(session: Session, accessToken = "", sessionToken = "", toke
 
 function detectionRecord(session: Session) {
   const records = [
+    (session.mailbox_error || (session.row_kind === "mailbox" ? session.error : "")) && `注册：${session.mailbox_error || session.error}`,
     session.access_token_error && `AT：${session.access_token_error}`,
     session.health_check_error && `测活：${session.health_check_error}`,
     session.trial_check_error && `试用：${session.trial_check_error}`,
@@ -309,7 +310,7 @@ export default function FreeppAccountPicker() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), sort_by: "last_health_checked_at", sort_order: "desc" });
+      const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), sort_by: "last_health_checked_at", sort_order: "desc", include_mailbox_only: "true" });
       if (query.trim()) params.set("q", query.trim());
       if (groupFilter) params.set("group_id", groupFilter);
       if (statusFilter) params.set("status", statusFilter);
@@ -321,14 +322,43 @@ export default function FreeppAccountPicker() {
       if (loginSecretFilter) params.set("login_secret", loginSecretFilter);
       if (rebindEmailFilter) params.set("rebind_email", rebindEmailFilter);
       const result = await apiFetch(`/sunny/sessions?${params.toString()}`);
-      const nextItems = Array.isArray(result.items) ? result.items : [];
+      let nextItems = Array.isArray(result.items) ? result.items : [];
+      let nextTotal = Number(result.total || 0);
+      // During a no-restart rollout an older backend ignores
+      // include_mailbox_only. Keep the failed-mailbox filter useful by reading
+      // the existing mailbox endpoint when the session-only result is empty.
+      if (statusFilter === "失败" && nextTotal === 0 && !nextItems.some((item: Session) => item.row_kind)) {
+        const mailboxParams = new URLSearchParams({ summary: "true", status: "失败", page: String(page), page_size: String(pageSize), sort_by: "last_health_checked_at", sort_order: "desc" });
+        if (query.trim()) mailboxParams.set("q", query.trim());
+        if (groupFilter) mailboxParams.set("group_id", groupFilter);
+        if (planFilter) mailboxParams.set("plan_type", planFilter);
+        if (rebindEmailFilter) mailboxParams.set("rebind_email", rebindEmailFilter);
+        if (loginSecretFilter === "present") {
+          mailboxParams.set("password", "present");
+          mailboxParams.set("totp", "present");
+        }
+        const mailboxResult = await apiFetch(`/sunny/mailboxes?${mailboxParams.toString()}`);
+        const mailboxRows = Array.isArray(mailboxResult?.items) ? mailboxResult.items : [];
+        nextItems = mailboxRows.map((item: Session) => ({
+          ...item,
+          id: `mailbox-${item.id}`,
+          mailbox_id: item.id,
+          row_kind: "mailbox",
+          selectable: false,
+          mailbox_error: item.error || item.last_error || "",
+          access_token_status: "missing",
+          health_check_status: "unknown",
+        }));
+        nextTotal = Number(mailboxResult?.total || nextItems.length);
+      }
       setItems(nextItems);
-      setTotal(Number(result.total || 0));
+      setTotal(nextTotal);
       setPaymentOptions((current) => Array.from(new Set([...current, ...(Array.isArray(result.payment_method_options) ? result.payment_method_options.map(String) : [])])));
       if (Array.isArray(result.trial_country_options)) {
         setTrialCountryOptions((current) => Array.from(new Set([...current, ...result.trial_country_options.map(String).map((value: string) => value.toUpperCase())])));
       }
-      setKnownSessions((current) => ({ ...current, ...Object.fromEntries(nextItems.map((item: Session) => [String(item.id), item])) }));
+      const sessionItems = nextItems.filter((item: Session) => item.selectable !== false && item.row_kind !== "mailbox");
+      setKnownSessions((current) => ({ ...current, ...Object.fromEntries(sessionItems.map((item: Session) => [String(item.id), item])) }));
     } catch (error) {
       setMessage(`账号列表加载失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -401,7 +431,7 @@ export default function FreeppAccountPicker() {
   }, [selectedTokens, knownSessions]);
 
   const selectedSessions = useMemo(() => {
-    const known = Object.values(knownSessions);
+    const known = Object.values(knownSessions).filter((session) => session.selectable !== false && session.row_kind !== "mailbox");
     const tokenSessions = selectedTokens.map((token) => {
       const directId = tokenSessionId(token);
       return known.find((session) => (directId && directId === String(session.id)) || tokenMatchesSession(token, session));
@@ -429,7 +459,8 @@ export default function FreeppAccountPicker() {
     setRuntimeSelection(selected, accounts);
   }, [selected, selectedSessions, selectedTokens]);
 
-  const pageSelected = items.length > 0 && items.every((item) => selected.includes(String(item.id)));
+  const selectableItems = items.filter((item) => item.selectable !== false && item.row_kind !== "mailbox");
+  const pageSelected = selectableItems.length > 0 && selectableItems.every((item) => selected.includes(String(item.id)));
 
   function tokenForSession(session: Session) {
     return tokens.find((token) => selectedTokenIds.has(String(token.id)) && tokenMatchesSession(token, session))
@@ -437,6 +468,7 @@ export default function FreeppAccountPicker() {
   }
 
   function toggle(session: Session) {
+    if (session.selectable === false || session.row_kind === "mailbox") return;
     const token = tokenForSession(session);
     const id = String(session.id);
     setKnownSessions((current) => ({ ...current, [id]: session }));
@@ -458,7 +490,7 @@ export default function FreeppAccountPicker() {
   }
 
   function togglePage() {
-    items.forEach((item) => {
+    selectableItems.forEach((item) => {
       const token = tokenForSession(item);
       const id = String(item.id);
       const isSelected = selected.includes(id);
@@ -471,7 +503,7 @@ export default function FreeppAccountPicker() {
         });
       }
     });
-    setKnownSessions((current) => ({ ...current, ...Object.fromEntries(items.map((item) => [String(item.id), item])) }));
+    setKnownSessions((current) => ({ ...current, ...Object.fromEntries(selectableItems.map((item) => [String(item.id), item])) }));
   }
 
   async function pollTask(taskId: string) {
@@ -718,11 +750,12 @@ export default function FreeppAccountPicker() {
             status: "running",
             chains: current.chains.map((chain) => chain.branch === branch && chain.status === "pending" ? { ...chain, current_log: "正在创建提链任务" } : chain),
           }));
-          const result = await apiFetch("/sunny/checkout", { method: "POST", body: JSON.stringify({
+          const result = await apiFetch("/sunny/workbench/checkout", { method: "POST", body: JSON.stringify({
             system_at: true,
             session_ids: sessionIds,
             external_ats: [],
             checkout_kinds: [],
+            use_program_proxy_pool: true,
             plan: "plus",
             link_type: branch,
             country: execution.country,
@@ -815,7 +848,10 @@ export default function FreeppAccountPicker() {
 
   async function copyField(session: Session, field: string) {
     try {
-      const result = await apiFetch(`/sunny/sessions/${encodeURIComponent(String(session.id))}/field?name=${field}`);
+      const resource = session.row_kind === "mailbox"
+        ? `/sunny/mailboxes/${encodeURIComponent(String(session.mailbox_id || ""))}/field?name=${field}`
+        : `/sunny/sessions/${encodeURIComponent(String(session.id))}/field?name=${field}`;
+      const result = await apiFetch(resource);
       const value = String(result.value || "").trim();
       if (!value) throw new Error(`${field.toUpperCase()} 为空`);
       await navigator.clipboard.writeText(value);
@@ -918,10 +954,10 @@ export default function FreeppAccountPicker() {
 
   const operationBusy = busy !== null;
   const selectedCount = Math.max(selected.length, selectedTokenIds.size);
-  return (
   // Batch size is a task preference, not a selection count.  Users may set it
   // before selecting rows; the actual start still uses only selected sessions.
   const chainBatchLimit = Math.max(1, total, selectedCount);
+  return (
     <section className="freepp-account-picker" aria-label="账号 AT">
       <div className="freepp-account-picker-head">
         <div>
@@ -950,7 +986,7 @@ export default function FreeppAccountPicker() {
         <select value={paymentFilter} onChange={(event) => setPaymentFilter(event.target.value)}><option value="">全部支付方式</option>{paymentOptions.map((method) => <option value={method} key={method}>{paymentLabel(method)}</option>)}</select>
       </div>
       <div className="freepp-account-toolbar">
-        <button className="btn btn-sm" type="button" onClick={togglePage} disabled={!items.length || operationBusy}>{pageSelected ? "清除选择" : "全选"}</button>
+        <button className="btn btn-sm" type="button" onClick={togglePage} disabled={!selectableItems.length || operationBusy}>{pageSelected ? "清除选择" : "全选"}</button>
         <span>选中 {selectedCount} 项</span>
         <button className="btn btn-sm btn-blue" type="button" onClick={() => void runTask("access-token-check", "/sunny/sessions/access-token-check")} disabled={!selected.length || operationBusy}><RefreshCw />AT 检测</button>
         <button className="btn btn-sm btn-blue" type="button" onClick={() => void runTask("refresh-at", "/sunny/tasks/refresh-session")} disabled={!selected.length || operationBusy}><RefreshCw />续期</button>
@@ -974,7 +1010,7 @@ export default function FreeppAccountPicker() {
       {!chainProgress.visible && Object.keys(chainTasks).length > 0 && <div className="freepp-account-message">检测到 {Object.keys(chainTasks).length} 个后台提链任务仍在运行。<button className="btn btn-sm" type="button" onClick={() => void recoverChainTasks()} disabled={chainRecoveryBusy}>{chainRecoveryBusy ? "查询中..." : "继续查询"}</button></div>}
       <div className="freepp-account-table-wrap">
         <table className="freepp-account-table">
-          <thead><tr><th><input type="checkbox" aria-label="选择当前页账号" checked={pageSelected} onChange={togglePage} disabled={!items.length || operationBusy} /></th><th>邮箱</th><th>换绑邮箱</th><th>所属分组</th><th>状态</th><th>套餐类型</th><th>LS</th><th>SK</th><th>AT</th><th>RT</th><th>试用资格</th><th>Checkout</th><th>支付方式</th><th>AT 过期时间</th><th>最近测活</th><th>检测记录</th></tr></thead>
+          <thead><tr><th><input type="checkbox" aria-label="选择当前页账号" checked={pageSelected} onChange={togglePage} disabled={!selectableItems.length || operationBusy} /></th><th>邮箱</th><th>换绑邮箱</th><th>所属分组</th><th>状态</th><th>套餐类型</th><th>LS</th><th>SK</th><th>AT</th><th>RT</th><th>试用资格</th><th>Checkout</th><th>支付方式</th><th>AT 过期时间</th><th>最近测活</th><th>检测记录</th></tr></thead>
           <tbody>
             {items.map((session) => {
               const id = String(session.id);
@@ -983,16 +1019,16 @@ export default function FreeppAccountPicker() {
               const payments = Array.isArray(session.payment_methods) ? session.payment_methods : [];
               const liveChain = chainProgress.visible ? sessionChainProgress(session, chainProgress) : null;
               return <tr key={id} className={selectedRow ? "selected" : ""}>
-                <td><input type="checkbox" checked={selectedRow} disabled={operationBusy} onChange={() => toggle(session)} aria-label={`选择 ${session.email || id}`} /></td>
+                <td><input type="checkbox" checked={selectedRow} disabled={operationBusy || session.selectable === false || session.row_kind === "mailbox"} onChange={() => toggle(session)} aria-label={`选择 ${session.email || id}`} title={session.row_kind === "mailbox" ? "该邮箱注册失败，尚未生成可提链会话" : undefined} /></td>
                 <td className="freepp-email-column" title={String(session.email || "")}><div className="freepp-email-cell"><span className="freepp-email-value">{session.email || `会话 #${id}`}</span>{liveChain && <div className={`freepp-account-chain-live ${liveChain.status}`} title={liveChain.message}><div className="freepp-account-chain-label"><span>{liveChain.message}</span><strong>{liveChain.progress}%</strong></div><div className="freepp-account-chain-track"><span style={{ width: `${Math.max(0, Math.min(100, liveChain.progress))}%` }} /></div></div>}</div></td>
                 <td title={String(session.rebind_email || "-")}>{session.rebind_email || "-"}</td>
                 <td>{session.group_name || "默认分组"}</td>
-                <td><span className={`freepp-status freepp-status-${statusLabel(session.status) === "已注册" ? "ok" : statusLabel(session.status) === "失败" ? "error" : "info"}`}>{statusLabel(session.status)}</span></td>
+                <td><span className={`freepp-status freepp-status-${statusLabel(session.status) === "已注册" ? "ok" : statusLabel(session.status) === "失败" ? "error" : "info"}`}>{statusLabel(session.status)}</span>{session.row_kind === "mailbox" && <small className="freepp-at-state missing">未生成会话</small>}</td>
                 <td><span className="freepp-plan">{planLabel(session.plan_type || session.account_type)}</span></td>
                 <td><button className="freepp-field-button" type="button" disabled={!session.has_login_secret || operationBusy} onClick={() => void copyField(session, "login_secret")}>{session.has_login_secret ? "LS" : "-"}</button></td>
                 <td><button className="freepp-field-button" type="button" disabled={!session.has_secret_key || operationBusy} onClick={() => void copyField(session, "secret_key")}>{session.has_secret_key ? "SK" : "-"}</button></td>
                 <td><button className={`freepp-field-button ${atAvailable ? "present" : "missing"}`} type="button" disabled={!atAvailable || operationBusy} onClick={() => void copyField(session, "access_token")}>{atAvailable ? "AT" : "-"}</button><small className={`freepp-at-state ${atAvailable ? "available" : "missing"}`}>{atLabel(session)}</small></td>
-                <td>{session.has_refresh_token ? <button className="freepp-field-button" type="button" disabled={operationBusy} onClick={() => void copyField(session, "refresh_token")}>RT</button> : <button className="freepp-field-button" type="button" disabled={operationBusy} onClick={() => void acquireRefreshToken(session)}>获取</button>}</td>
+                <td>{session.row_kind === "mailbox" ? "-" : session.has_refresh_token ? <button className="freepp-field-button" type="button" disabled={operationBusy} onClick={() => void copyField(session, "refresh_token")}>RT</button> : <button className="freepp-field-button" type="button" disabled={operationBusy} onClick={() => void acquireRefreshToken(session)}>获取</button>}</td>
                 <td><span className={`freepp-detection freepp-detection-${session.trial_eligibility === "eligible" ? "ok" : session.trial_eligibility === "ineligible" ? "error" : "muted"}`}>{trialLabel(session.trial_eligibility)}</span></td>
                 <td>{checkoutLabel(session.checkout_kind)}</td>
                 <td title={payments.map(paymentLabel).join("、") || "-"}>{payments.length ? payments.map(paymentLabel).join("、") : "-"}</td>
