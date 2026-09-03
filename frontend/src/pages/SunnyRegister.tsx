@@ -3919,7 +3919,9 @@ function ProxyConfigPage({ t, notify }: { t: typeof zh; notify: (type: "ok" | "f
     updates.purpose_tags = Array.isArray(form.purpose_tags) ? form.purpose_tags : [];
     if (countryValue) updates.country = countryValue;
     try {
-      await Promise.all(selected.map((id)=>apiFetch(`/sunny/proxy-config/pool/${id}`, { method:"PUT", body: JSON.stringify(updates) })));
+      // Use the server-side batch endpoint, with bounded-concurrency fallback,
+      // rather than opening one request per selected proxy at once.
+      await updateProxyRows(selected, updates);
       setBatchEditing(null);
       notify("ok", t.done);
       await load();
