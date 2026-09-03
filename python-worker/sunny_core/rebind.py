@@ -42,6 +42,8 @@ _DOMAIN_ROTATION = itertools.count()
 # random start while retaining round-robin behavior inside that child so retries
 # do not immediately reuse the same domain.
 _DOMAIN_ROTATION_OFFSET = secrets.randbelow(2**31)
+_BEGIN_RATE_LIMIT_MAX_ATTEMPTS = 4
+_BEGIN_RATE_LIMIT_BASE_DELAY_SECONDS = 20
 
 
 class RebindError(RuntimeError):
@@ -71,6 +73,18 @@ def _begin_with_retry(client: "ChangeEmailClient", email: str, log: Callable[[st
                     raise RebindError(f"换绑验证码请求未被接受：{detail[:220]}")
             return result
         except RebindError as exc:
+            # The begin endpoint has an independent upstream rate limit. Back
+            # off exponentially so a transient 429 is not turned into a
+            # permanent account failure during a batch.
+            message = str(exc).lower()
+            if "http 429" in message or "too many requests" in message or "failed to send email otp" in message:
+                max_attempts = min(max(1, attempts), _BEGIN_RATE_LIMIT_MAX_ATTEMPTS)
+                if attempt >= max_attempts:
+                    raise
+                delay = _BEGIN_RATE_LIMIT_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                log(f"[{email}] 换绑验证码请求被上游限流，将等待 {delay} 秒后重试（{attempt + 1}/{max_attempts}）")
+                time.sleep(delay)
+                continue
             if attempt >= attempts or not _is_retryable_rebind_error(exc):
                 raise
             delay = min(3, attempt)
@@ -661,13 +675,13 @@ def _wait_for_rebind_code(reader: DomainMailReader, client: ChangeEmailClient, e
         return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_FIRST_WAIT_SECONDS)
     except TimeoutError:
         log(f"[{email}] 首次换绑验证码请求已接受但 {REBIND_OTP_FIRST_WAIT_SECONDS} 秒内未收到邮件，进行第 1 次重发")
-        _begin_with_retry(client, email, log)
+        _begin_with_retry(client, email, log, attempts=4)
         log(f"[{email}] 第 1 次重发已接受，继续等待邮箱投递")
     try:
         return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_SECOND_WAIT_SECONDS)
     except TimeoutError:
         log(f"[{email}] 第 1 次重发后 {REBIND_OTP_SECOND_WAIT_SECONDS} 秒内仍未收到邮件，进行第 2 次重发")
-        _begin_with_retry(client, email, log)
+        _begin_with_retry(client, email, log, attempts=4)
         log(f"[{email}] 第 2 次重发已接受，进行最后一次邮箱等待")
         try:
             return reader.wait_for_code(min_timestamp, timeout=REBIND_OTP_FINAL_WAIT_SECONDS)
@@ -919,7 +933,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             log(f"[{old_email}] 已建立换绑邮箱取件监听，准备请求 ChatGPT 发送验证码")
             try:
                 phase = "begin"
-                _begin_with_retry(client, new_email, log)
+                _begin_with_retry(client, new_email, log, attempts=4)
                 log(f"[{old_email}] ChatGPT 换绑验证码请求已接受，等待新邮箱验证码")
             except RebindError as exc:
                 if "重新认证" not in str(exc):
@@ -936,7 +950,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
                 client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""), log)
                 client.set_access_token(str(old_result.get("access_token") or ""))
                 phase = "begin"
-                _begin_with_retry(client, new_email, log)
+                _begin_with_retry(client, new_email, log, attempts=4)
                 log(f"[{old_email}] 重新认证后已重新提交换绑验证码请求，等待新邮箱验证码")
             phase = "delivery"
             code = _wait_for_rebind_code(reader, client, new_email, issued_after, log)

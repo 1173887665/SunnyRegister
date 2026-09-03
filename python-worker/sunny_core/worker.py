@@ -51,7 +51,7 @@ AGENT_IDENTITY_REVERSE_PROXY = "agent_identity_reverse_proxy"
 # configurable for slower environments while retaining a bounded default.
 REBIND_ACCOUNT_TIMEOUT_SECONDS = max(
     60,
-    int(os.getenv("SUNNY_REBIND_ACCOUNT_TIMEOUT_SECONDS", "300")),
+    int(os.getenv("SUNNY_REBIND_ACCOUNT_TIMEOUT_SECONDS", "900")),
 )
 
 

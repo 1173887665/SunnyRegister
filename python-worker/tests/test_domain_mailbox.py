@@ -432,6 +432,26 @@ def test_rebind_begin_retries_transient_network_error():
     assert any("瞬时网络错误" in message for message in logs)
 
 
+def test_rebind_begin_rate_limit_uses_exponential_backoff(monkeypatch):
+    calls = []
+    sleeps = []
+    logs = []
+
+    class Client:
+        def begin(self, email):
+            calls.append(email)
+            if len(calls) < 3:
+                raise rebind_module.RebindError(
+                    '换绑接口 /backend-api/accounts/change_email/begin 失败：HTTP 429 {"detail":"Failed to send email OTP, please try again later."}'
+                )
+            return {"success": True}
+
+    monkeypatch.setattr(rebind_module.time, "sleep", sleeps.append)
+    assert rebind_module._begin_with_retry(Client(), "new@example.com", logs.append, attempts=4) == {"success": True}
+    assert calls == ["new@example.com"] * 3
+    assert sleeps == [20, 40]
+
+
 def test_rebind_begin_rejects_http_success_with_failed_payload():
     class Client:
         def begin(self, email):
