@@ -571,6 +571,41 @@ def test_browser_password_step_waits_for_a_transitional_readonly_input() -> None
     assert messages.count("[认证] 账号需要密码步骤，准备填写 ChatGPT 密码") == 1
 
 
+def test_browser_password_route_waits_when_the_input_is_temporarily_unmounted() -> None:
+    account = MailAccount(
+        "user@example.com", "mailbox-password", "client", "mail-rt", "raw",
+        chatgpt_password="Short1!",
+    )
+    messages: list[str] = []
+    flow = OpenAIEmailRegisterFlow(account, "", True, messages.append, existing_account=True)
+    flow._visible_inputs = Mock(return_value=[])
+    page = Mock(url="https://auth.openai.com/log-in/password")
+
+    assert flow._is_password_step_route(page.url) is True
+    assert flow._fill_password_step(page) is False
+    assert any("输入框仍在加载" in message for message in messages)
+
+
+def test_browser_password_submit_uses_enter_when_the_button_is_temporarily_unmounted() -> None:
+    account = MailAccount(
+        "user@example.com", "mailbox-password", "client", "mail-rt", "raw",
+        chatgpt_password="Short1!",
+    )
+    flow = OpenAIEmailRegisterFlow(account, "", True, None, existing_account=True)
+    password_input = Mock()
+    password_input.is_enabled.return_value = True
+    password_input.is_editable.return_value = True
+    password_input.is_visible.return_value = True
+    flow._visible_inputs = Mock(return_value=[password_input])
+    flow._click_continue = Mock(return_value=False)
+    page = Mock(url="https://auth.openai.com/log-in/password")
+
+    assert flow._fill_password_step(page) is True
+
+    password_input.fill.assert_called_once_with("Short1!", timeout=5000)
+    password_input.press.assert_called_once_with("Enter", timeout=3000)
+
+
 def test_browser_login_secret_retries_password_transition_once_before_fallback() -> None:
     account = MailAccount(
         "user@example.com", "mailbox-password", "client", "mail-rt", "raw",

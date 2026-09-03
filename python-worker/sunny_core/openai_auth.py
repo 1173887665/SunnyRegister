@@ -50,6 +50,15 @@ EMAIL_OTP_RESEND_WAIT_SECONDS = 60
 LOGIN_SECRET_FLOW_TIMEOUT_SECONDS = 120
 LOGIN_SECRET_STEP_TIMEOUT_SECONDS = 20
 LOGIN_SECRET_NO_PROGRESS_TIMEOUT_SECONDS = 25
+PASSWORD_INPUT_SELECTORS = (
+    'input[type="password"]',
+    'input[name="password"]',
+    'input[autocomplete="current-password"]',
+    'input[autocomplete="new-password"]',
+    'input[id*="password" i]',
+    'input[aria-label*="password" i]',
+    '[data-testid*="password" i] input',
+)
 # EmailOtpValidate is a small JSON request. Keep its browser-side timeout
 # short so a stalled proxy does not delay the mailbox login flow for a minute.
 EMAIL_OTP_BROWSER_REQUEST_TIMEOUT_MS = 15000
@@ -616,6 +625,7 @@ class OpenAIEmailRegisterFlow:
         self.generated_password = ""
         self.password_step_logged = False
         self.password_step_wait_started_at = 0.0
+        self.password_submit_wait_started_at = 0.0
         self.prefer_login_secret = bool(prefer_login_secret)
         self.login_secret_stage = ""
         self.login_secret_submitted_at = 0.0
@@ -1181,7 +1191,7 @@ class OpenAIEmailRegisterFlow:
             if self._has_workspace_selection(page):
                 self._select_first_workspace(page)
                 continue
-            if "password" in url and self._has_visible_password(page):
+            if self._is_password_step_route(url) or self._has_visible_password(page):
                 if password_step_submitted:
                     # The auth SPA keeps the old password node mounted while the
                     # request is transitioning. Do not refill it on every loop;
@@ -2223,7 +2233,69 @@ class OpenAIEmailRegisterFlow:
                 pass
 
     def _has_visible_password(self, page) -> bool:
-        return bool(self._visible_inputs(page, ['input[type="password"]', 'input[name="password"]']))
+        return bool(self._visible_inputs(page, list(PASSWORD_INPUT_SELECTORS)))
+
+    @staticmethod
+    def _is_password_step_route(url: str) -> bool:
+        path = str(url or "").lower().split("?", 1)[0].rstrip("/")
+        return path.endswith("/log-in/password") or path.endswith("/create-account/password")
+
+    def _password_step_diagnostics(self, page) -> str:
+        try:
+            url = str(page.url or "")[:240]
+        except Exception:
+            url = ""
+        return f"url={url or 'unknown'}; page={self._page_text_summary(page, 260)}"
+
+    def _submit_password_step(self, page, inputs) -> bool:
+        """Submit a password form across the current and legacy auth layouts."""
+        if self._click_continue(page):
+            return True
+        for item in inputs:
+            try:
+                if item.is_visible(timeout=500) and item.is_enabled(timeout=500):
+                    item.press("Enter", timeout=3000)
+                    return True
+            except Exception:
+                continue
+        try:
+            return bool(page.evaluate("""() => {
+                const visible = el => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                };
+                const enabled = el => el && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+                const passwords = Array.from(document.querySelectorAll(
+                    'input[type="password"],input[name="password"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[id*="password" i],input[aria-label*="password" i]'
+                )).filter(visible);
+                const input = passwords[passwords.length - 1];
+                if (!input) return false;
+                const form = input.form || input.closest('form');
+                const scope = form || document;
+                const candidates = Array.from(scope.querySelectorAll('button,input[type="submit"],[role="button"]')).filter(el => {
+                    if (!visible(el) || !enabled(el)) return false;
+                    const identity = `${el.value || ''} ${el.textContent || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('data-dd-action-name') || ''}`;
+                    return /continue|next|log.?in|sign.?in|submit|继续|登录|登入|続行|ログイン/i.test(identity) || String(el.type || '').toLowerCase() === 'submit';
+                });
+                const submitter = candidates[0];
+                if (submitter) {
+                    submitter.scrollIntoView({block:'center', inline:'center'});
+                    submitter.click();
+                    return true;
+                }
+                if (form && typeof form.requestSubmit === 'function') {
+                    form.requestSubmit();
+                    return true;
+                }
+                input.focus();
+                input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', bubbles:true}));
+                input.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter', code:'Enter', bubbles:true}));
+                return true;
+            }"""))
+        except Exception:
+            return False
 
     def _uses_login_secret(self) -> bool:
         return bool(self.existing_account and self.prefer_login_secret and self.account.has_login_secret)
@@ -2261,9 +2333,17 @@ class OpenAIEmailRegisterFlow:
         if not self.password_step_logged:
             self.log("[认证] 账号需要密码步骤，准备填写 ChatGPT 密码")
             self.password_step_logged = True
-        inputs = self._visible_inputs(page, ['input[type="password"]', 'input[name="password"]'])
+        inputs = self._visible_inputs(page, list(PASSWORD_INPUT_SELECTORS))
         if not inputs:
-            raise RuntimeError("Entered password step but password input was not found")
+            now = time.time()
+            if not self.password_step_wait_started_at:
+                self.password_step_wait_started_at = now
+                self.log("[认证] 密码路由已打开但输入框仍在加载，等待页面完成渲染")
+            # Leave the bounded timeout decision to the outer auth state
+            # machine.  The SPA may unmount this field between two renders;
+            # raising here incorrectly turns that normal transition into a
+            # per-account renewal failure.
+            return False
         now = time.time()
         editable_inputs = []
         for item in inputs:
@@ -2311,8 +2391,15 @@ class OpenAIEmailRegisterFlow:
                         return False
                     raise RuntimeError(f"ChatGPT password field was not editable: {str(exc)[:240]}") from exc
         self.password_step_wait_started_at = 0.0
-        if not self._click_continue(page):
-            raise RuntimeError("Password has been filled, but continue button was not found")
+        if not self._submit_password_step(page, targets):
+            now = time.time()
+            if not self.password_submit_wait_started_at:
+                self.password_submit_wait_started_at = now
+                self.log("[认证] ChatGPT 密码已填写，等待可用的登录提交控件")
+            if now - self.password_submit_wait_started_at < LOGIN_SECRET_STEP_TIMEOUT_SECONDS:
+                return False
+            raise RuntimeError(f"ChatGPT password form could not be submitted: {self._password_step_diagnostics(page)}")
+        self.password_submit_wait_started_at = 0.0
         if login_page:
             self.login_secret_stage = "password"
             self.login_secret_submitted_at = time.time()
