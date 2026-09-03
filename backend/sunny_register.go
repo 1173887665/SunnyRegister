@@ -3948,22 +3948,34 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 	if len(parts) == 0 && r.Method == http.MethodPost {
 		body, _ := parseBody(r)
 		addresses := []string{}
+		appendAddress := func(raw any) {
+			address := normalizeSunnyProxyAddress(text(raw))
+			if address == "" {
+				return
+			}
+			// Do not deduplicate repeated gateway URLs. Each input row represents
+			// an independent proxy slot and the task scheduler preserves those
+			// slots by database ID while reusing the shared provider endpoint.
+			addresses = append(addresses, address)
+		}
+		hasBatchInput := false
 		if arr, ok := body["addresses"].([]any); ok {
+			hasBatchInput = len(arr) > 0
 			for _, raw := range arr {
-				if v := normalizeSunnyProxyAddress(text(raw)); v != "" {
-					addresses = append(addresses, v)
-				}
+				appendAddress(raw)
 			}
 		}
 		if lines := strings.TrimSpace(text(body["lines"])); lines != "" {
+			hasBatchInput = true
 			for _, line := range strings.Split(lines, "\n") {
-				if v := normalizeSunnyProxyAddress(line); v != "" {
-					addresses = append(addresses, v)
-				}
+				appendAddress(line)
 			}
 		}
-		if address := normalizeSunnyProxyAddress(text(body["address"])); address != "" {
-			addresses = append(addresses, address)
+		// `address` is the legacy single-row field. Newer clients can include it
+		// alongside `addresses`; only use it when no batch input was supplied so
+		// the first row is not accidentally inserted twice.
+		if !hasBatchInput {
+			appendAddress(body["address"])
 		}
 		if len(addresses) == 0 {
 			writeError(w, 400, "proxy address is required")
@@ -3983,7 +3995,7 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 		if v, ok := body["enabled"]; ok {
 			enabled = asBool(v)
 		}
-		created := []map[string]any{}
+		proxies := make([]SunnyProxy, 0, len(addresses))
 		for _, address := range addresses {
 			p := SunnyProxy{
 				Address:     address,
@@ -3999,13 +4011,40 @@ func (s *Server) sunnyProxyPool(w http.ResponseWriter, r *http.Request, parts []
 				p.Enabled = false
 				p.LastCheckOK = false
 			}
-			if p.Enabled {
-				applySunnyProxyCheck(&p, checkSunnyProxy(address))
+			// Network validation is intentionally not performed in the create request.
+			// A single unreachable proxy can consume the full CONNECT timeout and used
+			// to make large imports block for minutes.  Newly enabled rows remain
+			// unchecked (LastCheckedAt == nil) until the explicit pool check runs.
+			proxies = append(proxies, p)
+		}
+		shouldRemainDisabled := make([]bool, len(proxies))
+		for i := range proxies {
+			shouldRemainDisabled[i] = !proxies[i].Enabled
+		}
+		if err := s.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.CreateInBatches(&proxies, 500).Error; err != nil {
+				return err
 			}
-			if err := s.db.Create(&p).Error; err != nil {
-				writeError(w, 400, err.Error())
-				return
+			// GORM applies the model's default:true to a boolean zero value during
+			// Create. Restore explicit disabled/invalid input in one statement so
+			// Status and Enabled cannot diverge.
+			disabledIDs := make([]uint, 0, len(proxies))
+			for i := range proxies {
+				if shouldRemainDisabled[i] {
+					disabledIDs = append(disabledIDs, proxies[i].ID)
+					proxies[i].Enabled = false
+				}
 			}
+			if len(disabledIDs) > 0 {
+				return tx.Model(&SunnyProxy{}).Where("id IN ?", disabledIDs).Update("enabled", false).Error
+			}
+			return nil
+		}); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		created := make([]map[string]any, 0, len(proxies))
+		for _, p := range proxies {
 			created = append(created, sunnyProxyJSON(p))
 		}
 		if len(created) == 1 {
