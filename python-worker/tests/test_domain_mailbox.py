@@ -766,3 +766,14 @@ def test_rebind_login_rebuilds_stale_auth_with_mailbox_protocol(monkeypatch):
 def test_rebind_login_does_not_mailbox_retry_when_account_is_deactivated():
     error = rebind_module.LoginSecretAuthenticationError("account_deactivated: account is disabled")
     assert rebind_module._should_use_mailbox_browser_fallback(error) is False
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "invalid_state: Your sign-in session is no longer valid",
+        "invalid_state: セッションの有効期限が切れました",
+    ],
+)
+def test_rebind_login_retries_with_fresh_mailbox_session_for_invalid_state(message):
+    assert rebind_module._should_use_mailbox_browser_fallback(RuntimeError(message)) is True

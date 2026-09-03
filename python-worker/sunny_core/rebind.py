@@ -461,6 +461,12 @@ def _should_use_mailbox_browser_fallback(error: Exception) -> bool:
             "upstream html challenge",
             "requires an interactive",
             "invalid_auth_step",
+            "invalid_state",
+            "session is no longer valid",
+            "session has expired",
+            "session expired",
+            "セッションは無効",
+            "セッションの有効期限",
             "invalid authorization step",
             "认证步骤不匹配",
         )
@@ -823,10 +829,12 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
     new_api_token_hash = ""
     old_flow = None
     new_flow = None
+    phase = "login"
     try:
         verified_email = str(account_row.get("rebind_email") or "").strip()
         verified_api = str(account_row.get("rebind_mailbox_api") or "").strip()
         if verified_email and verified_api and verified_email.lower() != old_email.lower():
+            phase = "post_login"
             verified_type, verified_channel = _resolve_rebind_mailbox_kind(
                 verified_api,
                 verified_email,
@@ -868,6 +876,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         _persist_login_result(db, old_email, mailbox or {}, old_result, log)
         client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""), log)
         client.set_access_token(str(old_result.get("access_token") or ""))
+        phase = "eligibility"
         client.eligibility()
         imported_email = str(account_row.get("_rebind_target_email") or "").strip()
         imported_api = str(account_row.get("_rebind_target_api") or "").strip()
@@ -890,16 +899,19 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         reader_account = _rebind_target_account(new_email, new_api, imported_type, target_channel, account)
         reader = create_mailbox_reader(reader_account, log)
         try:
+            phase = "mailbox"
             reader.connect()
             issued_after = time.time()
             log(f"[{old_email}] 已建立换绑邮箱取件监听，准备请求 ChatGPT 发送验证码")
             try:
+                phase = "begin"
                 _begin_with_retry(client, new_email, log)
                 log(f"[{old_email}] ChatGPT 换绑验证码请求已接受，等待新邮箱验证码")
             except RebindError as exc:
                 if "重新认证" not in str(exc):
                     raise
                 previous_flow = old_flow
+                phase = "login"
                 old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
                 _persist_login_result(db, old_email, mailbox or {}, old_result, log)
                 try:
@@ -909,11 +921,14 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
                     pass
                 client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""), log)
                 client.set_access_token(str(old_result.get("access_token") or ""))
+                phase = "begin"
                 _begin_with_retry(client, new_email, log)
                 log(f"[{old_email}] 重新认证后已重新提交换绑验证码请求，等待新邮箱验证码")
+            phase = "delivery"
             code = _wait_for_rebind_code(reader, client, new_email, issued_after, log)
         finally:
             reader.close()
+        phase = "verify"
         client.verify(new_email, code)
         log(f"[{old_email}] 已向 ChatGPT 提交换绑邮箱验证码")
         if phone_only:
@@ -924,6 +939,7 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             )
         log(f"[{old_email}] 已保存上游换绑验证断点，后续登录失败可直接恢复")
         new_account = _rebind_target_account(new_email, new_api, imported_type, target_channel, account)
+        phase = "post_login"
         new_flow, new_result = _login_rebound_account(
             new_account, proxy, log, should_cancel=db.cancel_requested
         )
@@ -939,11 +955,11 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         log(f"[{old_email}] 换绑成功：{new_email}")
         return {"email": old_email, "new_email": new_email, "status": "success"}
     except Exception as exc:
-        if not new_email:
-            try:
-                exc.rebind_phase = "login"
-            except Exception:
-                pass
+        try:
+            if not str(getattr(exc, "rebind_phase", "") or ""):
+                exc.rebind_phase = phase
+        except Exception:
+            pass
         if new_email and new_api:
             _handle_failed_domain_mailbox(
                 db,

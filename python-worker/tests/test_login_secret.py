@@ -23,6 +23,19 @@ class LoginSecretTests(unittest.TestCase):
         error = flow._detect_route_error(Page())
         self.assertTrue(error.startswith("rate_limit_exceeded:"))
 
+    def test_expired_japanese_auth_session_is_classified_as_invalid_state(self):
+        class Body:
+            def inner_text(self, **_kwargs):
+                return "認証エラー invalid_state セッションの有効期限が切れました"
+
+        class Page:
+            def locator(self, _selector):
+                return Body()
+
+        flow = object.__new__(OpenAIEmailRegisterFlow)
+        error = flow._detect_route_error(Page())
+        self.assertTrue(error.startswith("invalid_state:"))
+
     def test_mailbox_otp_requires_six_digits(self):
         self.assertEqual(extract_otp("Your OpenAI code is 123456"), "123456")
         self.assertEqual(extract_otp("Your OpenAI code is 1234"), "")

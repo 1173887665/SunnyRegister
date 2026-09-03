@@ -72,6 +72,10 @@ _RATE_LIMIT_ROUTE_MARKERS = (
     "rate_limit_exceeded", "too many requests", "rate limit", "请求过多",
     "リクエストが多すぎ", "リクエスト数が多", "слишком много запросов",
 )
+_STALE_AUTH_ROUTE_MARKERS = (
+    "invalid_state", "session is no longer valid", "session has expired", "session expired",
+    "セッションは無効", "セッションの有効期限", "登录会话已失效", "会话已过期",
+)
 _ACCOUNT_DEACTIVATED_MARKERS = (
     "account_deactivated", "account disabled", "account has been disabled",
     "account deactivated", "account has been deactivated", "deleted or deactivated",
@@ -1184,6 +1188,8 @@ class OpenAIEmailRegisterFlow:
                     # attempt. Retrying the same page only extends the stall;
                     # the outer task scheduler can rotate the route.
                     raise RuntimeError(f"{error_text}；当前代理触发上游限流，已停止当前认证尝试")
+                if error_text.lower().startswith("invalid_state:"):
+                    raise RuntimeError(f"{error_text}；当前认证事务已失效，需要建立全新登录会话")
                 if route_error_retries < 3 and self._retry_route_error(page):
                     route_error_retries += 1
                     self.log(f"[{self.account.email}] Page error; retried {route_error_retries}/3")
@@ -1428,6 +1434,8 @@ class OpenAIEmailRegisterFlow:
             return ""
         if any(marker in text.lower() for marker in _RATE_LIMIT_ROUTE_MARKERS):
             return f"rate_limit_exceeded: {text[:400]}"
+        if any(marker in text.lower() for marker in _STALE_AUTH_ROUTE_MARKERS):
+            return f"invalid_state: {text[:400]}"
         if any(x in text for x in ["Operation timed out", "Route Error", "Bad gateway", "Error code 502", "Route error"]):
             return text[:400]
         return ""

@@ -4150,6 +4150,7 @@ def _rebind_child_entry(result_queue, task_id: str, payload: dict[str, Any], acc
             "error": str(exc),
             "exception_type": type(exc).__name__,
             "rebind_phase": str(getattr(exc, "rebind_phase", "") or ""),
+            "traceback": traceback.format_exc(),
         })
 
 
@@ -4237,6 +4238,8 @@ def _rebind_one_with_timeout(
     if envelope.get("ok"):
         return tuple(envelope["value"])
     error = RuntimeError(str(envelope.get("error") or "换绑子进程失败"))
+    error.remote_exception_type = str(envelope.get("exception_type") or "RuntimeError")
+    error.remote_traceback = str(envelope.get("traceback") or "")
     phase = str(envelope.get("rebind_phase") or "")
     if phase:
         error.rebind_phase = phase
@@ -4245,6 +4248,18 @@ def _rebind_one_with_timeout(
 
 def _is_scheduler_test_double(value: Any) -> bool:
     return str(getattr(value, "__module__", "")) == "unittest.mock"
+
+
+def _rebind_failure_detail(email: str, exc: BaseException) -> dict[str, Any]:
+    remote_traceback = str(getattr(exc, "remote_traceback", "") or "")
+    return {
+        "email": email,
+        "module": "auth",
+        "action": "rebind.failed",
+        "exception_type": str(getattr(exc, "remote_exception_type", "") or type(exc).__name__),
+        "rebind_phase": str(getattr(exc, "rebind_phase", "") or ""),
+        "traceback": remote_traceback or traceback.format_exc(),
+    }
 
 
 def _rebind_payload_for_account(payload: dict[str, Any], account: dict[str, Any]) -> dict[str, Any]:
@@ -4298,17 +4313,27 @@ def _rebind_with_proxy_rotation(
             return rebind_one(db, account_for_rebind, proxy, log)
         except Exception as exc:
             failure = classify_auth_failure(exc)
+            phase = str(getattr(exc, "rebind_phase", "") or "").strip().lower()
+            delivery_not_observed = phase == "delivery" and "上游未实际投递换绑验证码" in str(exc)
             can_rotate = (
                 attempt + 1 < max_attempts
-                and str(getattr(exc, "rebind_phase", "")) == "login"
-                and failure.rotate_proxy
                 and bool(proxy)
+                and (
+                    (failure.rotate_proxy and phase in {"login", "eligibility", "begin", "delivery"})
+                    or delivery_not_observed
+                )
             )
             if not can_rotate:
                 raise
             excluded.add(proxy)
+            phase_label = {
+                "login": "登录阶段",
+                "eligibility": "资格检查阶段",
+                "begin": "验证码请求阶段",
+                "delivery": "验证码投递阶段",
+            }.get(phase, "执行阶段")
             db.event(
-                f"[{email}] [代理] 当前代理在换绑登录阶段发生{failure.category}，"
+                f"[{email}] [代理] 当前代理在换绑{phase_label}发生{failure.category}，"
                 f"将排除该代理并切换下一条（{attempt + 2}/{max_attempts}）：{redact_proxy_url(proxy)}；"
                 f"原因：{str(exc)[:260]}",
                 "warning",
@@ -4318,10 +4343,17 @@ def _rebind_with_proxy_rotation(
                     "action": "rebind.proxy_rotated",
                     "proxy": proxy,
                     "proxy_error_category": failure.category,
+                    "rebind_phase": phase,
                     "proxy_attempt": attempt + 1,
                     "proxy_max_attempts": max_attempts,
                 },
             )
+            retry_delay = float(failure.delay_seconds or (2 if delivery_not_observed else 0))
+            if retry_delay > 0:
+                deadline = time.monotonic() + retry_delay
+                while time.monotonic() < deadline:
+                    db.ensure_not_cancelled()
+                    time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
     raise RuntimeError("邮箱换绑代理轮换未返回执行结果")
 
 
@@ -4478,7 +4510,7 @@ def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[st
                 message = f"[{email}] 邮箱换绑失败：{exc}"
                 errors.append(message)
                 items.append({"email": email, "status": "failed", "error": str(exc)})
-                db.event(message, "error", detail={"email": email, "module": "auth", "action": "rebind.failed"})
+                db.event(message, "error", detail=_rebind_failure_detail(email, exc))
             db.update_task(
                 progress_current=len(prefiltered_items) + index,
                 success_count=success,
@@ -4524,7 +4556,7 @@ def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[st
                         message = f"[{email}] 邮箱换绑并行 Worker 失败：{exc}"
                         errors.append(message)
                         items.append({"email": email, "status": "failed", "error": str(exc)})
-                        db.event(message, "error", detail={"email": email, "module": "auth", "action": "rebind.failed"})
+                        db.event(message, "error", detail=_rebind_failure_detail(email, exc))
                     completed += 1
                     db.update_task(progress_current=completed, success_count=success, error_count=len(errors))
         finally:
