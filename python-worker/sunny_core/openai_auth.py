@@ -41,6 +41,8 @@ REGISTER_DEVICE_PROFILES = [
 ]
 PROFILE_SUBMISSION_TIMEOUT_SECONDS = 300
 PROFILE_TRANSITION_TIMEOUT_MS = 5000
+PROFILE_MAX_SUBMIT_CLICKS = 2
+PROFILE_STALL_RECOVERY_SECONDS = 40
 EMAIL_OTP_INITIAL_WAIT_SECONDS = 120
 EMAIL_OTP_RESEND_WAIT_SECONDS = 60
 # A complete LS is intended to be a fast renewal path.  Keep the browser
@@ -65,6 +67,10 @@ EMAIL_OTP_BROWSER_REQUEST_TIMEOUT_MS = 15000
 _EMAIL_OTP_TIMEOUT_MARKERS = (
     "email otp", "email verification", "email-otp", "邮箱验证码", "协议验证码",
     "openai 邮箱验证码", "openai email code", "重新发送验证码",
+)
+_RATE_LIMIT_ROUTE_MARKERS = (
+    "rate_limit_exceeded", "too many requests", "rate limit", "请求过多",
+    "リクエストが多すぎ", "リクエスト数が多", "слишком много запросов",
 )
 _ACCOUNT_DEACTIVATED_MARKERS = (
     "account_deactivated", "account disabled", "account has been disabled",
@@ -1051,6 +1057,7 @@ class OpenAIEmailRegisterFlow:
         about_you_submitted = False
         about_you_at = 0.0
         about_you_retry_at = 0.0
+        about_you_retry_count = 0
         about_you_recovery_attempted = False
         about_you_first_seen_at = 0.0
         about_you_validation_retries = 0
@@ -1167,10 +1174,16 @@ class OpenAIEmailRegisterFlow:
                 about_you_submitted = False
                 about_you_at = 0.0
                 about_you_retry_at = 0.0
+                about_you_retry_count = 0
                 about_you_first_seen_at = 0.0
                 continue
             error_text = self._detect_route_error(page)
             if error_text:
+                if error_text.lower().startswith("rate_limit_exceeded:"):
+                    # A rate-limit page is a terminal result for this proxy
+                    # attempt. Retrying the same page only extends the stall;
+                    # the outer task scheduler can rotate the route.
+                    raise RuntimeError(f"{error_text}；当前代理触发上游限流，已停止当前认证尝试")
                 if route_error_retries < 3 and self._retry_route_error(page):
                     route_error_retries += 1
                     self.log(f"[{self.account.email}] Page error; retried {route_error_retries}/3")
@@ -1282,11 +1295,17 @@ class OpenAIEmailRegisterFlow:
                         )
                         self._sleep_checked(1)
                         continue
-                    if now - about_you_at >= 10 and now - about_you_retry_at >= 10 and self._about_you_current_values_ok(page):
+                    if (
+                        now - about_you_at >= 10
+                        and now - about_you_retry_at >= 10
+                        and self._about_you_current_values_ok(page)
+                        and about_you_retry_count < PROFILE_MAX_SUBMIT_CLICKS
+                    ):
                         self._click_continue(page, transition_timeout_ms=PROFILE_TRANSITION_TIMEOUT_MS)
+                        about_you_retry_count += 1
                         about_you_retry_at = now
-                        self.log("[认证] 基础资料已提交但页面未跳转，已重新点击提交按钮")
-                    if not about_you_recovery_attempted and now - about_you_at >= 40 and self._about_you_current_values_ok(page):
+                        self.log(f"[认证] 基础资料已提交但页面未跳转，已重新点击提交按钮（{about_you_retry_count}/{PROFILE_MAX_SUBMIT_CLICKS}）")
+                    if not about_you_recovery_attempted and now - about_you_at >= PROFILE_STALL_RECOVERY_SECONDS and self._about_you_current_values_ok(page):
                         about_you_recovery_attempted = True
                         if self._recover_after_profile_submit(page):
                             self._emit_progress("auth_completed")
@@ -1297,12 +1316,18 @@ class OpenAIEmailRegisterFlow:
                         about_you_retry_at = 0.0
                         otp_min_timestamp = time.time() - 10
                         continue
+                    if about_you_recovery_attempted and now - about_you_at >= PROFILE_STALL_RECOVERY_SECONDS:
+                        raise TimeoutError(
+                            f"[{self.account.email}] 基础资料提交后页面未完成跳转；"
+                            f"{self._profile_submission_diagnostics(page)}"
+                        )
                     self._sleep_checked(1)
                     continue
                 self._fill_about_you(page)
                 about_you_submitted = True
                 about_you_at = time.time()
                 about_you_retry_at = 0.0
+                about_you_retry_count = 0
                 continue
             if "email-verification" in url or self._has_otp_input(page):
                 if not email_code_submitted:
@@ -1401,6 +1426,8 @@ class OpenAIEmailRegisterFlow:
             text = re.sub(r"\s+", " ", page.locator("body").inner_text(timeout=700)).strip()
         except Exception:
             return ""
+        if any(marker in text.lower() for marker in _RATE_LIMIT_ROUTE_MARKERS):
+            return f"rate_limit_exceeded: {text[:400]}"
         if any(x in text for x in ["Operation timed out", "Route Error", "Bad gateway", "Error code 502", "Route error"]):
             return text[:400]
         return ""
@@ -1452,7 +1479,12 @@ class OpenAIEmailRegisterFlow:
             try:
                 b = page.locator(selector).first
                 if b.is_visible(timeout=700):
-                    b.click(timeout=5000, force=True)
+                    try:
+                        if not b.is_enabled(timeout=700) or str(b.get_attribute("aria-disabled") or "").lower() == "true":
+                            continue
+                    except Exception:
+                        pass
+                    b.click(timeout=5000)
                     if transition_timeout_ms > 0:
                         try:
                             page.wait_for_load_state("domcontentloaded", timeout=transition_timeout_ms)
@@ -2521,14 +2553,18 @@ class OpenAIEmailRegisterFlow:
             return False
 
     def _visible_profile_controls(self, page):
-        """Return visible profile fields in DOM order, including native selects."""
+        """Return visible, editable profile fields in DOM order.
+
+        Date-switch buttons and picker helper nodes can be mounted next to the
+        actual fields.  Only controls that can hold user data belong here.
+        """
         controls = []
         try:
             locator = page.locator('input, textarea, select, [contenteditable="true"]')
             for index in range(min(locator.count(), 30)):
                 control = locator.nth(index)
                 try:
-                    if control.is_visible():
+                    if control.is_visible() and self._about_you_control_is_candidate(control):
                         controls.append(control)
                 except Exception:
                     pass
@@ -2539,9 +2575,38 @@ class OpenAIEmailRegisterFlow:
             # adapters that only implement the selector-based helper.
             try:
                 controls = self._visible_inputs(page, ['input', 'textarea', '[contenteditable="true"]'])
+                controls = [control for control in controls if self._about_you_control_is_candidate(control)]
             except Exception:
                 controls = []
         return controls
+
+    @staticmethod
+    def _about_you_control_is_candidate(control) -> bool:
+        """Exclude buttons, toggles, hidden and disabled controls."""
+        try:
+            control_type = str(control.get_attribute("type") or "").strip().lower()
+        except Exception:
+            control_type = ""
+        if control_type in {"hidden", "button", "submit", "reset", "checkbox", "radio", "file", "image"}:
+            return False
+        for attribute in ("aria-hidden", "disabled"):
+            try:
+                value = str(control.get_attribute(attribute) or "").strip().lower()
+            except Exception:
+                value = ""
+            if value in {"true", "disabled"}:
+                return False
+        try:
+            if str(control.get_attribute("readonly") or "").strip().lower() in {"true", "readonly"} and control_type != "select-one":
+                return False
+        except Exception:
+            pass
+        try:
+            if hasattr(control, "is_enabled") and not control.is_enabled(timeout=500):
+                return False
+        except Exception:
+            pass
+        return True
 
     def _fill_about_you(self, page) -> None:
         self.auth_action = "register"
@@ -2555,13 +2620,19 @@ class OpenAIEmailRegisterFlow:
         controls = self._visible_profile_controls(page)
         if len(controls) < 2:
             raise RuntimeError("Profile page missing name/age inputs")
-        self._force_fill(controls[0], name)
+        name_control = self._about_you_name_control(controls)
+        self._force_fill(name_control, name)
         date_controls = self._about_you_date_controls(controls)
         if second_kind == "birth_date" and date_controls:
             self._fill_about_you_date_controls(date_controls, birthdate, second_context)
         else:
-            self._force_fill(controls[1], second_value)
+            second_control = self._about_you_second_control(controls, name_control, second_kind)
+            if second_control is None:
+                raise RuntimeError("Profile page missing a usable age or birth-year field")
+            self._force_fill(second_control, second_value)
         self._sleep_checked(1.2)
+        if not self._about_you_current_values_ok(page):
+            raise RuntimeError(f"Profile values were not accepted by the page: {self._profile_submission_diagnostics(page)}")
         if not self._click_continue(page, transition_timeout_ms=PROFILE_TRANSITION_TIMEOUT_MS):
             raise RuntimeError("Profile filled, but finish button was not found")
 
@@ -2575,7 +2646,59 @@ class OpenAIEmailRegisterFlow:
                 value = ""
             if value:
                 values.append(str(value))
+        try:
+            extra = control.evaluate(
+                """el => {
+                    const text = node => String(node?.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 180);
+                    const out = [];
+                    const labelled = el.getAttribute('aria-labelledby');
+                    if (labelled) labelled.split(/\\s+/).forEach(id => out.push(text(document.getElementById(id))));
+                    if (el.id) document.querySelectorAll(`label[for="${CSS.escape(el.id)}"]`).forEach(node => out.push(text(node)));
+                    const label = el.closest('label');
+                    if (label) out.push(text(label));
+                    let parent = el.parentElement;
+                    for (let i = 0; parent && i < 2; i += 1, parent = parent.parentElement) out.push(text(parent));
+                    return out.filter(Boolean).join(' ');
+                }"""
+            )
+            if extra:
+                values.append(str(extra))
+        except Exception:
+            pass
         return " ".join(values).lower()
+
+    def _about_you_name_control(self, controls):
+        scored = []
+        for index, control in enumerate(controls):
+            metadata = self._about_you_control_metadata(control)
+            score = 0
+            if re.search(r"full.?name|display.?name|given.?name|氏名|姓名|名前|名字|your name", metadata, flags=re.I):
+                score += 8
+            if re.search(r"\bname\b", metadata, flags=re.I) and not re.search(r"user.?name|email", metadata, flags=re.I):
+                score += 4
+            if re.search(r"email|phone|age|birth|年齢|生年月|出生", metadata, flags=re.I):
+                score -= 5
+            scored.append((score, -index, control))
+        return max(scored, key=lambda item: (item[0], item[1]))[2] if scored else None
+
+    def _about_you_second_control(self, controls, name_control, kind: str):
+        candidates = [control for control in controls if control is not name_control]
+        patterns = {
+            "age": r"\bage\b|how.?old|年齢|何歳|何才|歳|才|年龄|年纪",
+            "birth_year": r"birth.?year|year.?of.?birth|born.?year|出生年|生年|出生年份|\byear\b",
+        }
+        pattern = patterns.get(kind, patterns["age"])
+        ranked = []
+        for index, control in enumerate(candidates):
+            metadata = self._about_you_control_metadata(control)
+            score = 5 if re.search(pattern, metadata, flags=re.I) else 0
+            if re.search(r"type=(date|datetime-local)|birth.?date|date.?of.?birth|生年月日|出生日期", metadata, flags=re.I):
+                score -= 10
+            ranked.append((score, -index, control))
+        if not ranked:
+            return None
+        best = max(ranked, key=lambda item: (item[0], item[1]))
+        return best[2] if best[0] > 0 else candidates[0]
 
     @staticmethod
     def _about_you_control_value(control) -> str:
@@ -2590,11 +2713,22 @@ class OpenAIEmailRegisterFlow:
     def _about_you_date_controls(self, controls):
         """Return date controls without treating the age field's date switch as a field."""
         candidates = []
-        for control in list(controls)[1:]:
+        for control in list(controls):
             metadata = self._about_you_control_metadata(control)
+            direct_values = []
+            for attribute in ("name", "id", "aria-label", "placeholder", "autocomplete", "inputmode", "type", "data-testid"):
+                try:
+                    value = control.get_attribute(attribute)
+                except Exception:
+                    value = ""
+                if value:
+                    direct_values.append(str(value).lower())
+            direct = " ".join(direct_values)
+            if re.search(r"\bage\b|年齢|何歳|何才|年龄|年纪", direct, flags=re.I):
+                continue
             if re.search(
-                r"type=date|birth.?date|date.?of.?birth|\bdob\b|birth.?year|\b(year|month|day)\b|(?:aria-label|name|id|placeholder)=(?:年|月|日)|生年月日|出生日期|出生年月|年齢年月日",
-                metadata,
+                r"type=date|\bdate\b|birth.?date|date.?of.?birth|\bdob\b|birth.?year|\b(year|month|day)\b|生年月日|出生日期|出生年月|(?:^|\s)(?:年|月|日)(?:\s|$)",
+                direct or metadata,
                 flags=re.I,
             ):
                 candidates.append(control)
@@ -2603,13 +2737,26 @@ class OpenAIEmailRegisterFlow:
     @staticmethod
     def _about_you_date_part(metadata: str) -> str | None:
         for part, pattern in (
-            ("year", r"\byear\b|(?:aria-label|name|id|placeholder)=年"),
-            ("month", r"\bmonth\b|(?:aria-label|name|id|placeholder)=月"),
-            ("day", r"\bday\b|(?:aria-label|name|id|placeholder)=日"),
+            ("year", r"\byear\b|(?:aria-label|name|id|placeholder)=年|(?:^|\s)年(?:\s|$)"),
+            ("month", r"\bmonth\b|(?:aria-label|name|id|placeholder)=月|(?:^|\s)月(?:\s|$)"),
+            ("day", r"\bday\b|(?:aria-label|name|id|placeholder)=日|(?:^|\s)日(?:\s|$)"),
         ):
             if re.search(pattern, metadata, flags=re.I):
                 return part
         return None
+
+    def _about_you_control_date_part(self, control) -> str | None:
+        """Resolve a segmented date control from its own metadata first."""
+        values = []
+        for attribute in ("name", "id", "aria-label", "placeholder", "data-testid", "autocomplete"):
+            try:
+                value = control.get_attribute(attribute)
+            except Exception:
+                value = ""
+            if value:
+                values.append(str(value).lower())
+        direct = " ".join(values)
+        return self._about_you_date_part(direct) if direct else self._about_you_date_part(self._about_you_control_metadata(control))
 
     def _fill_about_you_date_controls(self, controls, birthdate: str, context: str) -> None:
         year, month, day = [int(x) for x in str(birthdate).split("-")[:3]]
@@ -2619,8 +2766,7 @@ class OpenAIEmailRegisterFlow:
         remaining = {"year": str(year), "month": f"{month:02d}", "day": f"{day:02d}"}
         unresolved = []
         for control in controls:
-            metadata = self._about_you_control_metadata(control)
-            matched = self._about_you_date_part(metadata)
+            matched = self._about_you_control_date_part(control)
             if matched and matched in remaining:
                 self._force_fill(control, remaining.pop(matched))
             else:
@@ -2638,8 +2784,17 @@ class OpenAIEmailRegisterFlow:
                         const s = getComputedStyle(el);
                         return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
                     };
-                    const controls = Array.from(document.querySelectorAll('input, textarea, select, [contenteditable="true"]')).filter(visible);
-                    const el = controls[1];
+                    const controls = Array.from(document.querySelectorAll('input, textarea, select, [contenteditable="true"]')).filter(el => {
+                        if (!visible(el)) return false;
+                        const type = String(el.getAttribute('type') || '').toLowerCase();
+                        if (['hidden','button','submit','reset','checkbox','radio','file','image'].includes(type)) return false;
+                        if (el.disabled || el.getAttribute('aria-hidden') === 'true' || el.readOnly) return false;
+                        return true;
+                    });
+                    const metadata = el => `${el.name || ''} ${el.id || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('placeholder') || ''} ${el.getAttribute('autocomplete') || ''} ${el.getAttribute('type') || ''}`;
+                    const nameIndex = controls.findIndex(el => /full.?name|display.?name|given.?name|氏名|姓名|名前|名字|(^|[-_])name($|[-_])/i.test(metadata(el)));
+                    const semantic = controls.find(el => /age|how.?old|年齢|何歳|何才|歳|才|年龄|年纪|birth|生年月|出生|type=date/i.test(metadata(el)));
+                    const el = semantic || controls[Math.max(0, nameIndex + 1)];
                     if (!el) return document.body?.innerText || document.title || '';
                     const parts = [
                         `name=${el.getAttribute('name') || ''}`, `id=${el.id || ''}`,
@@ -2761,43 +2916,86 @@ class OpenAIEmailRegisterFlow:
     def _about_you_current_values_ok(self, page) -> bool:
         try:
             controls = self._visible_profile_controls(page)
-            values = [self._about_you_control_value(control) for control in controls]
-            if not any(values):
-                values = [str(x or "").strip() for x in page.evaluate("""() => Array.from(document.querySelectorAll('input,textarea,select,[contenteditable="true"]')).filter(el => { const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden'; }).map(el => el.isContentEditable ? el.textContent : el.value)""")]
-            nonempty = [x for x in values if x]
-            if len(nonempty) < 2:
+            if len(controls) < 2:
+                return False
+            name_control = self._about_you_name_control(controls)
+            if not self._about_you_control_value(name_control):
                 return False
             kind = self._about_you_second_field_kind_from_context(self._about_you_second_field_context(page))
             if kind == "age":
-                second = nonempty[1]
+                second_control = self._about_you_second_control(controls, name_control, kind)
+                second = self._about_you_control_value(second_control) if second_control is not None else ""
                 return bool(re.fullmatch(r"\d{1,3}", second) and 13 <= int(second) <= 120)
             if kind == "birth_year":
-                second = nonempty[1]
+                second_control = self._about_you_second_control(controls, name_control, kind)
+                second = self._about_you_control_value(second_control) if second_control is not None else ""
                 return bool(re.fullmatch(r"\d{4}", second) and 1900 <= int(second) <= datetime.now(timezone.utc).year - 13)
             date_controls = self._about_you_date_controls(controls)
             date_values = [self._about_you_control_value(control) for control in date_controls]
             if len(date_values) == 1:
-                parsed = re.search(r"(\d{4})\D(\d{1,2})\D(\d{1,2})", date_values[0])
-                if not parsed:
-                    parsed = re.search(r"(\d{4})(\d{2})(\d{2})", date_values[0])
-                if not parsed:
+                candidate = self._parse_about_you_date(date_values[0], self._about_you_second_field_context(page))
+                if candidate is None:
                     return False
-                candidate = datetime(int(parsed.group(1)), int(parsed.group(2)), int(parsed.group(3)), tzinfo=timezone.utc)
-                return candidate.year <= datetime.now(timezone.utc).year - 13
+                return self._about_you_is_old_enough(candidate)
             if len(date_values) >= 3:
                 parts = {"year": None, "month": None, "day": None}
                 for control, value in zip(date_controls, date_values):
-                    metadata = self._about_you_control_metadata(control)
-                    matched = self._about_you_date_part(metadata)
+                    matched = self._about_you_control_date_part(control)
                     if matched:
                         parts[matched] = value
                 if not all(parts.values()):
                     parts["month"], parts["day"], parts["year"] = date_values[:3]
                 candidate = datetime(int(parts["year"]), int(parts["month"]), int(parts["day"]), tzinfo=timezone.utc)
-                return candidate.year <= datetime.now(timezone.utc).year - 13
+                return self._about_you_is_old_enough(candidate)
             return False
         except Exception:
             return False
+
+    @staticmethod
+    def _parse_about_you_date(value: str, context: str = "") -> datetime | None:
+        text = str(value or "").strip()
+        match = re.search(r"(\d{4})\D(\d{1,2})\D(\d{1,2})", text) or re.search(r"(\d{4})(\d{2})(\d{2})", text)
+        if match:
+            year, month, day = map(int, match.groups())
+        else:
+            match = re.search(r"(\d{1,2})\D(\d{1,2})\D(\d{4})", text)
+            if not match:
+                return None
+            first, second, year = map(int, match.groups())
+            lowered = str(context or "").lower()
+            if re.search(r"mm\s*[/.-]\s*dd|month.*day", lowered):
+                month, day = first, second
+            else:
+                day, month = first, second
+        try:
+            return datetime(year, month, day, tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _about_you_is_old_enough(candidate: datetime) -> bool:
+        now = datetime.now(timezone.utc)
+        # Compare calendar components instead of replace(), which raises on
+        # Feb 29 when the target year is not a leap year.
+        age = now.year - candidate.year - ((now.month, now.day) < (candidate.month, candidate.day))
+        return age >= 13
+
+    def _profile_submission_diagnostics(self, page) -> str:
+        """Return a short actionable snapshot when the profile SPA stalls."""
+        try:
+            summary = self._page_text_summary(page, 220)
+        except Exception:
+            summary = ""
+        fields = []
+        try:
+            for control in self._visible_profile_controls(page)[:8]:
+                metadata = self._about_you_control_metadata(control)
+                value = self._about_you_control_value(control)
+                if metadata or value:
+                    fields.append(f"{metadata[:70]}={value[:40]}")
+        except Exception:
+            pass
+        return "页面摘要：" + (summary or "无") + "；字段：" + (" | ".join(fields) or "无")
 
     def _has_phone_form(self, page) -> bool:
         return bool(self._visible_inputs(page, ['input[type="tel"]', 'input[inputmode="tel"]', 'input[name*="phone" i]', 'input[autocomplete*="tel" i]']))

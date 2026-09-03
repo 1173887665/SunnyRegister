@@ -6,9 +6,23 @@ from unittest.mock import Mock, patch
 from sunny_core.login_secret import RECENT_EMAIL_CODE_MAX_AGE_SECONDS, LoginSecretRateLimitError, LoginSecretSetupFlow, ProtocolLoginSecretSetupFlow, _invalid_auth_state, _invalid_auth_step, _password_already_set, _wrong_email_otp, generate_chatgpt_password
 from sunny_core.protocol_auth import ProtocolChallengeRequired
 from sunny_core.mailbox import MailAccount, extract_otp
+from sunny_core.openai_auth import OpenAIEmailRegisterFlow
 
 
 class LoginSecretTests(unittest.TestCase):
+    def test_auth_rate_limit_page_is_classified_without_retrying_same_route(self):
+        class Body:
+            def inner_text(self, **_kwargs):
+                return "認証エラー リクエストが多すぎます error_code: rate_limit_exceeded"
+
+        class Page:
+            def locator(self, _selector):
+                return Body()
+
+        flow = object.__new__(OpenAIEmailRegisterFlow)
+        error = flow._detect_route_error(Page())
+        self.assertTrue(error.startswith("rate_limit_exceeded:"))
+
     def test_mailbox_otp_requires_six_digits(self):
         self.assertEqual(extract_otp("Your OpenAI code is 123456"), "123456")
         self.assertEqual(extract_otp("Your OpenAI code is 1234"), "")

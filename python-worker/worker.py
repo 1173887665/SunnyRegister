@@ -424,8 +424,20 @@ def _start_task_process(task_id: str) -> subprocess.Popen:
     return subprocess.Popen([sys.executable, "-m", "sunny_runner", task_id], **kwargs)
 
 
+def _task_activity_signature(task: dict, latest_event_at: str) -> tuple[str, str, str]:
+    """Return only fields that represent real task progress for the watchdog."""
+    return (
+        str(task.get("progress_current") or ""),
+        str(task.get("status") or ""),
+        str(latest_event_at or ""),
+    )
+
+
 def _watch_task_process(task_id: str, process: subprocess.Popen) -> None:
-    last_signature: tuple[str, str, str, str] | None = None
+    # `updated_at` is also touched by the 15-second progress heartbeat.  It is
+    # deliberately excluded here: a browser can be hung while the heartbeat
+    # keeps changing that column, which would make this watchdog wait forever.
+    last_signature: tuple[str, str, str] | None = None
     last_activity = time.monotonic()
     reclaimed_reason = ""
     while process.poll() is None:
@@ -445,12 +457,7 @@ def _watch_task_process(task_id: str, process: subprocess.Popen) -> None:
                     latest_event_at = str(event_row["latest_event_at"] or "")
                 else:
                     latest_event_at = ""
-                signature = (
-                    str(task.get("updated_at") or ""),
-                    str(task.get("progress_current") or ""),
-                    str(task.get("status") or ""),
-                    latest_event_at,
-                )
+                signature = _task_activity_signature(task, latest_event_at)
             finally:
                 db.close()
             if signature != last_signature:

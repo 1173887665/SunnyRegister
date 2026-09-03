@@ -658,10 +658,18 @@ def _wait_for_rebind_code(reader: DomainMailReader, client: ChangeEmailClient, e
         except TimeoutError as exc:
             raw_count = int(getattr(reader, "last_raw_count", 0) or 0)
             if getattr(client, "last_begin_accepted", False) and raw_count == 0:
+                status = int(getattr(reader, "last_status", 0) or 0)
+                last_error = str(getattr(reader, "last_error", "") or "").strip()
+                if status == 200 and not last_error:
+                    raise TimeoutError(
+                        "上游未实际投递换绑验证码：begin 已返回 HTTP 200/success=true，"
+                        "CloudMail 查询也持续返回 HTTP 200，但收件箱没有新邮件；"
+                        "当前失败点在上游发信/验证码任务，重试时会重新建立认证会话并轮换代理"
+                    ) from exc
                 raise TimeoutError(
-                    "换绑验证码请求已被上游接受（begin HTTP 200/success=true），"
-                    "但 CloudMail 查询持续返回空收件箱（data=[]），邮件尚未投递到该邮箱；"
-                    "请检查发信投递、域名 MX 与 CloudMail 入站配置"
+                    "上游未实际投递换绑验证码：begin 已返回 HTTP 200/success=true，"
+                    f"但 CloudMail 收件箱持续为空（HTTP {status or '未知'}{('，' + last_error[:120]) if last_error else ''}）；"
+                    "请检查上游发信投递状态"
                 ) from exc
             raise
 

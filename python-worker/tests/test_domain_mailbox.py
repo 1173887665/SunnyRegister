@@ -364,6 +364,26 @@ def test_rebind_resends_twice_after_otp_delivery_timeouts():
     assert any("进行第 2 次重发" in message for message in logs)
 
 
+def test_rebind_empty_mailbox_distinguishes_accepted_but_undelivered_code():
+    class Reader:
+        last_raw_count = 0
+        last_status = 200
+        last_error = ""
+
+        def wait_for_code(self, _timestamp, timeout):
+            assert timeout in {20, 45}
+            raise TimeoutError("mailbox empty")
+
+    class Client:
+        last_begin_accepted = True
+
+        def begin(self, _email):
+            return {"success": True}
+
+    with pytest.raises(TimeoutError, match="上游未实际投递换绑验证码"):
+        rebind_module._wait_for_rebind_code(Reader(), Client(), "new@example.com", 123.0, lambda _message: None)
+
+
 def test_rebind_begin_retries_transient_network_error():
     calls = []
     logs = []

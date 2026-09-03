@@ -11,10 +11,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sunny_core.db import SunnyDB
-from worker import _terminate_process_tree
+from worker import _task_activity_signature, _terminate_process_tree
 
 
 class TaskCancellationTests(unittest.TestCase):
+    def test_watchdog_activity_ignores_heartbeat_updated_at(self) -> None:
+        task = {"progress_current": 3, "status": "running", "updated_at": "2026-09-03 15:00:00"}
+        first = _task_activity_signature(task, "2026-09-03 15:00:00")
+        task["updated_at"] = "2026-09-03 15:00:15"
+        second = _task_activity_signature(task, "2026-09-03 15:00:00")
+        self.assertEqual(first, second)
+
     def test_force_stop_terminates_task_process(self) -> None:
         kwargs: dict = {}
         if os.name == "nt":
