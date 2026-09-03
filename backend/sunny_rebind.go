@@ -77,13 +77,17 @@ func (s *Server) createSunnyRebindTask(body map[string]any) (Task, error) {
 		if !boolValue(cfg["enabled_for_rebinding"], false) {
 			return Task{}, fmt.Errorf("自建域名邮箱未启用邮箱换绑，请先在邮箱配置中启用")
 		}
-		if strings.TrimSpace(text(cfg["base_url"])) == "" || strings.TrimSpace(text(cfg["auth_token"])) == "" || strings.TrimSpace(text(cfg["domain"])) == "" {
+		domains, err := domainMailboxDomains(cfg)
+		if err != nil || strings.TrimSpace(text(cfg["base_url"])) == "" || strings.TrimSpace(text(cfg["auth_token"])) == "" {
 			return Task{}, fmt.Errorf("自建域名邮箱配置不完整，请先配置 CloudMail API、PUBLIC_API_TOKEN 和域名")
 		}
 		if _, err := domainMailboxPickupBaseURL(cfg); err != nil {
 			return Task{}, err
 		}
 		body["rebind_source"] = "self"
+		// Snapshot only the non-secret pool selection. The Python worker can then
+		// finish a long task consistently even if the mailbox settings are edited.
+		body["domain_mailbox_domains"] = domains
 	}
 	sessionIDs := uintSlice(body["session_ids"])
 	accountIDs := uintSlice(body["account_ids"])

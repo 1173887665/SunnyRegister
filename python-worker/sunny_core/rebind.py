@@ -36,6 +36,12 @@ REBIND_OTP_FIRST_WAIT_SECONDS = 20
 REBIND_OTP_SECOND_WAIT_SECONDS = 45
 REBIND_OTP_FINAL_WAIT_SECONDS = 45
 _DOMAIN_ROTATION = itertools.count()
+# Every account runs in a newly spawned process. A zero-based counter therefore
+# always selected the first configured domain on the first attempt (and usually
+# only the second domain on a proxy retry). Give each child a cryptographically
+# random start while retaining round-robin behavior inside that child so retries
+# do not immediately reuse the same domain.
+_DOMAIN_ROTATION_OFFSET = secrets.randbelow(2**31)
 
 
 class RebindError(RuntimeError):
@@ -230,20 +236,24 @@ class ChangeEmailClient:
         return self._request("POST", VERIFY_PATH, json={"email": email, "code": code})
 
 
-def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str, str]:
+def _domain_mailbox(
+    db: SunnyDB,
+    log: Callable[[str], None],
+    configured_domains: Any = None,
+) -> tuple[str, str, str]:
     cfg = db.get_config("domain_mailbox")
     if cfg.get("enabled_for_rebinding") is not True:
         raise RebindError("自建域名邮箱未启用邮箱换绑")
     base = str(cfg.get("base_url") or "").strip().rstrip("/")
     token = str(cfg.get("auth_token") or "").strip()
     site_password = str(cfg.get("site_password") or "").strip()
-    raw_domains = cfg.get("domains")
+    raw_domains = configured_domains if configured_domains is not None else cfg.get("domains")
     if isinstance(raw_domains, (list, tuple)):
         domain_values = [str(value or "") for value in raw_domains]
     else:
         domain_values = re.split(r"[,;\r\n]+", str(raw_domains or ""))
     domain_values = [value.strip().lstrip("@").lower() for value in domain_values if value.strip()]
-    if not domain_values and str(cfg.get("domain") or "").strip():
+    if configured_domains is None and not domain_values and str(cfg.get("domain") or "").strip():
         domain_values = [str(cfg.get("domain") or "").strip().lstrip("@").lower()]
     domains = list(dict.fromkeys(domain_values))
     pickup_base = str(cfg.get("pickup_base_url") or os.getenv("SUNNY_PUBLIC_ORIGIN") or "").strip().rstrip("/")
@@ -253,7 +263,7 @@ def _domain_mailbox(db: SunnyDB, log: Callable[[str], None]) -> tuple[str, str, 
     if pickup_parts.scheme not in {"http", "https"} or not pickup_parts.netloc:
         raise RebindError("请先配置可公网访问的 SunnyRegister 取件 API 地址")
     length = max(6, min(32, int(cfg.get("random_local_length") or 12)))
-    domain = domains[next(_DOMAIN_ROTATION) % len(domains)]
+    domain = domains[(_DOMAIN_ROTATION_OFFSET + next(_DOMAIN_ROTATION)) % len(domains)]
     proxies = None
     for _ in range(8):
         local = re.sub(r"[^a-z0-9]", "", secrets.token_urlsafe(length + 4).lower())[:length]
@@ -891,7 +901,11 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             log(f"[{old_email}] 使用已导入域名邮箱：{new_email}")
         else:
             imported_type = "domain"
-            new_email, new_api, new_api_token_hash = _domain_mailbox(db, log)
+            new_email, new_api, new_api_token_hash = _domain_mailbox(
+                db,
+                log,
+                account_row.get("_rebind_domain_mailbox_domains"),
+            )
         # Register the one-time pickup credential before ChatGPT sends the verification mail.
         # The public pickup endpoint validates the token against this database row.
         target_channel = imported_channel or ("outlook" if imported_type == "microsoft" else "domain_api" if imported_type == "domain" else "url_api" if imported_type == "apple" else "remail_api")

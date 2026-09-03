@@ -4310,6 +4310,13 @@ def _rebind_with_proxy_rotation(
                     account_for_rebind[account_key] = str(
                         account_for_rebind.get(account_key) or current_payload.get(payload_key) or ""
                     ).strip()
+            else:
+                # Keep a long-running task on the domain pool that was selected
+                # when it started. Reading the live config here made mid-task
+                # edits silently mix old and new domain pools.
+                snapshot_domains = current_payload.get("domain_mailbox_domains")
+                if isinstance(snapshot_domains, (list, tuple)) and snapshot_domains:
+                    account_for_rebind["_rebind_domain_mailbox_domains"] = list(snapshot_domains)
             return rebind_one(db, account_for_rebind, proxy, log)
         except Exception as exc:
             failure = classify_auth_failure(exc)

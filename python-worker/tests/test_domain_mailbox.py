@@ -1,4 +1,5 @@
 import hashlib
+import itertools
 import json
 import re
 import sqlite3
@@ -324,6 +325,37 @@ def test_rebind_domain_mailbox_creates_individual_pickup_credential(monkeypatch)
     assert any("取件地址=" in message for message in logs)
     assert all(pickup_token not in message for message in logs)
     assert any("token=%3Credacted%3E" in message for message in logs)
+
+
+def test_rebind_domain_mailbox_distributes_spawned_workers_and_rotates_retries(monkeypatch):
+    class DB:
+        @staticmethod
+        def get_config(_key):
+            return {
+                "enabled_for_rebinding": True,
+                "base_url": "https://cloudmail.example",
+                "auth_token": "global-manager-token",
+                "pickup_base_url": "https://sunny.example",
+                "domains": ["live-config.example"],
+            }
+
+    class Response:
+        ok = True
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"code": 0}
+
+    monkeypatch.setattr(rebind_module.requests, "post", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(rebind_module, "_DOMAIN_ROTATION", itertools.count())
+    monkeypatch.setattr(rebind_module, "_DOMAIN_ROTATION_OFFSET", 1)
+
+    snapshot = ["one.example", "two.example", "three.example"]
+    emails = [rebind_module._domain_mailbox(DB(), lambda _message: None, snapshot)[0] for _ in range(3)]
+
+    assert [email.rsplit("@", 1)[1] for email in emails] == ["two.example", "three.example", "one.example"]
 
 
 def test_rebind_imported_pickup_credential_hashes_token():
