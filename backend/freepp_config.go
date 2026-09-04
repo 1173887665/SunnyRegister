@@ -69,6 +69,8 @@ func defaultFreePPBranches() map[string]any {
 		}
 		branches[name] = map[string]any{
 			"name": name, "label": spec.Label, "channel": spec.Channel, "token_source": name,
+			"checkout_proxies": "", "promotion_proxies": "",
+			"checkout_proxy_country": spec.Country, "promotion_proxy_country": spec.Country,
 			"require_zero": true, "channel_check": true, "dual_init": true,
 			"init0_ccs": []any{spec.Country}, "init1_ccs": []any{spec.Country}, "init_t_ccs": []any{spec.Country},
 			"follow_checkout": true, "billing_country": spec.Country, "billing_currency": spec.Currency,

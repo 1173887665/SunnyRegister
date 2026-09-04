@@ -2,10 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { StageName, StageCfg, BranchCfg } from "../types";
 import { CountrySelect, StageRow } from "../components/chain/StageSettings";
+import { ProxyPoolSettings } from "../components/chain/ProxyPoolSettings";
 
 /* ==========================================================================
    直卡提链 — 精简配置页 (仅 2 段: checkout → update 压 0)
-   pay.153 ph_short 模式: 代理池 1=US 创建 PH/PHP Checkout, 代理池 2=TR 应用优惠
+   pay.153 ph_short 模式: 顶部两个代理池分别用于 Checkout 与 Promotion
    ========================================================================== */
 
 const DIRECT_STAGES: StageName[] = ["checkout", "update"];
@@ -92,7 +93,7 @@ export function DirectView() {
         <div>
           <h2 className="page-title">直卡提链</h2>
           <p className="page-sub">
-            checkout(US 出口 / PH 账单) → update(TR 出口压 0) → 产出 checkout 短链
+            Checkout 与 Promotion 使用顶部独立代理池 → 产出 checkout 短链
           </p>
         </div>
         <div className="page-actions">
@@ -101,6 +102,16 @@ export function DirectView() {
           </button>
         </div>
       </div>
+
+      {branch && (
+        <ProxyPoolSettings
+          branchName="direct"
+          branch={branch}
+          countries={countryOptions}
+          onSave={handleSaveFlags}
+          saving={savingFlags}
+        />
+      )}
 
       <div className="card">
         <div className="card-head">
@@ -180,8 +191,7 @@ export function DirectView() {
       </div>
 
       <div className="note" style={{ marginTop: 14 }}>
-        <b>pay.153 配方</b>：代理池 1 使用 <b>US</b> 创建 PH/PHP Checkout，代理池 2 使用{" "}
-        <b>TR</b> 应用优惠（压 0）。产出短链：<code>chatgpt.com/checkout/openai_llc/oaics_…</code>
+        <b>pay.153 配方</b>：顶部两个代理池分别用于 Checkout 与 Promotion，按各自标注的国家发送；账单国家仍按本项目配置。产出短链：<code>chatgpt.com/checkout/openai_llc/oaics_…</code>
       </div>
 
       {result && (

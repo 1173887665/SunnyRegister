@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { StageName, StageCfg, BranchCfg } from "../types";
 import { StageSettingsPanel } from "../components/chain/StageSettings";
+import { ProxyPoolSettings } from "../components/chain/ProxyPoolSettings";
 
 /* ==========================================================================
    Grok 链路 — 配置模块 (七段出口配置, grok 分支 = card 渠道)
@@ -99,6 +100,14 @@ export function GrokView() {
       </div>
 
       {branch && (
+        <>
+        <ProxyPoolSettings
+          branchName="grok"
+          branch={branch}
+          countries={countryOptions}
+          onSave={handleSaveFlags}
+          saving={savingFlags}
+        />
         <StageSettingsPanel
           branchName="grok"
           branch={branch}
@@ -108,6 +117,7 @@ export function GrokView() {
           savingStage={savingStage}
           savingFlags={savingFlags}
         />
+        </>
       )}
 
       {result && (

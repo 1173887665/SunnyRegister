@@ -12,6 +12,7 @@ import {
   Search,
   Upload,
 } from "lucide-react";
+import QRCode from "qrcode";
 import { API_BASE, apiDownload, apiFetch, triggerBrowserDownload } from "@/lib/utils";
 import { useStore } from "./store/useStore";
 import { getRuntimeSnapshot, setRuntimeSelection, useRuntime } from "./integration/runtime";
@@ -76,12 +77,24 @@ function chainExecutionSettings(config: Session, branch: string) {
     : Math.max(0, Math.min(50, Math.trunc(Number(branchConfig?.stages?.checkout?.retry || 3))));
   const checkoutRouteCountries = checkoutCountries.length ? checkoutCountries : [country];
   const promotionRouteCountries = promotionCountries.length ? promotionCountries : checkoutRouteCountries;
+  const checkoutProxyPool = String(branchConfig.checkout_proxies || "").trim();
+  const promotionProxyPool = String(branchConfig.promotion_proxies || "").trim();
+  if (!checkoutProxyPool) {
+    throw new Error(`${branch} 未配置 Checkout 代理池，请先在项目顶部填写代理地址`);
+  }
+  if (branch !== "gcash" && !promotionProxyPool) {
+    throw new Error(`${branch} 未配置 Promotion 代理池，请先在项目顶部填写代理地址`);
+  }
   return {
     country,
     currency,
     retry,
     checkoutCountries: checkoutRouteCountries,
     promotionCountries: promotionRouteCountries,
+    checkoutProxyPool,
+    promotionProxyPool: promotionProxyPool || checkoutProxyPool,
+    checkoutProxyCountry: String(branchConfig.checkout_proxy_country || checkoutRouteCountries[0] || country).trim().toUpperCase(),
+    promotionProxyCountry: String(branchConfig.promotion_proxy_country || promotionRouteCountries[0] || country).trim().toUpperCase(),
     usePromo: branchConfig.require_zero !== false,
     checkoutMode: String(branchConfig.checkout_mode || "auto").trim().toLowerCase(),
     chainConfig: branchConfig,
@@ -170,6 +183,57 @@ function detectionRecord(session: Session) {
     .filter(Boolean).sort().pop();
   if (records.length) return records.join("；");
   return checked ? `最近检测：${formatDateTime(checked)}` : "暂无检测记录";
+}
+
+function checkoutResult(session: Session): Session {
+  return session.checkout_result && typeof session.checkout_result === "object" ? session.checkout_result : {};
+}
+
+function resultDisplayLink(result: Session) {
+  return String(result.payment_link || result.short_link || result.verification_url || result.provider_redirect_url || result.paypal_link || result.checkout_url || "").trim();
+}
+
+function resultQrImage(result: Session) {
+  return String(result.qr_image || result.qr_image_png || result.qr_image_svg || "").trim();
+}
+
+function resultQrData(result: Session, link: string) {
+  return String(result.qr_data || "").trim() || link;
+}
+
+function QRThumb({ value, onClick }: { value: string; onClick: () => void }) {
+  const [src, setSrc] = useState("");
+  useEffect(() => {
+    let active = true;
+    void QRCode.toDataURL(value, { width: 120, margin: 1, errorCorrectionLevel: "M" })
+      .then((data) => { if (active) setSrc(data); })
+      .catch(() => { if (active) setSrc(""); });
+    return () => { active = false; };
+  }, [value]);
+  return <button className="freepp-qr-thumb" type="button" title="查看提链二维码" onClick={onClick}>{src ? <img src={src} alt="提链二维码" /> : <span>生成中</span>}</button>;
+}
+
+function QRImageThumb({ src, onClick }: { src: string; onClick: () => void }) {
+  return <button className="freepp-qr-thumb" type="button" title="查看提链二维码" onClick={onClick}><img src={src} alt="提链二维码" /></button>;
+}
+
+function QRPreview({ value, image, onClose }: { value: string; image: string; onClose: () => void }) {
+  const [src, setSrc] = useState(image);
+  useEffect(() => {
+    if (image) { setSrc(image); return; }
+    let active = true;
+    void QRCode.toDataURL(value, { width: 480, margin: 2, errorCorrectionLevel: "M" })
+      .then((data) => { if (active) setSrc(data); })
+      .catch(() => { if (active) setSrc(""); });
+    return () => { active = false; };
+  }, [image, value]);
+  return <div className="freepp-qr-overlay" role="dialog" aria-modal="true" aria-label="提链二维码" onClick={onClose}>
+    <div className="freepp-qr-dialog" onClick={(event) => event.stopPropagation()}>
+      <div className="freepp-qr-dialog-head"><strong>提链二维码</strong><button type="button" className="freepp-rebind-close" onClick={onClose}>×</button></div>
+      {src ? <img className="freepp-qr-large" src={src} alt="提链二维码" /> : <div className="freepp-account-empty">二维码生成失败</div>}
+      {value && <code className="freepp-qr-value">{value}</code>}
+    </div>
+  </div>;
 }
 
 function wait(ms: number) {
@@ -288,6 +352,7 @@ export default function FreeppAccountPicker() {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<BusyAction>(null);
   const [message, setMessage] = useState("");
+  const [qrPreview, setQrPreview] = useState<{ value: string; image: string } | null>(null);
   const [chainProgress, setChainProgress] = useState<ChainProgress>({ visible: false, branch: "", branchIndex: 0, branchTotal: 0, total: 0, done: 0, percent: 0, success: 0, failure: 0, status: "idle", chains: [] });
   const [chainTasks, setChainTasks] = useState<Record<string, ChainTaskMeta>>(() => {
     try {
@@ -765,7 +830,11 @@ export default function FreeppAccountPicker() {
             session_ids: sessionIds,
             external_ats: [],
             checkout_kinds: [],
-            use_program_proxy_pool: true,
+            use_program_proxy_pool: false,
+            checkout_proxies: execution.checkoutProxyPool,
+            promotion_proxies: execution.promotionProxyPool,
+            checkout_proxy_country: execution.checkoutProxyCountry,
+            promotion_proxy_country: execution.promotionProxyCountry,
             plan: "plus",
             link_type: branch,
             country: execution.country,
@@ -867,6 +936,15 @@ export default function FreeppAccountPicker() {
       await navigator.clipboard.writeText(value);
       setMessage(`${field.toUpperCase()} 已复制`);
     } catch (error) { setMessage(`读取失败：${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  async function copyCheckoutLink(link: string) {
+    try {
+      await navigator.clipboard.writeText(link);
+      setMessage("提链链接已复制");
+    } catch (error) {
+      setMessage(`复制链接失败：${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async function acquireRefreshToken(session: Session) {
@@ -1017,13 +1095,17 @@ export default function FreeppAccountPicker() {
       {!chainProgress.visible && Object.keys(chainTasks).length > 0 && <div className="freepp-account-message">检测到 {Object.keys(chainTasks).length} 个后台提链任务仍在运行。<button className="btn btn-sm" type="button" onClick={() => void recoverChainTasks()} disabled={chainRecoveryBusy}>{chainRecoveryBusy ? "查询中..." : "继续查询"}</button></div>}
       <div className="freepp-account-table-wrap">
         <table className="freepp-account-table">
-          <thead><tr><th><input type="checkbox" aria-label="选择当前页账号" checked={pageSelected} onChange={togglePage} disabled={!selectableItems.length || operationBusy} /></th><th>邮箱</th><th>换绑邮箱</th><th>所属分组</th><th>状态</th><th>套餐类型</th><th>LS</th><th>SK</th><th>AT</th><th>RT</th><th>试用资格</th><th>Checkout</th><th>支付方式</th><th>AT 过期时间</th><th>最近测活</th><th>检测记录</th></tr></thead>
+          <thead><tr><th><input type="checkbox" aria-label="选择当前页账号" checked={pageSelected} onChange={togglePage} disabled={!selectableItems.length || operationBusy} /></th><th>邮箱</th><th>换绑邮箱</th><th>所属分组</th><th>状态</th><th>套餐类型</th><th>LS</th><th>SK</th><th>AT</th><th>RT</th><th>试用资格</th><th>Checkout</th><th>支付方式</th><th>AT 过期时间</th><th>最近测活</th><th>检测记录</th><th>提链链接</th><th>提链二维码</th></tr></thead>
           <tbody>
             {items.map((session) => {
               const id = String(session.id);
               const selectedRow = selected.includes(id);
               const atAvailable = hasAccessToken(session);
               const payments = Array.isArray(session.payment_methods) ? session.payment_methods : [];
+              const result = checkoutResult(session);
+              const checkoutLink = resultDisplayLink(result);
+              const qrImage = resultQrImage(result);
+              const qrData = resultQrData(result, checkoutLink);
               const liveChain = chainProgress.visible ? sessionChainProgress(session, chainProgress) : null;
               return <tr key={id} className={selectedRow ? "selected" : ""}>
                 <td><input type="checkbox" checked={selectedRow} disabled={operationBusy || session.selectable === false || session.row_kind === "mailbox"} onChange={() => toggle(session)} aria-label={`选择 ${session.email || id}`} title={session.row_kind === "mailbox" ? "该邮箱注册失败，尚未生成可提链会话" : undefined} /></td>
@@ -1042,9 +1124,11 @@ export default function FreeppAccountPicker() {
                 <td className={session.access_token_status === "invalid" || session.access_token_status === "expired" ? "freepp-expired" : ""}>{session.access_token_status === "invalid" || session.access_token_status === "expired" ? "AT 无效或已过期" : formatDateTime(session.access_token_expires_at)}</td>
                 <td title={session.health_check_error || ""}>{session.health_check_status === "failed" ? <span className="freepp-expired">测活失败</span> : formatDateTime(session.last_health_checked_at)}</td>
                 <td className="freepp-record-cell" title={detectionRecord(session)}>{detectionRecord(session)}</td>
+                <td className="freepp-checkout-link-cell">{checkoutLink ? <button type="button" className="freepp-checkout-link" title="点击复制提链链接" onClick={() => void copyCheckoutLink(checkoutLink)}>{checkoutLink}</button> : <span>-</span>}</td>
+                <td>{qrImage ? <QRImageThumb src={qrImage} onClick={() => setQrPreview({ value: qrData, image: qrImage })} /> : qrData ? <QRThumb value={qrData} onClick={() => setQrPreview({ value: qrData, image: "" })} /> : <span>-</span>}</td>
               </tr>;
             })}
-            {!items.length && <tr><td colSpan={16} className="freepp-account-empty">{loading ? "加载中..." : "暂无账号"}</td></tr>}
+            {!items.length && <tr><td colSpan={18} className="freepp-account-empty">{loading ? "加载中..." : "暂无账号"}</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1059,6 +1143,7 @@ export default function FreeppAccountPicker() {
         <button className="btn btn-sm" type="button" onClick={() => setView("tokens")}>打开 Token 库</button>
       </div>
       {rebindOpen && <div className="freepp-rebind-overlay" role="dialog" aria-modal="true" aria-label="选择换绑邮箱"><div className="freepp-rebind-dialog"><div className="freepp-rebind-head"><strong>选择换绑邮箱</strong><button type="button" className="freepp-rebind-close" onClick={() => setRebindOpen(false)}>×</button></div><div className="freepp-rebind-body"><p>可从已导入邮箱池选择多个目标邮箱，系统按批次分配；不选择时使用自建域名邮箱池。</p>{rebindLoading ? <div className="freepp-account-empty">正在加载邮箱池...</div> : <div className="freepp-rebind-list">{rebindMailboxes.length ? rebindMailboxes.map((item) => <label key={String(item.email)}><input type="checkbox" checked={rebindSelected.includes(String(item.email))} onChange={(event) => setRebindSelected((current) => event.target.checked ? [...current, String(item.email)] : current.filter((value) => value !== String(item.email)))} /><span>{String(item.email)}</span></label>) : <div className="freepp-account-empty">暂无可用邮箱，提交后将尝试使用自建邮箱池</div>}</div>}</div><div className="freepp-rebind-foot"><button type="button" className="btn" onClick={() => setRebindOpen(false)}>取消</button><button type="button" className="btn btn-primary" disabled={rebindLoading || operationBusy} onClick={() => void submitRebind()}>开始换绑（{selected.length}）</button></div></div></div>}
+      {qrPreview && <QRPreview value={qrPreview.value} image={qrPreview.image} onClose={() => setQrPreview(null)} />}
     </section>
   );
 }

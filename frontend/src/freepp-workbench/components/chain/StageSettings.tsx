@@ -33,12 +33,14 @@ export function CountrySelect({
   blocked = [],
   autoLabel = "AUTO · 自动轮换",
   disabled = false,
+  includeAuto = true,
 }: {
   value: string[];
   options: { code: string; capital?: string }[];
   onChange: (v: string[]) => void;
   blocked?: string[];
   autoLabel?: string;
+  includeAuto?: boolean;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -117,7 +119,7 @@ export function CountrySelect({
             style={{ width: "100%", marginBottom: 6 }}
           />
           <div style={{ maxHeight: 220, overflowY: "auto" }}>
-            <label
+            {includeAuto && <label
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -136,7 +138,7 @@ export function CountrySelect({
               />
               <span style={{ fontWeight: 600 }}>AUTO · 自动轮换</span>
               <span className="muted" style={{ fontSize: 10 }}>全量国家池动态优选</span>
-            </label>
+            </label>}
             {filtered.map((c) => (
               <label
                 key={c}

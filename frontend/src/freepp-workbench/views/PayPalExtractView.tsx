@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { StageName, StageCfg, BranchCfg } from "../types";
 import { StageSettingsPanel } from "../components/chain/StageSettings";
+import { ProxyPoolSettings } from "../components/chain/ProxyPoolSettings";
 
 /* ==========================================================================
    PayPal 提炼 — 提链配置模块 (七段出口配置)
@@ -100,6 +101,14 @@ export function PayPalExtractView() {
       </div>
 
       {branch && (
+        <>
+        <ProxyPoolSettings
+          branchName="paypal"
+          branch={branch}
+          countries={countryOptions}
+          onSave={handleSaveFlags}
+          saving={savingFlags}
+        />
         <StageSettingsPanel
           branchName="paypal"
           branch={branch}
@@ -109,6 +118,7 @@ export function PayPalExtractView() {
           savingStage={savingStage}
           savingFlags={savingFlags}
         />
+        </>
       )}
 
       {result && (

@@ -87,45 +87,49 @@ var checkoutCountryCurrency = map[string]string{
 }
 
 type sunnyCheckoutRequest struct {
-	SystemAT            bool           `json:"system_at"`
-	SessionIDs          []uint         `json:"session_ids"`
-	ExternalATs         []string       `json:"external_ats"`
-	CheckoutProxies     string         `json:"checkout_proxies"`
-	PromotionProxies    string         `json:"promotion_proxies"`
-	CheckoutKinds       []string       `json:"checkout_kinds"`
-	Plan                string         `json:"plan"`
-	LinkType            string         `json:"link_type"`
-	Country             string         `json:"country"`
-	Currency            string         `json:"currency"`
-	RetryCount          int            `json:"retry_count"`
-	Concurrency         int            `json:"concurrency"`
-	UsePromo            bool           `json:"use_promo"`
-	PromoCampaign       string         `json:"promo_campaign"`
-	PromoCode           string         `json:"promo_code"`
-	WorkspaceName       string         `json:"workspace_name"`
-	WorkspaceID         string         `json:"workspace_id"`
-	SeatQuantity        int            `json:"seat_quantity"`
-	PriceInterval       string         `json:"price_interval"`
-	CreditQuantity      int            `json:"credit_quantity"`
-	PixTaxID            string         `json:"pix_tax_id"`
-	PixAutoKind         string         `json:"pix_auto_kind"`
-	IdealBank           string         `json:"ideal_bank"`
-	PromoCountry        string         `json:"promo_country"`
-	CheckoutMode        string         `json:"checkout_mode"`
-	ChainConfig         map[string]any `json:"chain_config"`
-	UseProgramProxyPool bool           `json:"use_program_proxy_pool"`
+	SystemAT              bool           `json:"system_at"`
+	SessionIDs            []uint         `json:"session_ids"`
+	ExternalATs           []string       `json:"external_ats"`
+	CheckoutProxies       string         `json:"checkout_proxies"`
+	PromotionProxies      string         `json:"promotion_proxies"`
+	CheckoutProxyCountry  string         `json:"checkout_proxy_country"`
+	PromotionProxyCountry string         `json:"promotion_proxy_country"`
+	CheckoutKinds         []string       `json:"checkout_kinds"`
+	Plan                  string         `json:"plan"`
+	LinkType              string         `json:"link_type"`
+	Country               string         `json:"country"`
+	Currency              string         `json:"currency"`
+	RetryCount            int            `json:"retry_count"`
+	Concurrency           int            `json:"concurrency"`
+	UsePromo              bool           `json:"use_promo"`
+	PromoCampaign         string         `json:"promo_campaign"`
+	PromoCode             string         `json:"promo_code"`
+	WorkspaceName         string         `json:"workspace_name"`
+	WorkspaceID           string         `json:"workspace_id"`
+	SeatQuantity          int            `json:"seat_quantity"`
+	PriceInterval         string         `json:"price_interval"`
+	CreditQuantity        int            `json:"credit_quantity"`
+	PixTaxID              string         `json:"pix_tax_id"`
+	PixAutoKind           string         `json:"pix_auto_kind"`
+	IdealBank             string         `json:"ideal_bank"`
+	PromoCountry          string         `json:"promo_country"`
+	CheckoutMode          string         `json:"checkout_mode"`
+	ChainConfig           map[string]any `json:"chain_config"`
+	UseProgramProxyPool   bool           `json:"use_program_proxy_pool"`
 }
 
 type sunnyCheckoutPrecheckRequest struct {
-	SystemAT            bool     `json:"system_at"`
-	SessionIDs          []uint   `json:"session_ids"`
-	ExternalATs         []string `json:"external_ats"`
-	CheckoutProxies     string   `json:"checkout_proxies"`
-	PromotionProxies    string   `json:"promotion_proxies"`
-	LinkType            string   `json:"link_type"`
-	Country             string   `json:"country"`
-	PromoCountry        string   `json:"promo_country"`
-	UseProgramProxyPool bool     `json:"use_program_proxy_pool"`
+	SystemAT              bool     `json:"system_at"`
+	SessionIDs            []uint   `json:"session_ids"`
+	ExternalATs           []string `json:"external_ats"`
+	CheckoutProxies       string   `json:"checkout_proxies"`
+	PromotionProxies      string   `json:"promotion_proxies"`
+	CheckoutProxyCountry  string   `json:"checkout_proxy_country"`
+	PromotionProxyCountry string   `json:"promotion_proxy_country"`
+	LinkType              string   `json:"link_type"`
+	Country               string   `json:"country"`
+	PromoCountry          string   `json:"promo_country"`
+	UseProgramProxyPool   bool     `json:"use_program_proxy_pool"`
 }
 
 type sunnyCheckoutCredential struct {
@@ -259,6 +263,17 @@ func checkoutProviderDefaults(value string) (string, string) {
 	return "US", "USD"
 }
 
+func normalizeCheckoutProxyCountry(value, fallbackCountry string) (string, error) {
+	country := strings.ToUpper(strings.TrimSpace(value))
+	if country == "" {
+		country = strings.ToUpper(strings.TrimSpace(fallbackCountry))
+	}
+	if country == "" || !regexp.MustCompile(`^[A-Z]{2}$`).MatchString(country) {
+		return "", fmt.Errorf("代理池国家标注无效")
+	}
+	return country, nil
+}
+
 func (s *Server) normalizeCheckoutRequestFromPool(in sunnyCheckoutRequest) (sunnyCheckoutRequest, []string, []string, error) {
 	in.Plan = strings.ToLower(strings.TrimSpace(in.Plan))
 	if in.Plan == "" {
@@ -317,9 +332,19 @@ func (s *Server) normalizeCheckoutRequestFromPool(in sunnyCheckoutRequest) (sunn
 		}
 		in.PixTaxID = digits
 	}
-	var checkout, promotion []string
 	var err error
-	if in.UseProgramProxyPool {
+	in.CheckoutProxyCountry, err = normalizeCheckoutProxyCountry(in.CheckoutProxyCountry, in.Country)
+	if err != nil {
+		return in, nil, nil, err
+	}
+	in.PromotionProxyCountry, err = normalizeCheckoutProxyCountry(in.PromotionProxyCountry, fallback(in.PromoCountry, in.Country))
+	if err != nil {
+		return in, nil, nil, err
+	}
+	var checkout, promotion []string
+	// Explicit project pools take precedence. The legacy program pool remains
+	// available only when no project pool was supplied by an older caller.
+	if in.UseProgramProxyPool && strings.TrimSpace(in.CheckoutProxies) == "" && strings.TrimSpace(in.PromotionProxies) == "" {
 		checkout, err = s.sunnyCheckoutProxyPools(in.Country)
 		if err != nil {
 			return in, nil, nil, fmt.Errorf("Checkout 代理池: %w", err)
@@ -377,6 +402,15 @@ func normalizeCheckoutRequest(in sunnyCheckoutRequest) (sunnyCheckoutRequest, []
 		in.Country, in.Currency = "ID", "IDR"
 	}
 	in.PromoCountry = strings.ToUpper(strings.TrimSpace(in.PromoCountry))
+	checkoutCountry, err := normalizeCheckoutProxyCountry(in.CheckoutProxyCountry, in.Country)
+	if err != nil {
+		return in, nil, nil, err
+	}
+	in.CheckoutProxyCountry = checkoutCountry
+	in.PromotionProxyCountry, err = normalizeCheckoutProxyCountry(in.PromotionProxyCountry, fallback(in.PromoCountry, in.Country))
+	if err != nil {
+		return in, nil, nil, err
+	}
 	checkout, err := splitCheckoutPool(in.CheckoutProxies)
 	if err != nil {
 		return in, nil, nil, fmt.Errorf("Checkout 代理池: %w", err)
@@ -429,7 +463,7 @@ func (s *Server) sunnyCheckoutRuntime(w http.ResponseWriter, r *http.Request, pa
 		}
 		var checkout, promotion []string
 		var err error
-		if body.UseProgramProxyPool {
+		if body.UseProgramProxyPool && strings.TrimSpace(body.CheckoutProxies) == "" && strings.TrimSpace(body.PromotionProxies) == "" {
 			checkout, err = s.sunnyCheckoutProxyPools(country)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, "Checkout 代理池: "+err.Error())
@@ -577,7 +611,7 @@ func (s *Server) sunnyCheckoutRuntime(w http.ResponseWriter, r *http.Request, pa
 		s.checkoutMu.Lock()
 		s.checkoutCredentials(runtimeName)[id] = checkoutSecret{Tokens: values, Checkout: checkout, Promotion: promotion}
 		s.checkoutMu.Unlock()
-		payload := map[string]any{"checkout_runtime": runtimeName, "credential_id": id, "credentials": make([]map[string]any, len(creds)), "plan": body.Plan, "link_type": body.LinkType, "country": body.Country, "currency": body.Currency, "retry_count": body.RetryCount, "concurrency": body.Concurrency, "use_promo": body.UsePromo, "promo_campaign": body.PromoCampaign, "promo_country": body.PromoCountry, "promo_code": body.PromoCode, "workspace_name": body.WorkspaceName, "workspace_id": body.WorkspaceID, "seat_quantity": body.SeatQuantity, "price_interval": body.PriceInterval, "credit_quantity": body.CreditQuantity, "pix_tax_id": body.PixTaxID, "pix_auto_kind": body.PixAutoKind, "ideal_bank": body.IdealBank, "checkout_mode": body.CheckoutMode, "chain_config": body.ChainConfig, "proxy_enabled": true}
+		payload := map[string]any{"checkout_runtime": runtimeName, "credential_id": id, "credentials": make([]map[string]any, len(creds)), "plan": body.Plan, "link_type": body.LinkType, "country": body.Country, "currency": body.Currency, "retry_count": body.RetryCount, "concurrency": body.Concurrency, "use_promo": body.UsePromo, "promo_campaign": body.PromoCampaign, "promo_country": body.PromoCountry, "checkout_proxy_country": body.CheckoutProxyCountry, "promotion_proxy_country": body.PromotionProxyCountry, "promo_code": body.PromoCode, "workspace_name": body.WorkspaceName, "workspace_id": body.WorkspaceID, "seat_quantity": body.SeatQuantity, "price_interval": body.PriceInterval, "credit_quantity": body.CreditQuantity, "pix_tax_id": body.PixTaxID, "pix_auto_kind": body.PixAutoKind, "ideal_bank": body.IdealBank, "checkout_mode": body.CheckoutMode, "chain_config": body.ChainConfig, "proxy_enabled": true}
 		items := payload["credentials"].([]map[string]any)
 		for i, c := range creds {
 			items[i] = map[string]any{"index": i, "email": c.Email, "checkout_kind": c.CheckoutKind, "session_id": c.SessionID, "external": c.External}
@@ -898,6 +932,7 @@ func sunnyCheckoutWorkerRequestBody(token, checkoutKind string, payload map[stri
 	}
 	return map[string]any{
 		"token": token, "checkout_proxies": checkoutProxies, "promotion_proxies": promotionProxies,
+		"checkout_proxy_country": payload["checkout_proxy_country"], "promotion_proxy_country": payload["promotion_proxy_country"],
 		// The Go batch scheduler assigns one row index per account. Carry it to
 		// the Worker so concurrent account jobs start at different pool slots
 		// instead of all selecting index zero.

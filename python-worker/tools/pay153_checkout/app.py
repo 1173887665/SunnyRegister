@@ -1140,6 +1140,15 @@ def proxy_country(proxy: str, expected_country: str = "") -> tuple[str, str]:
     return data["country"], data["region"]
 
 
+def configured_proxy_country(value: Any, fallback: str) -> str:
+    """Return the configured two-letter label without querying the proxy."""
+    candidate = str(value or "").strip().upper()
+    if re.fullmatch(r"[A-Z]{2}", candidate):
+        return candidate
+    fallback_value = str(fallback or "US").strip().upper()
+    return fallback_value if re.fullmatch(r"[A-Z]{2}", fallback_value) else "US"
+
+
 def update_checkout_promo(
     http,
     token: str,
@@ -3296,8 +3305,8 @@ class JobStore:
                         "account_id": str(meta.get("account_id") or ""),
                         "country": country,
                         "currency": str(result.get("currency") or options.get("currency") or "").upper(),
-                        "entry_country": str(proxy_country(entry_proxy)[0] or "").upper(),
-                        "payment_proxy_country": str(proxy_country(payment_proxy)[0] or "").upper(),
+                        "entry_country": str(proxy_country(entry_proxy, options.get("entry_proxy_country"))[0] or "").upper(),
+                        "payment_proxy_country": str(proxy_country(payment_proxy, options.get("exit_proxy_country"))[0] or "").upper(),
                         "rust_workflow": True,
                         "sen_requested": bool(options.get("use_sen", True)),
                         "so_requested": bool(options.get("use_so", True)),
@@ -3458,7 +3467,7 @@ class JobStore:
                 return
 
             if provider == "pix":
-                self.update(job_id, percent=9, text="第 1/7 步：选择并检测代理")
+                self.update(job_id, percent=9, text="第 1/7 步：使用项目配置的代理池")
                 promotion_country, promotion_region = proxy_country(entry_proxy, options.get("entry_proxy_country"))
                 checkout_country, checkout_region = proxy_country(exit_proxy, options.get("exit_proxy_country"))
                 main_country, main_region = promotion_country, promotion_region
@@ -3527,18 +3536,35 @@ class JobStore:
                     self.log(job_id, "BLIK 检测到用户指定的非默认代理国家；保留当前 Checkout/Promotion 路由，由上游判断支付方式")
                 self.ensure_not_cancelled(job_id)
             if provider == "paypal":
-                self.update(job_id, percent=9, text="第 1/7 步：校验 PayPal 优惠识别代理与支付代理")
-                main_country, main_region = proxy_country(entry_proxy)
-                exit_proxy, payment_geo, rejected_countries = select_paypal_exit_proxy(
-                    exit_proxy,
-                    exit_pool,
-                    scan_limit=int(os.getenv("PAYPAL_PROXY_SCAN_LIMIT", "24") or 24),
-                    expected_country=str(options.get("requested_paypal_country") or country),
-                )
+                self.update(job_id, percent=9, text="第 1/7 步：使用项目配置的 PayPal 代理池")
+                main_country, main_region = proxy_country(entry_proxy, options.get("entry_proxy_country"))
+                rejected_countries: list[str] = []
+                if options.get("named_proxy_pools"):
+                    # The project-level pool already identifies its country.
+                    # Keep the selected slot and avoid an external geo probe;
+                    # rotating gateways may reuse one URL while changing IP.
+                    payment_country = str(options.get("exit_proxy_country") or country).upper()
+                    payment_region = "项目代理池"
+                    payment_geo = {
+                        "country": payment_country,
+                        "currency": str(COUNTRY_CURRENCY.get(payment_country) or options.get("checkout_currency") or options.get("currency") or "").upper(),
+                        "region": payment_region,
+                        "city": "",
+                        "postal": "",
+                        "timezone": "",
+                        "source": "configured_pool",
+                    }
+                else:
+                    exit_proxy, payment_geo, rejected_countries = select_paypal_exit_proxy(
+                        exit_proxy,
+                        exit_pool,
+                        scan_limit=int(os.getenv("PAYPAL_PROXY_SCAN_LIMIT", "24") or 24),
+                        expected_country=str(options.get("requested_paypal_country") or country),
+                    )
                 payment_country = payment_geo.get("country") or ""
                 payment_region = payment_geo.get("region") or ""
                 if not payment_country:
-                    raise RuntimeError("Checkout 代理池未检测到国家地区")
+                    raise RuntimeError("Checkout 代理池未标注国家")
                 if rejected_countries:
                     self.log(job_id, f"PayPal 已跳过不兼容地区：{'/'.join(rejected_countries[:8])}")
                 detected_currency = str(payment_geo.get("currency") or "").upper()
@@ -3555,11 +3581,7 @@ class JobStore:
                 options["checkout_country"] = checkout_country
                 options["checkout_currency"] = checkout_currency
                 options["payment_proxy_country"] = payment_country
-                self.log(
-                    job_id,
-                    f"PayPal Checkout代理池地区：{payment_country}/{payment_region}；"
-                    f"Checkout={checkout_country}/{checkout_currency}（{currency_source}）",
-                )
+                self.log(job_id, f"PayPal Checkout代理池标注地区：{payment_country}/{payment_region}；Checkout={checkout_country}/{checkout_currency}（{currency_source}）")
                 if promo_requested and main_country not in {"TR", "JP"}:
                     self.log(job_id, f"PayPal 优惠识别代理当前为 {main_country or '?'}；不限制国家，继续尝试")
                 self.ensure_not_cancelled(job_id)
@@ -5433,6 +5455,8 @@ def start_checkout():
                 if not manual_identity["name"]:
                     return jsonify({"error": f"CNPJ 登记信息查询失败：{exc}"}), 400
         pix_identity.update({key: value for key, value in manual_identity.items() if value})
+    explicit_entry_country = bool(str(data.get("entry_proxy_country") or "").strip())
+    explicit_exit_country = bool(str(data.get("exit_proxy_country") or "").strip())
     options = {
         "token_raw": str(data.get("token") or ""),
         "plan": plan,
@@ -5467,12 +5491,14 @@ def start_checkout():
         "entry_proxy_country": str(data.get("entry_proxy_country") or (str(data.get("promo_country") or country) if link_type == "kakao" else ("VN" if link_type == "gcash" else ("US" if link_type == "ph_short" and country == "PH" else country)))).upper(),
         "exit_proxy_country": str(data.get("exit_proxy_country") or ("PH" if link_type == "gcash" else ((str(data.get("promo_country") or ("TR" if country == "PH" else country))) if link_type == "ph_short" and bool(data.get("use_promo", True)) else country))).upper(),
     }
+    options["entry_proxy_country"] = configured_proxy_country(options["entry_proxy_country"], country)
+    options["exit_proxy_country"] = configured_proxy_country(options["exit_proxy_country"], country)
     if link_type == "ph_short":
-        if country == "PH" and options["entry_proxy_country"] == "PH":
+        if not explicit_entry_country and country == "PH" and options["entry_proxy_country"] == "PH":
             options["entry_proxy_country"] = "US"
-        if not options.get("use_promo"):
+        if not options.get("use_promo") and not explicit_exit_country:
             options["exit_proxy_country"] = options["entry_proxy_country"]
-        elif not str(data.get("exit_proxy_country") or "").strip() and not str(data.get("promo_country") or "").strip():
+        elif not explicit_exit_country and not str(data.get("promo_country") or "").strip():
             options["exit_proxy_country"] = "TR" if country == "PH" else country
     if not options["token_raw"].strip():
         return jsonify({"error": "请填写 Access Token 或 Session JSON"}), 400

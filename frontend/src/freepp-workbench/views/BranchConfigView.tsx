@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { StageName, StageCfg, BranchCfg, BranchName } from "../types";
 import { StageSettingsPanel } from "../components/chain/StageSettings";
+import { ProxyPoolSettings } from "../components/chain/ProxyPoolSettings";
 
 /* ==========================================================================
    通用提链分支配置页（iDEAL / UPI / Kakao / BLIK / TWINT）
@@ -105,6 +106,14 @@ export function BranchConfigView({ branchName, title, sub, defaultCountry, updat
       </div>
 
       {branch && (
+        <>
+          <ProxyPoolSettings
+            branchName={branchName}
+            branch={branch}
+            countries={countryOptions}
+            onSave={handleSaveFlags}
+            saving={savingFlags}
+          />
         <StageSettingsPanel
           branchName={branchName}
           branch={branch}
@@ -114,6 +123,7 @@ export function BranchConfigView({ branchName, title, sub, defaultCountry, updat
           savingStage={savingStage}
           savingFlags={savingFlags}
         />
+        </>
       )}
 
       {result && (

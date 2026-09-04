@@ -21,6 +21,11 @@ _LEGACY_PROMOTION_POOL_RE = re.compile(r"代理池\s*1")
 _LEGACY_CHECKOUT_POOL_RE = re.compile(r"代理池\s*2")
 
 
+def _proxy_country_label(value: Any, fallback: str) -> str:
+    candidate = str(value or "").strip().upper()
+    return candidate if re.fullmatch(r"[A-Z]{2}", candidate) else str(fallback or "US").strip().upper()
+
+
 def _safe_error(value: Any) -> str:
     text = _TOKEN_RE.sub("[TOKEN]", str(value or ""))
     text = _PROXY_AUTH_RE.sub(r"\1[PROXY]@", text)
@@ -97,8 +102,10 @@ def start_checkout(payload: dict[str, Any]) -> str:
         "gopay_cs_live_attempts": max(1, int(provider_stage.get("retry") or retry_count or 1)),
         "gopay_confirm_retries": max(0, int(approve_stage.get("retry") or 2)),
         "momo_confirm_retries": max(0, int(approve_stage.get("retry") or 2)),
-        "entry_proxy_country": str(payload.get("promo_country") or payload.get("country") or default_country).upper(),
-        "exit_proxy_country": str(payload.get("country") or default_country).upper(),
+        # Project settings provide explicit labels for each pool. They are
+        # trusted route metadata, not a reason to probe or rewrite the proxy.
+        "entry_proxy_country": _proxy_country_label(payload.get("promotion_proxy_country") or payload.get("promo_country"), str(payload.get("country") or default_country)),
+        "exit_proxy_country": _proxy_country_label(payload.get("checkout_proxy_country"), str(payload.get("country") or default_country)),
     }
     if options["link_type"] == "gcash":
         options["country"] = options["checkout_country"] = "PH"

@@ -547,6 +547,14 @@ export interface BranchCfg {
   follow_checkout: boolean;// 分段跟随: 除 update 外所有段跟随 checkout
   billing_country: string; // 账单国: "auto"=跟随 checkout 段, 否则固定国家
   attempts: number; // 总尝试 (每 Token 最大尝试轮数)
+  /** 项目级 Checkout 代理池，每行一个代理地址。 */
+  checkout_proxies?: string;
+  /** 项目级 Promotion 代理池，每行一个代理地址。 */
+  promotion_proxies?: string;
+  /** Checkout 代理池的人工国家标注，不做出口 IP 探测。 */
+  checkout_proxy_country?: string;
+  /** Promotion 代理池的人工国家标注，不做出口 IP 探测。 */
+  promotion_proxy_country?: string;
   /** checkout 建单模式: auto/host_inline/host_no_inline/cust_inline/cust_no_inline
    *  仅影响 cs_live_ 七段路径的 checkout 参数 (ui_mode + promo_inline);
    *  oaics_ 会话由服务端下发时仍自动走 oaics 五段, 不受此字段影响 */

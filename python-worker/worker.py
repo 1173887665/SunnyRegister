@@ -228,6 +228,8 @@ class CheckoutRequest(BaseModel):
     token: str
     checkout_proxies: list[str]
     promotion_proxies: list[str]
+    checkout_proxy_country: str = ""
+    promotion_proxy_country: str = ""
     proxy_slot: int = 0
     checkout_kind: str = "unknown"
     plan: str = "plus"

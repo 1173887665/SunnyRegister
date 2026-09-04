@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { StageName, StageCfg, BranchCfg } from "../types";
 import { StageSettingsPanel } from "../components/chain/StageSettings";
+import { ProxyPoolSettings } from "../components/chain/ProxyPoolSettings";
 
 /* ==========================================================================
    MoMo 提链 — 提链配置模块 (七段出口配置)
@@ -100,6 +101,14 @@ export function MomoView() {
       </div>
 
       {branch && (
+        <>
+        <ProxyPoolSettings
+          branchName="momo"
+          branch={branch}
+          countries={countryOptions}
+          onSave={handleSaveFlags}
+          saving={savingFlags}
+        />
         <StageSettingsPanel
           branchName="momo"
           branch={branch}
@@ -109,6 +118,7 @@ export function MomoView() {
           savingStage={savingStage}
           savingFlags={savingFlags}
         />
+        </>
       )}
 
       {result && (
