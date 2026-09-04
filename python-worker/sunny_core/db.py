@@ -801,14 +801,20 @@ class SunnyDB:
         if ids:
             marks = ",".join("?" for _ in ids)
             rows = self.conn.execute(
-                f"select a.*, m.registered_at as mailbox_registered_at "
+                f"select a.*, m.registered_at as mailbox_registered_at, "
+                f"m.trial_eligibility as mailbox_trial_eligibility, "
+                f"m.rebind_email as mailbox_rebind_email, "
+                f"m.rebind_mailbox_api as mailbox_rebind_mailbox_api "
                 f"from sunny_accounts a left join sunny_mailboxes m on m.id=a.mailbox_id "
                 f"where a.id in ({marks}) order by a.id asc",
                 ids,
             ).fetchall()
         else:
             rows = self.conn.execute(
-                "select a.*, m.registered_at as mailbox_registered_at "
+                "select a.*, m.registered_at as mailbox_registered_at, "
+                "m.trial_eligibility as mailbox_trial_eligibility, "
+                "m.rebind_email as mailbox_rebind_email, "
+                "m.rebind_mailbox_api as mailbox_rebind_mailbox_api "
                 "from sunny_accounts a left join sunny_mailboxes m on m.id=a.mailbox_id "
                 "order by a.id asc"
             ).fetchall()

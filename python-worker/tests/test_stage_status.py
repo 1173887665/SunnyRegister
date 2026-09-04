@@ -2148,8 +2148,8 @@ class RebindTaskTests(unittest.TestCase):
         eligible, skipped = worker._rebind_prefilter_accounts(
             db,
             [
-                {"id": 1, "email": "new@example.com", "mailbox_registered_at": now - 23 * 3600},
-                {"id": 2, "email": "old@example.com", "mailbox_registered_at": now - 25 * 3600},
+                {"id": 1, "email": "new@example.com", "trial_eligibility": "eligible", "mailbox_registered_at": now - 23 * 3600},
+                {"id": 2, "email": "old@example.com", "trial_eligibility": "eligible", "mailbox_registered_at": now - 25 * 3600},
             ],
             now=now,
         )
@@ -2165,7 +2165,7 @@ class RebindTaskTests(unittest.TestCase):
         db.task_id = "task-rebind-cooldown"
         db.cancel_requested.return_value = False
         db.fetch_accounts.return_value = [
-            {"id": 1, "email": "new@example.com", "mailbox_registered_at": 1_800_000_000.0 - 3600},
+            {"id": 1, "email": "new@example.com", "trial_eligibility": "eligible", "mailbox_registered_at": 1_800_000_000.0 - 3600},
         ]
 
         with patch.object(worker, "_rebind_one_isolated") as isolated:
@@ -2175,13 +2175,32 @@ class RebindTaskTests(unittest.TestCase):
         self.assertEqual(items[0]["status"], "skipped")
         isolated.assert_not_called()
 
+    def test_rebind_prefilters_non_trial_and_already_rebound_accounts(self):
+        db = MagicMock()
+        eligible, skipped = worker._rebind_prefilter_accounts(
+            db,
+            [
+                {"id": 1, "email": "trial@example.com", "trial_eligibility": "eligible"},
+                {"id": 2, "email": "no-trial@example.com", "trial_eligibility": "ineligible"},
+                {"id": 3, "email": "unknown@example.com", "trial_eligibility": "unknown"},
+                {"id": 4, "email": "rebound@example.com", "trial_eligibility": "eligible", "rebind_email": "new@example.com"},
+                {"id": 5, "email": "pending@example.com", "trial_eligibility": "eligible", "mailbox_rebind_mailbox_api": "https://pickup.example/token"},
+            ],
+            now=1_800_000_000.0,
+        )
+
+        self.assertEqual([item["email"] for item in eligible], ["trial@example.com"])
+        self.assertEqual([item["email"] for item in skipped], ["no-trial@example.com", "unknown@example.com", "rebound@example.com", "pending@example.com"])
+        self.assertTrue(any("没有 0 元试用资格" in item["reason"] for item in skipped))
+        self.assertTrue(any("已存在换绑记录" in item["reason"] for item in skipped))
+
     def test_parallel_imported_rebind_preserves_each_target_mailbox(self):
         db = MagicMock()
         db.task_id = "task-rebind-imported"
         db.cancel_requested.return_value = False
         db.fetch_accounts.return_value = [
-            {"id": 1, "email": "first@example.com"},
-            {"id": 2, "email": "second@example.com"},
+            {"id": 1, "email": "first@example.com", "trial_eligibility": "eligible"},
+            {"id": 2, "email": "second@example.com", "trial_eligibility": "eligible"},
         ]
         received: dict[int, dict] = {}
 
@@ -2214,8 +2233,8 @@ class RebindTaskTests(unittest.TestCase):
         db.task_id = "task-rebind-proxy"
         db.cancel_requested.return_value = False
         db.fetch_accounts.return_value = [
-            {"id": 1, "email": "first@example.com"},
-            {"id": 2, "email": "second@example.com"},
+            {"id": 1, "email": "first@example.com", "trial_eligibility": "eligible"},
+            {"id": 2, "email": "second@example.com", "trial_eligibility": "eligible"},
         ]
         slots = []
 
@@ -2237,7 +2256,7 @@ class RebindTaskTests(unittest.TestCase):
         db.task_id = "task-rebind"
         db.cancel_requested.return_value = False
         db.fetch_accounts.return_value = [
-            {"id": index, "email": f"user-{index}@example.com"}
+            {"id": index, "email": f"user-{index}@example.com", "trial_eligibility": "eligible"}
             for index in range(1, 5)
         ]
 

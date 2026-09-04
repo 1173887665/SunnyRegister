@@ -4512,15 +4512,47 @@ def _rebind_prefilter_accounts(
     *,
     now: float | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Skip accounts still inside the upstream 24-hour email-change cooldown."""
+    """Keep only trial-eligible, not-yet-rebound accounts outside cooldown."""
     current = time.time() if now is None else float(now)
     eligible: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+
+    def trial_value(value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"eligible", "true", "yes", "有0元试用", "有试用资格"}:
+            return "eligible"
+        if normalized in {"ineligible", "false", "no", "无0元试用", "无试用资格"}:
+            return "ineligible"
+        return "unknown"
+
     for account in accounts:
+        email = str(account.get("email") or "").strip()
+        account_trial = trial_value(account.get("trial_eligibility"))
+        mailbox_trial = trial_value(account.get("mailbox_trial_eligibility"))
+        trial_eligibility = account_trial if account_trial != "unknown" else mailbox_trial
+        rebound_email = str(account.get("rebind_email") or account.get("mailbox_rebind_email") or "").strip()
+        rebound_api = str(account.get("rebind_mailbox_api") or account.get("mailbox_rebind_mailbox_api") or "").strip()
+        if trial_eligibility != "eligible":
+            reason = "没有 0 元试用资格"
+            skipped.append({"email": email, "status": "skipped", "reason": reason})
+            db.event(
+                f"[{email}] 已跳过邮箱换绑：{reason}",
+                "info",
+                detail={"email": email, "module": "auth", "action": "rebind.skipped.trial", "trial_eligibility": trial_eligibility or "unknown"},
+            )
+            continue
+        if rebound_email or rebound_api:
+            reason = "账号已存在换绑记录"
+            skipped.append({"email": email, "status": "skipped", "reason": reason})
+            db.event(
+                f"[{email}] 已跳过邮箱换绑：{reason}",
+                "info",
+                detail={"email": email, "module": "auth", "action": "rebind.skipped.already_rebound"},
+            )
+            continue
         registered_at = _rebind_registration_timestamp(account)
         age = current - registered_at if registered_at else 0.0
         if registered_at and age < 24 * 60 * 60:
-            email = str(account.get("email") or "").strip()
             remaining_hours = max(0.0, (24 * 60 * 60 - max(0.0, age)) / 3600)
             reason = (
                 "注册未满24小时，处于官方邮箱换绑冷却期 "
