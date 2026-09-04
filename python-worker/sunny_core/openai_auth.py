@@ -1071,6 +1071,13 @@ class OpenAIEmailRegisterFlow:
         password_step_submitted = False
         password_step_submitted_at = 0.0
         password_step_attempts = 0
+        # The password page can keep a stale "use email code" control mounted
+        # after its click handler failed to advance the authorization route.
+        # Treat that action as a one-shot transition; otherwise every loop
+        # clicks the same DOM node again and floods the task log until the hard
+        # account timeout expires.
+        email_code_switch_pending = False
+        email_code_switch_wait_loops = 0
         # A partial LS (existing TOTP without a ChatGPT password) is still an
         # email-login flow, but the email OTP only satisfies the first factor.
         # Do not accept the provisional ChatGPT session until the stored TOTP
@@ -1210,7 +1217,16 @@ class OpenAIEmailRegisterFlow:
             if self._has_workspace_selection(page):
                 self._select_first_workspace(page)
                 continue
-            if self._is_password_step_route(url) or self._has_visible_password(page):
+            email_route_active = "email-verification" in url
+            if not email_route_active and email_code_switch_pending:
+                # Only probe the DOM for an OTP field while a switch is in
+                # flight.  This keeps lightweight page test doubles working
+                # and avoids an extra full-page scan on every normal loop.
+                try:
+                    email_route_active = bool(self._has_otp_input(page))
+                except Exception:
+                    email_route_active = False
+            if (self._is_password_step_route(url) or self._has_visible_password(page)) and not email_route_active:
                 if password_step_submitted:
                     # The auth SPA keeps the old password node mounted while the
                     # request is transitioning. Do not refill it on every loop;
@@ -1231,7 +1247,31 @@ class OpenAIEmailRegisterFlow:
                         )
                     password_step_submitted = False
                 if ("/log-in/password" in url or self.existing_account) and not self._uses_login_secret():
+                    if email_code_switch_pending:
+                        # Give the SPA a bounded window to replace the stale
+                        # password node.  A no-op click must not immediately
+                        # reopen the sign-in flow or repeat the same click.
+                        email_code_switch_wait_loops += 1
+                        if email_code_switch_wait_loops <= LOGIN_SECRET_STEP_TIMEOUT_SECONDS:
+                            self._sleep_checked(1)
+                            continue
+                        if not email_login_recovery_attempted:
+                            email_login_recovery_attempted = True
+                            email_code_switch_pending = False
+                            email_code_switch_wait_loops = 0
+                            self.log("[认证] 邮箱验证码入口点击后页面未推进，正在重新打开邮箱登录流程")
+                            signin_url = self._create_openai_signin_url(page.context, page)
+                            _goto_auth_page(page, signin_url, self.log, timeout=90000)
+                            otp_min_timestamp = time.time() - 10
+                            email_code_submitted = False
+                            about_you_submitted = False
+                            continue
+                        raise RuntimeError(
+                            "invalid_state: 邮箱验证码入口点击后认证页面未推进；当前授权事务需要更换代理后重试"
+                        )
                     if self._switch_password_to_email_code(page):
+                        email_code_switch_pending = True
+                        email_code_switch_wait_loops = 0
                         if self.account.chatgpt_password or self.account.totp_secret:
                             self.log("[认证] 登录密钥不完整或已切换回退，本次使用邮箱凭证登录")
                         email_code_submitted = False
@@ -1244,6 +1284,8 @@ class OpenAIEmailRegisterFlow:
                             signin_url = self._create_openai_signin_url(page.context, page)
                             _goto_auth_page(page, signin_url, self.log, timeout=90000)
                             otp_min_timestamp = time.time() - 10
+                            email_code_switch_pending = False
+                            email_code_switch_wait_loops = 0
                             email_code_submitted = False
                             about_you_submitted = False
                             continue
@@ -1275,6 +1317,8 @@ class OpenAIEmailRegisterFlow:
                 about_you_submitted = False
                 continue
             if "about-you" in url or self._has_about_you_form(page):
+                email_code_switch_pending = False
+                email_code_switch_wait_loops = 0
                 password_step_submitted = False
                 password_step_attempts = 0
                 email_code_submitted = False
@@ -1336,6 +1380,8 @@ class OpenAIEmailRegisterFlow:
                 about_you_retry_count = 0
                 continue
             if "email-verification" in url or self._has_otp_input(page):
+                email_code_switch_pending = False
+                email_code_switch_wait_loops = 0
                 if not email_code_submitted:
                     self._submit_email_code(page, otp_min_timestamp)
                     self._emit_progress("email_verified")
@@ -1343,6 +1389,8 @@ class OpenAIEmailRegisterFlow:
                 self._sleep_checked(2)
                 continue
             if self._fill_email_if_visible(page):
+                email_code_switch_pending = False
+                email_code_switch_wait_loops = 0
                 otp_min_timestamp = time.time()
                 email_code_submitted = False
                 about_you_submitted = False
