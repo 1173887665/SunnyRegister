@@ -185,6 +185,10 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			s.domainMailboxPickupHandler(w, r)
 			return
 		}
+		if r.URL.Path == "/api/sunny/domain-mail/webhook" && r.Method == http.MethodPost {
+			s.routeAPI(w, r)
+			return
+		}
 		if isMutation(r.Method) && !s.validRequestOrigin(r) {
 			writeError(w, http.StatusForbidden, "Invalid request origin")
 			return

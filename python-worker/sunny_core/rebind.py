@@ -292,12 +292,61 @@ def _domain_mailbox(
     domains = list(dict.fromkeys(domain_values))
     pickup_base = str(cfg.get("pickup_base_url") or os.getenv("SUNNY_PUBLIC_ORIGIN") or "").strip().rstrip("/")
     pickup_parts = urlsplit(pickup_base)
-    if not base or not token or not domains or any("@" in domain or "." not in domain or any(char.isspace() for char in domain) for domain in domains):
-        raise RebindError("自建域名邮箱配置不完整，请填写 CloudMail API、PUBLIC_API_TOKEN 和域名")
+    provider = str(cfg.get("provider") or "").strip().lower()
+    moemail_url = str(cfg.get("moemail_api_url") or os.getenv("MOEMAIL_API_URL") or "").strip().rstrip("/")
+    moemail_key = str(cfg.get("moemail_api_key") or os.getenv("MOEMAIL_API_KEY") or "").strip()
+    use_moemail = provider in {"moemail", "moe_mail"} if provider else bool(moemail_key)
+    if ((not use_moemail and (not base or not token)) or not domains or any("@" in domain or "." not in domain or any(char.isspace() for char in domain) for domain in domains)):
+        raise RebindError("自建域名邮箱配置不完整，请填写邮件服务 API、密钥和域名")
     if pickup_parts.scheme not in {"http", "https"} or not pickup_parts.netloc:
         raise RebindError("请先配置可公网访问的 SunnyRegister 取件 API 地址")
     length = max(6, min(32, int(cfg.get("random_local_length") or 12)))
     domain = domains[(_DOMAIN_ROTATION_OFFSET + next(_DOMAIN_ROTATION)) % len(domains)]
+
+    if use_moemail:
+        if not moemail_url or not moemail_key:
+            raise RebindError("MoeMail 配置不完整，请填写 API 地址和 API Key")
+        expiry_time = int(cfg.get("moemail_expiry_time") or 0)
+        last = "MoeMail 未返回有效邮箱"
+        for _ in range(8):
+            local = re.sub(r"[^a-z0-9]", "", secrets.token_urlsafe(length + 4).lower())[:length]
+            email = f"{local}@{domain}"
+            try:
+                response = requests.post(
+                    moemail_url + "/api/emails/generate",
+                    json={"name": local, "expiryTime": expiry_time, "domain": domain},
+                    headers={"Accept": "application/json", "X-API-Key": moemail_key, "User-Agent": "SunnyRegister/1.0"},
+                    timeout=30,
+                )
+                payload: Any = {}
+                try:
+                    payload = response.json()
+                except Exception:
+                    pass
+                obj = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
+                provider_email = str(obj.get("email") or obj.get("address") or "").strip().lower() if isinstance(obj, dict) else ""
+                if not response.ok or not provider_email or "@" not in provider_email:
+                    detail = str((payload.get("message") if isinstance(payload, dict) else "") or response.text or "")[:180]
+                    last = f"HTTP {response.status_code}: {detail}".strip()
+                    if response.status_code not in {408, 425, 429} and response.status_code < 500:
+                        break
+                    continue
+                provider_id = str(obj.get("id") or obj.get("emailId") or "").strip() if isinstance(obj, dict) else ""
+                if not provider_id:
+                    last = "MoeMail 创建邮箱响应缺少 id"
+                    continue
+                if not any(provider_email.endswith("@" + configured) for configured in domains):
+                    last = f"MoeMail 返回了未配置的邮箱域名：{provider_email}"
+                    continue
+                pickup_token = "dmsk_" + secrets.token_urlsafe(32)
+                credential = pickup_base + "/api/sunny/domain-mail/pickup?" + urlencode({"email": provider_email, "token": pickup_token})
+                token_hash = hashlib.sha256(pickup_token.encode("utf-8")).hexdigest()
+                log(f"[{provider_email}] 已从 MoeMail 生成换绑邮箱，取件地址={_redact_pickup_credential(credential)}")
+                return provider_email, credential, token_hash
+            except requests.RequestException as exc:
+                last = str(exc)
+        raise RebindError(f"生成 MoeMail 邮箱失败：{last}")
+
     proxies = None
     for _ in range(8):
         local = re.sub(r"[^a-z0-9]", "", secrets.token_urlsafe(length + 4).lower())[:length]

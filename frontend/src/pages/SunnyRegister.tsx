@@ -893,9 +893,19 @@ Object.assign(zh, {
   terminateTask: "终止", terminatingTask: "终止中...", terminateTaskRequested: "已请求终止当前日志对应的任务", terminateTaskFailed: "终止任务失败",
 });
 (zh as AnyObj).domainMailboxRetainFailed = "保留失败域名邮箱";
-(zh as AnyObj).domainMailboxRetainFailedTip = "关闭后，注册或换绑失败时会同时删除 CloudMail 和本项目中的本次邮箱";
+(zh as AnyObj).domainMailboxRetainFailedTip = "关闭后，注册或换绑失败时会同时删除邮箱服务和本项目中的本次邮箱";
 (en as AnyObj).domainMailboxRetainFailed = "Retain failed domain mailboxes";
-(en as AnyObj).domainMailboxRetainFailedTip = "When disabled, failed registration or rebinding mailboxes are deleted from CloudMail and this project";
+(en as AnyObj).domainMailboxRetainFailedTip = "When disabled, failed registration or rebinding mailboxes are deleted from the provider and this project";
+(zh as AnyObj).domainMailboxProvider = "邮件服务";
+(zh as AnyObj).moemailApiURL = "MoeMail API 地址";
+(zh as AnyObj).moemailApiKey = "MoeMail API Key";
+(zh as AnyObj).moemailWebhookSecret = "MoeMail Webhook 密钥（可选）";
+(zh as AnyObj).moemailNoSend = "MoeMail OpenAPI 当前不提供发件接口";
+(en as AnyObj).domainMailboxProvider = "Email provider";
+(en as AnyObj).moemailApiURL = "MoeMail API URL";
+(en as AnyObj).moemailApiKey = "MoeMail API Key";
+(en as AnyObj).moemailWebhookSecret = "MoeMail Webhook secret (optional)";
+(en as AnyObj).moemailNoSend = "MoeMail OpenAPI does not expose sending";
 Object.assign(en, {
   loginExisting: "Login Existing",
   loginExistingTitle: "Log in Existing ChatGPT Accounts",
@@ -1262,8 +1272,12 @@ function selectionIDs(result: AnyObj): number[] {
   return Array.from(new Set<number>(ids));
 }
 function isMailboxSelectable(row: AnyObj): boolean {
-  if (row?.enabled === false) return false;
   const status = String(row?.status || "").trim().toLowerCase();
+  // Failed and cancelled registration tasks are retryable even when the
+  // previous task left enabled=false. Explicitly disabled/blocked states stay
+  // unselectable below.
+  if (["failed", "error", "失败", "cancelled", "canceled", "已取消"].includes(status)) return true;
+  if (row?.enabled === false) return false;
   return status !== "disabled" && status !== "禁用";
 }
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
@@ -1444,6 +1458,8 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
       if (planFilter) params.set("plan_type", planFilter);
       if (trialFilter) params.set("trial_eligibility", trialFilter);
       params.set("enabled", "true");
+      // Failed rows are retryable even when the previous task disabled them.
+      params.set("include_failed", "true");
       const result = await apiFetch(`/sunny/mailboxes?${allSelectionParams(params).toString()}`);
       const ids = selectionIDs(result);
       const selectionItems = Array.isArray(result.items) ? result.items : [];
@@ -1481,7 +1497,7 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
   useEffect(()=>{if (pageNo !== safePageNo) setPageNo(safePageNo)},[pageNo, safePageNo]);
   async function resolveSelectableMailboxIds(candidateIds: number[]): Promise<number[]> {
     if (!candidateIds.length || identity === "phone") return candidateIds;
-    const result = await apiFetch("/sunny/mailboxes?selection=all&summary=true&enabled=true");
+    const result = await apiFetch("/sunny/mailboxes?selection=all&summary=true&enabled=true&include_failed=true");
     const enabledIds = new Set(selectionIDs(result));
     const ids = candidateIds.filter((id) => enabledIds.has(Number(id)));
     const skipped = candidateIds.length - ids.length;
@@ -1537,7 +1553,12 @@ function Workbench({ t, notify }: { t: typeof zh; notify: (type: "ok" | "fail", 
     setSelectedLogs((old) => [sep, ...old]);
     try {
       const endpoint = phoneRegistration ? "/sunny/tasks/phone-register" : "/sunny/tasks/register";
-      const res = await apiFetch(endpoint, { method: "POST", body: JSON.stringify({ mailbox_ids: phoneRegistration ? [] : identity === "system" ? taskIds : [], count: requestedCount, concurrency: Math.max(1, Math.min(Number(modalConcurrency) || 1, requestedCount)), identity, execution_mode: mode, protocol_challenge_strategy: protocolChallengeStrategy, registration_stage: taskStage, proxy_all_traffic: allTrafficProxyPool, setup_login_secret: setupLoginSecret, proxy_countries: proxyCountries, sms_provider: phoneOptions?.smsProvider || "", sms_country: phoneOptions?.smsCountry || "", ...postRegistrationEmailBindPayload(phoneOptions?.emailBind) }) });
+      const retryFailed = taskIds.some((id) => {
+        const row = rowsById.get(Number(id));
+        const rowStatus = String(row?.status || "").trim().toLowerCase();
+        return ["failed", "error", "失败", "cancelled", "canceled", "已取消"].includes(rowStatus);
+      });
+      const res = await apiFetch(endpoint, { method: "POST", body: JSON.stringify({ mailbox_ids: phoneRegistration ? [] : identity === "system" ? taskIds : [], count: requestedCount, concurrency: Math.max(1, Math.min(Number(modalConcurrency) || 1, requestedCount)), identity, execution_mode: mode, protocol_challenge_strategy: protocolChallengeStrategy, registration_stage: taskStage, proxy_all_traffic: allTrafficProxyPool, setup_login_secret: setupLoginSecret, proxy_countries: proxyCountries, sms_provider: phoneOptions?.smsProvider || "", sms_country: phoneOptions?.smsCountry || "", retry_failed: retryFailed, ...postRegistrationEmailBindPayload(phoneOptions?.emailBind) }) });
       notify("ok", t.taskSubmitted);
       setGlobalLogs((old) => [localLog(t.taskSubmitted), ...old].slice(0, 160));
       const taskId = String(res.id || res.task_id || "");
@@ -2098,7 +2119,12 @@ function AutoRegisterModal({ t, busy, selectedEmails, concurrency, setConcurrenc
   const mailboxPoolEnabled = mailboxCfg.pool_enabled !== false;
   const mailboxPoolReady = mailboxPoolEnabled && selectedEmails.length > 0;
   const remailReady = remailCfg.enabled === true && (remailCfg.api_key_configured === true || !!String(remailCfg.api_key || "").trim()) && Number(remailCfg.project_id || 0) > 0;
-  const domainReady = domainCfg.enabled !== false && domainCfg.enabled_for_registration === true && !!String(domainCfg.base_url || "").trim() && (domainCfg.auth_token_configured === true || !!String(domainCfg.auth_token || "").trim()) && !!String(domainCfg.domain || "").trim();
+  const domainProvider = String(domainCfg.provider || "").trim().toLowerCase();
+  const domainUsesMoeMail = domainProvider ? ["moemail", "moe_mail"].includes(domainProvider) : domainCfg.moemail_api_key_configured === true || !!String(domainCfg.moemail_api_key || "").trim();
+  const domainMoeMailReady = !!String(domainCfg.moemail_api_url || "").trim() && (domainCfg.moemail_api_key_configured === true || !!String(domainCfg.moemail_api_key || "").trim());
+  const domainCloudMailReady = !domainUsesMoeMail && !!String(domainCfg.base_url || "").trim() && (domainCfg.auth_token_configured === true || !!String(domainCfg.auth_token || "").trim());
+  const selectedDomainProviderReady = domainUsesMoeMail ? domainMoeMailReady : domainCloudMailReady;
+  const domainReady = domainCfg.enabled !== false && domainCfg.enabled_for_registration === true && selectedDomainProviderReady && !!String(domainCfg.domain || (Array.isArray(domainCfg.domains) ? domainCfg.domains[0] : domainCfg.domains) || "").trim();
   const googleMailboxReady = false;
   const microsoftMailboxReady = false;
   const selectedPhoneProvider = usableProviderEntries.find((entry)=>entry.value === smsProvider);
@@ -2560,6 +2586,8 @@ function DomainMailboxProviderConfig({ t, config, setConfig, notify }: { t: type
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useCachedState("mailbox.domain.expanded", true);
   const [sendRecipient, setSendRecipient] = useState("");
+  const configuredProvider = String(config.provider || "").trim().toLowerCase();
+  const isMoeMail = configuredProvider ? ["moemail", "moe_mail"].includes(configuredProvider) : config.moemail_api_key_configured === true || !!String(config.moemail_api_key || "").trim();
   const update = (key:string, value:any) => setConfig({...config, [key]: value});
   async function save(next = config) {
     setBusy(true);
@@ -2568,7 +2596,7 @@ function DomainMailboxProviderConfig({ t, config, setConfig, notify }: { t: type
       // The API masks secrets in its response. Keep a key entered in this
       // session so the user can run the send smoke test immediately after
       // saving without exposing it in a subsequent GET response.
-      setConfig({...saved, external_api_key: String(next.external_api_key || saved?.external_api_key || "").trim()});
+      setConfig({...saved, external_api_key: String(next.external_api_key || saved?.external_api_key || "").trim(), moemail_api_key: String(next.moemail_api_key || saved?.moemail_api_key || "").trim(), moemail_webhook_secret: String(next.moemail_webhook_secret || saved?.moemail_webhook_secret || "").trim()});
       const migrated=Number(saved?.migrated_mailboxes || 0);
       notify("ok", migrated > 0 ? `配置已保存，已为 ${migrated} 个旧邮箱生成独立取件凭证` : t.done);
     } catch (e:any) { notify("fail", e.message || String(e)); }
@@ -2617,18 +2645,18 @@ function DomainMailboxProviderConfig({ t, config, setConfig, notify }: { t: type
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold">{t.domainMailboxTitle}</h2><p className="mt-1 text-sm text-slate-500">{t.domainMailboxDesc}</p></div><div className="flex items-center gap-3"><button type="button" aria-label={expanded ? "折叠自建域名邮箱配置" : "展开自建域名邮箱配置"} title={expanded ? "折叠自建域名邮箱配置" : "展开自建域名邮箱配置"} className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white/80 text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700" onClick={()=>setExpanded((value)=>!value)}><ChevronDown className={cn("h-4 w-4 transition-transform", expanded && "rotate-180")} /></button><button type="button" aria-label="启用自建域名邮箱池" title={boolConfig(config.enabled) ? "关闭自建域名邮箱池" : "启用自建域名邮箱池"} disabled={busy} className={cn("sr-switch-only", boolConfig(config.enabled) && "on")} onClick={()=>void toggleEnabled()}><span/></button></div></div>
     {expanded && <div className="sr-mailbox-expanded mt-5 space-y-4">
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <div><Label>{t.domainMailboxApiURL}</Label><Input value={config.base_url || ""} onChange={(e)=>update("base_url",e.target.value)} placeholder="https://mail.example.com"/></div>
-        <div><Label>{t.domainMailboxToken}</Label><Input type="password" autoComplete="new-password" value={config.auth_token || ""} onChange={(e)=>update("auth_token",e.target.value)} placeholder={config.auth_token_configured ? "已配置，留空保持不变" : "请输入 Token"}/></div>
+        <div><Label>{(t as AnyObj).domainMailboxProvider}</Label><SelectBox value={isMoeMail ? "moemail" : "cloudmail"} onChange={(v)=>update("provider",String(v))} options={[{value:"moemail",label:"MoeMail"},{value:"cloudmail",label:"CloudMail"}]}/></div>
+        {isMoeMail ? <><div><Label>{(t as AnyObj).moemailApiURL}</Label><Input value={config.moemail_api_url || ""} onChange={(e)=>update("moemail_api_url",e.target.value)} placeholder="https://mail.example.com"/></div><div><Label>{(t as AnyObj).moemailApiKey}</Label><Input type="password" autoComplete="new-password" value={config.moemail_api_key || ""} onChange={(e)=>update("moemail_api_key",e.target.value)} placeholder={config.moemail_api_key_configured ? "已配置，留空保持不变" : "请输入 API Key"}/></div><div><Label>{(t as AnyObj).moemailWebhookSecret}</Label><Input type="password" autoComplete="new-password" value={config.moemail_webhook_secret || ""} onChange={(e)=>update("moemail_webhook_secret",e.target.value)} placeholder={config.moemail_webhook_secret_configured ? "已配置，留空保持不变" : "可选"}/></div></> : <><div><Label>{t.domainMailboxApiURL}</Label><Input value={config.base_url || ""} onChange={(e)=>update("base_url",e.target.value)} placeholder="https://mail.example.com"/></div><div><Label>{t.domainMailboxToken}</Label><Input type="password" autoComplete="new-password" value={config.auth_token || ""} onChange={(e)=>update("auth_token",e.target.value)} placeholder={config.auth_token_configured ? "已配置，留空保持不变" : "请输入 Token"}/></div></>}
         <div><Label>{t.domainMailboxExternalAPIKey}</Label><Input type="password" autoComplete="new-password" value={config.external_api_key || ""} onChange={(e)=>update("external_api_key",e.target.value)} placeholder={config.external_api_key_configured ? "已配置，留空保持不变" : "请输入 External API Key"}/></div>
         <div><Label>{t.domainMailboxSitePassword}</Label><Input type="password" autoComplete="new-password" value={config.site_password || ""} onChange={(e)=>update("site_password",e.target.value)} placeholder={config.site_password_configured ? "已配置，留空保持不变" : "没有 PASSWORDS 时可留空"}/></div>
         <div><Label>{t.domainMailboxDomain}</Label><Textarea className="min-h-24 rounded-xl" value={Array.isArray(config.domains) ? config.domains.join("\n") : String(config.domains || config.domain || "")} onChange={(e)=>update("domains",e.target.value)} placeholder="example.com\nexample.net"/></div>
         <div><Label>{t.domainMailboxPickupURL}</Label><Input value={config.pickup_base_url || ""} onChange={(e)=>update("pickup_base_url",e.target.value)} placeholder="https://sunny.example.com"/></div>
         <div><Label>{t.domainMailboxLength}</Label><Input type="number" min={6} max={32} value={config.random_local_length || 12} onChange={(e)=>update("random_local_length",Math.max(6,Math.min(32,Number(e.target.value || 12))))}/></div>
-        <div className="flex items-end"><label className="flex min-h-11 items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={config.auto_add_user !== false} onChange={(e)=>update("auto_add_user",e.target.checked)} />{t.domainMailboxAutoAdd}</label></div>
+        {!isMoeMail && <div className="flex items-end"><label className="flex min-h-11 items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={config.auto_add_user !== false} onChange={(e)=>update("auto_add_user",e.target.checked)} />{t.domainMailboxAutoAdd}</label></div>}
         <div className="flex items-end"><label className="flex min-h-11 items-center gap-2 text-sm text-slate-600" title={(t as AnyObj).domainMailboxRetainFailedTip}><input type="checkbox" disabled={busy} checked={config.retain_failed_mailboxes !== false} onChange={(e)=>void setRetainFailedMailboxes(e.target.checked)} />{(t as AnyObj).domainMailboxRetainFailed}</label></div>
         <div className="flex flex-wrap items-end gap-5"><label className="flex items-center gap-2 text-sm text-slate-600"><span>{t.domainMailboxRegistration}</span><button type="button" aria-label={t.domainMailboxRegistration} disabled={!boolConfig(config.enabled) || busy} className={cn("sr-switch-only", boolConfig(config.enabled_for_registration) && "on")} onClick={()=>void toggle("enabled_for_registration")}><span/></button></label><label className="flex items-center gap-2 text-sm text-slate-600"><span>{t.domainMailboxRebinding}</span><button type="button" aria-label={t.domainMailboxRebinding} disabled={!boolConfig(config.enabled) || busy} className={cn("sr-switch-only", boolConfig(config.enabled_for_rebinding) && "on")} onClick={()=>void toggle("enabled_for_rebinding")}><span/></button></label></div>
       </div>
-       <div className="flex flex-wrap items-end justify-end gap-2"><div className="min-w-[240px] flex-1 sm:flex-none"><Label>{t.domainMailboxSendRecipient}</Label><Input type="email" value={sendRecipient} onChange={(e)=>setSendRecipient(e.target.value)} placeholder="you@example.com"/></div><Button disabled={busy || !boolConfig(config.enabled)} variant="outline" className="rounded-xl" onClick={()=>void sendTest()}><Inbox className="mr-2 h-4 w-4"/>{t.domainMailboxSendTest}</Button><Button disabled={busy} variant="outline" className="rounded-xl" onClick={check}><RefreshCw className="mr-2 h-4 w-4"/>{t.domainMailboxCheck}</Button><Button disabled={busy || !boolConfig(config.enabled)} variant="outline" className="rounded-xl" onClick={generate}><Plus className="mr-2 h-4 w-4"/>{t.domainMailboxGenerate}</Button><Button disabled={busy} className="rounded-xl bg-emerald-600 px-5 text-white hover:bg-emerald-700" onClick={()=>void save()}><Save className="mr-2 h-4 w-4"/>{t.domainMailboxSave}</Button></div>
+       <div className="flex flex-wrap items-end justify-end gap-2">{!isMoeMail && <><div className="min-w-[240px] flex-1 sm:flex-none"><Label>{t.domainMailboxSendRecipient}</Label><Input type="email" value={sendRecipient} onChange={(e)=>setSendRecipient(e.target.value)} placeholder="you@example.com"/></div><Button disabled={busy || !boolConfig(config.enabled)} variant="outline" className="rounded-xl" onClick={()=>void sendTest()}><Inbox className="mr-2 h-4 w-4"/>{t.domainMailboxSendTest}</Button></>}<Button disabled={busy} variant="outline" className="rounded-xl" onClick={check}><RefreshCw className="mr-2 h-4 w-4"/>{t.domainMailboxCheck}</Button><Button disabled={busy || !boolConfig(config.enabled)} variant="outline" className="rounded-xl" onClick={generate}><Plus className="mr-2 h-4 w-4"/>{t.domainMailboxGenerate}</Button><Button disabled={busy} className="rounded-xl bg-emerald-600 px-5 text-white hover:bg-emerald-700" onClick={()=>void save()}><Save className="mr-2 h-4 w-4"/>{t.domainMailboxSave}</Button></div>
     </div>}
   </Card>;
 }

@@ -33,8 +33,13 @@ func defaultDomainMailboxConfig() map[string]any {
 		"enabled":                  true,
 		"enabled_for_registration": false,
 		"enabled_for_rebinding":    false,
+		"provider":                 "",
 		"base_url":                 "",
 		"auth_token":               "",
+		"moemail_api_url":          "",
+		"moemail_api_key":          "",
+		"moemail_expiry_time":      int64(0),
+		"moemail_webhook_secret":   "",
 		"external_api_key":         "",
 		"site_password":            "",
 		"pickup_base_url":          "",
@@ -44,6 +49,21 @@ func defaultDomainMailboxConfig() map[string]any {
 		"auto_add_user":            true,
 		"retain_failed_mailboxes":  true,
 	}
+}
+
+func domainMailboxProvider(cfg map[string]any) string {
+	if moeMailConfigured(cfg) {
+		return "moemail"
+	}
+	return "cloudmail"
+}
+
+func mailboxUsesMoeMail(mailbox SunnyMailbox, cfg map[string]any) bool {
+	provider := strings.ToLower(strings.TrimSpace(mailbox.MailboxProvider))
+	if provider != "" {
+		return provider == "moemail" || provider == "moe_mail"
+	}
+	return domainMailboxProvider(cfg) == "moemail"
 }
 
 type domainMailClient struct {
@@ -730,6 +750,17 @@ func (s *Server) domainMailboxMessagesForToken(ctx context.Context, email, token
 	if !boolValue(cfg["enabled"], true) {
 		return nil, fmt.Errorf("自建域名邮箱池已关闭")
 	}
+	if mailboxUsesMoeMail(mailbox, cfg) {
+		client, err := newMoeMailClient(cfg)
+		if err != nil {
+			return nil, err
+		}
+		messages, err := client.listMessages(ctx, effectiveEmail, mailbox.ProviderMailboxID)
+		if err != nil {
+			return nil, &domainMailboxUpstreamError{err: err}
+		}
+		return messages, nil
+	}
 	client, err := newDomainMailClient(cfg)
 	if err != nil {
 		return nil, err
@@ -769,6 +800,27 @@ func (s *Server) domainMailLatestMail(accessKey, email string, limit int) (map[s
 	return domainMailPayload(messages, email, limit), nil
 }
 
+func (s *Server) deleteDomainMailboxRemote(mailbox SunnyMailbox) error {
+	cfg := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if mailboxUsesMoeMail(mailbox, cfg) {
+		client, err := newMoeMailClient(cfg)
+		if err != nil {
+			return err
+		}
+		return client.deleteMailbox(ctx, mailbox.Email, mailbox.ProviderMailboxID)
+	}
+	if strings.TrimSpace(text(cfg["base_url"])) == "" || strings.TrimSpace(text(cfg["auth_token"])) == "" {
+		return nil
+	}
+	client, err := newDomainMailClient(cfg)
+	if err != nil {
+		return err
+	}
+	return client.deleteUser(ctx, mailbox.Email)
+}
+
 func (s *Server) domainMailboxPickupHandler(w http.ResponseWriter, r *http.Request) {
 	email := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("email")))
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
@@ -791,6 +843,9 @@ func (s *Server) domainMailboxPickupHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) createDomainMailbox(ctx context.Context, cfg map[string]any, client *domainMailClient, groupID uint) (SunnyMailbox, error) {
+	if domainMailboxProvider(cfg) == "moemail" {
+		return s.createMoeMailMailbox(ctx, cfg, groupID)
+	}
 	pickupBaseURL, err := domainMailboxPickupBaseURL(cfg)
 	if err != nil {
 		return SunnyMailbox{}, err
@@ -833,6 +888,78 @@ func (s *Server) createDomainMailbox(ctx context.Context, cfg map[string]any, cl
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("生成邮箱失败")
+	}
+	return SunnyMailbox{}, lastErr
+}
+
+func (s *Server) createMoeMailMailbox(ctx context.Context, cfg map[string]any, groupID uint) (SunnyMailbox, error) {
+	client, err := newMoeMailClient(cfg)
+	if err != nil {
+		return SunnyMailbox{}, err
+	}
+	pickupBaseURL, err := domainMailboxPickupBaseURL(cfg)
+	if err != nil {
+		return SunnyMailbox{}, err
+	}
+	length := intValue(cfg["random_local_length"], 12)
+	expiryTime := int64(intValue(cfg["moemail_expiry_time"], 0))
+	domains, err := domainMailboxDomains(cfg)
+	if err != nil {
+		return SunnyMailbox{}, err
+	}
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		domain, domainErr := nextDomainMailboxDomain(cfg)
+		if domainErr != nil {
+			return SunnyMailbox{}, domainErr
+		}
+		local := strings.TrimSuffix(strings.ToLower(randomDomainSecret(length)), "@")
+		providerID, email, generateErr := client.generate(ctx, local, domain, expiryTime)
+		if generateErr != nil {
+			lastErr = generateErr
+			continue
+		}
+		if !strings.HasSuffix(strings.ToLower(email), "@"+strings.ToLower(domain)) {
+			lastErr = fmt.Errorf("MoeMail 返回邮箱域名不匹配：%s（期望 %s）", email, domain)
+			continue
+		}
+		validDomain := false
+		for _, configured := range domains {
+			if strings.HasSuffix(strings.ToLower(email), "@"+configured) {
+				validDomain = true
+				break
+			}
+		}
+		if !validDomain {
+			lastErr = fmt.Errorf("MoeMail 返回了未配置的邮箱域名：%s", email)
+			continue
+		}
+		existing := SunnyMailbox{}
+		if s.db.Where("LOWER(email) = ?", sunnyEmailKey(email)).First(&existing).Error == nil {
+			continue
+		}
+		pickupToken, tokenErr := randomDomainPickupToken()
+		if tokenErr != nil {
+			return SunnyMailbox{}, tokenErr
+		}
+		credential, credentialErr := domainMailboxPickupCredential(pickupBaseURL, email, pickupToken)
+		if credentialErr != nil {
+			return SunnyMailbox{}, credentialErr
+		}
+		mailbox := SunnyMailbox{
+			GroupID: groupID, Email: email, MailboxType: "domain", MailboxChannel: "domain_api",
+			MailboxProvider: "moemail", ProviderMailboxID: providerID,
+			AccessKey: credential, PickupTokenHash: domainMailboxPickupTokenHash(pickupToken),
+			Raw: sunnyURLAPIRaw(email, credential), AccountType: "free", Status: "未注册", Enabled: true, LatestMailJSON: "{}",
+		}
+		if createErr := s.db.Create(&mailbox).Error; createErr == nil {
+			return mailbox, nil
+		} else {
+			lastErr = createErr
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("MoeMail 生成邮箱失败")
 	}
 	return SunnyMailbox{}, lastErr
 }
@@ -896,6 +1023,10 @@ func (s *Server) migrateLegacyDomainMailboxCredentials(cfg map[string]any) (int,
 }
 
 func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Request, parts []string) {
+	if len(parts) == 1 && parts[0] == "webhook" && r.Method == http.MethodPost {
+		s.moeMailWebhookHandler(w, r)
+		return
+	}
 	if len(parts) == 1 && parts[0] == "config" && r.Method == http.MethodGet {
 		cfg := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
 		if domains, err := domainMailboxDomains(cfg); err == nil {
@@ -905,9 +1036,14 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 		cfg["auth_token_configured"] = strings.TrimSpace(text(cfg["auth_token"])) != ""
 		cfg["external_api_key_configured"] = strings.TrimSpace(text(cfg["external_api_key"])) != ""
 		cfg["site_password_configured"] = strings.TrimSpace(text(cfg["site_password"])) != ""
+		cfg["moemail_api_key_configured"] = strings.TrimSpace(firstText(cfg["moemail_api_key"], osEnv("MOEMAIL_API_KEY"))) != ""
+		cfg["moemail_webhook_secret_configured"] = strings.TrimSpace(firstText(cfg["moemail_webhook_secret"], osEnv("MOEMAIL_WEBHOOK_SECRET"))) != ""
+		cfg["moemail_api_url"] = firstText(cfg["moemail_api_url"], osEnv("MOEMAIL_API_URL"))
 		cfg["auth_token"] = ""
 		cfg["external_api_key"] = ""
 		cfg["site_password"] = ""
+		cfg["moemail_api_key"] = ""
+		cfg["moemail_webhook_secret"] = ""
 		writeJSON(w, http.StatusOK, cfg)
 		return
 	}
@@ -924,6 +1060,14 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 		if strings.TrimSpace(text(body["external_api_key"])) == "" {
 			current := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
 			body["external_api_key"] = text(current["external_api_key"])
+		}
+		if strings.TrimSpace(text(body["moemail_api_key"])) == "" {
+			current := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
+			body["moemail_api_key"] = text(current["moemail_api_key"])
+		}
+		if strings.TrimSpace(text(body["moemail_webhook_secret"])) == "" {
+			current := mergeConfig(defaultDomainMailboxConfig(), s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig()))
+			body["moemail_webhook_secret"] = text(current["moemail_webhook_secret"])
 		}
 		cfg := mergeConfig(defaultDomainMailboxConfig(), body)
 		domains, domainErr := domainMailboxDomains(cfg)
@@ -946,9 +1090,14 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 		cfg["auth_token_configured"] = strings.TrimSpace(text(cfg["auth_token"])) != ""
 		cfg["external_api_key_configured"] = strings.TrimSpace(text(cfg["external_api_key"])) != ""
 		cfg["site_password_configured"] = strings.TrimSpace(text(cfg["site_password"])) != ""
+		cfg["moemail_api_key_configured"] = strings.TrimSpace(firstText(cfg["moemail_api_key"], osEnv("MOEMAIL_API_KEY"))) != ""
+		cfg["moemail_webhook_secret_configured"] = strings.TrimSpace(firstText(cfg["moemail_webhook_secret"], osEnv("MOEMAIL_WEBHOOK_SECRET"))) != ""
+		cfg["moemail_api_url"] = firstText(cfg["moemail_api_url"], osEnv("MOEMAIL_API_URL"))
 		cfg["auth_token"] = ""
 		cfg["external_api_key"] = ""
 		cfg["site_password"] = ""
+		cfg["moemail_api_key"] = ""
+		cfg["moemail_webhook_secret"] = ""
 		cfg["migrated_mailboxes"] = migrated
 		writeJSON(w, http.StatusOK, cfg)
 		return
@@ -970,18 +1119,85 @@ func (s *Server) domainMailboxConfigHandler(w http.ResponseWriter, r *http.Reque
 		if strings.TrimSpace(text(requestBody["external_api_key"])) == "" {
 			requestBody["external_api_key"] = text(cfg["external_api_key"])
 		}
+		// GET /config masks provider secrets. Preserve the persisted MoeMail
+		// credentials for operational requests when the frontend submits the
+		// masked response back to /check or /generate.
+		if strings.TrimSpace(text(requestBody["moemail_api_key"])) == "" {
+			requestBody["moemail_api_key"] = text(cfg["moemail_api_key"])
+		}
+		if strings.TrimSpace(text(requestBody["moemail_webhook_secret"])) == "" {
+			requestBody["moemail_webhook_secret"] = text(cfg["moemail_webhook_secret"])
+		}
 		cfg = mergeConfig(cfg, requestBody)
 		// Operational requests may test unsaved connection fields, but the
 		// persisted master switch cannot be bypassed through request payloads.
 		cfg["enabled"] = enabled
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if domainMailboxProvider(cfg) == "moemail" {
+		client, clientErr := newMoeMailClient(cfg)
+		if clientErr != nil {
+			writeError(w, http.StatusBadRequest, clientErr.Error())
+			return
+		}
+		switch parts[0] {
+		case "check":
+			remoteCfg, checkErr := client.config(ctx)
+			if checkErr != nil {
+				writeError(w, http.StatusBadRequest, checkErr.Error())
+				return
+			}
+			remoteDomains := splitDomainValues(remoteCfg["emailDomains"])
+			configuredDomains, domainErr := domainMailboxDomains(cfg)
+			if domainErr != nil {
+				writeError(w, http.StatusBadRequest, domainErr.Error())
+				return
+			}
+			missing := make([]string, 0)
+			for _, configured := range configuredDomains {
+				found := false
+				for _, remote := range remoteDomains {
+					if strings.EqualFold(configured, remote) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					missing = append(missing, configured)
+				}
+			}
+			if len(missing) > 0 {
+				writeError(w, http.StatusBadRequest, "MoeMail 未配置以下域名："+strings.Join(missing, ", "))
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "provider": "moemail", "domain": configuredDomains[0], "domains": configuredDomains, "moemail": remoteCfg})
+			return
+		case "generate":
+			if !boolValue(cfg["enabled"], true) {
+				writeError(w, http.StatusBadRequest, "自建域名邮箱池已关闭，请先在邮箱配置中启用")
+				return
+			}
+			mailbox, generateErr := s.createMoeMailMailbox(ctx, cfg, s.sunnyEnsureDefaultGroup())
+			if generateErr != nil {
+				writeError(w, http.StatusBadRequest, generateErr.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"id": mailbox.ID, "email": mailbox.Email, "mailbox_type": mailbox.MailboxType, "mailbox_channel": mailbox.MailboxChannel, "provider": mailbox.MailboxProvider})
+			return
+		case "send-test":
+			writeError(w, http.StatusNotImplemented, "MoeMail OpenAPI 当前不提供发件接口")
+			return
+		default:
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 	}
 	client, err := newDomainMailClient(cfg)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
 	switch parts[0] {
 	case "check":
 		_, err = client.listMessages(ctx, "healthcheck@"+strings.TrimSpace(text(cfg["domain"])))
@@ -1045,7 +1261,11 @@ func (s *Server) validateDomainMailboxRegistration(body map[string]any) error {
 	if !boolValue(cfg["enabled_for_registration"], false) {
 		return fmt.Errorf("自建域名邮箱未启用账户注册，请先在邮箱配置中启用")
 	}
-	if _, err := newDomainMailClient(cfg); err != nil {
+	if domainMailboxProvider(cfg) == "moemail" {
+		if _, err := newMoeMailClient(cfg); err != nil {
+			return err
+		}
+	} else if _, err := newDomainMailClient(cfg); err != nil {
 		return err
 	}
 	if _, err := domainMailboxPickupBaseURL(cfg); err != nil {
@@ -1063,9 +1283,13 @@ func (s *Server) prepareDomainMailboxRegistration(body map[string]any) error {
 		return err
 	}
 	cfg := s.sunnyGetConfig(sunnyCfgDomainMailbox, defaultDomainMailboxConfig())
-	client, err := newDomainMailClient(cfg)
-	if err != nil {
-		return err
+	var client *domainMailClient
+	var err error
+	if domainMailboxProvider(cfg) != "moemail" {
+		client, err = newDomainMailClient(cfg)
+		if err != nil {
+			return err
+		}
 	}
 	count := intValue(body["count"], 1)
 	groupName := "domain-api-" + time.Now().Format("01-02")
@@ -1091,8 +1315,22 @@ func (s *Server) prepareDomainMailboxRegistration(body map[string]any) error {
 					s.db.Model(&SunnyMailbox{}).Where("id = ?", id).Updates(map[string]any{"status": "失败", "last_error": "批量生成域名邮箱未完成"})
 					continue
 				}
-				if deleteErr := client.deleteUser(context.Background(), generated.Email); deleteErr != nil {
-					cleanupErrors = append(cleanupErrors, generated.Email+" CloudMail 删除失败："+deleteErr.Error())
+				var deleteErr error
+				if domainMailboxProvider(cfg) == "moemail" {
+					if moeClient, clientErr := newMoeMailClient(cfg); clientErr != nil {
+						deleteErr = clientErr
+					} else {
+						deleteErr = moeClient.deleteMailbox(context.Background(), generated.Email, generated.ProviderMailboxID)
+					}
+				} else if client != nil {
+					deleteErr = client.deleteUser(context.Background(), generated.Email)
+				}
+				if deleteErr != nil {
+					label := "邮箱服务"
+					if domainMailboxProvider(cfg) == "cloudmail" {
+						label = "CloudMail"
+					}
+					cleanupErrors = append(cleanupErrors, generated.Email+" "+label+" 删除失败："+deleteErr.Error())
 				}
 				if localErr := s.db.Delete(&SunnyMailbox{}, id).Error; localErr != nil {
 					cleanupErrors = append(cleanupErrors, generated.Email+" 本地记录删除失败："+localErr.Error())

@@ -78,8 +78,15 @@ func (s *Server) createSunnyRebindTask(body map[string]any) (Task, error) {
 			return Task{}, fmt.Errorf("自建域名邮箱未启用邮箱换绑，请先在邮箱配置中启用")
 		}
 		domains, err := domainMailboxDomains(cfg)
-		if err != nil || strings.TrimSpace(text(cfg["base_url"])) == "" || strings.TrimSpace(text(cfg["auth_token"])) == "" {
-			return Task{}, fmt.Errorf("自建域名邮箱配置不完整，请先配置 CloudMail API、PUBLIC_API_TOKEN 和域名")
+		if err != nil {
+			return Task{}, err
+		}
+		if domainMailboxProvider(cfg) == "moemail" {
+			if _, err := newMoeMailClient(cfg); err != nil {
+				return Task{}, err
+			}
+		} else if _, err := newDomainMailClient(cfg); err != nil {
+			return Task{}, fmt.Errorf("自建域名邮箱配置不完整，请先配置 CloudMail API、PUBLIC_API_TOKEN 和域名：%w", err)
 		}
 		if _, err := domainMailboxPickupBaseURL(cfg); err != nil {
 			return Task{}, err

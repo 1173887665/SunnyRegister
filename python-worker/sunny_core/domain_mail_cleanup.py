@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Callable
 
 import requests
@@ -100,6 +101,48 @@ def delete_cloudmail_user(cfg: dict[str, Any], email: str, *, timeout: float = 3
     raise RuntimeError(f"CloudMail 删除邮箱 {email} 失败：{last_error}")
 
 
+def delete_moemail_user(cfg: dict[str, Any], email: str, *, timeout: float = 30) -> None:
+    """Delete a MoeMail mailbox after resolving its provider id by address."""
+    base = str(cfg.get("moemail_api_url") or os.getenv("MOEMAIL_API_URL") or "").strip().rstrip("/")
+    api_key = str(cfg.get("moemail_api_key") or os.getenv("MOEMAIL_API_KEY") or "").strip()
+    if not base or not api_key:
+        raise RuntimeError("MoeMail 删除失败：缺少 API 地址或 API Key")
+    headers = {"Accept": "application/json", "X-API-Key": api_key, "User-Agent": "SunnyRegister/1.0"}
+    mailbox_id = ""
+    cursor = ""
+    for _ in range(100):
+        params = {"cursor": cursor} if cursor else None
+        try:
+            response = requests.get(base + "/api/emails", params=params, headers=headers, timeout=timeout)
+        except requests.RequestException as exc:
+            raise RuntimeError(f"MoeMail 查询邮箱失败：{exc}") from exc
+        if not response.ok:
+            raise RuntimeError(f"MoeMail 查询邮箱失败：HTTP {response.status_code}: {_response_error(response)}")
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise RuntimeError("MoeMail 查询邮箱返回内容不是有效 JSON") from exc
+        rows = payload.get("emails") if isinstance(payload, dict) else payload
+        rows = rows if isinstance(rows, list) else []
+        for row in rows:
+            if isinstance(row, dict) and str(row.get("address") or row.get("email") or "").strip().casefold() == email.strip().casefold():
+                mailbox_id = str(row.get("id") or row.get("emailId") or "").strip()
+                break
+        if mailbox_id:
+            break
+        cursor = str(payload.get("nextCursor") or payload.get("next_cursor") or "").strip() if isinstance(payload, dict) else ""
+        if not cursor:
+            break
+    if not mailbox_id:
+        raise RuntimeError(f"MoeMail 未找到邮箱：{email}")
+    try:
+        response = requests.delete(base + "/api/emails/" + requests.utils.quote(mailbox_id, safe=""), headers=headers, timeout=timeout)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"MoeMail 删除邮箱请求失败：{exc}") from exc
+    if not _response_success(response):
+        raise RuntimeError(f"MoeMail 删除邮箱失败：HTTP {response.status_code}: {_response_error(response)}")
+
+
 def cleanup_failed_mailbox(
     db: Any,
     cfg: dict[str, Any],
@@ -112,7 +155,12 @@ def cleanup_failed_mailbox(
         return False
     provider_error: Exception | None = None
     try:
-        delete_cloudmail_user(cfg, email)
+        provider = str(cfg.get("provider") or "").strip().lower()
+        use_moemail = provider in {"moemail", "moe_mail"} if provider else bool(str(cfg.get("moemail_api_key") or os.getenv("MOEMAIL_API_KEY") or "").strip())
+        if use_moemail:
+            delete_moemail_user(cfg, email)
+        else:
+            delete_cloudmail_user(cfg, email)
     except Exception as exc:
         provider_error = exc
 
@@ -126,7 +174,7 @@ def cleanup_failed_mailbox(
             raise RuntimeError(f"{provider_error}；{local_error}") from provider_error
         raise local_error
     if provider_error is not None:
-        log(f"[{email}] 已删除本地失败域名邮箱记录，但 CloudMail 邮箱仍可能残留：{provider_error}")
+        log(f"[{email}] 已删除本地失败域名邮箱记录，但远程邮箱仍可能残留：{provider_error}")
         raise provider_error
-    log(f"[{email}] 已删除 CloudMail 邮箱及本地失败域名邮箱记录")
+    log(f"[{email}] 已删除远程邮箱及本地失败域名邮箱记录")
     return True

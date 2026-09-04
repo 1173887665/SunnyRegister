@@ -20,6 +20,46 @@ def _credential():
     return json.dumps({"base_url": "https://mail.example", "auth_token": "token-1"})
 
 
+def test_rebind_domain_mailbox_uses_moemail_openapi(monkeypatch):
+    class DB:
+        @staticmethod
+        def get_config(key):
+            assert key == "domain_mailbox"
+            return {
+                "enabled_for_rebinding": True,
+                "provider": "moemail",
+                "moemail_api_url": "https://moemail.example",
+                "moemail_api_key": "api-key",
+                "pickup_base_url": "https://sunny.example",
+                "domains": ["obo1688.us.ci", "obo1688.cc.cd", "obo1688.de5.net"],
+                "random_local_length": 12,
+            }
+
+    class Response:
+        ok = True
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"id": "email-id", "email": "created@obo1688.us.ci"}
+
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append((url, kwargs))
+        return Response()
+
+    monkeypatch.setattr(rebind_module.requests, "post", post)
+    email, credential, token_hash = rebind_module._domain_mailbox(DB(), lambda _message: None, ["obo1688.us.ci"])
+
+    assert email == "created@obo1688.us.ci"
+    assert "token=dmsk_" in credential
+    assert len(token_hash) == 64
+    assert calls[0][0] == "https://moemail.example/api/emails/generate"
+    assert calls[0][1]["headers"]["X-API-Key"] == "api-key"
+
+
 def test_rebound_mailbox_credentials_are_used_for_bulk_mailbox_selection():
     row = {
         "email": "original@icloud.com",

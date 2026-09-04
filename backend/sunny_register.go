@@ -252,7 +252,7 @@ func serializeSunnyMailbox(m SunnyMailbox, groups map[uint]string, planType ...s
 	}
 	return map[string]any{
 		"id": m.ID, "account_id": accountID, "group_id": m.GroupID, "group_name": groups[m.GroupID], "email": m.Email, "rebind_email": m.RebindEmail, "rebind_mailbox_api": m.RebindMailboxAPI,
-		"mailbox_type": normalizeSunnyMailboxType(m.MailboxType), "mailbox_channel": normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel), "access_key": m.AccessKey,
+		"mailbox_type": normalizeSunnyMailboxType(m.MailboxType), "mailbox_channel": normalizeSunnyMailboxChannel(m.MailboxType, m.MailboxChannel), "mailbox_provider": m.MailboxProvider, "access_key": m.AccessKey,
 		"password": m.Password, "chatgpt_password": m.ChatGPTPassword, "totp_secret": m.TOTPSecret, "client_id": m.ClientID, "refresh_token": m.RefreshToken, "openai_rt": m.OpenAIRT, "access_token": accessToken,
 		"has_chatgpt_password": strings.TrimSpace(m.ChatGPTPassword) != "", "has_totp_secret": strings.TrimSpace(m.TOTPSecret) != "",
 		"has_login_secret": sunnyLoginSecretLine(m) != "", "has_secret_key": sunnyMailboxCredentialLine(m) != "", "chatgpt_password_preview": sunnyCredentialPreview(m.ChatGPTPassword), "totp_secret_preview": sunnyCredentialPreview(m.TOTPSecret),
@@ -776,9 +776,18 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			query = query.Where("status IN ?", sunnyMailboxStatusFilterValues(status))
 		}
 		if enabled := strings.TrimSpace(q.Get("enabled")); enabled != "" {
-			query = query.Where("enabled = ?", boolValue(enabled, true))
-			if selectionOnly && boolValue(enabled, true) {
+			enabledValue := boolValue(enabled, true)
+			if selectionOnly && enabledValue && boolValue(q.Get("include_failed"), false) {
+				// Failed registrations are retryable. Include those rows in the
+				// selection response even if the failed task left enabled=false,
+				// while still excluding explicitly disabled/blocked rows.
+				query = query.Where("(enabled = ? OR status IN ?)", true, sunnyMailboxRetryableStatusValues())
 				query = query.Where("status NOT IN ?", []string{"disabled", "禁用"})
+			} else {
+				query = query.Where("enabled = ?", enabledValue)
+				if selectionOnly && enabledValue {
+					query = query.Where("status NOT IN ?", []string{"disabled", "禁用"})
+				}
 			}
 		}
 		if kw := strings.TrimSpace(q.Get("q")); kw != "" {
@@ -794,7 +803,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			var allRows []SunnyMailbox
 			allQuery := query
 			if summary {
-				allQuery = allQuery.Select("id", "group_id", "email", "rebind_email", "rebind_mailbox_api", "mailbox_type", "mailbox_channel", "access_key", "password", "client_id", "refresh_token", "raw", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
+				allQuery = allQuery.Select("id", "group_id", "email", "rebind_email", "rebind_mailbox_api", "mailbox_type", "mailbox_channel", "mailbox_provider", "provider_mailbox_id", "access_key", "password", "client_id", "refresh_token", "raw", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
 			}
 			allQuery.Order(sunnyMailboxListSortClause(q.Get("sort_by"), q.Get("sort_order"))).Find(&allRows)
 			gm := s.sunnyGroupMap()
@@ -886,7 +895,7 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 		var rows []SunnyMailbox
 		listQuery := query
 		if summary {
-			listQuery = listQuery.Select("id", "group_id", "email", "rebind_email", "rebind_mailbox_api", "mailbox_type", "mailbox_channel", "access_key", "password", "client_id", "refresh_token", "raw", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
+			listQuery = listQuery.Select("id", "group_id", "email", "rebind_email", "rebind_mailbox_api", "mailbox_type", "mailbox_channel", "mailbox_provider", "provider_mailbox_id", "access_key", "password", "client_id", "refresh_token", "raw", "openai_rt", "account_type", "status", "enabled", "registered_at", "chat_gpt_password", "totp_secret", "trial_eligibility", "chatgpt_register_traffic_bytes", "proxy_traffic_bytes", "status_changed_at", "created_at", "updated_at")
 		}
 		listQuery.Order(sunnyMailboxListSortClause(q.Get("sort_by"), q.Get("sort_order"))).Offset((page - 1) * size).Limit(size).Find(&rows)
 		gm := s.sunnyGroupMap()
@@ -1206,7 +1215,16 @@ func (s *Server) sunnyMailboxes(w http.ResponseWriter, r *http.Request, parts []
 			return
 		}
 		if len(parts) == 1 && r.Method == http.MethodDelete {
-			s.db.Delete(&m)
+			if normalizeSunnyMailboxType(m.MailboxType) == "domain" {
+				if err := s.deleteDomainMailboxRemote(m); err != nil {
+					writeError(w, http.StatusBadGateway, "删除远程域名邮箱失败："+err.Error())
+					return
+				}
+			}
+			if err := s.db.Delete(&m).Error; err != nil {
+				writeError(w, http.StatusInternalServerError, "删除本地邮箱记录失败："+err.Error())
+				return
+			}
 			writeJSON(w, 200, map[string]any{"ok": true})
 			return
 		}
@@ -1430,6 +1448,10 @@ func sunnyMailboxStatusFilterValues(status string) []string {
 	default:
 		return []string{strings.TrimSpace(status)}
 	}
+}
+
+func sunnyMailboxRetryableStatusValues() []string {
+	return append(sunnyMailboxStatusFilterValues("失败"), sunnyMailboxStatusFilterValues("已取消")...)
 }
 
 func (s *Server) sunnyMailboxStatusCounts() (map[string]int64, int64) {
@@ -6842,6 +6864,7 @@ func sunnyRegisterProxyCountries(body map[string]any) []string {
 
 func (s *Server) sunnyMailboxesForRegisterTask(body map[string]any) ([]SunnyMailbox, error) {
 	ids := uintSlice(body["mailbox_ids"])
+	retryFailed := boolValue(body["retry_failed"], false)
 	var rows []SunnyMailbox
 	if len(ids) > 0 {
 		s.db.Where("id IN ?", ids).Order("id asc").Find(&rows)
@@ -6851,7 +6874,9 @@ func (s *Server) sunnyMailboxesForRegisterTask(body map[string]any) ([]SunnyMail
 		seen := map[uint]bool{}
 		for _, m := range rows {
 			seen[m.ID] = true
-			if !m.Enabled || strings.EqualFold(strings.TrimSpace(m.Status), "disabled") || strings.TrimSpace(m.Status) == "禁用" {
+			retryableStatus := normalizeSunnyMailboxCountStatus(m.Status)
+			failedRetry := retryFailed && (retryableStatus == "失败" || retryableStatus == "已取消")
+			if (!m.Enabled && !failedRetry) || strings.EqualFold(strings.TrimSpace(m.Status), "disabled") || strings.TrimSpace(m.Status) == "禁用" {
 				return nil, fmt.Errorf("mailbox config is unavailable: selected mailbox is disabled: %s", m.Email)
 			}
 		}
