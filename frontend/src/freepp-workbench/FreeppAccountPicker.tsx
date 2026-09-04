@@ -17,6 +17,7 @@ import { useStore } from "./store/useStore";
 import { getRuntimeSnapshot, setRuntimeSelection, useRuntime } from "./integration/runtime";
 import { CHAIN_PROJECT_BRANCH } from "./views/FlowWorkspaceView";
 import { api } from "./api/client";
+import { MAX_CHAIN_CONCURRENCY } from "./types";
 
 type Session = Record<string, any>;
 type BusyAction = "access-token-check" | "refresh-at" | "health-check" | "subscription-check" | "trial-check" | "checkout-probe" | "payment-probe" | "add-ls" | "rebind" | "sub2-import" | "export" | "acquire-rt" | "chain-start" | null;
@@ -36,12 +37,19 @@ const TRIAL_COUNTRY_OPTIONS = ["US", "GB", "AU", "VN", "BR", "NL", "IN", "KR", "
 const CHECKOUT_POLL_HARD_TIMEOUT_MS = 35 * 60 * 1000;
 const CHECKOUT_POLL_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const CHAIN_TASK_STORAGE_KEY = "sunnyregister.chainTasks.v1";
-const CHAIN_BATCH_COUNT_KEY = "sunnyregister.chainBatchCount.v1";
+const CHAIN_CONCURRENCY_KEY = "sunnyregister.chainConcurrency.v1";
+const DEFAULT_CHAIN_CONCURRENCY = MAX_CHAIN_CONCURRENCY;
 const COUNTRY_CURRENCIES: Record<string, string> = {
   AE: "AED", AU: "AUD", BR: "BRL", CA: "CAD", CH: "CHF", ES: "EUR", GB: "GBP",
   ID: "IDR", IN: "INR", JP: "JPY", KR: "KRW", MX: "MXN", NL: "EUR", PH: "PHP",
   PL: "PLN", TH: "THB", TW: "TWD", US: "USD", VN: "VND",
 };
+
+function normalizeChainConcurrency(value: unknown): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return DEFAULT_CHAIN_CONCURRENCY;
+  return Math.max(1, Math.min(MAX_CHAIN_CONCURRENCY, Math.trunc(numeric)));
+}
 
 function configuredCountries(value: any): string[] {
   const rows = Array.isArray(value) ? value : [];
@@ -289,17 +297,16 @@ export default function FreeppAccountPicker() {
     } catch { return {}; }
   });
   const [chainRecoveryBusy, setChainRecoveryBusy] = useState(false);
-  const [chainBatchCount, setChainBatchCount] = useState<number>(() => {
+  const [chainConcurrency, setChainConcurrency] = useState<number>(() => {
     try {
-      const value = Number(window.localStorage.getItem(CHAIN_BATCH_COUNT_KEY) || 10);
-      return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 10;
-    } catch { return 10; }
+      return normalizeChainConcurrency(window.localStorage.getItem(CHAIN_CONCURRENCY_KEY) || DEFAULT_CHAIN_CONCURRENCY);
+    } catch { return DEFAULT_CHAIN_CONCURRENCY; }
   });
   const runtime = useRuntime();
 
   useEffect(() => {
-    try { window.localStorage.setItem(CHAIN_BATCH_COUNT_KEY, String(chainBatchCount)); } catch { /* optional */ }
-  }, [chainBatchCount]);
+    try { window.localStorage.setItem(CHAIN_CONCURRENCY_KEY, String(chainConcurrency)); } catch { /* optional */ }
+  }, [chainConcurrency]);
 
   useEffect(() => {
     try {
@@ -705,14 +712,17 @@ export default function FreeppAccountPicker() {
     const failures: string[] = [];
     let started = 0;
     try {
+      // The input controls simultaneous workers, not how many selected accounts
+      // are submitted. Every selected session is sent in one task and the
+      // backend applies the concurrency limit while processing it.
       const checkoutSessions = selectedSessions
-        .filter((session) => Number.isFinite(Number(session.id)) && Number(session.id) > 0)
-        .slice(0, Math.max(1, Math.min(Math.trunc(Number(chainBatchCount) || 1), selectedSessions.length)));
+        .filter((session) => Number.isFinite(Number(session.id)) && Number(session.id) > 0);
       const sessionIds = checkoutSessions.map((session) => Number(session.id));
       if (!sessionIds.length) {
         setMessage("所选账号没有可用会话，无法启动提链");
         return;
       }
+      const concurrency = normalizeChainConcurrency(chainConcurrency);
       const projectConfig = await api<Session>("/api/config");
       const initialChains = branches.flatMap((branch) => checkoutSessions.map((session, index) => ({
         chain_id: `${branch}:${String(session.id)}`,
@@ -737,7 +747,7 @@ export default function FreeppAccountPicker() {
         status: "running",
         chains: initialChains,
       });
-      setMessage(`正在启动 ${branches.length} 个提链项目（${sessionIds.length} 个账号）...`);
+      setMessage(`正在启动 ${branches.length} 个提链项目（${sessionIds.length} 个账号，同时运行 ${concurrency} 个）...`);
       for (const [branchIndex, branch] of branches.entries()) {
         try {
           const execution = chainExecutionSettings(projectConfig, branch);
@@ -761,7 +771,7 @@ export default function FreeppAccountPicker() {
             country: execution.country,
             currency: execution.currency,
             retry_count: execution.retry,
-            concurrency: Math.min(10, sessionIds.length),
+            concurrency,
             use_promo: execution.usePromo,
             promo_country: execution.promotionCountries[0] || execution.country,
             checkout_mode: execution.checkoutMode,
@@ -954,9 +964,6 @@ export default function FreeppAccountPicker() {
 
   const operationBusy = busy !== null;
   const selectedCount = Math.max(selected.length, selectedTokenIds.size);
-  // Batch size is a task preference, not a selection count.  Users may set it
-  // before selecting rows; the actual start still uses only selected sessions.
-  const chainBatchLimit = Math.max(1, total, selectedCount);
   return (
     <section className="freepp-account-picker" aria-label="账号 AT">
       <div className="freepp-account-picker-head">
@@ -969,7 +976,7 @@ export default function FreeppAccountPicker() {
           <span>提链项目 {selectedProjects.size} 项</span>
           <span className="freepp-runtime-summary">运行时：{runtime.accounts.filter((item) => item.accessToken).length} AT · {runtime.proxies.length} 代理</span>
           <button className="btn" type="button" onClick={() => void load()} disabled={loading || operationBusy} title="刷新账号列表"><RefreshCw className={loading ? "spin" : ""} />刷新</button>
-          <label className="freepp-chain-count"><span>批量数量</span><input type="number" min={1} max={chainBatchLimit} value={Math.min(chainBatchCount, chainBatchLimit)} onChange={(event) => setChainBatchCount(Math.max(1, Math.min(Number(event.target.value || 1), chainBatchLimit)))} disabled={operationBusy} /></label>
+          <label className="freepp-chain-count"><span>提链并发</span><input type="number" min={1} max={MAX_CHAIN_CONCURRENCY} value={chainConcurrency} onChange={(event) => setChainConcurrency(normalizeChainConcurrency(event.target.value))} disabled={operationBusy} aria-label={`同时运行的提链数，最多 ${MAX_CHAIN_CONCURRENCY}`} /></label>
           <button className="btn btn-primary" type="button" onClick={() => void startSelectedChains()} disabled={(!selected.length && !selectedTokenIds.size) || !selectedProjects.size || operationBusy}><Play />开始提链</button>
         </div>
       </div>
