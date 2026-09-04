@@ -46,6 +46,17 @@ _BEGIN_RATE_LIMIT_MAX_ATTEMPTS = 4
 _BEGIN_RATE_LIMIT_BASE_DELAY_SECONDS = 20
 
 
+def _retry_after_seconds(value: Any) -> int:
+    """Parse Retry-After while bounding malformed upstream values."""
+    raw = str(value or "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(0, min(300, int(float(raw))))
+    except (TypeError, ValueError):
+        return 0
+
+
 class RebindError(RuntimeError):
     pass
 
@@ -81,7 +92,8 @@ def _begin_with_retry(client: "ChangeEmailClient", email: str, log: Callable[[st
                 max_attempts = min(max(1, attempts), _BEGIN_RATE_LIMIT_MAX_ATTEMPTS)
                 if attempt >= max_attempts:
                     raise
-                delay = _BEGIN_RATE_LIMIT_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                delay = int(getattr(exc, "retry_after_seconds", 0) or 0) or _BEGIN_RATE_LIMIT_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                delay = min(300, delay)
                 log(f"[{email}] 换绑验证码请求被上游限流，将等待 {delay} 秒后重试（{attempt + 1}/{max_attempts}）")
                 time.sleep(delay)
                 continue
@@ -217,7 +229,11 @@ class ChangeEmailClient:
                 )
             if response.status_code in {401, 403} or "reauth" in body.lower() or "recent" in body.lower():
                 raise RebindError(f"换绑接口需要重新认证：HTTP {response.status_code} {body}")
-            raise RebindError(f"换绑接口 {path} 失败：HTTP {response.status_code} {body}")
+            error = RebindError(f"换绑接口 {path} 失败：HTTP {response.status_code} {body}")
+            retry_after = _retry_after_seconds(getattr(response, "headers", {}).get("Retry-After"))
+            if retry_after:
+                error.retry_after_seconds = retry_after
+            raise error
         try:
             value = response.json()
             result = value if isinstance(value, dict) else {"value": value}
