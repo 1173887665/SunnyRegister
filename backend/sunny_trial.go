@@ -1122,7 +1122,8 @@ func (s *Server) executeSunnyTrialTask(task *Task, payload map[string]any) {
 func (s *Server) sunnyPurposeProxyURL(purpose, accountKey, preferredCountry string) string {
 	var proxies []SunnyProxy
 	query := "(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?"
-	if err := s.db.Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
+	if err := s.db.Where("status = ? AND enabled = ?", "enabled", true).
+		Where("last_checked_at IS NULL OR last_check_ok = ?", true).
 		Where(query, "%,"+purpose+",%").
 		Order("updated_at desc, id asc").Find(&proxies).Error; err != nil || len(proxies) == 0 {
 		return ""

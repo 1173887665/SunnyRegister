@@ -6772,12 +6772,13 @@ func (s *Server) sunnyValidateProxyForRegisterTask() error {
 	}
 	var n int64
 	s.db.Model(&SunnyProxy{}).
-		Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
+		Where("status = ? AND enabled = ?", "enabled", true).
+		Where("last_checked_at IS NULL OR last_check_ok = ?", true).
 		Where("(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%").
 		Count(&n)
 	if n <= 0 {
 		stats := s.sunnyProxyStats()
-		return fmt.Errorf("proxy config is enabled but no checked usable proxy is available: total=%d enabled=%d disabled=%d invalid=%d", stats["total"], stats["enabled"], stats["disabled"], stats["invalid"])
+		return fmt.Errorf("proxy config is enabled but no enabled usable proxy is available: total=%d enabled=%d disabled=%d invalid=%d", stats["total"], stats["enabled"], stats["disabled"], stats["invalid"])
 	}
 	return nil
 }
@@ -6789,7 +6790,8 @@ func (s *Server) sunnyValidateSelectedRegisterProxyCountries(body map[string]any
 		return nil
 	}
 	query := s.db.Model(&SunnyProxy{}).
-		Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
+		Where("status = ? AND enabled = ?", "enabled", true).
+		Where("last_checked_at IS NULL OR last_check_ok = ?", true).
 		Where("(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%")
 	if len(ids) > 0 {
 		query = query.Where("id IN ?", ids)
@@ -6804,7 +6806,7 @@ func (s *Server) sunnyValidateSelectedRegisterProxyCountries(body map[string]any
 		if label == "" {
 			label = "selected proxy IDs"
 		}
-		return fmt.Errorf("selected registration proxies have no checked usable entries: %s", label)
+		return fmt.Errorf("selected registration proxies have no enabled usable entries: %s", label)
 	}
 	return nil
 }
@@ -6985,7 +6987,8 @@ func (s *Server) sunnyTaskProxySnapshot(payload map[string]any) map[string]any {
 		next["proxy_pool_configured"] = false
 	}
 	var proxies []SunnyProxy
-	s.db.Where("status = ? AND enabled = ? AND last_check_ok = ?", "enabled", true, true).
+	s.db.Where("status = ? AND enabled = ?", "enabled", true).
+		Where("last_checked_at IS NULL OR last_check_ok = ?", true).
 		Where("(',' || replace(lower(coalesce(purpose_tags, '')), ' ', '') || ',') LIKE ?", "%,"+sunnyProxyPurposeRegister+",%").
 		Scopes(func(db *gorm.DB) *gorm.DB {
 			if len(selectedIDs) > 0 {

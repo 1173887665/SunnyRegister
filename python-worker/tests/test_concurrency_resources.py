@@ -218,6 +218,41 @@ class ProxySnapshotTests(unittest.TestCase):
         self.assertIn("代理池已配置但当前没有可用槽位", str(error.exception))
 
 
+class ProxyUsabilityTests(unittest.TestCase):
+    def test_enabled_unchecked_proxy_is_usable_until_explicit_check_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "sunny.db"
+            conn = sqlite3.connect(database)
+            conn.executescript(
+                """
+                create table sunny_proxies (
+                    id integer primary key,
+                    status text default 'enabled',
+                    enabled integer default 1,
+                    last_check_ok integer default 0,
+                    last_checked_at datetime
+                );
+                insert into sunny_proxies(id,status,enabled,last_check_ok,last_checked_at)
+                    values (1,'enabled',1,0,null);
+                insert into sunny_proxies(id,status,enabled,last_check_ok,last_checked_at)
+                    values (2,'enabled',1,0,'2026-09-04 08:00:00+08:00');
+                insert into sunny_proxies(id,status,enabled,last_check_ok,last_checked_at)
+                    values (3,'invalid',0,0,'2026-09-04 08:00:00+08:00');
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with patch.dict(os.environ, {"ACCOUNT_MANAGER_DATABASE_URL": str(database)}):
+                db = SunnyDB("proxy-usable-test", ensure_schema=False)
+                try:
+                    self.assertTrue(db.proxy_is_usable(1))
+                    self.assertFalse(db.proxy_is_usable(2))
+                    self.assertFalse(db.proxy_is_usable(3))
+                finally:
+                    db.close()
+
+
 class PhoneReservationTests(unittest.TestCase):
     def test_concurrent_workers_reserve_distinct_numbers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -1553,14 +1553,18 @@ class SunnyDB:
         if proxy_id <= 0:
             return True
         row = self.conn.execute(
-            "select status,enabled,last_check_ok from sunny_proxies where id=?",
+            "select status,enabled,last_check_ok,last_checked_at from sunny_proxies where id=?",
             (proxy_id,),
         ).fetchone()
+        # A newly imported enabled row has no check timestamp yet.  It is a
+        # candidate for the Worker's target-level HTTPS precheck; only a row
+        # with an explicit failed check is excluded here.
+        unchecked = row and not row["last_checked_at"]
         return bool(
             row
             and str(row["status"] or "").strip().lower() == "enabled"
             and int(row["enabled"] or 0) == 1
-            and int(row["last_check_ok"] or 0) == 1
+            and (int(row["last_check_ok"] or 0) == 1 or unchecked)
         )
 
     def acquire_mailbox_lease(self, mailbox_id: int, owner: str, ttl_seconds: int = 600) -> bool:

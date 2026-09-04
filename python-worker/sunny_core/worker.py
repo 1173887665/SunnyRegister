@@ -644,7 +644,7 @@ def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, sl
     proxy = proxies.get("register", "")
     if not proxy or proxies.get("mode") != "proxy_pool":
         if payload.get("proxy_pool_configured") is True:
-            raise RuntimeError("代理池已配置但当前没有可用槽位；请先启用并检测图二代理池中的记录")
+            raise RuntimeError("代理池已配置但当前没有可用槽位；请启用可用记录，或在代理池中检测后重试")
         return proxies
 
     candidates = _proxy_pool_candidates(payload)
@@ -670,7 +670,7 @@ def _prepare_register_proxy(db: SunnyDB, payload: dict[str, Any], email: str, sl
         candidates = [{"id": 0, "address": proxy, "register": proxy}]
 
     if pool_configured and not candidates:
-        raise RuntimeError("代理池已配置但当前没有可用槽位；请先启用并检测图二代理池中的记录")
+        raise RuntimeError("代理池已配置但当前没有可用槽位；请启用可用记录，或在代理池中检测后重试")
 
     failures: list[str] = []
     for attempt, candidate in enumerate(candidates, start=1):
