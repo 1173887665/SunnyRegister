@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
 import type { BranchCfg, BranchName } from "../../types";
 import { CountrySelect } from "./StageSettings";
+import { apiFetch } from "@/lib/utils";
 
 type CountryOption = { code: string; capital?: string };
+type PoolRole = "checkout" | "promotion";
+type PoolTestState = { status: "idle" | "checking" | "success" | "error"; message: string };
 
 /**
  * Project-owned proxy pools for the checkout and promotion routes.
@@ -30,6 +34,8 @@ export function ProxyPoolSettings({
   const [promotionPool, setPromotionPool] = useState(branch.promotion_proxies || "");
   const [checkoutCountry, setCheckoutCountry] = useState(branch.checkout_proxy_country || fallbackCheckoutCountry);
   const [promotionCountry, setPromotionCountry] = useState(branch.promotion_proxy_country || fallbackPromotionCountry);
+  const [checkoutTest, setCheckoutTest] = useState<PoolTestState>({ status: "idle", message: "" });
+  const [promotionTest, setPromotionTest] = useState<PoolTestState>({ status: "idle", message: "" });
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
@@ -37,6 +43,8 @@ export function ProxyPoolSettings({
     setPromotionPool(branch.promotion_proxies || "");
     setCheckoutCountry(branch.checkout_proxy_country || fallbackCheckoutCountry);
     setPromotionCountry(branch.promotion_proxy_country || fallbackPromotionCountry);
+    setCheckoutTest({ status: "idle", message: "" });
+    setPromotionTest({ status: "idle", message: "" });
   }, [branch.checkout_proxies, branch.promotion_proxies, branch.checkout_proxy_country, branch.promotion_proxy_country, fallbackCheckoutCountry, fallbackPromotionCountry]);
 
   const save = async () => {
@@ -50,11 +58,41 @@ export function ProxyPoolSettings({
     setSaved(true);
   };
 
+  const testPool = async (role: PoolRole, pool: string) => {
+    const setState = role === "checkout" ? setCheckoutTest : setPromotionTest;
+    if (!pool.trim()) {
+      setState({ status: "error", message: "请先填写代理地址" });
+      return;
+    }
+    setState({ status: "checking", message: "检测中..." });
+    try {
+      const result = await apiFetch("/sunny/workbench/checkout/proxy-check", {
+        method: "POST",
+        body: JSON.stringify({ role, pool, limit: 20 }),
+      }) as {
+        checked?: number;
+        available?: number;
+        unavailable?: number;
+        truncated?: boolean;
+      };
+      const checked = Number(result?.checked || 0);
+      const available = Number(result?.available || 0);
+      const suffix = result?.truncated ? "（仅检测前 20 条）" : "";
+      if (available > 0) {
+        setState({ status: "success", message: `可用 ${available}/${checked}${suffix}` });
+      } else {
+        setState({ status: "error", message: `没有可用代理（已检测 ${checked} 条）${suffix}` });
+      }
+    } catch (error) {
+      setState({ status: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   return (
     <div className="card proxy-pool-settings">
       <div className="card-head">
         <span className="card-title">{branch.label || branchName} · 项目代理池</span>
-        <span className="card-hint">按项目固定使用；国家为手动标注，不探测或改写出口 IP</span>
+        <span className="card-hint">按项目固定使用；建议先用 1 条稳定代理检测通过，再加入动态代理</span>
       </div>
       <div className="card-body proxy-pool-grid">
         <ProxyPoolField
@@ -63,8 +101,11 @@ export function ProxyPoolSettings({
           value={checkoutPool}
           country={checkoutCountry}
           countries={countries}
+          role="checkout"
+          testState={checkoutTest}
           onValueChange={setCheckoutPool}
           onCountryChange={setCheckoutCountry}
+          onTest={() => void testPool("checkout", checkoutPool)}
         />
         <ProxyPoolField
           title="Promotion 代理池"
@@ -72,8 +113,11 @@ export function ProxyPoolSettings({
           value={promotionPool}
           country={promotionCountry}
           countries={countries}
+          role="promotion"
+          testState={promotionTest}
           onValueChange={setPromotionPool}
           onCountryChange={setPromotionCountry}
+          onTest={() => void testPool("promotion", promotionPool)}
         />
       </div>
       <div className="card-body" style={{ borderTop: "1px solid var(--border-faint)", display: "flex", alignItems: "center", gap: 10 }}>
@@ -92,16 +136,22 @@ function ProxyPoolField({
   value,
   country,
   countries,
+  role,
+  testState,
   onValueChange,
   onCountryChange,
+  onTest,
 }: {
   title: string;
   hint: string;
   value: string;
   country: string;
   countries: CountryOption[];
+  role: PoolRole;
+  testState: PoolTestState;
   onValueChange: (value: string) => void;
   onCountryChange: (value: string) => void;
+  onTest: () => void;
 }) {
   return (
     <div style={{ minWidth: 0 }}>
@@ -118,6 +168,26 @@ function ProxyPoolField({
         spellCheck={false}
         style={{ width: "100%", resize: "vertical", minHeight: 112 }}
       />
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, minHeight: 30 }}>
+        <button
+          className="btn btn-sm"
+          type="button"
+          onClick={onTest}
+          disabled={testState.status === "checking" || !value.trim()}
+          title={`检测 ${role === "promotion" ? "Promotion" : "Checkout"} 代理池`}
+        >
+          <RefreshCw className={testState.status === "checking" ? "animate-spin" : ""} size={14} />
+          {testState.status === "checking" ? "检测中..." : "检测此代理池"}
+        </button>
+        {testState.message && (
+          <span
+            className="muted"
+            style={{ fontSize: 11, color: testState.status === "error" ? "var(--danger)" : testState.status === "success" ? "var(--ok)" : undefined }}
+          >
+            {testState.message}
+          </span>
+        )}
+      </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
         <span className="muted" style={{ fontSize: 11, whiteSpace: "nowrap" }}>代理国家</span>
         <CountrySelect

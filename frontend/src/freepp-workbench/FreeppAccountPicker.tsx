@@ -16,7 +16,7 @@ import QRCode from "qrcode";
 import { API_BASE, apiDownload, apiFetch, triggerBrowserDownload } from "@/lib/utils";
 import { useStore } from "./store/useStore";
 import { getRuntimeSnapshot, setRuntimeSelection, useRuntime } from "./integration/runtime";
-import { CHAIN_PROJECT_BRANCH } from "./views/FlowWorkspaceView";
+import { ACCOUNT_TEST_PROJECTS, CHAIN_PROJECT_BRANCH } from "./views/FlowWorkspaceView";
 import { api } from "./api/client";
 import { MAX_CHAIN_CONCURRENCY } from "./types";
 
@@ -25,6 +25,7 @@ type BusyAction = "access-token-check" | "refresh-at" | "health-check" | "subscr
 type ProgressChain = { chain_id: string; branch: string; email?: string; account_id?: number; index?: number; progress: number; current_log?: string; status: "pending" | "running" | "succeeded" | "failed"; stages?: Record<string, any>; reasonText?: string; reason?: string };
 type ChainProgress = { visible: boolean; branch: string; branchIndex: number; branchTotal: number; total: number; done: number; percent: number; success: number; failure: number; status: "idle" | "running" | "success" | "failed"; chains: ProgressChain[] };
 type ChainTaskMeta = { taskId: string; branch: string; branchIndex: number; branchTotal: number; accountTotal: number };
+type AccountTestItem = { session_id?: number | string; email?: string; check_status?: string; check_error?: string; checkout_kind?: string };
 
 const PAGE_SIZES = [10, 20, 50, 100];
 const STATUS_OPTIONS = ["未注册", "已注册", "已接码", "已反代", "已封禁", "需二验", "注册中", "登录刷新", "失败", "已取消", "禁用"];
@@ -757,6 +758,59 @@ export default function FreeppAccountPicker() {
     }
   }
 
+  async function runAccountTestProject(
+    project: string,
+    sessionIds: number[],
+    execution: ReturnType<typeof chainExecutionSettings>,
+    branchIndex: number,
+    branchTotal: number,
+  ) {
+    const result = await apiFetch("/sunny/workbench/checkout/precheck", {
+      method: "POST",
+      body: JSON.stringify({
+        system_at: true,
+        session_ids: sessionIds,
+        external_ats: [],
+        checkout_proxies: execution.checkoutProxyPool,
+        promotion_proxies: execution.promotionProxyPool,
+        checkout_proxy_country: execution.checkoutProxyCountry,
+        promotion_proxy_country: execution.promotionProxyCountry,
+        // These projects do not have a provider-specific extractor yet. A
+        // hosted precheck still verifies the selected account's AT, Checkout
+        // response, and configured project proxy pools without fabricating a
+        // provider link.
+        link_type: "hosted",
+        country: execution.country,
+        promo_country: execution.promotionCountries[0] || execution.country,
+        use_program_proxy_pool: false,
+      }),
+    });
+    const items = Array.isArray(result?.items) ? result.items as AccountTestItem[] : [];
+    if (!items.length) throw new Error("账号测试未返回结果");
+    const passed = items.filter((item) => String(item.check_status || "").toLowerCase() === "checked" && !String(item.check_error || "").trim());
+    const passedIds = new Set(passed.map((item) => String(item.session_id || "")).filter(Boolean));
+    const passedEmails = new Set(passed.map((item) => normalizedEmail(item.email)).filter(Boolean));
+    setChainProgress((current) => {
+      const chains = current.chains.map((chain) => {
+        if (chain.branch !== project) return chain;
+        const id = String(chain.account_id || "");
+        const email = normalizedEmail(chain.email);
+        const ok = (id && passedIds.has(id)) || (email && passedEmails.has(email));
+        const item = items.find((candidate) => String(candidate.session_id || "") === id || (email && normalizedEmail(candidate.email) === email));
+        const detail = item?.checkout_kind ? `（${checkoutLabel(item.checkout_kind)}）` : "";
+        return {
+          ...chain,
+          progress: 100,
+          current_log: ok ? `账号测试通过${detail}，未生成提链链接` : String(item?.check_error || "账号 Checkout 测试失败"),
+          status: ok ? "succeeded" as const : "failed" as const,
+          reason: ok ? undefined : String(item?.check_error || "账号 Checkout 测试失败"),
+        };
+      });
+      return { ...current, ...summarizeProgressChains(chains), visible: true, branch: project, branchIndex, branchTotal, total: branchTotal * sessionIds.length, chains };
+    });
+    return { passed: passed.length, failed: Math.max(0, items.length - passed.length) };
+  }
+
   async function startSelectedChains() {
     if (!selectedSessions.length && !selectedTokenIds.size) {
       setMessage("请先在账号 AT 区域勾选账号");
@@ -768,9 +822,11 @@ export default function FreeppAccountPicker() {
       return;
     }
     const branches = Array.from(new Set(projects.map((project) => CHAIN_PROJECT_BRANCH[project]).filter((branch): branch is NonNullable<typeof branch> => Boolean(branch))));
-    const unsupported = projects.filter((project) => !CHAIN_PROJECT_BRANCH[project]);
-    if (!branches.length) {
-      setMessage("当前勾选项目没有可直接提链的分支");
+    const accountTestProjects = projects.filter((project) => ACCOUNT_TEST_PROJECTS.has(project));
+    const unsupported = projects.filter((project) => !CHAIN_PROJECT_BRANCH[project] && !ACCOUNT_TEST_PROJECTS.has(project));
+    const workItems = [...branches, ...accountTestProjects];
+    if (!workItems.length) {
+      setMessage("当前勾选项目没有可执行的账号测试或提链分支");
       return;
     }
     setBusy("chain-start");
@@ -789,7 +845,7 @@ export default function FreeppAccountPicker() {
       }
       const concurrency = normalizeChainConcurrency(chainConcurrency);
       const projectConfig = await api<Session>("/api/config");
-      const initialChains = branches.flatMap((branch) => checkoutSessions.map((session, index) => ({
+      const initialChains = workItems.flatMap((branch) => checkoutSessions.map((session, index) => ({
         chain_id: `${branch}:${String(session.id)}`,
         branch,
         email: String(session.email || session.mailbox || ""),
@@ -801,9 +857,9 @@ export default function FreeppAccountPicker() {
       })));
       setChainProgress({
         visible: true,
-        branch: branches[0],
+        branch: workItems[0],
         branchIndex: 0,
-        branchTotal: branches.length,
+        branchTotal: workItems.length,
         total: initialChains.length,
         done: 0,
         percent: 0,
@@ -812,7 +868,7 @@ export default function FreeppAccountPicker() {
         status: "running",
         chains: initialChains,
       });
-      setMessage(`正在启动 ${branches.length} 个提链项目（${sessionIds.length} 个账号，同时运行 ${concurrency} 个）...`);
+      setMessage(`正在启动 ${workItems.length} 个项目（${sessionIds.length} 个账号，同时运行 ${concurrency} 个）...`);
       for (const [branchIndex, branch] of branches.entries()) {
         try {
           const execution = chainExecutionSettings(projectConfig, branch);
@@ -821,7 +877,7 @@ export default function FreeppAccountPicker() {
             visible: true,
             branch,
             branchIndex,
-            branchTotal: branches.length,
+            branchTotal: workItems.length,
             status: "running",
             chains: current.chains.map((chain) => chain.branch === branch && chain.status === "pending" ? { ...chain, current_log: "正在创建提链任务" } : chain),
           }));
@@ -849,8 +905,8 @@ export default function FreeppAccountPicker() {
           if (result?.error) throw new Error(String(result.error));
           const taskId = String(result?.id || result?.task_id || "");
           if (!taskId) throw new Error("提链任务未返回任务编号");
-          setChainTasks((current) => ({ ...current, [taskId]: { taskId, branch, branchIndex, branchTotal: branches.length, accountTotal: sessionIds.length } }));
-          const completedTask = await waitForSunnyCheckout(taskId, branch, branchIndex, branches.length, sessionIds.length);
+          setChainTasks((current) => ({ ...current, [taskId]: { taskId, branch, branchIndex, branchTotal: workItems.length, accountTotal: sessionIds.length } }));
+          const completedTask = await waitForSunnyCheckout(taskId, branch, branchIndex, workItems.length, sessionIds.length);
           if (completedTask?.detached) {
             pushLog(`${branch} 提链任务仍在后台运行，任务编号 ${taskId}；可点击“继续查询”`, "info");
             setMessage(`${branch} 提链仍在后台运行（任务 ${taskId}），当前页面已停止等待，可继续查询`);
@@ -869,6 +925,34 @@ export default function FreeppAccountPicker() {
           pushLog(`${branch} 提链启动失败：${reason}`, "err");
         }
       }
+      for (const [testIndex, project] of accountTestProjects.entries()) {
+        const branchIndex = branches.length + testIndex;
+        try {
+          const execution = chainExecutionSettings(projectConfig, project);
+          setChainProgress((current) => ({
+            ...current,
+            visible: true,
+            branch: project,
+            branchIndex,
+            branchTotal: workItems.length,
+            status: "running",
+            chains: current.chains.map((chain) => chain.branch === project && chain.status === "pending" ? { ...chain, current_log: "正在测试账号 Checkout" } : chain),
+          }));
+          const testResult = await runAccountTestProject(project, sessionIds, execution, branchIndex, workItems.length);
+          started += 1;
+          pushLog(`${project} 账号测试完成：通过 ${testResult.passed}，失败 ${testResult.failed}`, testResult.failed ? "warn" : "ok");
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          failures.push(`${project}: ${reason}`);
+          setChainProgress((current) => {
+            const chains = current.chains.map((chain) => chain.branch === project && (chain.status === "pending" || chain.status === "running")
+              ? { ...chain, progress: 100, current_log: reason, reason, status: "failed" as const }
+              : chain);
+            return { ...current, ...summarizeProgressChains(chains), chains };
+          });
+          pushLog(`${project} 账号测试失败：${reason}`, "err");
+        }
+      }
       setChainProgress((current) => ({
         ...current,
         // Detached tasks remain visible as running. Only mark the batch
@@ -877,8 +961,9 @@ export default function FreeppAccountPicker() {
           ? "running"
           : current.failure > 0 ? "failed" : "success",
       }));
-      const skipped = unsupported.length ? `，已跳过 ${unsupported.length} 个非提链项目` : "";
-      setMessage(`已启动 ${started}/${branches.length} 个提链项目${skipped}${failures.length ? `；失败：${failures.join("；")}` : ""}`);
+      const skipped = unsupported.length ? `，已跳过 ${unsupported.length} 个支付授权项目` : "";
+      const testSuffix = accountTestProjects.length ? `，账号测试 ${accountTestProjects.length} 个` : "";
+      setMessage(`已处理 ${started}/${workItems.length} 个项目${testSuffix}${skipped}${failures.length ? `；失败：${failures.join("；")}` : ""}`);
       if (unsupported.length) pushLog(`已跳过 ${unsupported.length} 个支付授权项目`, "info");
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);

@@ -132,6 +132,16 @@ type sunnyCheckoutPrecheckRequest struct {
 	UseProgramProxyPool   bool     `json:"use_program_proxy_pool"`
 }
 
+// sunnyCheckoutProxyCheckRequest is intentionally separate from the global
+// proxy-pool model. Project-level pools are often temporary or rotating
+// gateways; checking them must not create, delete, or mutate global records.
+type sunnyCheckoutProxyCheckRequest struct {
+	Role    string   `json:"role"`
+	Pool    string   `json:"pool"`
+	Proxies []string `json:"proxies"`
+	Limit   int      `json:"limit"`
+}
+
 type sunnyCheckoutCredential struct {
 	Token        string
 	Email        string
@@ -443,6 +453,55 @@ func (s *Server) sunnyCheckoutRuntime(w http.ResponseWriter, r *http.Request, pa
 		writeJSON(w, 200, map[string]any{"items": checkoutProviders, "countries": checkoutCountryCurrency})
 		return
 	}
+	if len(parts) == 1 && parts[0] == "proxy-check" && r.Method == http.MethodPost {
+		var body sunnyCheckoutProxyCheckRequest
+		if err := decodeJSONBody(r, 1<<20, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "代理检测请求格式无效")
+			return
+		}
+		role := strings.ToLower(strings.TrimSpace(body.Role))
+		if role != "checkout" && role != "promotion" {
+			writeError(w, http.StatusBadRequest, "代理检测用途必须是 checkout 或 promotion")
+			return
+		}
+		pool := strings.TrimSpace(body.Pool)
+		if pool == "" && len(body.Proxies) > 0 {
+			pool = strings.Join(body.Proxies, "\n")
+		}
+		addresses, err := splitCheckoutPool(pool)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s 代理池: %v", roleLabel(role), err))
+			return
+		}
+		limit := body.Limit
+		if limit <= 0 {
+			limit = 20
+		}
+		if limit > 50 {
+			limit = 50
+		}
+		truncated := len(addresses) > limit
+		if truncated {
+			addresses = addresses[:limit]
+		}
+		results := checkSunnyProxyAddresses(addresses, sunnyProxyCheckConcurrency())
+		available := 0
+		for _, result := range results {
+			if ok, _ := result["ok"].(bool); ok {
+				available++
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":          available > 0,
+			"role":        role,
+			"checked":     len(results),
+			"available":   available,
+			"unavailable": len(results) - available,
+			"truncated":   truncated,
+			"results":     results,
+		})
+		return
+	}
 	if len(parts) >= 2 && parts[0] == "gcash-orders" && (r.Method == http.MethodGet || r.Method == http.MethodPost) {
 		s.proxySunnyGcashOrder(w, r, parts[1:], runtimeName)
 		return
@@ -487,12 +546,14 @@ func (s *Server) sunnyCheckoutRuntime(w http.ResponseWriter, r *http.Request, pa
 				writeError(w, http.StatusBadRequest, "Checkout 代理池: "+err.Error())
 				return
 			}
-			promotion, err = splitCheckoutPool(body.PromotionProxies)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "Promotion 代理池: "+err.Error())
-				return
-			}
-			if linkType == "gcash" {
+			promotion = append([]string(nil), checkout...)
+			if linkType != "gcash" {
+				promotion, err = splitCheckoutPool(body.PromotionProxies)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, "Promotion 代理池: "+err.Error())
+					return
+				}
+			} else {
 				promotion = append([]string(nil), checkout...)
 			}
 		}

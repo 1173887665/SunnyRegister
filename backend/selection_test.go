@@ -143,6 +143,48 @@ func TestSunnyMailboxSelectionReportsAvailabilityAndSkipsDisabledRows(t *testing
 	}
 }
 
+func TestSunnyFailedMailboxCanBeSelectedForRetry(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	failed := SunnyMailbox{Email: "retry-failed@example.com", Status: "失败", Enabled: false}
+	if err := s.db.Create(&failed).Error; err != nil {
+		t.Fatalf("create failed mailbox: %v", err)
+	}
+	if err := s.db.Model(&failed).Update("enabled", false).Error; err != nil {
+		t.Fatalf("disable failed mailbox: %v", err)
+	}
+
+	selection := httptest.NewRecorder()
+	s.sunnyMailboxes(selection, httptest.NewRequest(http.MethodGet, "/api/sunny/mailboxes?selection=all&enabled=true&include_failed=true&q=retry-failed", nil), nil)
+	payload := decodeFilteredSelection(t, selection)
+	if payload.Total != 1 || len(payload.IDs) != 1 || payload.IDs[0] != failed.ID {
+		t.Fatalf("failed retry selection = %#v, want mailbox %d", payload, failed.ID)
+	}
+	if _, err := s.sunnyMailboxesForRegisterTask(map[string]any{"mailbox_ids": []any{failed.ID}, "retry_failed": true}); err != nil {
+		t.Fatalf("failed mailbox retry validation: %v", err)
+	}
+	if _, err := s.sunnyMailboxesForRegisterTask(map[string]any{"mailbox_ids": []any{failed.ID}}); err == nil {
+		t.Fatal("disabled failed mailbox should require retry_failed")
+	}
+}
+
+func TestSunnyCancelledMailboxCanBeSelectedForRetry(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	cancelled := SunnyMailbox{Email: "retry-cancelled@example.com", Status: "已取消", Enabled: false}
+	if err := s.db.Create(&cancelled).Error; err != nil {
+		t.Fatalf("create cancelled mailbox: %v", err)
+	}
+
+	selection := httptest.NewRecorder()
+	s.sunnyMailboxes(selection, httptest.NewRequest(http.MethodGet, "/api/sunny/mailboxes?selection=all&enabled=true&include_failed=true&q=retry-cancelled", nil), nil)
+	payload := decodeFilteredSelection(t, selection)
+	if payload.Total != 1 || len(payload.IDs) != 1 || payload.IDs[0] != cancelled.ID {
+		t.Fatalf("cancelled retry selection = %#v, want mailbox %d", payload, cancelled.ID)
+	}
+	if _, err := s.sunnyMailboxesForRegisterTask(map[string]any{"mailbox_ids": []any{cancelled.ID}, "retry_failed": true}); err != nil {
+		t.Fatalf("cancelled mailbox retry validation: %v", err)
+	}
+}
+
 func TestAuditFilteredSelectionIgnoresPagination(t *testing.T) {
 	s := newAuditTestServer(t)
 	for index := 0; index < 12; index++ {

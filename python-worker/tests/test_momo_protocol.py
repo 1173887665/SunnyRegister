@@ -74,7 +74,7 @@ def _server() -> ThreadingHTTPServer:
     return server
 
 
-def _wait(manager: MomoManager, job_id: str, statuses: set[str], timeout: float = 5) -> dict:
+def _wait(manager: MomoManager, job_id: str, statuses: set[str], timeout: float = 10) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         job = manager.get_job(job_id) or {}

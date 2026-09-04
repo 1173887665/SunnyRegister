@@ -4503,6 +4503,54 @@ func checkSunnyProxy(proxyAddr string) map[string]any {
 	return result
 }
 
+func roleLabel(role string) string {
+	if strings.EqualFold(strings.TrimSpace(role), "promotion") {
+		return "Promotion"
+	}
+	return "Checkout"
+}
+
+// checkSunnyProxyAddresses checks project-supplied addresses without touching
+// the persisted global proxy pool. Results are kept in input order so repeated
+// rows from a rotating gateway remain visible as independent slots.
+func checkSunnyProxyAddresses(addresses []string, concurrency int) []map[string]any {
+	if len(addresses) == 0 {
+		return []map[string]any{}
+	}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if concurrency > len(addresses) {
+		concurrency = len(addresses)
+	}
+	results := make([]map[string]any, len(addresses))
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for index, address := range addresses {
+		index, address := index, address
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			checked := checkSunnyProxy(address)
+			result := map[string]any{
+				"index":      index + 1,
+				"address":    sanitizePersistedString(address),
+				"ok":         checked["ok"],
+				"latency_ms": checked["latency_ms"],
+				"check_mode": checked["check_mode"],
+			}
+			if errorText := strings.TrimSpace(text(checked["error"])); errorText != "" {
+				result["error"] = sanitizePersistedString(errorText)
+			}
+			results[index] = result
+		}()
+	}
+	wg.Wait()
+	return results
+}
+
 func sunnyProxyCheckTimeout() time.Duration {
 	seconds := 6
 	if raw := strings.TrimSpace(os.Getenv("SUNNY_PROXY_CHECK_TIMEOUT_SECONDS")); raw != "" {

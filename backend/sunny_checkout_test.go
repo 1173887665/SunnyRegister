@@ -193,6 +193,82 @@ func TestSplitCheckoutPoolNormalizesAndLimits(t *testing.T) {
 	}
 }
 
+func TestCheckSunnyProxyAddressesPreservesSlotsAndRedactsCredentials(t *testing.T) {
+	addresses := []string{
+		"http://user:secret@127.0.0.1:1",
+		"http://user:secret@127.0.0.1:1",
+	}
+	results := checkSunnyProxyAddresses(addresses, 2)
+	if len(results) != len(addresses) {
+		t.Fatalf("results=%d, want %d", len(results), len(addresses))
+	}
+	for index, result := range results {
+		if got := intValue(result["index"], 0); got != index+1 {
+			t.Fatalf("result %d index=%d", index, got)
+		}
+		if got := text(result["address"]); strings.Contains(got, "secret") || !strings.Contains(got, "127.0.0.1:1") {
+			t.Fatalf("result %d address was not safely redacted: %q", index, got)
+		}
+		if _, ok := result["proxy"]; ok {
+			t.Fatalf("result %d leaked raw proxy field: %#v", index, result)
+		}
+	}
+}
+
+func TestSunnyCheckoutProxyCheckEndpointDoesNotPersistProjectPool(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/workbench/checkout/proxy-check", strings.NewReader(`{
+		"role":"promotion",
+		"pool":"http://127.0.0.1:1\nhttp://127.0.0.1:1",
+		"limit":20
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	s.sunnyCheckoutRuntime(recorder, req, []string{"proxy-check"}, checkoutRuntimeWorkbench)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("proxy check status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode proxy check response: %v", err)
+	}
+	if text(response["role"]) != "promotion" || toInt(response["checked"]) != 2 || toInt(response["available"]) != 0 {
+		t.Fatalf("unexpected proxy check response: %#v", response)
+	}
+	var count int64
+	if err := s.db.Model(&SunnyProxy{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("project proxy check persisted %d global proxy rows", count)
+	}
+}
+
+func TestSunnyCheckoutProxyCheckEndpointRejectsUnknownRole(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/checkout/proxy-check", strings.NewReader(`{"role":"other","pool":"http://127.0.0.1:1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	s.sunnyCheckoutRuntime(recorder, req, []string{"proxy-check"}, checkoutRuntimeManager)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unknown role status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestSunnyCheckoutPrecheckGCashUsesCheckoutPoolWhenPromotionPoolOmitted(t *testing.T) {
+	s := newSunnySessionTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/sunny/checkout/precheck", strings.NewReader(`{
+		"link_type":"gcash",
+		"checkout_proxies":"http://127.0.0.1:1"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	s.sunnyCheckoutRuntime(recorder, req, []string{"precheck"}, checkoutRuntimeManager)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GCash precheck status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestCheckoutProviderDefaultsIncludeAllCurrentPaths(t *testing.T) {
 	if len(checkoutProviders) != 12 {
 		t.Fatalf("providers=%d", len(checkoutProviders))

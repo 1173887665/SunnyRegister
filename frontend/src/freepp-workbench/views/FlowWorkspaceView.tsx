@@ -50,10 +50,28 @@ const PROJECTS: Project[] = [
   { id: "direct_pay", label: "直卡支付", group: "支付授权", channel: "card", country: "跟随提链", desc: "绑卡、免税地址与订阅执行", details: [{ label: "支付任务", desc: "启动与查看直卡支付任务", view: "direct_pay" }, { label: "任务监控", desc: "查看支付流程进度与结果", view: "chains" }] },
 ];
 
-/** Projects that can be submitted to the local SunnyRegister checkout runner. */
-export const CHAIN_PROJECT_BRANCH: Partial<Record<WorkspaceProject, string>> = Object.fromEntries(
-  PROJECTS.filter((project) => project.group === "提链配置").map((project) => [project.id, project.id === "paypal_extract" ? "paypal" : project.id]),
-) as Partial<Record<WorkspaceProject, string>>;
+/**
+ * Project ids that have a real provider implementation in the checkout
+ * Worker.  The remaining configuration cards are still useful for account
+ * readiness checks, but must not be sent as an unknown `link_type`.
+ */
+export const CHAIN_PROJECT_BRANCH: Partial<Record<WorkspaceProject, string>> = {
+  paypal_extract: "paypal",
+  momo: "momo",
+  pix: "pix",
+  ideal: "ideal",
+  upi: "upi",
+  kakao: "kakao",
+  blik: "blik",
+  twint: "twint",
+  gopay: "gopay",
+  gcash: "gcash",
+};
+
+/** Projects without a provider-specific extractor use account-only checks. */
+export const ACCOUNT_TEST_PROJECTS = new Set<WorkspaceProject>([
+  "grok", "bizum", "naver_pay", "grabpay", "qris", "direct",
+]);
 
 const ICONS: Record<string, string> = {
   paypal: "P", momo: "M", grok: "G", pix: "Q", ideal: "i", upi: "U", kakao: "K", blik: "B", twint: "T", bizum: "Bz", gopay: "Go", naver_pay: "N", gcash: "G", grabpay: "Gr", qris: "Qr", direct: "D", direct_pay: "D",
@@ -147,7 +165,7 @@ export function FlowWorkspaceView() {
                 <span className="workspace-chevron">›</span>
               </span>
               <span className="workspace-card-desc">{project.desc}</span>
-              <span className="workspace-card-meta"><span>{project.channel}</span><span>{project.country}</span><span>{project.details.length} 个入口</span></span>
+              <span className="workspace-card-meta"><span>{project.channel}</span><span>{project.country}</span><span>{project.details.length} 个入口</span>{ACCOUNT_TEST_PROJECTS.has(project.id) && <span>账号测试</span>}</span>
             </button>
           ))}
         </div>
