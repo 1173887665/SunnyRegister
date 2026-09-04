@@ -35,6 +35,10 @@ CLIENT_BUILD = "9758774"
 REBIND_OTP_FIRST_WAIT_SECONDS = 20
 REBIND_OTP_SECOND_WAIT_SECONDS = 45
 REBIND_OTP_FINAL_WAIT_SECONDS = 45
+# A successful `begin` response does not guarantee that the upstream actually
+# delivered an OTP.  Self-hosted mailboxes are cheap to rotate, so retry a
+# delivery miss with a fresh address instead of polling the same empty inbox.
+REBIND_MAILBOX_DELIVERY_ATTEMPTS = 3
 _DOMAIN_ROTATION = itertools.count()
 # Every account runs in a newly spawned process. A zero-based counter therefore
 # always selected the first configured domain on the first attempt (and usually
@@ -950,39 +954,78 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
         # Register the one-time pickup credential before ChatGPT sends the verification mail.
         # The public pickup endpoint validates the token against this database row.
         target_channel = imported_channel or ("outlook" if imported_type == "microsoft" else "domain_api" if imported_type == "domain" else "url_api" if imported_type == "apple" else "remail_api")
-        db.persist_rebind_pending(new_email, new_api, new_api_token_hash, imported_type, target_channel)
-        reader_account = _rebind_target_account(new_email, new_api, imported_type, target_channel, account)
-        reader = create_mailbox_reader(reader_account, log)
-        try:
-            phase = "mailbox"
-            reader.connect()
-            issued_after = time.time()
-            log(f"[{old_email}] 已建立换绑邮箱取件监听，准备请求 ChatGPT 发送验证码")
+        delivery_attempt = 0
+        while True:
+            db.ensure_not_cancelled()
+            db.persist_rebind_pending(new_email, new_api, new_api_token_hash, imported_type, target_channel)
+            reader_account = _rebind_target_account(new_email, new_api, imported_type, target_channel, account)
+            reader = create_mailbox_reader(reader_account, log)
             try:
-                phase = "begin"
-                _begin_with_retry(client, new_email, log, attempts=4)
-                log(f"[{old_email}] ChatGPT 换绑验证码请求已接受，等待新邮箱验证码")
-            except RebindError as exc:
-                if "重新认证" not in str(exc):
-                    raise
-                previous_flow = old_flow
-                phase = "login"
-                old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
-                _persist_login_result(db, old_email, mailbox or {}, old_result, log)
+                phase = "mailbox"
+                reader.connect()
+                issued_after = time.time()
+                log(f"[{old_email}] 已建立换绑邮箱取件监听，准备请求 ChatGPT 发送验证码")
                 try:
-                    if previous_flow and previous_flow.session:
-                        previous_flow.session.close()
-                except Exception:
-                    pass
-                client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""), log)
-                client.set_access_token(str(old_result.get("access_token") or ""))
-                phase = "begin"
-                _begin_with_retry(client, new_email, log, attempts=4)
-                log(f"[{old_email}] 重新认证后已重新提交换绑验证码请求，等待新邮箱验证码")
-            phase = "delivery"
-            code = _wait_for_rebind_code(reader, client, new_email, issued_after, log)
-        finally:
-            reader.close()
+                    phase = "begin"
+                    _begin_with_retry(client, new_email, log, attempts=4)
+                    log(f"[{old_email}] ChatGPT 换绑验证码请求已接受，等待新邮箱验证码")
+                except RebindError as exc:
+                    if "重新认证" not in str(exc):
+                        raise
+                    previous_flow = old_flow
+                    phase = "login"
+                    old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
+                    _persist_login_result(db, old_email, mailbox or {}, old_result, log)
+                    try:
+                        if previous_flow and previous_flow.session:
+                            previous_flow.session.close()
+                    except Exception:
+                        pass
+                    client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""), log)
+                    client.set_access_token(str(old_result.get("access_token") or ""))
+                    phase = "begin"
+                    _begin_with_retry(client, new_email, log, attempts=4)
+                    log(f"[{old_email}] 重新认证后已重新提交换绑验证码请求，等待新邮箱验证码")
+                phase = "delivery"
+                code = _wait_for_rebind_code(reader, client, new_email, issued_after, log)
+                break
+            except TimeoutError as exc:
+                # An imported mailbox is user-selected and must remain intact. For
+                # generated self-hosted mailboxes, rotate the address after the
+                # provider accepted begin but produced no message.
+                undelivered = "上游未实际投递换绑验证码" in str(exc)
+                can_retry_delivery = (
+                    imported_email == ""
+                    and undelivered
+                    and delivery_attempt + 1 < REBIND_MAILBOX_DELIVERY_ATTEMPTS
+                )
+                if not can_retry_delivery:
+                    raise
+                delivery_attempt += 1
+                failed_email, failed_api, failed_hash = new_email, new_api, new_api_token_hash
+                _handle_failed_domain_mailbox(
+                    db,
+                    old_email,
+                    failed_email,
+                    failed_api,
+                    failed_hash,
+                    exc,
+                    log,
+                    mailbox_type=imported_type,
+                    mailbox_channel=target_channel,
+                )
+                new_email, new_api, new_api_token_hash = _domain_mailbox(
+                    db,
+                    log,
+                    account_row.get("_rebind_domain_mailbox_domains"),
+                )
+                target_channel = "domain_api"
+                log(
+                    f"[{old_email}] 自建邮箱已接受请求但未收到验证码，"
+                    f"将更换新邮箱地址重试（{delivery_attempt + 1}/{REBIND_MAILBOX_DELIVERY_ATTEMPTS}）"
+                )
+            finally:
+                reader.close()
         phase = "verify"
         client.verify(new_email, code)
         log(f"[{old_email}] 已向 ChatGPT 提交换绑邮箱验证码")
