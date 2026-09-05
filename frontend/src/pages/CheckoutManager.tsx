@@ -120,6 +120,7 @@ type CheckoutPreferences = {
   currency?: string;
   retryCount?: number;
   concurrency?: number;
+  useProgramProxyPool?: boolean;
   usePromo?: boolean;
   promoCampaign?: string;
   promoCode?: string;
@@ -462,6 +463,8 @@ export default function CheckoutManager() {
   const [currency, setCurrency] = useState(savedPreferences.currency ?? "USD");
   const [retryCount, setRetryCount] = useState(() => savedNumber(savedPreferences.retryCount, 10, 0, 50));
   const [concurrency, setConcurrency] = useState(() => savedNumber(savedPreferences.concurrency, 3, 1, 100));
+  const [useProgramProxyPool, setUseProgramProxyPool] = useState(savedPreferences.useProgramProxyPool ?? false);
+  const [programProxyStats, setProgramProxyStats] = useState({ available: 0, country: "" });
   const [usePromo, setUsePromo] = useState(savedPreferences.usePromo ?? true);
   const [promoCampaign, setPromoCampaign] = useState(savedPreferences.promoCampaign ?? "plus-1-month-free");
   const [promoCode, setPromoCode] = useState(savedPreferences.promoCode ?? "");
@@ -503,13 +506,14 @@ export default function CheckoutManager() {
       const preferences: CheckoutPreferences = {
         checkoutProxies, promotionProxies, systemAT, externalText, query, group, status, planFilter, trialFilter,
         checkoutFilter, paymentMethods, plan, linkType, country, currency, retryCount, concurrency, usePromo, promoCampaign,
+        useProgramProxyPool,
         promoCode, promoCountry, idealBank, workspaceName, workspaceId, seatQuantity, priceInterval,
         creditQuantity, pixTaxID, pixAutoKind, pageSize, logOpen, sortBy, sortOrder, rebindEmailFilter, trialCountryFilters,
       };
       window.localStorage.setItem(checkoutPreferencesStorageKey, JSON.stringify(preferences));
       writeProxyPoolsForPath(linkType, checkoutProxies, promotionProxies);
     } catch { /* private browsing may disable local storage */ }
-  }, [checkoutFilter, checkoutProxies, concurrency, country, creditQuantity, currency, externalText, group, idealBank, linkType, logOpen, pageSize, paymentMethods, pixAutoKind, pixTaxID, plan, planFilter, priceInterval, promoCampaign, promoCode, promoCountry, promotionProxies, query, retryCount, seatQuantity, sortBy, sortOrder, status, systemAT, trialFilter, usePromo, workspaceId, workspaceName]);
+  }, [checkoutFilter, checkoutProxies, concurrency, country, creditQuantity, currency, externalText, group, idealBank, linkType, logOpen, pageSize, paymentMethods, pixAutoKind, pixTaxID, plan, planFilter, priceInterval, promoCampaign, promoCode, promoCountry, promotionProxies, query, retryCount, seatQuantity, sortBy, sortOrder, status, systemAT, trialFilter, usePromo, useProgramProxyPool, workspaceId, workspaceName]);
   useEffect(() => {
     try {
       if (activeTaskID) window.localStorage.setItem(checkoutTaskStorageKey, activeTaskID);
@@ -517,6 +521,19 @@ export default function CheckoutManager() {
     } catch { /* private browsing may disable local storage */ }
   }, [activeTaskID]);
   useEffect(() => { void apiFetch("/sunny/checkout/providers").then((data) => { if (data.items?.length) setProviders(data.items); if (data.countries) setCountries(data.countries); }).catch(() => {}); }, []);
+  useEffect(() => {
+    if (linkType !== "upi" || !useProgramProxyPool) {
+      setProgramProxyStats({ available: 0, country: "" });
+      return;
+    }
+    let active = true;
+    const params = new URLSearchParams({ page: "1", page_size: "1", purpose: "checkout", status: "enabled" });
+    if (country) params.set("country", country);
+    void apiFetch(`/sunny/proxy-config/pool?${params.toString()}`).then((data) => {
+      if (active) setProgramProxyStats({ available: Number(data.total || 0), country: country || "" });
+    }).catch(() => { if (active) setProgramProxyStats({ available: 0, country: country || "" }); });
+    return () => { active = false; };
+  }, [country, linkType, refreshKey, useProgramProxyPool]);
   useEffect(() => { void apiFetch("/sunny/mailbox-groups").then((data) => setGroups(data.items || [])).catch(() => setGroups([])); }, []);
   useEffect(() => {
     if (!checkoutSuccesses.some((item) => item.path === "gcash" && item.qrExpiresAt > 0)) return;
@@ -718,6 +735,11 @@ export default function CheckoutManager() {
     () => externalRows.filter((row) => selected.includes(checkoutSelectionKey(row, false))),
     [externalRows, selected],
   );
+  const usesProgramProxyPool = linkType === "upi" && useProgramProxyPool;
+  const effectiveCheckoutProxies = usesProgramProxyPool && linkType === "upi" ? "" : checkoutProxies;
+  const effectivePromotionProxies = usesProgramProxyPool && linkType === "upi"
+    ? ""
+    : linkType === "gcash" ? checkoutProxies : promotionProxies;
   function switchMode(value: boolean) {
     setSystemAT(value);
     setSelected([]);
@@ -792,11 +814,10 @@ export default function CheckoutManager() {
     if (provider) { setCountry(provider.country); setCurrency(provider.currency); }
   }
   async function precheck() {
-    const effectivePromotionProxies = linkType === "gcash" ? checkoutProxies : promotionProxies;
-    if (!splitLines(checkoutProxies).length || !splitLines(effectivePromotionProxies).length || !selected.length) { setNotice("请先填写代理池并勾选账户"); return; }
+    if ((!usesProgramProxyPool && (!splitLines(checkoutProxies).length || !splitLines(effectivePromotionProxies).length)) || !selected.length) { setNotice(usesProgramProxyPool ? "请先勾选账户" : "请先填写代理池并勾选账户"); return; }
     setPrecheckBusy(true);
     try {
-      const data = await apiFetch("/sunny/checkout/precheck", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selected : [], external_ats: systemAT ? [] : selectedExternalRows.map((x) => x.token), checkout_proxies: checkoutProxies, promotion_proxies: effectivePromotionProxies, link_type: linkType, country, promo_country: linkType === "gcash" ? "PH" : promoCountry }) });
+      const data = await apiFetch("/sunny/checkout/precheck", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selected : [], external_ats: systemAT ? [] : selectedExternalRows.map((x) => x.token), checkout_proxies: effectiveCheckoutProxies, promotion_proxies: effectivePromotionProxies, use_program_proxy_pool: usesProgramProxyPool, link_type: linkType, country, promo_country: linkType === "gcash" ? "PH" : promoCountry }) });
       const byEmail = new Map((data.items || []).map((item: AnyRow) => [item.email, item]));
       const apply = (old: AnyRow[]) => old.map((row) => {
         const found = byEmail.get(row.email) as AnyRow | undefined;
@@ -826,19 +847,32 @@ export default function CheckoutManager() {
       setTask(current);
     } catch (error: any) { setNotice(error.message || String(error)); } finally { setCancelBusy(false); }
   }
-  async function start() {
-    const effectivePromotionProxies = linkType === "gcash" ? checkoutProxies : promotionProxies;
-    if (!splitLines(checkoutProxies).length || !splitLines(effectivePromotionProxies).length) { setNotice("请先填写代理池"); return; }
-    if (!selected.length) { setNotice("请先勾选需要提链的账户"); return; }
+  async function retryFailedAccounts() {
+    const items = Array.isArray(task?.result?.items) ? task.result.items : [];
+    const failed = items.filter((item: AnyRow) => normalized(item.status) !== "succeeded");
+    if (!failed.length) { setNotice("当前任务没有可重试的失败账户"); return; }
+    const keys = failed.map((item: AnyRow) => systemAT
+      ? Number(item.account_id || sessions.find((row) => row.email === item.email)?.id || 0)
+      : Number(item.index ?? -1)).filter((value: number) => value > 0 || (!systemAT && value >= 0));
+    if (!keys.length) { setNotice("失败账户缺少可重试标识，请重新选择账户"); return; }
+    setSelected(keys);
+    setNotice(`已准备重试 ${keys.length} 个失败账户`);
+    await start(keys);
+  }
+  async function start(retrySelection?: number[]) {
+    const selection = retrySelection ?? selected;
+    const externalSelection = externalRows.filter((row) => selection.includes(checkoutSelectionKey(row, false)));
+    if ((!usesProgramProxyPool && (!splitLines(checkoutProxies).length || !splitLines(effectivePromotionProxies).length))) { setNotice("请先填写代理池"); return; }
+    if (!selection.length) { setNotice("请先勾选需要提链的账户"); return; }
     setCheckoutBusy(true); setTask(null); setTaskLogs([]); setCheckoutSuccesses([]); setSuccessListExpanded(false); setDetailKey(""); setLogOpen(true);
     setCheckoutLive((old) => {
       const visibleRows = systemAT ? sessions : externalRows;
-      const currentBatchKeys = new Set(visibleRows.filter((row) => selected.includes(checkoutSelectionKey(row, systemAT))).map((row) => checkoutLiveKey(row)));
+      const currentBatchKeys = new Set(visibleRows.filter((row) => selection.includes(checkoutSelectionKey(row, systemAT))).map((row) => checkoutLiveKey(row)));
       if (!currentBatchKeys.size) return old;
       return Object.fromEntries(Object.entries(old).filter(([key]) => !currentBatchKeys.has(key)));
     });
     try {
-      const response = await apiFetch("/sunny/checkout", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selected : [], external_ats: systemAT ? [] : selectedExternalRows.map((x) => x.token), checkout_kinds: systemAT ? [] : selectedExternalRows.map((x) => normalized(x.checkout_kind) || "unknown"), checkout_proxies: checkoutProxies, promotion_proxies: effectivePromotionProxies, plan, link_type: linkType, country, currency, retry_count: retryCount, concurrency, use_promo: usePromo, promo_campaign: promoCampaign, promo_country: linkType === "gcash" ? "PH" : promoCountry, promo_code: promoCode, ideal_bank: idealBank, workspace_name: workspaceName, workspace_id: workspaceId, seat_quantity: seatQuantity, price_interval: priceInterval, credit_quantity: creditQuantity, pix_tax_id: pixTaxID, pix_auto_kind: pixAutoKind }) });
+      const response = await apiFetch("/sunny/checkout", { method: "POST", body: JSON.stringify({ system_at: systemAT, session_ids: systemAT ? selection : [], external_ats: systemAT ? [] : externalSelection.map((x) => x.token), checkout_kinds: systemAT ? [] : externalSelection.map((x) => normalized(x.checkout_kind) || "unknown"), checkout_proxies: effectiveCheckoutProxies, promotion_proxies: effectivePromotionProxies, use_program_proxy_pool: usesProgramProxyPool, plan, link_type: linkType, country, currency, retry_count: retryCount, concurrency, use_promo: usePromo, promo_campaign: promoCampaign, promo_country: linkType === "gcash" ? "PH" : promoCountry, promo_code: promoCode, ideal_bank: idealBank, workspace_name: workspaceName, workspace_id: workspaceId, seat_quantity: seatQuantity, price_interval: priceInterval, credit_quantity: creditQuantity, pix_tax_id: pixTaxID, pix_auto_kind: pixAutoKind }) });
       const taskID = String(response.id || response.task_id);
       setTask(response);
       setActiveTaskID(taskID);
@@ -854,7 +888,7 @@ export default function CheckoutManager() {
   return <div className="checkout-manager space-y-5">
     {notice && <div className="fixed right-5 top-20 z-[500] rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white shadow-xl">{notice}</div>}
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5 shadow-sm"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--accent)]">PAYMENT ROUTER</p><h1 className="mt-1 text-2xl font-black">提链管理</h1><p className="mt-2 text-sm text-[var(--text-secondary)]">为选中的 ChatGPT 账户批量提取支付链接、跳转地址和支付二维码。</p></div><div className="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--text-muted)]">{statusLabel}</div></div></section>
-    <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5"><div className={`grid gap-4 ${linkType === "gcash" ? "md:grid-cols-1" : "md:grid-cols-2"}`}><label><span className="mb-2 block text-sm font-semibold">{linkType === "gcash" ? "PH Checkout 代理池" : "Checkout 代理池"} <b className="text-red-500">*</b></span><textarea className="min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)]" value={checkoutProxies} onChange={(e) => setCheckoutProxies(e.target.value)} placeholder="每行一个代理，支持 http://、https://、socks4://、socks5://" /></label>{linkType !== "gcash" && <label><span className="mb-2 block text-sm font-semibold">Promotion 代理池 <b className="text-red-500">*</b></span><textarea className="min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)]" value={promotionProxies} onChange={(e) => setPromotionProxies(e.target.value)} placeholder="每行一个代理，支持 http://、https://、socks4://、socks5://" /></label>}</div><p className="mt-3 text-xs text-[var(--text-muted)]">该页单独使用这里配置的代理池；每个支付路径会保存各自的 Checkout 与 Promotion 代理。其它提链工作台项目继续使用程序代理池。</p></section>
+    <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div className="text-sm font-semibold">代理来源</div><label className={`flex items-center gap-2 text-xs ${linkType === "upi" ? "" : "text-[var(--text-muted)]"}`}><button type="button" className={`sr-switch-only ${usesProgramProxyPool ? "on" : ""}`} disabled={linkType !== "upi"} onClick={() => setUseProgramProxyPool((value) => !value)}><span /></button><span>UPI 使用程序代理池</span>{linkType === "upi" && useProgramProxyPool && <span className="text-[var(--text-muted)]">{programProxyStats.available > 0 ? `可用 ${programProxyStats.available} 条 · ${programProxyStats.country || country}` : "当前地区暂无已启用代理"}</span>}</label></div><div className={`grid gap-4 ${linkType === "gcash" ? "md:grid-cols-1" : "md:grid-cols-2"}`}><label><span className="mb-2 block text-sm font-semibold">{linkType === "gcash" ? "PH Checkout 代理池" : "Checkout 代理池"} {!usesProgramProxyPool && <b className="text-red-500">*</b>}</span><textarea className="min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50" value={checkoutProxies} onChange={(e) => setCheckoutProxies(e.target.value)} disabled={usesProgramProxyPool} placeholder="每行一个代理，支持 http://、https://、socks4://、socks5://" /></label>{linkType !== "gcash" && <label><span className="mb-2 block text-sm font-semibold">Promotion 代理池 {!usesProgramProxyPool && <b className="text-red-500">*</b>}</span><textarea className="min-h-28 w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50" value={promotionProxies} onChange={(e) => setPromotionProxies(e.target.value)} disabled={usesProgramProxyPool} placeholder="每行一个代理，支持 http://、https://、socks4://、socks5://" /></label>}</div><p className="mt-3 text-xs text-[var(--text-muted)]">该页单独使用这里配置的代理池；每个支付路径会保存各自的 Checkout 与 Promotion 代理。UPI 开启程序代理池后由系统按国家筛选并轮换，其他路径继续使用上方手工代理。</p></section>
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5"><h2 className="mb-3 text-sm font-semibold">订阅 / 空间</h2><div className="grid grid-cols-2 gap-2 md:grid-cols-4">{planOptions.map((item) => <button key={item.value} type="button" onClick={() => setPlan(item.value)} className={`rounded-xl border p-3 text-left transition ${plan === item.value ? "border-[var(--accent)] bg-[var(--accent)]/10" : "border-[var(--border)] hover:border-[var(--accent)]/60"}`}><b className="block">{item.label}</b><small className="text-xs text-[var(--text-muted)]">{item.hint}</small></button>)}</div>{plan === "team" && <div className="mt-4 grid gap-3 md:grid-cols-4"><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} placeholder="空间名称" /><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} placeholder="已有空间 ID" /><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" type="number" min={2} value={seatQuantity} onChange={(e) => setSeatQuantity(Number(e.target.value))} placeholder="席位数量" /><select className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={priceInterval} onChange={(e) => setPriceInterval(e.target.value)}><option value="month">按月</option><option value="year">按年</option></select></div>}{plan === "codex_low" && <div className="mt-4 grid gap-3 md:grid-cols-2"><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} placeholder="Codex 空间名称" /><input className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" type="number" min={1} value={creditQuantity} onChange={(e) => setCreditQuantity(Number(e.target.value))} placeholder="积分数量" /></div>}</section>
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-shell)] p-5">
       <h2 className="mb-3 text-sm font-semibold">支付路径</h2>
@@ -878,7 +912,7 @@ export default function CheckoutManager() {
       </div>
       {task && <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg-main)]/40 p-3">
         <div className="flex flex-wrap items-center justify-between gap-3"><div><div className="text-sm font-semibold">最近提链任务</div><div className="mt-1 text-xs text-[var(--text-muted)]">状态：{taskStatusLabel(task.status)} · 进度：{task.progress || "0/0"} · 成功 {task.success ?? task.success_count ?? 0} · 失败 {task.error_count ?? 0}</div></div>{!task.terminal && <Button variant="outline" disabled={cancelBusy || task.status === "cancel_requested"} onClick={() => void cancelTask()}>{cancelBusy || task.status === "cancel_requested" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <X className="mr-2 h-4 w-4" />}{cancelBusy || task.status === "cancel_requested" ? "停止中..." : "停止提链"}</Button>}</div>
-        {task.terminal && <div className={`mt-2 text-xs ${task.status === "succeeded" ? "text-emerald-600" : "text-red-500"}`}>{task.status === "succeeded" ? `任务完成：成功 ${task.success ?? task.success_count ?? 0}，失败 ${task.error_count ?? 0}` : `任务结束：${task.error || "请查看下方账户结果"}`}</div>}
+        {task.terminal && <div className={`mt-2 flex flex-wrap items-center gap-3 text-xs ${task.status === "succeeded" ? "text-emerald-600" : "text-red-500"}`}><span>{task.status === "succeeded" ? `任务完成：成功 ${task.success ?? task.success_count ?? 0}，失败 ${task.error_count ?? 0}` : `任务结束：${task.error || "请查看下方账户结果"}`}</span>{Array.isArray(task.result?.items) && task.result.items.some((item: AnyRow) => normalized(item.status) !== "succeeded") && <Button variant="outline" size="sm" onClick={() => void retryFailedAccounts()}>重试失败账户</Button>}</div>}
         <div className="mt-3 border-t border-[var(--border)] pt-3">
           <button type="button" className="flex w-full items-center gap-2 text-left text-xs font-semibold disabled:cursor-default" aria-expanded={successListExpanded} disabled={!checkoutSuccesses.length} onClick={() => setSuccessListExpanded((value) => !value)}><span>成功账户</span><span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-600 dark:text-emerald-400" aria-live="polite">{checkoutSuccesses.length}</span>{checkoutSuccesses.length > 0 && <span className="ml-auto inline-flex items-center gap-1 text-[var(--text-muted)]">{successListExpanded ? "收起" : "展开"}{successListExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}</span>}</button>
           {successListExpanded && checkoutSuccesses.length > 0 && <div className="mt-2 overflow-x-auto"><table className="w-full min-w-[860px] table-fixed text-left text-xs"><colgroup><col className="w-[210px]" /><col className="w-[120px]" /><col /><col className="w-[120px]" /><col className="w-[82px]" /></colgroup><thead className="border-y border-[var(--border)] text-[var(--text-muted)]"><tr><th className="p-2">邮箱</th><th className="p-2">支付路径</th><th className="p-2">支付链接</th><th className="p-2">支付二维码</th><th className="p-2">操作</th></tr></thead><tbody>{checkoutSuccesses.map((item) => <tr key={item.key} className="border-b border-[var(--border)]/60"><td className="p-2"><div className="truncate font-medium" title={item.email}>{item.email}</div></td><td className="p-2"><CompactBadge label={labelFor(item.path, pathLabels)} tone={pathTone(item.path)} /></td><td className="p-2"><button className="block w-full truncate text-left font-medium text-[var(--accent)] underline decoration-[var(--accent)]/40 underline-offset-2" title={`${item.link}\n点击复制支付链接`} onClick={() => void copy(item.link)}>{item.link}</button></td><td className="p-2">{item.qrImage ? <QRImageThumb src={item.qrImage} onClick={() => { setQrValue(item.qrData); setQrImage(item.qrImage); }} /> : item.qrData ? <div><QRThumb value={item.qrData} onClick={() => { setQrValue(item.qrData); setQrImage(""); }} />{item.qrExpiresAt > 0 && <QRExpiryLabel expiresAt={item.qrExpiresAt} status={item.qrStatus} />}</div> : <span className="text-[var(--text-muted)]">上游未提供免登录二维码</span>}</td><td className="p-2"><button className="sr-link inline-flex items-center gap-1 whitespace-nowrap" title="复制支付链接" onClick={() => void copy(item.link)}><Clipboard className="h-3 w-3" />复制</button></td></tr>)}</tbody></table></div>}
