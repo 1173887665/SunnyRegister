@@ -164,7 +164,15 @@ func urlAPIHostResolvesToPrivate(host string) bool {
 	if host == "" {
 		return true
 	}
-	if host == "mail.moink.cc" || strings.HasSuffix(host, ".mail.moink.cc") {
+	// Known URL-API mailbox providers may resolve through the local DNS/proxy
+	// sink to a synthetic private address. They are still public provider
+	// endpoints and must be allowed through the health-check path just like the
+	// runtime mailbox reader (which reaches them via the configured proxy).
+	if host == "mail.moink.cc" || strings.HasSuffix(host, ".mail.moink.cc") ||
+		host == "icloud-api.top" || strings.HasSuffix(host, ".icloud-api.top") ||
+		host == "gapi.mailsapi.com" || strings.HasSuffix(host, ".gapi.mailsapi.com") ||
+		host == "icmail.2790cake.cn" || strings.HasSuffix(host, ".icmail.2790cake.cn") ||
+		host == "191006.xyz" || strings.HasSuffix(host, ".191006.xyz") {
 		return false
 	}
 	// RFC 6761 reserves these suffixes for documentation and test fixtures;

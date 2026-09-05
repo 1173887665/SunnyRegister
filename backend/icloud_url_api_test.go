@@ -209,6 +209,14 @@ func TestValidateURLAPIMailAddressAcceptsMoinkProviderWithSyntheticDNS(t *testin
 	}
 }
 
+func TestURLAPIHostResolvesToPrivateAllowsKnownMailboxProviders(t *testing.T) {
+	for _, host := range []string{"icloud-api.top", "gapi.mailsapi.com", "icmail.2790cake.cn", "191006.xyz"} {
+		if urlAPIHostResolvesToPrivate(host) {
+			t.Fatalf("known mailbox provider %q was treated as private", host)
+		}
+	}
+}
+
 func TestValidateURLAPIMailAddressRejectsURLCredentials(t *testing.T) {
 	if _, err := validateURLAPIMailAddress("https://user:pass@example.test/inbox"); err == nil {
 		t.Fatal("URL userinfo must not be accepted as a mailbox credential")
