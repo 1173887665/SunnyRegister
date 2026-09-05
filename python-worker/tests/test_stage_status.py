@@ -2272,8 +2272,27 @@ class RebindTaskTests(unittest.TestCase):
         self.assertEqual((success, errors, len(items)), (4, [], 4))
         concurrency_events = [call.kwargs.get("detail", {}) for call in db.event.call_args_list if "邮箱换绑并发数" in str(call.args[0])]
         self.assertEqual(concurrency_events[0]["cpu_count"], 2)
-        self.assertEqual(concurrency_events[0]["default_concurrency"], 3)
-        self.assertEqual(concurrency_events[0]["concurrency"], 3)
+        self.assertEqual(concurrency_events[0]["default_concurrency"], 2)
+        self.assertEqual(concurrency_events[0]["concurrency"], 2)
+
+    def test_rebind_requested_concurrency_is_capped_for_rate_limit_resilience(self):
+        db = MagicMock()
+        db.task_id = "task-rebind-cap"
+        db.cancel_requested.return_value = False
+        db.fetch_accounts.return_value = [
+            {"id": index, "email": f"cap-{index}@example.com", "trial_eligibility": "eligible"}
+            for index in range(1, 5)
+        ]
+
+        def isolated(_task_id, _payload, account_id, index, _total):
+            return index, {"email": f"cap-{account_id}@example.com", "status": "success"}
+
+        with patch.object(worker, "_rebind_one_isolated", side_effect=isolated):
+            success, errors, items = worker._rebind_sessions(db, {"concurrency": 6})
+
+        self.assertEqual((success, errors, len(items)), (4, [], 4))
+        concurrency_events = [call.kwargs.get("detail", {}) for call in db.event.call_args_list if "邮箱换绑并发数" in str(call.args[0])]
+        self.assertEqual(concurrency_events[0]["concurrency"], 2)
 
     def test_all_prefiltered_accounts_do_not_expand_to_all_database_accounts(self):
         db = MagicMock()

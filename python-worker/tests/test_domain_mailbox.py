@@ -60,6 +60,43 @@ def test_rebind_domain_mailbox_uses_moemail_openapi(monkeypatch):
     assert calls[0][1]["headers"]["X-API-Key"] == "api-key"
 
 
+def test_rebind_domain_mailbox_retries_moemail_gateway_errors_with_backoff(monkeypatch):
+    class DB:
+        @staticmethod
+        def get_config(key):
+            assert key == "domain_mailbox"
+            return {
+                "enabled_for_rebinding": True,
+                "provider": "moemail",
+                "moemail_api_url": "https://moemail.example",
+                "moemail_api_key": "api-key",
+                "pickup_base_url": "https://sunny.example",
+                "domains": ["example.com"],
+            }
+
+    class Response:
+        def __init__(self, status_code, payload=None):
+            self.ok = 200 <= status_code < 300
+            self.status_code = status_code
+            self.text = "gateway unavailable" if not self.ok else ""
+            self.headers = {}
+            self.payload = payload or {}
+
+        def json(self):
+            return self.payload
+
+    responses = [Response(502), Response(503), Response(200, {"id": "id-1", "email": "created@example.com"})]
+    sleeps = []
+
+    monkeypatch.setattr(rebind_module.requests, "post", lambda *_args, **_kwargs: responses.pop(0))
+    monkeypatch.setattr(rebind_module.time, "sleep", sleeps.append)
+
+    email, _credential, _token_hash = rebind_module._domain_mailbox(DB(), lambda _message: None)
+
+    assert email == "created@example.com"
+    assert sleeps == [2, 4]
+
+
 def test_rebound_mailbox_credentials_are_used_for_bulk_mailbox_selection():
     row = {
         "email": "original@icloud.com",
@@ -518,7 +555,7 @@ def test_rebind_begin_rate_limit_uses_exponential_backoff(monkeypatch):
     class Client:
         def begin(self, email):
             calls.append(email)
-            if len(calls) < 3:
+            if len(calls) < 2:
                 raise rebind_module.RebindError(
                     '换绑接口 /backend-api/accounts/change_email/begin 失败：HTTP 429 {"detail":"Failed to send email OTP, please try again later."}'
                 )
@@ -526,8 +563,8 @@ def test_rebind_begin_rate_limit_uses_exponential_backoff(monkeypatch):
 
     monkeypatch.setattr(rebind_module.time, "sleep", sleeps.append)
     assert rebind_module._begin_with_retry(Client(), "new@example.com", logs.append, attempts=4) == {"success": True}
-    assert calls == ["new@example.com"] * 3
-    assert sleeps == [20, 40]
+    assert calls == ["new@example.com"] * 2
+    assert sleeps == [20]
 
 
 def test_rebind_begin_rejects_http_success_with_failed_payload():

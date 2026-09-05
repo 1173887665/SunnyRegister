@@ -51,7 +51,13 @@ AGENT_IDENTITY_REVERSE_PROXY = "agent_identity_reverse_proxy"
 # configurable for slower environments while retaining a bounded default.
 REBIND_ACCOUNT_TIMEOUT_SECONDS = max(
     60,
-    int(os.getenv("SUNNY_REBIND_ACCOUNT_TIMEOUT_SECONDS", "900")),
+    int(os.getenv("SUNNY_REBIND_ACCOUNT_TIMEOUT_SECONDS", "600")),
+)
+# ChatGPT's change-email endpoint rate-limits bursts by account and route. Keep
+# batch pressure bounded even when an old UI payload requests a larger value.
+REBIND_MAX_CONCURRENCY = max(
+    1,
+    min(4, int(os.getenv("SUNNY_REBIND_MAX_CONCURRENCY", "2"))),
 )
 
 
@@ -4618,12 +4624,12 @@ def _rebind_sessions(db: SunnyDB, payload: dict[str, Any]) -> tuple[int, list[st
     items: list[dict[str, Any]] = list(prefiltered_items)
     db.update_task(progress_total=selected_total, progress_current=len(prefiltered_items))
     cpu_count = max(1, int(os.cpu_count() or 1))
-    default_concurrency = max(1, (cpu_count * 3 + 1) // 2)
+    default_concurrency = min(REBIND_MAX_CONCURRENCY, max(1, (cpu_count * 3 + 1) // 2))
     try:
         requested_concurrency = int(payload.get("concurrency") or default_concurrency)
     except (TypeError, ValueError):
         requested_concurrency = default_concurrency
-    concurrency = max(1, min(requested_concurrency, len(accounts)))
+    concurrency = max(1, min(requested_concurrency, REBIND_MAX_CONCURRENCY, len(accounts)))
     db.event(
         f"[系统] 邮箱换绑并发数：{concurrency}（CPU {cpu_count} 核，默认并发 {default_concurrency}）",
         detail={"scope": "global", "concurrency": concurrency, "cpu_count": cpu_count, "default_concurrency": default_concurrency, "total": len(accounts), "operation": "rebind"},

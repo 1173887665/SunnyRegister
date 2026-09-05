@@ -46,8 +46,10 @@ _DOMAIN_ROTATION = itertools.count()
 # random start while retaining round-robin behavior inside that child so retries
 # do not immediately reuse the same domain.
 _DOMAIN_ROTATION_OFFSET = secrets.randbelow(2**31)
-_BEGIN_RATE_LIMIT_MAX_ATTEMPTS = 4
+_BEGIN_RATE_LIMIT_MAX_ATTEMPTS = 2
 _BEGIN_RATE_LIMIT_BASE_DELAY_SECONDS = 20
+_MOEMAIL_MAX_ATTEMPTS = 5
+_MOEMAIL_RETRY_BASE_DELAY_SECONDS = 2
 
 
 def _retry_after_seconds(value: Any) -> int:
@@ -308,7 +310,7 @@ def _domain_mailbox(
             raise RebindError("MoeMail 配置不完整，请填写 API 地址和 API Key")
         expiry_time = int(cfg.get("moemail_expiry_time") or 0)
         last = "MoeMail 未返回有效邮箱"
-        for _ in range(8):
+        for attempt in range(1, _MOEMAIL_MAX_ATTEMPTS + 1):
             local = re.sub(r"[^a-z0-9]", "", secrets.token_urlsafe(length + 4).lower())[:length]
             email = f"{local}@{domain}"
             try:
@@ -328,8 +330,14 @@ def _domain_mailbox(
                 if not response.ok or not provider_email or "@" not in provider_email:
                     detail = str((payload.get("message") if isinstance(payload, dict) else "") or response.text or "")[:180]
                     last = f"HTTP {response.status_code}: {detail}".strip()
-                    if response.status_code not in {408, 425, 429} and response.status_code < 500:
+                    status = int(getattr(response, "status_code", 0) or 0)
+                    retryable = status in {408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526}
+                    if not retryable or attempt >= _MOEMAIL_MAX_ATTEMPTS:
                         break
+                    retry_after = _retry_after_seconds(getattr(response, "headers", {}).get("Retry-After"))
+                    delay = retry_after or min(30, _MOEMAIL_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
+                    log(f"MoeMail 生成邮箱暂时失败（HTTP {status}），等待 {delay} 秒后重试（{attempt + 1}/{_MOEMAIL_MAX_ATTEMPTS}）")
+                    time.sleep(delay)
                     continue
                 provider_id = str(obj.get("id") or obj.get("emailId") or "").strip() if isinstance(obj, dict) else ""
                 if not provider_id:
@@ -345,6 +353,10 @@ def _domain_mailbox(
                 return provider_email, credential, token_hash
             except requests.RequestException as exc:
                 last = str(exc)
+                if attempt < _MOEMAIL_MAX_ATTEMPTS:
+                    delay = min(30, _MOEMAIL_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
+                    log(f"MoeMail 生成邮箱网络异常，等待 {delay} 秒后重试（{attempt + 1}/{_MOEMAIL_MAX_ATTEMPTS}）：{str(exc)[:160]}")
+                    time.sleep(delay)
         raise RebindError(f"生成 MoeMail 邮箱失败：{last}")
 
     proxies = None
