@@ -180,6 +180,27 @@ def _goto_chatgpt_page(page: Any, log: Callable[[str], None] | None = None, *, t
         try:
             return page.goto(CHATGPT_BASE_URL, wait_until="domcontentloaded", timeout=timeout)
         except Exception as exc:
+            if _is_navigation_aborted(exc):
+                # Camoufox/Firefox can abort the top-level ChatGPT navigation
+                # when the site immediately redirects or replaces the document.
+                # Treat it like the auth-page navigation path: retry at the
+                # commit milestone and accept the page only after it is on a
+                # trusted ChatGPT/OpenAI origin.
+                try:
+                    page.wait_for_timeout(600 * (attempt + 1))
+                except Exception:
+                    time.sleep(0.6 * (attempt + 1))
+                previous_url = str(getattr(page, "url", "") or "")
+                try:
+                    return page.goto(CHATGPT_BASE_URL, wait_until="commit", timeout=min(timeout, 30000))
+                except Exception as retry_exc:
+                    if _navigation_abort_landed(page, retry_exc, previous_url) or _navigation_abort_can_resume_current(page, retry_exc):
+                        if log:
+                            log(f"[认证] ChatGPT 首页导航由重定向接管，继续处理当前页面：{page.url}")
+                        return None
+                    if attempt >= 2:
+                        raise
+                    exc = retry_exc
             if attempt >= 2 or not _is_transient_browser_network_error(exc):
                 raise
             if log:

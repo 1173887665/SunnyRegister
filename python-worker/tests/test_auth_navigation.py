@@ -70,6 +70,17 @@ def test_chatgpt_navigation_retries_transient_ssl_error() -> None:
     page.wait_for_timeout.assert_called_once_with(600)
 
 
+def test_chatgpt_navigation_retries_navigation_abort_at_commit() -> None:
+    page = Mock()
+    page.url = "about:blank"
+    response = object()
+    page.goto.side_effect = [RuntimeError("Page.goto: NS_ERROR_ABORT"), response]
+
+    assert _goto_chatgpt_page(page) is response
+    assert page.goto.call_count == 2
+    assert page.goto.call_args_list[1].kwargs["wait_until"] == "commit"
+
+
 def test_auth_navigation_does_not_accept_unchanged_chatgpt_page() -> None:
     page = Mock()
     page.url = "https://chatgpt.com/"
