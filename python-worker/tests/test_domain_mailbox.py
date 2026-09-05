@@ -4,6 +4,7 @@ import json
 import re
 import sqlite3
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -933,6 +934,87 @@ def test_rebind_login_rebuilds_stale_auth_with_mailbox_protocol(monkeypatch):
 def test_rebind_login_does_not_mailbox_retry_when_account_is_deactivated():
     error = rebind_module.LoginSecretAuthenticationError("account_deactivated: account is disabled")
     assert rebind_module._should_use_mailbox_browser_fallback(error) is False
+
+
+def test_saved_session_flow_restores_access_token_and_cookies(monkeypatch):
+    class Cookies:
+        def __init__(self):
+            self.jar = []
+
+        def clear(self):
+            self.jar.clear()
+
+        def set(self, name, value, **kwargs):
+            self.jar.append(SimpleNamespace(name=name, value=value, **kwargs))
+
+    class Session:
+        def __init__(self):
+            self.cookies = Cookies()
+
+        def close(self):
+            return None
+
+    created = []
+
+    class FakeFlow:
+        def __init__(self, flow_account, proxy_url, log, **kwargs):
+            self.account = flow_account
+            self.proxy_url = proxy_url
+            self.session = Session()
+            self.device_id = ""
+            self._last_access_token = ""
+            self.kwargs = kwargs
+            created.append(self)
+
+        def _new_session(self):
+            return Session()
+
+    class DB:
+        @staticmethod
+        def cancel_requested():
+            return False
+
+        @staticmethod
+        def fetch_session_by_account_id(account_id):
+            assert account_id == 42
+            return {
+                "access_token": "saved-access-token",
+                "refresh_token": "saved-refresh-token",
+                "id_token": "saved-id-token",
+                "session_json": json.dumps({"account": {"id": "account-42"}}),
+                "storage_state_json": json.dumps({
+                    "cookies": [
+                        {"name": "oai-did", "value": "device-42", "domain": ".chatgpt.com", "path": "/"},
+                        {"name": "session", "value": "cookie-42", "domain": "chatgpt.com", "path": "/"},
+                    ],
+                    "origins": [],
+                }),
+            }
+
+    monkeypatch.setattr(rebind_module, "ProtocolRegistrationFlow", FakeFlow)
+    account = account_from_row({
+        "email": "saved@example.com",
+        "raw": "saved@example.com----mail-password----client-id----mail-refresh-token",
+    })
+    flow, result = rebind_module._saved_session_flow(DB(), account, {"id": 42}, "http://proxy.example:8080", lambda _message: None)
+
+    assert len(created) == 1
+    assert flow.kwargs["existing_account"] is True
+    assert flow.kwargs["skip_mailbox"] is True
+    assert flow.device_id == "device-42"
+    assert flow._last_access_token == "saved-access-token"
+    assert result["account_id"] == "account-42"
+    assert result["refresh_token"] == "saved-refresh-token"
+    assert "session=cookie-42" in rebind_module._cookie_header(flow.session)
+
+
+@pytest.mark.parametrize("message", [
+    "换绑接口需要重新认证：HTTP 403 {}",
+    "reauth required",
+    "HTTP 401 unauthorized",
+])
+def test_saved_session_rejection_is_classified_for_login_fallback(message):
+    assert rebind_module._requires_fresh_saved_session(RuntimeError(message)) is True
 
 
 @pytest.mark.parametrize(

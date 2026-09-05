@@ -691,27 +691,28 @@ def _browser_mailbox_fallback(
     return flow, result
 
 
-def _phone_session_flow(
+def _saved_session_flow(
     db: SunnyDB,
     account: MailAccount,
     account_row: dict[str, Any],
     proxy: str,
     log: Callable[[str], None],
 ) -> tuple[ProtocolRegistrationFlow, dict[str, Any]]:
-    """Restore a phone-only account from its persisted ChatGPT session.
+    """Restore any existing account from its persisted ChatGPT session.
 
-    A phone registration has no mailbox credentials, so rebind must not try
-    to authenticate through an email reader. The session captured immediately
-    after registration already contains the AT and cookies required by the
-    change-email endpoints.
+    The session captured during registration already contains the Access Token
+    and cookies required by the change-email endpoints. Reusing it avoids a
+    second interactive login, which is especially important for accounts whose
+    upstream login is currently protected by an anti-bot challenge.
     """
     account_id = int(account_row.get("id") or 0)
     session_row = db.fetch_session_by_account_id(account_id) if account_id > 0 else None
     if not session_row:
-        raise RebindError("手机号账户缺少已保存的登录会话，请先完成注册或刷新会话")
-    access_token = str(session_row.get("access_token") or "").strip()
-    if not access_token:
-        raise RebindError("手机号账户会话缺少 Access Token，请先刷新会话")
+        fetch_by_email = getattr(db, "fetch_session_by_email", None)
+        if callable(fetch_by_email):
+            session_row = fetch_by_email(account.email)
+    if not session_row:
+        raise RebindError("账户缺少已保存的登录会话，请先完成注册或刷新会话")
     def parse_json(value: Any, default: Any) -> Any:
         if isinstance(value, (dict, list)):
             return value
@@ -721,9 +722,17 @@ def _phone_session_flow(
         except (TypeError, ValueError, json.JSONDecodeError):
             return default
     session_json = parse_json(session_row.get("session_json"), {})
+    access_token = str(
+        session_row.get("access_token")
+        or (session_json.get("accessToken") if isinstance(session_json, dict) else "")
+        or (session_json.get("access_token") if isinstance(session_json, dict) else "")
+        or ""
+    ).strip()
+    if not access_token:
+        raise RebindError("已保存会话缺少 Access Token，请先刷新会话")
     storage_state = parse_json(session_row.get("storage_state_json"), {})
     if not isinstance(storage_state, dict) or not isinstance(storage_state.get("cookies"), list):
-        raise RebindError("手机号账户会话缺少认证 Cookie，请先刷新会话")
+        raise RebindError("已保存会话缺少认证 Cookie，请先刷新会话")
     flow = ProtocolRegistrationFlow(
         account,
         proxy,
@@ -741,11 +750,41 @@ def _phone_session_flow(
         "id_token": str(session_row.get("id_token") or access_token),
         "session_json": session_json,
         "storage_state_json": storage_state,
-        "account_id": str((session_json.get("account") or {}).get("id") or "") if isinstance(session_json, dict) else "",
+        "account_id": str(
+            session_row.get("account_id")
+            or (session_json.get("account") or {}).get("id")
+            or ""
+        ) if isinstance(session_json, dict) else str(session_row.get("account_id") or ""),
     }
     _hydrate_protocol_flow_from_browser(flow, result)
     flow._last_access_token = access_token
     return flow, result
+
+
+def _phone_session_flow(
+    db: SunnyDB,
+    account: MailAccount,
+    account_row: dict[str, Any],
+    proxy: str,
+    log: Callable[[str], None],
+) -> tuple[ProtocolRegistrationFlow, dict[str, Any]]:
+    """Backward-compatible wrapper for phone-only callers."""
+    return _saved_session_flow(db, account, account_row, proxy, log)
+
+
+def _requires_fresh_saved_session(error: Exception) -> bool:
+    """Return true when a persisted session was rejected by the upstream API."""
+    message = str(error or "").lower()
+    return any(
+        marker in message
+        for marker in (
+            "换绑接口需要重新认证",
+            "reauth",
+            "recent authentication",
+            "http 401",
+            "http 403",
+        )
+    )
 
 
 def _persist_login_result(db: SunnyDB, identity_email: str, mailbox: dict[str, Any], result: dict[str, Any], log: Callable[[str], None]) -> None:
@@ -985,15 +1024,40 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             return {"email": old_email, "new_email": verified_email, "status": "success", "resumed": True}
 
         log(f"[{old_email}] 开始协议换绑")
+        session_reused = False
         if phone_only:
             old_flow, old_result = _phone_session_flow(db, account, account_row, proxy, log)
+            session_reused = True
         else:
-            old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
+            try:
+                old_flow, old_result = _saved_session_flow(db, account, account_row, proxy, log)
+                session_reused = True
+                log(f"[{old_email}] 已优先复用保存的 ChatGPT Session，跳过重复网页登录")
+            except Exception as session_exc:
+                log(f"[{old_email}] 保存的 ChatGPT Session 不可用，回退完整登录：{str(session_exc)[:260]}")
+                old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
         _persist_login_result(db, old_email, mailbox or {}, old_result, log)
         client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""), log)
         client.set_access_token(str(old_result.get("access_token") or ""))
         phase = "eligibility"
-        client.eligibility()
+        try:
+            client.eligibility()
+        except Exception as eligibility_exc:
+            if phone_only or not session_reused or not _requires_fresh_saved_session(eligibility_exc):
+                raise
+            log(f"[{old_email}] 保存的 ChatGPT Session 已被上游拒绝，重新认证后重试资格检查：{str(eligibility_exc)[:260]}")
+            try:
+                if old_flow and old_flow.session:
+                    old_flow.session.close()
+            except Exception:
+                pass
+            phase = "login"
+            old_flow, old_result = _login_flow(account, proxy, log, keep_session=True, should_cancel=db.cancel_requested)
+            _persist_login_result(db, old_email, mailbox or {}, old_result, log)
+            client = ChangeEmailClient(old_flow, str(old_result.get("account_id") or ""), log)
+            client.set_access_token(str(old_result.get("access_token") or ""))
+            phase = "eligibility"
+            client.eligibility()
         imported_email = str(account_row.get("_rebind_target_email") or "").strip()
         imported_api = str(account_row.get("_rebind_target_api") or "").strip()
         imported_type = str(account_row.get("_rebind_target_type") or "").strip().lower()
