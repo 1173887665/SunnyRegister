@@ -1644,6 +1644,33 @@ class SunnyDB:
                 (detail, timestamp, timestamp, email, access_token),
             )
 
+    def invalidate_saved_session(self, email: str, error: str = "") -> None:
+        """Drop a revoked AT/session snapshot before the next rebind login.
+
+        A revoked access token can remain duplicated in both the session row and
+        its JSON snapshot. Clearing both copies prevents the rebind flow from
+        loading the same invalid token on every retry while retaining the
+        refresh token and mailbox credentials for a fresh authentication.
+        """
+        email = str(email or "").strip()
+        if not email:
+            return
+        timestamp = now_sql()
+        detail = str(error or "saved access token rejected by upstream")[:2000]
+        with self.conn:
+            self.conn.execute(
+                "update sunny_accounts set access_token='',last_error=?,updated_at=? where lower(email)=lower(?)",
+                (detail, timestamp, email),
+            )
+            self.conn.execute(
+                """update sunny_sessions
+                   set access_token='',session_json='{}',storage_state_json='{}',
+                       access_token_status='invalid',access_token_error=?,
+                       access_token_checked_at=?,updated_at=?
+                 where lower(email)=lower(?)""",
+                (detail, timestamp, timestamp, email),
+            )
+
     def save_chatgpt_password(self, mailbox_id: int, password: str) -> None:
         if mailbox_id <= 0 or not password:
             return

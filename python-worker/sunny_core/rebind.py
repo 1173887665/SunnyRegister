@@ -787,6 +787,20 @@ def _requires_fresh_saved_session(error: Exception) -> bool:
     )
 
 
+def _is_revoked_saved_session(error: Exception) -> bool:
+    """Return true only when the persisted token itself was rejected."""
+    message = str(error or "").lower()
+    return any(
+        marker in message
+        for marker in (
+            "token_revoked",
+            "invalidated oauth token",
+            "invalid access token",
+            "http 401",
+        )
+    )
+
+
 def _persist_login_result(db: SunnyDB, identity_email: str, mailbox: dict[str, Any], result: dict[str, Any], log: Callable[[str], None]) -> None:
     persist = getattr(db, "persist_authenticated_session", None)
     if not callable(persist):
@@ -1046,6 +1060,10 @@ def rebind_one(db: SunnyDB, account_row: dict[str, Any], proxy: str, log: Callab
             if phone_only or not session_reused or not _requires_fresh_saved_session(eligibility_exc):
                 raise
             log(f"[{old_email}] 保存的 ChatGPT Session 已被上游拒绝，重新认证后重试资格检查：{str(eligibility_exc)[:260]}")
+            invalidate_saved_session = getattr(db, "invalidate_saved_session", None)
+            if callable(invalidate_saved_session) and _is_revoked_saved_session(eligibility_exc):
+                invalidate_saved_session(old_email, str(eligibility_exc))
+                log(f"[{old_email}] 已清理失效的本地 Access Token 与 Session 快照，后续从全新认证事务开始")
             try:
                 if old_flow and old_flow.session:
                     old_flow.session.close()
