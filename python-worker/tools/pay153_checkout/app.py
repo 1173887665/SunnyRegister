@@ -919,6 +919,10 @@ def checkout_payload(options: dict, meta: dict) -> dict[str, Any]:
     return common
 
 
+def hosted_requires_zero_due(promo_requested: bool, campaign_id: str) -> bool:
+    return bool(promo_requested) and str(campaign_id or "").strip().lower() == "plus-1-month-free"
+
+
 def _verify_checkout_context_cookies(
     http,
     client_context: CheckoutClientContext,
@@ -6812,6 +6816,9 @@ class JobStore:
                     or f"https://chatgpt.com/checkout/{custom_processor}/{session_id}"
                 )
                 custom_update: dict[str, Any] = {}
+                require_zero_due = hosted_requires_zero_due(
+                    promo_requested, options.get("promo_campaign") or "plus-1-month-free"
+                )
                 if promo_requested:
                     self.update(job_id, percent=68, text="正在为 OAICS Checkout 应用优惠")
                     custom_update = update_checkout_promo(
@@ -6857,9 +6864,9 @@ class JobStore:
                     "checkout_amount": custom_amount,
                     "amount_currency": custom_currency,
                     "amount_verification": custom_verification,
-                    "promo_applied": (custom_amount == 0) if promo_requested and custom_amount is not None else None,
+                    "promo_applied": (custom_amount == 0) if require_zero_due and custom_amount is not None else None,
                 })
-                if promo_requested and custom_amount not in {None, 0}:
+                if require_zero_due and custom_amount != 0:
                     raise RuntimeError(
                         f"OAICS 优惠未生效：今日应付 amount={custom_amount} {custom_currency}"
                     )
@@ -6870,6 +6877,9 @@ class JobStore:
                 return
             if provider == "hosted":
                 transport_stage = "Stripe Hosted Checkout"
+                require_zero_due = hosted_requires_zero_due(
+                    promo_requested, options.get("promo_campaign") or "plus-1-month-free"
+                )
                 self.update(job_id, percent=56, text="正在检测官方长链金额")
                 if not session_id:
                     if promo_requested:
@@ -6938,7 +6948,7 @@ class JobStore:
                             hosted_zero = int(str(hosted_amount)) == 0
                         except (TypeError, ValueError):
                             hosted_zero = str(hosted_amount).strip() in {"0", "0.0", "0.00"}
-                        if hosted_zero:
+                        if hosted_zero or not require_zero_due:
                             break
 
                 hosted_elements = sc.fetch_elements_session(
@@ -6983,14 +6993,14 @@ class JobStore:
                     hosted_zero = str(hosted_amount).strip() in {"0", "0.0", "0.00"}
                 result.update({
                     "checkout_amount": hosted_amount,
-                    "promo_applied": hosted_zero if promo_requested else None,
+                    "promo_applied": hosted_zero if require_zero_due else None,
                     "payment_method_types": hosted_ctx.get("payment_method_types") or [],
                     "processor_entity": hosted_processor,
                     "stripe_publishable_key": hosted_pk,
                 })
-                if promo_requested and not hosted_zero:
+                if require_zero_due and not hosted_zero:
                     raise RuntimeError(f"官方长链优惠未生效：Stripe 今日应付 amount={hosted_amount}")
-                if promo_requested:
+                if require_zero_due:
                     self.log(job_id, "官方长链金额校验通过：Stripe 今日应付 amount=0")
                 else:
                     self.log(job_id, f"官方长链金额检测完成：Stripe 今日应付 amount={hosted_amount}")
